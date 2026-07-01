@@ -1,0 +1,32 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "device": 0,
+  "threads": 1,
+  "_comment": "Whitelist of every model family currently enabled in registry.cpp. The WebUI loads ONE model at a time by (re)starting audiocpp_server with a single-model config; paths are relative to the bundle root (where cpu/ gpu/ models/ live). Entries whose directory is missing show as '未安装'; click 下载 in the UI to fetch them in the background (runs `python tools/model_manager.py install <download_id> --models-root <this>/models`). 'task' must be one of: tts, asr, vad, diar, sep, gen, clon, vc, s2s, align, vdes, spk, svc. The current UI only surfaces TTS-tab tasks (tts, clon) and the ASR tab (asr). 'download_id' is the model_manager package id (omit for bundled assets like silero_vad).",
+
+  "models": [
+    { "id": "omnivoice",              "display_name": "OmniVoice (tts)",                       "family": "omnivoice",            "path": "models/OmniVoice",                       "task": "tts",   "mode": "offline", "download_id": "omnivoice" },
+    { "id": "pocket-tts",             "display_name": "Pocket TTS (tts)",                      "family": "pocket_tts",           "path": "models/pocket-tts",                      "task": "tts",   "mode": "offline", "download_id": "pocket_tts" },
+    { "id": "qwen3-tts",              "display_name": "Qwen3-TTS 0.6B (tts)",                  "family": "qwen3_tts",            "path": "models/Qwen3-TTS-12Hz-0.6B-Base",        "task": "tts",   "mode": "offline", "download_id": "qwen3_tts_0_6b_base" },
+    { "id": "qwen3-tts-1.7b",         "display_name": "Qwen3-TTS 1.7B Base (tts)",             "family": "qwen3_tts",            "path": "models/Qwen3-TTS-12Hz-1.7B-Base",        "task": "tts",   "mode": "offline", "download_id": "qwen3_tts_1_7b_base" },
+    { "id": "qwen3-tts-1.7b-custom",  "display_name": "Qwen3-TTS 1.7B CustomVoice (tts)",      "family": "qwen3_tts",            "path": "models/Qwen3-TTS-12Hz-1.7B-CustomVoice", "task": "tts",   "mode": "offline", "download_id": "qwen3_tts_1_7b_custom_voice" },
+    { "id": "miotts",                 "display_name": "MioTTS 1.7B (tts; needs MioCodec)",     "family": "miotts",               "path": "models/MioTTS-1.7B",                     "task": "tts",   "mode": "offline", "download_id": "miotts_1_7b" },
+    { "id": "voxcpm2",                "display_name": "VoxCPM2 (tts)",                         "family": "voxcpm2",              "path": "models/VoxCPM2",                         "task": "tts",   "mode": "offline", "download_id": "voxcpm2" },
+    { "id": "vibevoice",              "display_name": "VibeVoice 1.5B (tts, long-form/multi-speaker)", "family": "vibevoice",    "path": "models/VibeVoice-1.5B",                  "task": "tts",   "mode": "offline", "download_id": "vibevoice_1_5b" },
+
+    { "id": "chatterbox",             "display_name": "Chatterbox (voice clone)",              "family": "chatterbox",           "path": "models/chatterbox",                      "task": "clon",  "mode": "offline", "download_id": "chatterbox" },
+
+    { "id": "qwen3-asr",              "display_name": "Qwen3-ASR 0.6B (asr)",                  "family": "qwen3_asr",            "path": "models/Qwen3-ASR-0.6B",                  "task": "asr",   "mode": "offline", "download_id": "qwen3_asr_0_6b" },
+    { "id": "citrinet-asr",           "display_name": "Citrinet ASR (asr)",                    "family": "citrinet_asr",         "path": "models/citrinet",                        "task": "asr",   "mode": "offline", "download_id": "citrinet_asr" },
+
+    { "id": "qwen3-tts-1.7b-vdesign", "display_name": "Qwen3-TTS 1.7B VoiceDesign (vdes)",     "family": "qwen3_tts",            "path": "models/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "task": "vdes",  "mode": "offline", "download_id": "qwen3_tts_1_7b_voice_design" },
+    { "id": "qwen3-forced-aligner",   "display_name": "Qwen3 Forced Aligner (align)",          "family": "qwen3_forced_aligner", "path": "models/Qwen3-ForcedAligner-0.6B",        "task": "align", "mode": "offline", "download_id": "qwen3_forced_aligner_0_6b" },
+    { "id": "sortformer-diar",        "display_name": "Sortformer Diarization 4spk (diar)",    "family": "sortformer_diar",      "path": "models/diar_sortformer_4spk-v1",         "task": "diar",  "mode": "offline", "download_id": "sortformer_diar_4spk_v1" },
+    { "id": "silero-vad",             "display_name": "Silero VAD (vad, bundled)",             "family": "silero_vad",           "path": "assets/framework/models/silero_vad",     "task": "vad",   "mode": "offline" },
+    { "id": "marblenet-vad",          "display_name": "MarbleNet VAD (vad)",                   "family": "marblenet_vad",        "path": "models/marblenet_vad",                   "task": "vad",   "mode": "offline", "download_id": "marblenet_vad" },
+    { "id": "vevo2",                  "display_name": "Vevo2 (vc / s2s)",                      "family": "vevo2",                "path": "models/Vevo2",                           "task": "vc",    "mode": "offline", "download_id": "vevo2" },
+    { "id": "seed-vc",                "display_name": "Seed-VC (vc)",                          "family": "seed_vc",              "path": "models/SeedVC-MLX",                      "task": "vc",    "mode": "offline", "download_id": "seed_vc" },
+    { "id": "miocodec",               "display_name": "MioCodec (vc; codec dependency)",       "family": "miocodec",             "path": "models/MioCodec-25Hz-44.1kHz-v2",        "task": "vc",    "mode": "offline", "download_id": "miocodec_25hz_44k_v2" }
+  ]
+}

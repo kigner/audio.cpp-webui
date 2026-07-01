@@ -24,3 +24,17 @@ __pycache__/
 /*.wav
 /flutter/
 /.cache/
+
+# --- local dev environment / editor tooling (not for the repo) ---
+/venv/
+/.codegraph/
+/.cursor/
+
+# --- portable bundle: distributed manually, never committed ---
+/audiocpp-portable/
+
+# --- WebUI runtime artifacts: keep the source + empty dirs, drop generated files ---
+/webui/output/*
+!/webui/output/.gitkeep
+/webui/logs/*
+!/webui/logs/.gitkeep

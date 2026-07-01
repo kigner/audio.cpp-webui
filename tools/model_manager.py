@@ -7,6 +7,7 @@ import fractions
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1047,18 +1048,77 @@ def list_hf_files(source: SnapshotSource) -> list[tuple[str, int | None]]:
     return files
 
 
-def download_file(url: str, target: Path, expected_size: int | None) -> int:
-    request = Request(url, headers=http_headers())
-    with urlopen(request) as response, target.open("wb") as handle:
-        written = 0
-        while True:
-            chunk = response.read(1 << 20)
-            if not chunk:
-                break
-            handle.write(chunk)
-            written += len(chunk)
+def download_file(
+    url: str,
+    target: Path,
+    expected_size: int | None,
+    label: str | None = None,
+) -> int:
+    """Download ``url`` into ``target``, resuming across runs when possible.
+
+    Bytes land in a sidecar ``<target>.part`` file first. If a previous run was
+    interrupted, an HTTP ``Range`` request fetches only the missing tail instead
+    of restarting the transfer (critical for multi-GB weights on flaky links);
+    the ``.part`` file is promoted to ``target`` only once the full length has
+    arrived. Files already present at the expected size are skipped outright.
+    """
+    name = label or target.name
+    if expected_size is not None and target.is_file() and target.stat().st_size == expected_size:
+        print(f"skip {name} (already complete)")
+        return expected_size
+
+    part = target.with_name(target.name + ".part")
+    existing = part.stat().st_size if part.is_file() else 0
+    if expected_size is not None and existing >= expected_size:
+        # A finished-but-unpromoted leftover promotes as-is; anything larger than
+        # expected is corrupt, so discard it and start over.
+        if existing == expected_size:
+            part.replace(target)
+            print(f"skip {name} (already complete)")
+            return expected_size
+        part.unlink()
+        existing = 0
+
+    headers = http_headers()
+    mode = "wb"
+    if existing > 0:
+        headers["Range"] = f"bytes={existing}-"
+        mode = "ab"
+        print(f"resume {name} (from {existing} bytes)")
+    else:
+        print(f"download {name}")
+
+    request = Request(url, headers=headers)
+    try:
+        response = urlopen(request)
+    except HTTPError as ex:
+        if ex.code == 416 and existing > 0:
+            # Requested range past EOF: the server has nothing more to send.
+            if expected_size is None or existing == expected_size:
+                part.replace(target)
+                return existing
+            part.unlink(missing_ok=True)
+        raise
+
+    with response:
+        status = getattr(response, "status", None) or response.getcode()
+        if existing > 0 and status != 206:
+            # Server ignored the Range header (answered 200) — start over.
+            print(f"restart {name} (server ignored resume)")
+            existing = 0
+            mode = "wb"
+        written = existing
+        with part.open(mode) as handle:
+            while True:
+                chunk = response.read(1 << 20)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                written += len(chunk)
+
     if expected_size is not None and written != expected_size:
         raise RuntimeError(f"downloaded size mismatch for {target}: {written} != {expected_size}")
+    part.replace(target)
     return written
 
 
@@ -1085,8 +1145,7 @@ def install_snapshot_into_dir(
     for relative, expected_size in files:
         destination = destination_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        print(f"download {relative}")
-        download_file(hf_resolve_url(source, relative), destination, expected_size)
+        download_file(hf_resolve_url(source, relative), destination, expected_size, label=relative)
     if validate:
         validate_required_files_list(required_files, destination_root, source.repo_id)
 
@@ -1238,11 +1297,28 @@ def copy_bundled_model_manager_assets(asset_subdir: str, destination_root: Path,
         shutil.copy2(source_path, destination_path)
 
 
+def staging_dir_name(package: ModelPackage) -> str:
+    """Deterministic staging directory name so an interrupted install resumes
+    into the same place on the next run (a random ``mkdtemp`` name would strand
+    the partial downloads)."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", package.target_directory)
+    return f"{safe}.partial"
+
+
+def prune_staging_root(staging_root: Path) -> None:
+    try:
+        if staging_root.exists() and not any(staging_root.iterdir()):
+            staging_root.rmdir()
+    except OSError:
+        pass
+
+
 def install_snapshot(package: ModelPackage, source: SnapshotSource, models_root: Path, overwrite: bool) -> Path:
     target_dir = models_root / package.target_directory
     staging_root = models_root / ".engine_model_staging"
     staging_root.mkdir(parents=True, exist_ok=True)
-    staging_dir = Path(tempfile.mkdtemp(prefix=f"{package.target_directory}.", dir=staging_root))
+    staging_dir = staging_root / staging_dir_name(package)
+    staging_dir.mkdir(parents=True, exist_ok=True)
     try:
         pre_validate_files = tuple(relative for relative in package.required_files if relative != "audiovae.safetensors")
         install_snapshot_into_dir(source, staging_dir, pre_validate_files, validate=package.id != "voxcpm2")
@@ -1256,15 +1332,10 @@ def install_snapshot(package: ModelPackage, source: SnapshotSource, models_root:
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         staging_dir.rename(target_dir)
         return target_dir
-    except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        raise
     finally:
-        try:
-            if staging_root.exists() and not any(staging_root.iterdir()):
-                staging_root.rmdir()
-        except OSError:
-            pass
+        # On success the staging dir was renamed away; on failure it is kept so
+        # the next run resumes partial downloads. Drop the parent when empty.
+        prune_staging_root(staging_root)
 
 
 def normalized_join(base: Path, relative: str) -> Path:
@@ -1282,7 +1353,8 @@ def install_composite_snapshot(
     package_root = models_root / package.target_directory
     staging_root = models_root / ".engine_model_staging"
     staging_root.mkdir(parents=True, exist_ok=True)
-    staging_bundle = Path(tempfile.mkdtemp(prefix=f"{package.target_directory}.", dir=staging_root))
+    staging_bundle = staging_root / staging_dir_name(package)
+    staging_bundle.mkdir(parents=True, exist_ok=True)
     staged_roots: dict[Path, Path] = {}
     try:
         staged_package_root = staging_bundle / package.target_directory
@@ -1329,11 +1401,11 @@ def install_composite_snapshot(
             destination_root = staged_roots[final_root]
             final_root.parent.mkdir(parents=True, exist_ok=True)
             destination_root.rename(final_root)
-        return package_root
-    except Exception:
         shutil.rmtree(staging_bundle, ignore_errors=True)
-        raise
+        return package_root
     finally:
+        # Failed runs keep their staging bundle so partial downloads resume;
+        # successful runs already removed it above. Drop the parent when empty.
         try:
             if staging_root.exists() and not any(staging_root.iterdir()):
                 staging_root.rmdir()

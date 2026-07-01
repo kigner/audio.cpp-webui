@@ -1,0 +1,15 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "device": 0,
+  "threads": 1,
+  "models": [
+    {
+      "id": "silero-vad",
+      "family": "silero_vad",
+      "path": "assets/framework/models/silero_vad",
+      "task": "vad",
+      "mode": "offline"
+    }
+  ]
+}
