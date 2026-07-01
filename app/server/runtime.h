@@ -32,6 +32,7 @@ private:
     };
 
     void load_models();
+    void ensure_model_loaded_locked(LoadedModel & model);
     LoadedModel & require_model(const engine::io::json::Value & body);
     engine::runtime::TaskResult run_model(LoadedModel & model, const engine::runtime::TaskRequest & request);
     HttpResponse handle_speech(const std::string & body_text);

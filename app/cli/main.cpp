@@ -28,13 +28,13 @@ namespace {
 
 void print_task_list_help() {
     std::cout
-        << "audiocpp_cli --task <task> --family <family> --model <path> --backend <backend> --mode offline|streaming [options]\n"
+        << "audiocpp_cli --task <task> --family <family> --model <path> --backend <backend> [options]\n"
         << "  Global:\n"
-        << "    --task vad|asr|diar|sep|tts|clon|vc|s2s|align|vdes|spk|svc\n"
+        << "    --task vad|asr|diar|sep|gen|tts|clon|vc|s2s|align|vdes|spk|svc\n"
         << "    --family <name>\n"
         << "    --model <path>\n"
         << "    --backend cpu|cuda|vulkan|metal|best\n"
-        << "    --mode offline|streaming\n"
+        << "    --mode offline|streaming  default offline\n"
         << "    --device <n>\n"
         << "    --threads <n>  Backend and OpenMP worker threads, default 1\n"
         << "    --registry-config <path>\n"
@@ -127,7 +127,8 @@ void print_task_list_help() {
         << "    asr    automatic speech recognition\n"
         << "    diar   speaker diarization\n"
         << "    sep    source separation\n"
-        << "    tts    text to speech/music\n"
+        << "    gen    text/audio conditioned music or sound generation\n"
+        << "    tts    text to speech\n"
         << "    clon   voice cloning\n"
         << "    vc     voice conversion\n"
         << "    s2s    speech to speech\n"
@@ -165,6 +166,22 @@ bool model_supports_task(const engine::runtime::ModelInspection & inspection, en
 
 void print_model_common_options(const engine::runtime::ModelInspection & inspection) {
     std::cout << "  Available input options:\n";
+    if (model_supports_task(inspection, engine::runtime::VoiceTaskKind::AudioGeneration)) {
+        std::cout
+            << "    --text <text>\n"
+            << "    --audio <wav>\n"
+            << "    --batch-text-file <txt>\n"
+            << "    --language <code>\n"
+            << "    --duration-seconds <float>\n"
+            << "    --guidance-scale <float>\n"
+            << "    --num-inference-steps <n>\n"
+            << "    --seed <n>\n"
+            << "    --max-tokens <n>\n"
+            << "    --temperature <float>\n"
+            << "    --top-k <n>\n"
+            << "    --top-p <float>\n"
+            << "    --do-sample true|false\n";
+    }
     if (model_supports_task(inspection, engine::runtime::VoiceTaskKind::Tts) ||
         model_supports_task(inspection, engine::runtime::VoiceTaskKind::VoiceDesign) ||
         model_supports_task(inspection, engine::runtime::VoiceTaskKind::VoiceCloning)) {
@@ -264,7 +281,7 @@ void print_task_help(const engine::runtime::ModelRegistry & registry, const std:
         << "task=" << engine::runtime::to_string(task) << "\n"
         << "  Select a model to see model-owned options:\n"
         << "    audiocpp_cli --task " << engine::runtime::to_string(task)
-        << " --family <family> --model <path> --backend <backend> --mode offline --help\n"
+            << " --family <family> --model <path> --backend <backend> --help\n"
         << "  Registered families:\n";
     for (const auto & family : registry.families()) {
         std::cout << "    " << family << "\n";

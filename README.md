@@ -494,6 +494,7 @@ cat > server.json <<'JSON'
   "port": 8080,
   "device": 0,
   "threads": 1,
+  "lazy_load": true,
   "models": [
     {
       "id": "pocket-tts",
@@ -519,6 +520,11 @@ cat > server.json <<'JSON'
 }
 JSON
 ```
+
+Set `"lazy_load": true` to register configured model ids at startup while loading each model only on first use. Use per-model `"lazy": true` or `"lazy": false` to override that default.
+
+> [!WARNING]
+> Lazy loading does not unload models after a request. Once a model is first used, the server keeps that model and session in memory for reuse until the server exits.
 
 Start:
 

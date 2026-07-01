@@ -9,11 +9,21 @@
 
 namespace engine::text {
 
+enum class TextChunkMode {
+    Default,
+    TagAware,
+};
+
 std::optional<int64_t> parse_text_chunk_size_override(
     const std::unordered_map<std::string, std::string> & options);
 
 std::vector<std::string> split_text_chunks(
     std::string_view text,
     int64_t codepoint_budget);
+
+std::vector<std::string> split_text_chunks(
+    std::string_view text,
+    int64_t codepoint_budget,
+    TextChunkMode mode);
 
 }  // namespace engine::text

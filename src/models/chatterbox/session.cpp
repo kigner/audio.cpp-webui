@@ -283,7 +283,10 @@ runtime::TaskResult ChatterboxSession::run_voice_cloning(const runtime::TaskRequ
     if (!component_) {
         throw std::runtime_error("Chatterbox voice cloning requires prepared model component");
     }
-    const auto request_config = make_voice_clone_config(request);
+    auto request_config = make_voice_clone_config(request);
+    if (!runtime::parse_u32_option(request.options, {"seed"}).has_value()) {
+        request_config.seed = voice_clone_config_->seed;
+    }
     if (!same_voice_clone_config(*voice_clone_config_, request_config)) {
         throw std::runtime_error("Chatterbox voice cloning session config is fixed; create a new session for different config");
     }

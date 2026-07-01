@@ -6,7 +6,6 @@
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
-#include "engine/framework/io/dynamic_library.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/linear_module.h"
 #include "engine/framework/modules/lookup_modules.h"
@@ -113,74 +112,7 @@ struct Vevo2ARPrefillOutput {
     runtime::TransformerKVState kv_state;
 };
 
-struct TorchCudaSamplingPolicy {
-    int64_t multiprocessor_count = 1;
-    int64_t max_threads_per_multiprocessor = 256;
-};
-
-TorchCudaSamplingPolicy resolve_torch_cuda_sampling_policy(core::BackendType backend_type, int device_index) {
-    TorchCudaSamplingPolicy policy;
-#ifdef GGML_USE_CUDA
-    if (backend_type != core::BackendType::Cuda) {
-        return policy;
-    }
-    const engine::io::DynamicLibraryHandle driver =
-        engine::io::open_dynamic_library({"libcuda.so.1", "libcuda.so", "libcuda.dylib", "nvcuda.dll"});
-    if (driver == nullptr) {
-        engine::debug::log_message(
-            engine::debug::LogLevel::Warning,
-            "vevo2.ar.cuda_sampling_policy",
-            std::string("probe failed; falling back to default PyTorch-compatible RNG layout policy ")
-                + "(multiprocessor_count=" + std::to_string(policy.multiprocessor_count)
-                + ", max_threads_per_multiprocessor=" + std::to_string(policy.max_threads_per_multiprocessor)
-                + "): CUDA driver library was not found");
-        return policy;
-    }
-    using CuInitFn = int (*)(unsigned int);
-    using CuDeviceGetFn = int (*)(int *, int);
-    using CuDeviceGetAttributeFn = int (*)(int *, int, int);
-    auto cu_init = reinterpret_cast<CuInitFn>(engine::io::dynamic_library_symbol(driver, "cuInit"));
-    auto cu_device_get = reinterpret_cast<CuDeviceGetFn>(engine::io::dynamic_library_symbol(driver, "cuDeviceGet"));
-    auto cu_device_get_attribute =
-        reinterpret_cast<CuDeviceGetAttributeFn>(engine::io::dynamic_library_symbol(driver, "cuDeviceGetAttribute"));
-    if (cu_init == nullptr || cu_device_get == nullptr || cu_device_get_attribute == nullptr) {
-        engine::io::close_dynamic_library(driver);
-        engine::debug::log_message(
-            engine::debug::LogLevel::Warning,
-            "vevo2.ar.cuda_sampling_policy",
-            std::string("probe failed; falling back to default PyTorch-compatible RNG layout policy ")
-                + "(multiprocessor_count=" + std::to_string(policy.multiprocessor_count)
-                + ", max_threads_per_multiprocessor=" + std::to_string(policy.max_threads_per_multiprocessor)
-                + "): CUDA driver symbols were not resolved");
-        return policy;
-    }
-    int device = 0;
-    int multiprocessor_count = 0;
-    int max_threads_per_multiprocessor = 0;
-    constexpr int kCuDeviceAttributeMultiprocessorCount = 16;
-    constexpr int kCuDeviceAttributeMaxThreadsPerMultiprocessor = 39;
-    const bool ok = cu_init(0) == 0 && cu_device_get(&device, device_index) == 0 &&
-                    cu_device_get_attribute(&multiprocessor_count, kCuDeviceAttributeMultiprocessorCount, device) == 0 &&
-                    cu_device_get_attribute(
-                        &max_threads_per_multiprocessor,
-                        kCuDeviceAttributeMaxThreadsPerMultiprocessor,
-                        device) == 0;
-    engine::io::close_dynamic_library(driver);
-    if (!ok || multiprocessor_count <= 0 || max_threads_per_multiprocessor <= 0) {
-        engine::debug::log_message(
-            engine::debug::LogLevel::Warning,
-            "vevo2.ar.cuda_sampling_policy",
-            std::string("probe failed; falling back to default PyTorch-compatible RNG layout policy ")
-                + "(multiprocessor_count=" + std::to_string(policy.multiprocessor_count)
-                + ", max_threads_per_multiprocessor=" + std::to_string(policy.max_threads_per_multiprocessor)
-                + "): CUDA device attributes were not queried");
-        return policy;
-    }
-    policy.multiprocessor_count = multiprocessor_count;
-    policy.max_threads_per_multiprocessor = max_threads_per_multiprocessor;
-#endif
-    return policy;
-}
+using TorchCudaSamplingPolicy = engine::sampling::TorchCudaSamplingPolicy;
 
 std::shared_ptr<const Vevo2ARWeights> load_ar_weights(
     const Vevo2Assets & assets,
@@ -1021,9 +953,12 @@ Vevo2TokenSequence Vevo2AutoregressiveRuntime::generate_content_style(
     std::vector<int32_t> generated_ids;
     generated_ids.reserve(static_cast<size_t>(generation.max_new_tokens));
     const auto rng_start = Clock::now();
-    const TorchCudaSamplingPolicy sampling_policy = resolve_torch_cuda_sampling_policy(
+    const TorchCudaSamplingPolicy sampling_policy = engine::sampling::resolve_torch_cuda_sampling_policy(
         execution_context_.backend_type(),
-        execution_context_.config().device);
+        execution_context_.config().device,
+        "vevo2.ar.cuda_sampling_policy",
+        "Vevo2",
+        engine::sampling::TorchCudaSamplingPolicyFailureMode::FallbackToDefault);
     const double rng_ms = engine::debug::elapsed_ms(rng_start);
     std::vector<float> logits = std::move(prefill.logits);
     double sampling_ms = 0.0;

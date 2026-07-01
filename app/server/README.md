@@ -1,6 +1,6 @@
 # audio.cpp Server
 
-`audiocpp_server` is a CUDA-only HTTP adapter over the framework runtime registry. It keeps one loaded model and one offline task session per configured model id, so repeated HTTP requests reuse the same framework session and model-owned graph/cache state.
+`audiocpp_server` is a CUDA-only HTTP adapter over the framework runtime registry. It keeps one loaded model and one offline task session per active model id, so repeated HTTP requests reuse the same framework session and model-owned graph/cache state.
 
 ## Build
 
@@ -18,6 +18,7 @@ cat > server.json <<'JSON'
   "port": 8080,
   "device": 0,
   "threads": 1,
+  "lazy_load": true,
   "models": [
     {
       "id": "pocket-tts",
@@ -45,6 +46,11 @@ JSON
 ```
 
 The server resolves model paths from this JSON exactly as written, so use paths that match your machine. Request-time audio paths are also user-provided paths.
+
+Set top-level `"lazy_load": true` to register all configured model ids at startup but defer each model's framework load and session creation until its first request. A model can override the default with `"lazy": true` or `"lazy": false`.
+
+> [!WARNING]
+> Lazy loading does not unload models after a request. Once a model is first used, the server keeps that model and session in memory for reuse until the server exits.
 
 ## Start
 

@@ -28,6 +28,7 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
     config.port = engine::io::json::optional_i32(root, "port", config.port);
     config.device = engine::io::json::optional_i32(root, "device", config.device);
     config.threads = engine::io::json::optional_i32(root, "threads", config.threads);
+    config.lazy_load = engine::io::json::optional_bool(root, "lazy_load", config.lazy_load);
     if (config.port <= 0 || config.port > 65535) {
         throw std::runtime_error("server port must be in 1..65535");
     }
@@ -46,6 +47,7 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
         model.family = engine::io::json::require_string(item, "family");
         model.task = engine::io::json::optional_string(item, "task", model.task);
         model.mode = engine::io::json::optional_string(item, "mode", model.mode);
+        model.lazy = engine::io::json::optional_bool(item, "lazy", config.lazy_load);
         if (const auto * value = item.find("config")) {
             model.config_id = value->as_string();
         }

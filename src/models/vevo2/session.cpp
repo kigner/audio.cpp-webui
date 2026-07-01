@@ -925,10 +925,11 @@ runtime::TaskResult Vevo2Session::run(const runtime::TaskRequest & request) {
         if (text_chunks.empty()) {
             chunk_requests.push_back(std::move(vevo2_request));
         } else {
+            const bool split_across_chunks = text_chunks.size() > 1;
             for (const auto & text_chunk : text_chunks) {
                 Vevo2Request chunk_request = vevo2_request;
                 chunk_request.refs.target_text = text_chunk;
-                if (chunk_request.route == Vevo2RouteKind::ZeroShotTts) {
+                if (split_across_chunks && chunk_request.route == Vevo2RouteKind::ZeroShotTts) {
                     chunk_request.refs.style_ref_text.clear();
                 }
                 chunk_requests.push_back(std::move(chunk_request));

@@ -14,6 +14,7 @@ struct ServerModelConfig {
     std::string family;
     std::string task = "tts";
     std::string mode = "offline";
+    bool lazy = false;
     std::optional<std::string> config_id;
     std::optional<std::string> weight_id;
     std::unordered_map<std::string, std::string> load_options;
@@ -25,6 +26,7 @@ struct ServerConfig {
     int port = 8080;
     int device = 0;
     int threads = 1;
+    bool lazy_load = false;
     std::vector<ServerModelConfig> models;
 };
 

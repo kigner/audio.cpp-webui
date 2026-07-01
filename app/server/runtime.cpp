@@ -305,21 +305,7 @@ HttpResponse ServerState::handle(const HttpRequest & request) {
 }
 
 void ServerState::load_models() {
-    auto registry = engine::runtime::make_default_registry();
     for (auto & config : config_.models) {
-        engine::runtime::ModelLoadRequest load_request;
-        load_request.model_path = config.path;
-        load_request.family_hint = config.family;
-        load_request.config_id = config.config_id;
-        load_request.weight_id = config.weight_id;
-        load_request.options = config.load_options;
-
-        engine::runtime::SessionOptions session_options;
-        session_options.backend.type = engine::core::BackendType::Cuda;
-        session_options.backend.device = config_.device;
-        session_options.backend.threads = config_.threads;
-        session_options.options = config.session_options;
-
         auto loaded = std::make_unique<LoadedModel>();
         loaded->config = std::move(config);
         loaded->task = engine::runtime::TaskSpec{
@@ -329,17 +315,44 @@ void ServerState::load_models() {
         if (loaded->task.mode != engine::runtime::RunMode::Offline) {
             throw std::runtime_error("audiocpp_server currently requires offline model sessions");
         }
-        loaded->model = registry.load(load_request);
-        loaded->session = loaded->model->create_task_session(loaded->task, session_options);
-        loaded->offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(loaded->session.get());
-        if (loaded->offline == nullptr) {
-            throw std::runtime_error("configured model does not provide offline execution: " + loaded->config.id);
-        }
         if (!model_index_.emplace(loaded->config.id, models_.size()).second) {
             throw std::runtime_error("duplicate server model id: " + loaded->config.id);
         }
+        if (!loaded->config.lazy) {
+            ensure_model_loaded_locked(*loaded);
+        }
         models_.push_back(std::move(loaded));
     }
+}
+
+void ServerState::ensure_model_loaded_locked(LoadedModel & model) {
+    if (model.session != nullptr) {
+        return;
+    }
+    auto registry = engine::runtime::make_default_registry();
+
+    engine::runtime::ModelLoadRequest load_request;
+    load_request.model_path = model.config.path;
+    load_request.family_hint = model.config.family;
+    load_request.config_id = model.config.config_id;
+    load_request.weight_id = model.config.weight_id;
+    load_request.options = model.config.load_options;
+
+    engine::runtime::SessionOptions session_options;
+    session_options.backend.type = engine::core::BackendType::Cuda;
+    session_options.backend.device = config_.device;
+    session_options.backend.threads = config_.threads;
+    session_options.options = model.config.session_options;
+
+    auto loaded_model = registry.load(load_request);
+    auto session = loaded_model->create_task_session(model.task, session_options);
+    auto * offline = dynamic_cast<engine::runtime::IOfflineVoiceTaskSession *>(session.get());
+    if (offline == nullptr) {
+        throw std::runtime_error("configured model does not provide offline execution: " + model.config.id);
+    }
+    model.model = std::move(loaded_model);
+    model.session = std::move(session);
+    model.offline = offline;
 }
 
 ServerState::LoadedModel & ServerState::require_model(const Value & body) {
@@ -355,6 +368,7 @@ engine::runtime::TaskResult ServerState::run_model(
     LoadedModel & model,
     const engine::runtime::TaskRequest & request) {
     std::lock_guard<std::mutex> lock(model.mutex);
+    ensure_model_loaded_locked(model);
     model.session->prepare(engine::runtime::build_preparation_request(request));
     return model.offline->run(request);
 }

@@ -206,10 +206,17 @@ RunMode parse_run_mode(const std::string & value) {
 }
 
 std::vector<TaskRequest> chunk_text_request(const TaskRequest & request, int64_t codepoint_budget) {
+    return chunk_text_request(request, codepoint_budget, engine::text::TextChunkMode::Default);
+}
+
+std::vector<TaskRequest> chunk_text_request(
+    const TaskRequest & request,
+    int64_t codepoint_budget,
+    engine::text::TextChunkMode mode) {
     if (!request.text_input.has_value()) {
         return {request};
     }
-    const auto chunks = engine::text::split_text_chunks(request.text_input->text, codepoint_budget);
+    const auto chunks = engine::text::split_text_chunks(request.text_input->text, codepoint_budget, mode);
     if (chunks.empty()) {
         return {request};
     }

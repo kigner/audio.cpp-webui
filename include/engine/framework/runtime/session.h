@@ -12,6 +12,10 @@
 #include <unordered_map>
 #include <vector>
 
+namespace engine::text {
+enum class TextChunkMode;
+}
+
 namespace engine::runtime {
 
 enum class VoiceTaskKind {
@@ -220,6 +224,10 @@ public:
 SessionPreparationRequest build_preparation_request(const AudioBuffer & audio);
 SessionPreparationRequest build_preparation_request(const TaskRequest & request);
 std::vector<TaskRequest> chunk_text_request(const TaskRequest & request, int64_t codepoint_budget);
+std::vector<TaskRequest> chunk_text_request(
+    const TaskRequest & request,
+    int64_t codepoint_budget,
+    engine::text::TextChunkMode mode);
 void append_audio_buffer(AudioBuffer & dst, const AudioBuffer & src);
 
 class IGraphCapacityAdapter {
