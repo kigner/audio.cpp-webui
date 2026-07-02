@@ -2,78 +2,72 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
+call "%~dp0_env.bat"
 
 REM ============================================================
 REM  Long-text TTS  ->  synthesize a whole .txt into ONE wav.
 REM
-REM  Usage:  run_tts_long.bat <model_dir> <text_file.txt> [out.wav]
-REM    e.g.  run_tts_long.bat "models\Qwen3-TTS-12Hz-0.6B-Base" "sample_long.txt"
-REM          run_tts_long.bat "models\OmniVoice" "book.txt" "book.wav"
+REM  Usage:  run_tts_long.bat <model_id> <text_file.txt> [out.wav]
+REM    e.g.  run_tts_long.bat qwen3-tts "sample_long.txt"
+REM          run_tts_long.bat qwen3-tts "D:\books\chapter1.txt" "output\ch1.wav"
 REM
-REM  A relative <model_dir> like models\X is resolved against the bundle.
+REM  <model_id> is an entry in configs\models_catalog.json.
+REM  <text_file.txt> may be ANY path (relative to here, or a full absolute path).
 REM  Output defaults to output\<txt name>.wav.
+REM  Backend auto-picks CUDA, falls back to CPU (set AUDIOCPP_BACKEND=cpu to force).
 REM
 REM  How long text works here:
-REM    The .txt is split by LINE. Every non-empty line becomes one
-REM    generation, all run on a single loaded model, then every clip
-REM    is concatenated into one wav (--batch-merge-audio concat).
-REM    There is NO limit on the file size, so 60+ minutes is fine.
+REM    The .txt is split by LINE. Every non-empty line becomes one generation,
+REM    all run on a single loaded model, then every clip is concatenated into
+REM    one wav (--batch-merge-audio concat). No file-size limit; 60+ min is fine.
 REM
 REM  IMPORTANT text-file rules:
-REM    * Put ONE sentence / short paragraph per line. Each line must
-REM      fit inside --max-tokens (a 12Hz model makes ~12 tokens/sec,
-REM      so 1200 tokens ~= 100 seconds per line); over-long lines get
-REM      cut off. Split long paragraphs into several lines.
+REM    * One sentence / short paragraph per line. Each line must fit inside
+REM      --max-tokens (a 12Hz model makes ~12 tokens/sec, so 1200 tokens ~=
+REM      100 seconds/line); over-long lines get cut off. Split long paragraphs.
 REM    * Blank lines are ignored (they do NOT add a pause).
 REM    * Save the file as UTF-8 (needed for non-ASCII / Chinese text).
 REM ============================================================
 
-REM Locate the integrated bundle (cpu/ gpu/ models/); sibling in the dev tree,
-REM or this folder itself when copied into the bundle.
-set "BUNDLE=%~dp0..\audiocpp-portable"
-if not exist "%BUNDLE%\gpu\audiocpp_cli.exe" if not exist "%BUNDLE%\cpu\audiocpp_cli.exe" set "BUNDLE=%~dp0."
-
-REM ---- editable defaults (match them to your model/voice) ----
-set "FAMILY=qwen3_tts"
-set "BACKEND=cuda"
-set "LANGUAGE=english"
+REM ---- editable voice defaults (blank VOICE_REF for non-clone models) ----
 set "VOICE_REF=voice\demo_01_man.wav"
 set "REF_TEXT=okay, I'm Cemo and what you just heard wasn't a human voice."
+set "LANGUAGE=english"
 set "MAX_TOKENS=1200"
 set "SEED=1234"
-REM Blank out VOICE_REF (set "VOICE_REF=") for non-voice-clone models.
-REM ------------------------------------------------------------
+REM ------------------------------------------------------------------------
 
-set "MODEL=%~1"
-set "TEXT=%~2"
+set "MODEL_ID=%~1"
+set "TEXTFILE=%~2"
 set "OUT=%~3"
-
-if "%MODEL%"=="" goto :usage
-if "%TEXT%"=="" goto :usage
-REM resolve a bundle-relative model path (e.g. models\Qwen3-...)
-if not exist "%MODEL%" if exist "%BUNDLE%\%MODEL%" set "MODEL=%BUNDLE%\%MODEL%"
-if not exist "%MODEL%" echo [ERROR] model not found: %MODEL% & goto :end
-if not exist "%TEXT%" echo [ERROR] text file not found: %TEXT% & goto :end
+if "%MODEL_ID%"=="" goto :usage
+if "%TEXTFILE%"=="" goto :usage
+if not exist "%TEXTFILE%" ( echo [ERROR] text file not found: %TEXTFILE% & goto :end )
 if "%OUT%"=="" set "OUT=output\%~n2.wav"
 
-if /I "%BACKEND%"=="cpu" (set "EXE=%BUNDLE%\cpu\audiocpp_cli.exe") else (set "EXE=%BUNDLE%\gpu\audiocpp_cli.exe")
-if not exist "%EXE%" echo [ERROR] cli not found: %EXE%  (build it or switch BACKEND) & goto :end
+if not exist "%CLI_EXE%" ( echo [ERROR] cli exe not found: %CLI_EXE% & goto :end )
 
-REM Voice-clone args are added only when VOICE_REF is set.
+REM --- resolve family + absolute model path from the catalog id ---
+set "STATUS="
+for /f "usebackq tokens=1-4 delims=|" %%A in (`powershell -NoProfile -Command "$c=Get-Content -Raw 'configs\models_catalog.json' | ConvertFrom-Json; $m=$c.models | Where-Object { $_.id -eq '%MODEL_ID%' } | Select-Object -First 1; if (-not $m) { 'ERR|unknown id|.|.'; exit }; $p = Join-Path (Resolve-Path '%BUNDLE%').Path $m.path; if (-not (Test-Path $p)) { 'ERR|not installed|.|.'; exit }; 'OK|' + $m.family + '|' + $m.task + '|' + $p"`) do (
+  set "STATUS=%%A" & set "FAMILY=%%B" & set "TASK=%%C" & set "MODEL=%%D"
+)
+if /I not "%STATUS%"=="OK" ( echo [ERROR] bad model id "%MODEL_ID%": %FAMILY% - see configs\models_catalog.json & goto :end )
+
 set "VOICE_ARGS="
 if not "%VOICE_REF%"=="" set "VOICE_ARGS=--voice-ref "%VOICE_REF%" --reference-text "%REF_TEXT%""
 
-for /f %%N in ('find /c /v "" ^< "%TEXT%"') do set "LINES=%%N"
-echo [long-tts] family=%FAMILY%  backend=%BACKEND%  model=%MODEL%
-echo [long-tts] text=%TEXT%  (~%LINES% lines)  -^>  out=%OUT%
+for /f %%N in ('find /c /v "" ^< "%TEXTFILE%"') do set "LINES=%%N"
+echo [long-tts] model=%MODEL_ID% (%FAMILY%)  backend=%BACKEND%
+echo [long-tts] text=%TEXTFILE%  (~%LINES% lines)  -^>  out=%OUT%
 echo.
 
-"%EXE%" ^
+"%CLI_EXE%" ^
   --task tts --family %FAMILY% --mode offline ^
   --model "%MODEL%" ^
   --backend %BACKEND% ^
   --language %LANGUAGE% ^
-  --batch-text-file "%TEXT%" ^
+  --batch-text-file "%TEXTFILE%" ^
   --batch-merge-audio concat ^
   %VOICE_ARGS% ^
   --max-tokens %MAX_TOKENS% ^
@@ -81,13 +75,15 @@ echo.
   --out "%OUT%"
 
 echo.
-if exist "%OUT%" (echo Done -^> %OUT%) else (echo FAILED: no output — see messages above)
+if exist "%OUT%" ( echo Done -^> %OUT% ) else ( echo FAILED: no output — see messages above )
 goto :end
 
 :usage
-echo Usage: %~nx0 ^<model_dir^> ^<text_file.txt^> [out.wav]
-echo   e.g. %~nx0 "models\Qwen3-TTS-12Hz-0.6B-Base" "sample_long.txt"
-echo Edit FAMILY / VOICE_REF / REF_TEXT / BACKEND near the top for other models.
+echo Usage: %~nx0 ^<model_id^> ^<text_file.txt^> [out.wav]
+echo   e.g. %~nx0 qwen3-tts "sample_long.txt"
+echo        %~nx0 qwen3-tts "D:\books\chapter1.txt" "output\ch1.wav"
+echo Model ids are the entries in configs\models_catalog.json.
+echo Edit VOICE_REF / REF_TEXT near the top for other voices; blank VOICE_REF for non-clone models.
 
 :end
 endlocal

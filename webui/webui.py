@@ -29,10 +29,36 @@ import sys
 import tempfile
 import threading
 import time
+import warnings
 from urllib.parse import urlparse
 
 import requests
 import gradio as gr
+
+# 降噪：屏蔽 Gradio 内部触发、每次请求都会刷屏的 Starlette 弃用告警。
+warnings.filterwarnings("ignore", message=r".*HTTP_422_UNPROCESSABLE.*")
+
+
+def _silence_proactor_connection_reset():
+    """Windows: swallow the benign `ConnectionResetError [WinError 10054]` that
+    asyncio's proactor prints when a browser/HTTP connection drops abruptly."""
+    if sys.platform != "win32":
+        return
+    try:
+        from asyncio.proactor_events import _ProactorBasePipeTransport
+    except Exception:
+        return
+    _orig = _ProactorBasePipeTransport._call_connection_lost
+
+    def _patched(self, exc):
+        if isinstance(exc, ConnectionResetError):
+            return
+        return _orig(self, exc)
+
+    _ProactorBasePipeTransport._call_connection_lost = _patched
+
+
+_silence_proactor_connection_reset()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
@@ -47,6 +73,7 @@ for _d in (CONFIG_DIR, OUTPUT_DIR, VOICE_DIR, LOG_DIR):
 
 PROMPTS_DIR = VOICE_DIR                                    # built-in / reference voices
 CATALOG_PATH = os.path.join(CONFIG_DIR, "models_catalog.json")
+MODEL_PARAMS_PATH = os.path.join(CONFIG_DIR, "model_params.json")
 
 
 def _find_bundle_root():
@@ -200,6 +227,12 @@ def server_error(entry, status, text):
             parts.append("ℹ️ " + ih)
     return gr.Error("\n\n".join(parts))
 
+
+def _msg_from_error(e):
+    """Human-readable text from a gr.Error/exception, for inline (non-popup) display."""
+    return getattr(e, "message", None) or str(e) or "未知错误"
+
+
 # Fallback catalog if models_catalog.json is missing/unreadable.
 DEFAULT_CATALOG = {
     "host": "127.0.0.1", "port": 8080, "device": 0, "threads": 1,
@@ -227,7 +260,20 @@ def _load_catalog():
     return DEFAULT_CATALOG
 
 
+def _load_model_params():
+    """Per-family advanced-parameter specs for the TTS tab (configs/model_params.json).
+    Returns {family: [param_spec, ...]}; a missing/broken file -> {} (no knobs shown)."""
+    if os.path.isfile(MODEL_PARAMS_PATH):
+        try:
+            with open(MODEL_PARAMS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[webui] failed to read {MODEL_PARAMS_PATH}: {e}; no param controls")
+    return {}
+
+
 CATALOG = _load_catalog()
+MODEL_PARAMS = _load_model_params()
 HOST = CATALOG.get("host", "127.0.0.1")
 PORT = int(CATALOG.get("port", 8080))
 DEVICE = int(CATALOG.get("device", 0))
@@ -285,6 +331,73 @@ def builtin_voices():
     if not os.path.isdir(PROMPTS_DIR):
         return []
     return sorted(f for f in os.listdir(PROMPTS_DIR) if f.lower().endswith(".wav"))
+
+
+def _load_voice_texts():
+    """Built-in voice basename -> reference transcript, parsed from
+    voice/prompt_text (each line is '<basename>|<transcript>')."""
+    texts = {}
+    try:
+        with open(os.path.join(PROMPTS_DIR, "prompt_text"), "r", encoding="utf-8") as f:
+            for line in f:
+                name, sep, text = line.rstrip("\n").partition("|")
+                if sep:
+                    texts[name.strip()] = text
+    except Exception:
+        pass
+    return texts
+
+
+def on_builtin_voice_change(name):
+    """Selecting a built-in voice mirrors its wav into the upload widget and
+    fills the matching reference text; '(none)' clears both."""
+    if not name or name == "(none)":
+        return None, ""
+    path = os.path.join(PROMPTS_DIR, name)
+    ref = _load_voice_texts().get(os.path.splitext(name)[0], "")
+    return (path if os.path.isfile(path) else None), ref
+
+
+# --- config-driven advanced-parameter controls (TTS tab) -------------------
+def params_for(model_id):
+    """Advanced-parameter specs for a model, looked up by its catalog family."""
+    entry = catalog_by_id(model_id) if model_id else None
+    if not entry:
+        return []
+    specs = MODEL_PARAMS.get(entry.get("family", ""), [])
+    return specs if isinstance(specs, list) else []
+
+
+def _make_param_component(p):
+    """Build one Gradio control from a spec (type: slider|number|bool|text|choice)."""
+    t = p.get("type", "number")
+    label = p.get("label", p.get("name", ""))
+    info = p.get("info")
+    if t == "bool":
+        return gr.Checkbox(label=label, info=info, value=bool(p.get("default", False)))
+    if t == "text":
+        return gr.Textbox(label=label, info=info, value=p.get("default", ""),
+                          placeholder=p.get("placeholder", ""), lines=1)
+    if t == "choice":
+        return gr.Dropdown(label=label, info=info, choices=p.get("choices", []),
+                           value=p.get("default"))
+    if t == "slider":
+        return gr.Slider(label=label, info=info,
+                         minimum=p.get("minimum", 0), maximum=p.get("maximum", 1),
+                         step=p.get("step", 0.01), value=p.get("default", 0))
+    return gr.Number(label=label, info=info, value=p.get("default"),
+                     minimum=p.get("minimum"), maximum=p.get("maximum"),
+                     step=p.get("step"), precision=p.get("precision"))
+
+
+def _adv_updater(name):
+    """change-handler that writes one control's value into the shared advanced
+    options state dict (keyed by the option name)."""
+    def _fn(state, value):
+        state = dict(state or {})
+        state[name] = value
+        return state
+    return _fn
 
 
 # --- server lifecycle ------------------------------------------------------
@@ -363,6 +476,28 @@ def _log_tail(n=30):
     return _read_tail(LOG_PATH, n)
 
 
+def _pump_server_output(proc, logf):
+    """Tee the server's combined stdout/stderr to BOTH the console (so synthesis
+    step logs stream live in the window) and the WebUI log file (for _log_tail)."""
+    try:
+        for line in proc.stdout:
+            try:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            except Exception:
+                pass
+            try:
+                logf.write(line)
+                logf.flush()
+            except Exception:
+                pass
+    finally:
+        try:
+            logf.close()
+        except Exception:
+            pass
+
+
 def _start_server(entry):
     global _server_proc, _loaded_id
     if not os.path.isfile(SERVER_EXE):
@@ -372,9 +507,12 @@ def _start_server(entry):
     logf = open(LOG_PATH, "w", encoding="utf-8", errors="replace")
     _server_proc = subprocess.Popen(
         [SERVER_EXE, "--config", cfg, "--host", HOST, "--port", str(PORT)],
-        cwd=BUNDLE_ROOT, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags,
+        cwd=BUNDLE_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
     _loaded_id = entry["id"]
+    threading.Thread(target=_pump_server_output, args=(_server_proc, logf),
+                     daemon=True).start()
 
 
 def _wait_health(timeout):
@@ -451,17 +589,17 @@ def hf_token_present():
 def download_model(model_id, hf_token="", proxy=""):
     """Kick off `model_manager.py install <download_id>` in the background."""
     if not model_id:
-        raise gr.Error("请先选择一个模型")
+        return "❌ 请先选择一个模型"
     entry = catalog_by_id(model_id)
     if entry is None:
-        raise gr.Error(f"catalog 里没有模型 id: {model_id}")
+        return f"❌ catalog 里没有模型 id: {model_id}"
     if entry["installed"]:
         return f"✅ {entry['label']} 已安装，无需下载"
     dl_id = entry.get("download_id")
     if not dl_id:
-        raise gr.Error(f"{entry['label']} 没有配置 download_id（内置资源/依赖），请手动安装")
+        return f"⚠️ {entry['label']} 没有配置 download_id（内置资源/依赖），请手动安装"
     if MODEL_MANAGER is None:
-        raise gr.Error("找不到 tools/model_manager.py（设 AUDIOCPP_MODEL_MANAGER 指向它）")
+        return "❌ 找不到 tools/model_manager.py（设 AUDIOCPP_MODEL_MANAGER 指向它）"
 
     # Pass a token to the child so gated/private HF repos don't 401.
     env = os.environ.copy()
@@ -492,7 +630,7 @@ def download_model(model_id, hf_token="", proxy=""):
             cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
         _downloads[model_id] = {"proc": proc, "log": log}
     return (f"{warn}{proxy_note}⏳ 已开始后台下载 **{entry['label']}**（{dl_id}）。\n"
-            f"完成后点『🔁 下载进度』确认，再点顶部『🔄 刷新』即可加载。\n日志：{log}")
+            f"完成后点『📊 下载进度』确认，再点旁边的『🔄 刷新』即可加载。\n日志：{log}")
 
 
 def download_status(model_id):
@@ -509,94 +647,123 @@ def download_status(model_id):
     if code is None:
         return f"⏳ 正在下载 {entry['label']}…\n```\n{tail}\n```"
     if code == 0:
-        return f"✅ {entry['label']} 下载进程完成，点顶部『🔄 刷新』刷新可用列表。\n```\n{tail}\n```"
+        return f"✅ {entry['label']} 下载进程完成，点旁边的『🔄 刷新』刷新可用列表。\n```\n{tail}\n```"
     return f"❌ {entry['label']} 下载失败 (exit {code})。\n```\n{tail}\n```"
 
 
 # --- task handlers ---------------------------------------------------------
+# Task handlers return (output, message): the reminder/status message is shown
+# inline under the output widget instead of as a Gradio popup card.
 def do_tts(model, text, language, uploaded_voice, builtin_voice,
-           reference_text, seed, max_tokens, adv_options):
-    if not (text or "").strip():
-        raise gr.Error("请输入要合成的文字")
-    ensure_model_loaded(model, TTS_TASKS)
-
-    entry = catalog_by_id(model)
-    prof = profile_for(entry) if entry else DEFAULT_PROFILE
-
-    if prof.get("wrap_speaker_script"):     # e.g. VibeVoice needs Speaker N: lines
-        text = _as_speaker_script(text)
-
-    # Model-specific knobs travel in a nested "options" object; the server merges
-    # every key into the request options and each model reads what it understands.
-    options = dict(prof.get("default_options", {}))
-    options.update(_parse_adv_options(adv_options))
-
-    voice_path = None
-    if uploaded_voice:                      # gradio gives an absolute temp path
-        voice_path = uploaded_voice
-    elif builtin_voice and builtin_voice != "(none)":
-        voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
-    # voice_samples (multi-speaker) can't be combined with a single voice_ref.
-    if "voice_samples" in options and voice_path:
-        voice_path = None
-
-    payload = {
-        "model": model,
-        "input": text,
-        "language": language or "",
-        "seed": int(seed),
-        "max_tokens": int(max_tokens),
-    }
-    if voice_path:
-        payload["voice_ref"] = voice_path
-    if (reference_text or "").strip():
-        payload["reference_text"] = reference_text
-    if options:
-        payload["options"] = options
-
+           reference_text, seed, max_tokens, adv_values, adv_options):
     try:
-        r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
-    except requests.RequestException as e:
-        raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『⬇️ 加载模型』。")
-    if r.status_code != 200:
-        raise server_error(entry, r.status_code, r.text)
+        if not (text or "").strip():
+            raise gr.Error("请输入要合成的文字")
+        ensure_model_loaded(model, TTS_TASKS)
 
-    out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_{int(time.time()*1000)}.wav")
-    with open(out, "wb") as f:
-        f.write(r.content)
-    return out
+        entry = catalog_by_id(model)
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+
+        if prof.get("wrap_speaker_script"):     # e.g. VibeVoice needs Speaker N: lines
+            text = _as_speaker_script(text)
+
+        # Model-specific knobs travel in a nested "options" object; the server merges
+        # every key into the request options and each model reads what it understands.
+        # Order: family defaults -> generated controls (user-changed only) -> JSON box.
+        options = dict(prof.get("default_options", {}))
+        if isinstance(adv_values, dict):
+            options.update({k: v for k, v in adv_values.items()
+                            if v is not None and v != ""})
+        options.update(_parse_adv_options(adv_options))
+
+        voice_path = None
+        if uploaded_voice:                      # gradio gives an absolute temp path
+            voice_path = uploaded_voice
+        elif builtin_voice and builtin_voice != "(none)":
+            voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
+        # voice_samples (multi-speaker) can't be combined with a single voice_ref.
+        if "voice_samples" in options and voice_path:
+            voice_path = None
+
+        payload = {
+            "model": model,
+            "input": text,
+            "language": language or "",
+            "seed": int(seed),
+            "max_tokens": int(max_tokens),
+        }
+        if voice_path:
+            payload["voice_ref"] = voice_path
+        if (reference_text or "").strip():
+            payload["reference_text"] = reference_text
+        if options:
+            payload["options"] = options
+
+        t_start = time.time()
+        try:
+            r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
+        except requests.RequestException as e:
+            raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+        if r.status_code != 200:
+            raise server_error(entry, r.status_code, r.text)
+
+        out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_{int(time.time()*1000)}.wav")
+        with open(out, "wb") as f:
+            f.write(r.content)
+        elapsed = time.time() - t_start
+        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。"
+    except gr.Error as e:
+        return None, _msg_from_error(e)
+    except Exception as e:
+        return None, f"❌ 生成失败：{e}"
 
 
 def do_asr(model, audio_path):
-    if not audio_path:
-        raise gr.Error("请上传或录制音频")
-    ensure_model_loaded(model, ASR_TASKS)
-    entry = catalog_by_id(model)
-    payload = {"model": model, "audio": audio_path}
     try:
-        r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload, timeout=900)
-    except requests.RequestException as e:
-        raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『⬇️ 加载模型』。")
-    if r.status_code != 200:
-        raise server_error(entry, r.status_code, r.text)
-    try:
-        data = r.json()
-    except Exception:
-        return r.text
-    return data.get("text") or str(data)
+        if not audio_path:
+            raise gr.Error("请上传或录制音频")
+        ensure_model_loaded(model, ASR_TASKS)
+        entry = catalog_by_id(model)
+        payload = {"model": model, "audio": audio_path}
+        t_start = time.time()
+        try:
+            r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload, timeout=900)
+        except requests.RequestException as e:
+            raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+        if r.status_code != 200:
+            raise server_error(entry, r.status_code, r.text)
+        elapsed = time.time() - t_start
+        try:
+            data = r.json()
+        except Exception:
+            return r.text, f"✅ 转写完成，用时 {elapsed:.1f}s。"
+        return (data.get("text") or str(data)), f"✅ 转写完成，用时 {elapsed:.1f}s。"
+    except gr.Error as e:
+        return "", _msg_from_error(e)
+    except Exception as e:
+        return "", f"❌ 转写失败：{e}"
 
 
 def load_tts(model):
-    return ensure_model_loaded(model, TTS_TASKS), server_status()
+    try:
+        s = ensure_model_loaded(model, TTS_TASKS)
+    except gr.Error as e:
+        s = _msg_from_error(e)
+    return s, server_status()
 
 
 def load_asr(model):
-    return ensure_model_loaded(model, ASR_TASKS), server_status()
+    try:
+        s = ensure_model_loaded(model, ASR_TASKS)
+    except gr.Error as e:
+        s = _msg_from_error(e)
+    return s, server_status()
 
 
 def refresh():
-    global CATALOG
+    global CATALOG, MODEL_PARAMS
     CATALOG = _load_catalog()
+    MODEL_PARAMS = _load_model_params()
     tts = choices_for_tasks(TTS_TASKS)
     asr = choices_for_tasks(ASR_TASKS)
     tval = tts[0][1] if tts else None
@@ -612,88 +779,179 @@ def refresh():
 atexit.register(_stop_server)
 
 
+CUSTOM_CSS = """
+/* 音频控件用默认简洁外观：不要黑色/加重描边（避免与外层分组框叠出黑框）。*/
+.audio-default { border: none !important; box-shadow: none !important; }
+
+/* 模型管理下方四个按钮之间留一点间距，并使用与「生成语音」一致的圆角
+   （避免相邻按钮被 Gradio 拼接成方角）。*/
+.mm-btn-row { gap: 10px !important; }
+.mm-btn-row button { border-radius: var(--button-large-radius, var(--radius-lg)) !important; }
+"""
+
+
 with gr.Blocks(title="audio.cpp WebUI") as demo:
     gr.Markdown(
-        "# audio.cpp WebUI\n"
-        "通过本地 `audiocpp_server` 工作（路线 B）。**按需加载**：选择模型后由 WebUI "
-        "自动启动/切换 server，同一时刻只加载一个模型（省显存）。无需手动先跑 run_server.bat。")
+        "# 🎙️ audio.cpp WebUI\n"
+        "本地语音合成与识别 —— 声音克隆（TTS）与音频转写（ASR）。**按需加载**："
+        "选择模型后由 WebUI 自动启动/切换本地 `audiocpp_server`，同一时刻只加载一个模型（省显存）。"
+        "模型可在后台下载，不影响当前操作。")
     status = gr.Markdown(server_status())
-    refresh_btn = gr.Button("🔄 刷新 catalog / 状态")
-    with gr.Row():
-        hf_token = gr.Textbox(
-            label="HF token (可选；下载受限模型时用，不保存)", type="password",
-            placeholder="hf_xxx —— 或先在命令行运行 huggingface-cli login")
-        proxy = gr.Textbox(
-            label="代理 (可选；仅下载子进程使用，不保存)",
-            placeholder="http://127.0.0.1:7890")
+    with gr.Accordion("🔐 下载设置：HF token / 代理（可选，不保存）", open=False):
+        with gr.Row():
+            hf_token = gr.Textbox(
+                label="HF token (下载受限模型时用)", type="password",
+                placeholder="hf_xxx —— 或先在命令行运行 huggingface-cli login")
+            proxy = gr.Textbox(
+                label="代理 (仅下载子进程使用)",
+                placeholder="http://127.0.0.1:7890")
 
     tts_init = choices_for_tasks(TTS_TASKS)
     asr_init = choices_for_tasks(ASR_TASKS)
 
-    with gr.Tab("TTS / 声音克隆"):
-        with gr.Row():
-            tts_model = gr.Dropdown(label="模型 (task=tts)", choices=tts_init,
-                                    value=(tts_init[0][1] if tts_init else None),
-                                    scale=3)
-            tts_load_btn = gr.Button("⬇️ 加载模型", scale=1)
-        tts_load_status = gr.Markdown("")
-        with gr.Row():
-            tts_dl_btn = gr.Button("📥 下载所选模型 (后台)", scale=1)
-            tts_dl_stat_btn = gr.Button("🔁 下载进度", scale=1)
-        tts_dl_status = gr.Markdown("")
-        tts_hint = gr.Markdown(tts_hint_for(tts_init[0][1] if tts_init else None))
-        tts_text = gr.Textbox(label="要合成的文字", lines=3,
-                              value="Hello, this is audio dot cpp speaking from a web page.")
-        tts_lang = gr.Dropdown(label="语言 (留空=模型默认)", choices=LANGS, value="english")
-        with gr.Row():
-            tts_upload = gr.Audio(label="参考音色：上传/录音 (可选)", type="filepath")
-            tts_builtin = gr.Dropdown(label="或选内置参考音色",
-                                      choices=["(none)"] + builtin_voices(), value="(none)")
-        tts_ref_text = gr.Textbox(
-            label="参考文本 (克隆时填参考音频里说的内容，越准越好)", lines=2,
-            value="okay, I'm Cemo and what you just heard wasn't a human voice.")
-        with gr.Row():
-            tts_seed = gr.Number(label="seed", value=1234, precision=0)
-            tts_maxtok = gr.Number(label="max_tokens", value=1200, precision=0)
-        tts_adv = gr.Textbox(
-            label="高级参数 (JSON, 可选) — 合并进请求 options，按模型透传",
-            placeholder='{"num_inference_steps": 10, "guidance_scale": 1.3, "voice_samples": "D:/a.wav,D:/b.wav"}',
-            lines=2)
-        tts_btn = gr.Button("🎙️ 生成", variant="primary")
-        tts_out = gr.Audio(label="输出音频", type="filepath")
+    # ---------------- TTS / 声音克隆 ----------------
+    with gr.Tab("🗣️ TTS / 声音克隆"):
+        with gr.Row(equal_height=False):
+            # 左列：模型管理 + 参考音频（声音克隆）
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### 🧩 模型管理")
+                    tts_model = gr.Dropdown(
+                        label="模型列表 (task=tts)", choices=tts_init,
+                        value=(tts_init[0][1] if tts_init else None))
+                    with gr.Row(elem_classes="mm-btn-row"):
+                        tts_load_btn = gr.Button("📥 加载模型", variant="primary",
+                                                 size="lg", min_width=100)
+                        tts_refresh_btn = gr.Button("🔄 刷新列表", variant="primary",
+                                                    size="lg", min_width=100)
+                        tts_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
+                                               size="lg", min_width=100)
+                        tts_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
+                                                    size="lg", min_width=100)
+                    tts_load_status = gr.Markdown("")
+                    tts_dl_status = gr.Markdown("")
+
+                with gr.Group():
+                    gr.Markdown("#### 🎧 参考音频（声音克隆）")
+                    tts_builtin = gr.Dropdown(
+                        label="内置参考音色",
+                        choices=["(none)"] + builtin_voices(), value="(none)",
+                        info="上传/录音的音色优先于内置音色")
+                    tts_upload = gr.Audio(
+                        label="上传/录制参考音色（可选）", type="filepath",
+                        elem_classes="audio-default")
+                    tts_ref_text = gr.Textbox(
+                        label="参考文本 (克隆时填参考音频里说的内容，越准越好)", lines=2,
+                        value="okay, I'm Cemo and what you just heard wasn't a human voice.")
+
+                # 切换模型后的提示，显示在参考音频整块下面
+                tts_hint = gr.Markdown(
+                    tts_hint_for(tts_init[0][1] if tts_init else None))
+
+            # 右列：合成设置 + 合成内容 + 生成 + 输出
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### ⚙️ 合成设置")
+                    with gr.Row():
+                        tts_seed = gr.Number(label="seed", value=1234, precision=0)
+                        tts_maxtok = gr.Number(label="max_tokens", value=1200, precision=0)
+                    tts_adv_state = gr.State({})
+                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                        @gr.render(inputs=tts_model)
+                        def _render_tts_params(model_id):
+                            specs = params_for(model_id)
+                            if not specs:
+                                gr.Markdown("*该模型无可调高级参数。*")
+                                return
+                            for p in specs:
+                                comp = _make_param_component(p)
+                                comp.change(_adv_updater(p["name"]),
+                                            [tts_adv_state, comp], tts_adv_state)
+
+                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                        tts_adv = gr.Textbox(
+                            label="",
+                            placeholder='{"num_inference_steps": 10, "voice_samples": "D:/a.wav,D:/b.wav"}',
+                            lines=3)
+
+                with gr.Group():
+                    gr.Markdown("#### ✍️ 合成内容")
+                    tts_text = gr.Textbox(
+                        label="要合成的文字", lines=5,
+                        value="Hello, this is audio dot cpp speaking from a web page.")
+                    tts_lang = gr.Dropdown(
+                        label="语言 (Auto=自动 / 留空=用模型默认)", choices=LANGS,
+                        value="Auto")
+
+                tts_btn = gr.Button("🎵 生成语音", variant="primary", size="lg")
+                with gr.Group():
+                    gr.Markdown("#### 🔊 输出音频")
+                    tts_out = gr.Audio(label="输出音频", type="filepath",
+                                       elem_classes="audio-default")
+                    tts_msg = gr.Markdown("")
 
         tts_load_btn.click(load_tts, tts_model, [tts_load_status, status])
         tts_dl_btn.click(download_model, [tts_model, hf_token, proxy], tts_dl_status)
         tts_dl_stat_btn.click(download_status, tts_model, tts_dl_status)
         tts_model.change(tts_hint_for, tts_model, tts_hint)
+        tts_model.change(lambda: {}, None, tts_adv_state)  # reset knobs on model switch
+        tts_builtin.change(on_builtin_voice_change, tts_builtin,
+                           [tts_upload, tts_ref_text])
         tts_btn.click(do_tts,
                       [tts_model, tts_text, tts_lang, tts_upload, tts_builtin,
-                       tts_ref_text, tts_seed, tts_maxtok, tts_adv],
-                      tts_out)
+                       tts_ref_text, tts_seed, tts_maxtok, tts_adv_state, tts_adv],
+                      [tts_out, tts_msg])
 
-    with gr.Tab("ASR / 转写"):
-        with gr.Row():
-            asr_model = gr.Dropdown(label="模型 (task=asr)", choices=asr_init,
-                                    value=(asr_init[0][1] if asr_init else None),
-                                    scale=3)
-            asr_load_btn = gr.Button("⬇️ 加载模型", scale=1)
-        asr_load_status = gr.Markdown("")
-        with gr.Row():
-            asr_dl_btn = gr.Button("📥 下载所选模型 (后台)", scale=1)
-            asr_dl_stat_btn = gr.Button("🔁 下载进度", scale=1)
-        asr_dl_status = gr.Markdown("")
-        asr_audio = gr.Audio(label="上传/录制音频", type="filepath")
-        asr_btn = gr.Button("📝 转写", variant="primary")
-        asr_out = gr.Textbox(label="识别结果", lines=6)
+    # ---------------- ASR / 音频转写 ----------------
+    with gr.Tab("📝 ASR / 音频转写"):
+        with gr.Row(equal_height=False):
+            # 左列：模型管理 + 音频输入
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### 🧩 模型管理")
+                    asr_model = gr.Dropdown(
+                        label="模型列表 (task=asr)", choices=asr_init,
+                        value=(asr_init[0][1] if asr_init else None))
+                    with gr.Row(elem_classes="mm-btn-row"):
+                        asr_load_btn = gr.Button("📥 加载模型", variant="primary",
+                                                 size="lg", min_width=100)
+                        asr_refresh_btn = gr.Button("🔄 刷新列表", variant="primary",
+                                                    size="lg", min_width=100)
+                        asr_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
+                                               size="lg", min_width=100)
+                        asr_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
+                                                    size="lg", min_width=100)
+                    asr_load_status = gr.Markdown("")
+                    asr_dl_status = gr.Markdown("")
+
+                with gr.Group():
+                    gr.Markdown("#### 🎤 音频输入")
+                    asr_audio = gr.Audio(label="上传/录制音频", type="filepath",
+                                         elem_classes="audio-default")
+                asr_btn = gr.Button("📝 开始转写", variant="primary", size="lg")
+
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### 📄 识别结果")
+                    asr_out = gr.Textbox(
+                        label="转写文本", lines=10,
+                        placeholder="转写结果将显示在这里……")
+                    asr_msg = gr.Markdown("")
 
         asr_load_btn.click(load_asr, asr_model, [asr_load_status, status])
         asr_dl_btn.click(download_model, [asr_model, hf_token, proxy], asr_dl_status)
         asr_dl_stat_btn.click(download_status, asr_model, asr_dl_status)
-        asr_btn.click(do_asr, [asr_model, asr_audio], asr_out)
+        asr_btn.click(do_asr, [asr_model, asr_audio], [asr_out, asr_msg])
 
-    refresh_btn.click(refresh, None, [tts_model, asr_model, status, tts_hint])
+    tts_refresh_btn.click(refresh, None, [tts_model, asr_model, status, tts_hint])
+    asr_refresh_btn.click(refresh, None, [tts_model, asr_model, status, tts_hint])
+    gr.Markdown(
+        "---\n<center><small>audio.cpp WebUI · 按需加载，同一时刻只驻留一个模型 · "
+        "模型下载在后台进行，可随时点击「下载进度」</small></center>")
 
 
 if __name__ == "__main__":
     open_browser = os.environ.get("AUDIOCPP_NO_BROWSER") != "1"
-    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=open_browser)
+    # Gradio 6 moved css/theme from the Blocks constructor to launch().
+    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=open_browser,
+                css=CUSTOM_CSS)

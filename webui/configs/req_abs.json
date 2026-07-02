@@ -1,9 +1,0 @@
-{
-  "model": "qwen3-tts",
-  "input": "Absolute path voice reference test through the HTTP API.",
-  "language": "english",
-  "voice_ref": "D:/AItools/audio.cpp/audiocpp-portable/default_prompts/demo_01_man.wav",
-  "reference_text": "okay, I'm Cemo and what you just heard wasn't a human voice.",
-  "max_tokens": 1200,
-  "seed": 1234
-}
