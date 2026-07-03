@@ -22,6 +22,7 @@ Env overrides:
 import atexit
 import io
 import json
+import logging
 import os
 import re
 import socket
@@ -54,13 +55,58 @@ def _silence_proactor_connection_reset():
 
     def _patched(self, exc):
         if isinstance(exc, ConnectionResetError):
-            return
-        return _orig(self, exc)
+            exc = None  # peer reset == normal close; still run the cleanup below
+        try:
+            return _orig(self, exc)
+        except ConnectionResetError:
+            # _orig's own sock.shutdown() raced a peer reset (WinError 10054),
+            # which skips the rest of its cleanup — finish it here.
+            sock = getattr(self, "_sock", None)
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                self._sock = None
+            server = getattr(self, "_server", None)
+            if server is not None:
+                try:
+                    server._detach()
+                except Exception:
+                    pass
+                self._server = None
+            self._called_connection_lost = True
 
     _ProactorBasePipeTransport._call_connection_lost = _patched
 
 
+def _silence_h11_content_length_race():
+    """Large uploads (e.g. a multi-minute reference wav) can have the browser
+    abort/replace an in-flight preview fetch for the same file while uvicorn
+    is still streaming its body; h11 then raises LocalProtocolError trying to
+    close out that half-sent response. It's a benign race — verified the
+    aborted request doesn't affect the server or any other request, the
+    browser's follow-up fetch of the same file completes fine — but uvicorn
+    logs it as a full "Exception in ASGI application" traceback per occurrence.
+    Drop just that one exception type from uvicorn's logger instead of hiding
+    all uvicorn.error output."""
+    try:
+        from h11 import LocalProtocolError
+    except Exception:
+        return
+
+    class _DropContentLengthRace(logging.Filter):
+        def filter(self, record):
+            exc = record.exc_info[1] if record.exc_info else None
+            if isinstance(exc, LocalProtocolError) and "declared Content-Length" in str(exc):
+                return False
+            return True
+
+    logging.getLogger("uvicorn.error").addFilter(_DropContentLengthRace())
+
+
 _silence_proactor_connection_reset()
+_silence_h11_content_length_race()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
@@ -155,6 +201,11 @@ MODEL_PROFILES = {
     "chatterbox": {
         "input_hint": "🗣 **Chatterbox**（声音克隆）：需要一段参考音色（上传/录音），否则会报错。",
     },
+    "qwen3_asr": {
+        # Encoder cap: max_source_positions=1500 tokens at 13 tokens/second
+        # (qwen3_asr_audio_encoder_token_count) -> ~115 s of audio per request.
+        "input_hint": "📝 **Qwen3-ASR** 单次最长约 115 秒；更长的音频请先剪短或分段转写。",
+    },
 }
 DEFAULT_PROFILE = {"input_hint": "", "wrap_speaker_script": False, "default_options": {},
                    # Families with internal chunking handle long text fine; the client
@@ -175,7 +226,7 @@ def profile_for(entry):
     return prof
 
 
-def tts_hint_for(model_id):
+def model_hint_for(model_id):
     entry = catalog_by_id(model_id) if model_id else None
     return profile_for(entry)["input_hint"] if entry else ""
 
@@ -253,6 +304,18 @@ def _concat_wavs(blobs, out_path):
             w.writeframes(data)
 
 
+def _audio_duration_seconds(path):
+    """Duration of a local audio file, or None when not measurable. wave covers
+    WAV, i.e. Gradio mic recordings and the typical uploads here; other formats
+    just skip the duration note instead of failing the request."""
+    try:
+        with wave.open(path, "rb") as w:
+            rate = w.getframerate()
+            return (w.getnframes() / float(rate)) if rate else None
+    except Exception:
+        return None
+
+
 def _parse_adv_options(raw):
     raw = (raw or "").strip()
     if not raw:
@@ -270,6 +333,9 @@ def _parse_adv_options(raw):
 # like "requires a session voice via --voice-ref" becomes "请上传参考音色".
 # Ordered specific -> generic; server_error() takes the FIRST match.
 ERROR_HINTS = [
+    (re.compile(r"max_source_positions", re.I),
+     "⏱ 音频过长：Qwen3-ASR 编码器上限 1500 token（约 13 token/秒），"
+     "单次最多约 115 秒。请把音频剪短或分段后再转写。"),
     (re.compile(r"combine voice_samples|voice_samples.{0,20}voice_ref", re.I),
      "🔀 voice_samples 与单个参考音色不能同时用：多说话人时请不要上传参考音色。"),
     (re.compile(r"cached voice id", re.I),
@@ -291,13 +357,15 @@ def _extract_server_message(text):
         return (text or "").strip()
 
 
-def server_error(entry, status, text):
+def server_error(entry, status, text, extra=None):
     """Build a friendly gr.Error from a non-200 server response."""
     msg = _extract_server_message(text)
     parts = [f"❌ server {status}：{msg[:400]}"]
     hint = next((h for pat, h in ERROR_HINTS if pat.search(msg)), None)
     if hint:
         parts.append("💡 " + hint)
+    if extra:
+        parts.append(extra)
     if entry:
         ih = profile_for(entry).get("input_hint")
         if ih:
@@ -548,10 +616,19 @@ def _stop_server():
         time.sleep(0.25)
 
 
-def _read_tail(path, n=30):
+def _read_tail(path, n=30, max_bytes=65536):
+    """Last n non-empty lines of a file. Reads only the file's tail, and treats
+    \\r as a line break so tqdm-style progress (one giant \\r-line) shows its
+    latest state instead of nothing."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return "".join(f.readlines()[-n:]).strip()
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read().decode("utf-8", errors="replace")
+        lines = [ln for ln in data.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+                 if ln.strip()]
+        return "\n".join(lines[-n:]).strip()
     except Exception:
         return ""
 
@@ -560,26 +637,81 @@ def _log_tail(n=30):
     return _read_tail(LOG_PATH, n)
 
 
-def _pump_server_output(proc, logf):
-    """Tee the server's combined stdout/stderr to BOTH the console (so synthesis
-    step logs stream live in the window) and the WebUI log file (for _log_tail)."""
-    try:
-        for line in proc.stdout:
+# One shared append handle for the WebUI log: the pump thread (server output)
+# and _ui_log (webui-side request events) both write through it, so lines
+# interleave correctly instead of two handles overwriting each other.
+_log_lock = threading.Lock()
+_log_fh = None
+
+
+def _open_log_file(truncate=False):
+    global _log_fh
+    with _log_lock:
+        if _log_fh is not None:
             try:
-                sys.stdout.write(line)
-                sys.stdout.flush()
+                _log_fh.close()
             except Exception:
                 pass
+        _log_fh = open(LOG_PATH, "w" if truncate else "a",
+                       encoding="utf-8", errors="replace")
+
+
+def _log_write(text):
+    global _log_fh
+    with _log_lock:
+        if _log_fh is None:
             try:
-                logf.write(line)
-                logf.flush()
+                _log_fh = open(LOG_PATH, "a", encoding="utf-8", errors="replace")
             except Exception:
-                pass
-    finally:
+                return
         try:
-            logf.close()
+            _log_fh.write(text)
+            _log_fh.flush()
         except Exception:
             pass
+
+
+def _ts():
+    return time.strftime("%H:%M:%S")
+
+
+def _emit_log_line(text):
+    """One already-formatted line to BOTH the console and the WebUI log file."""
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except Exception:
+        pass
+    _log_write(text)
+
+
+def _ui_log(msg):
+    """Timestamped webui-side event (request start/finish, model load, ...) so
+    the console/log show when things began and ended, not just server spam."""
+    _emit_log_line(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [webui] {msg}\n")
+
+
+def _pump_server_output(proc):
+    """Tee the server's combined stdout/stderr to console + log file, prefixing
+    every line with a timestamp and collapsing consecutive duplicate lines
+    (e.g. the repeated `CUDA graph warmup complete`) into a periodic counter."""
+    last, repeats = None, 0
+    try:
+        for line in proc.stdout:
+            if line == last:
+                repeats += 1
+                if repeats % 50 == 0:
+                    _emit_log_line(f"[{_ts()}]   ... 上一行已重复 {repeats} 次\n")
+                continue
+            if repeats:
+                _emit_log_line(f"[{_ts()}]   ... (上一行共重复 {repeats} 次)\n")
+            last, repeats = line, 0
+            _emit_log_line(f"[{_ts()}] {line}")
+    except Exception:
+        pass
+    finally:
+        if repeats:
+            _emit_log_line(f"[{_ts()}]   ... (上一行共重复 {repeats} 次)\n")
 
 
 def _start_server(entry):
@@ -588,14 +720,15 @@ def _start_server(entry):
         raise gr.Error(f"找不到 server: {SERVER_EXE}（用 AUDIOCPP_BACKEND=gpu|cpu 指定）")
     cfg = _write_temp_config(entry)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    logf = open(LOG_PATH, "w", encoding="utf-8", errors="replace")
+    _open_log_file(truncate=True)
     _server_proc = subprocess.Popen(
         [SERVER_EXE, "--config", cfg, "--host", HOST, "--port", str(PORT)],
         cwd=BUNDLE_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
     _loaded_id = entry["id"]
-    threading.Thread(target=_pump_server_output, args=(_server_proc, logf),
+    _ui_log(f"启动 audiocpp_server（backend={BACKEND}），加载模型 {entry['label']} …")
+    threading.Thread(target=_pump_server_output, args=(_server_proc,),
                      daemon=True).start()
 
 
@@ -637,11 +770,14 @@ def ensure_model_loaded(model_id, expect_tasks=None):
                 f"（例如 run_server.bat）。请先关闭它，或设 AUDIOCPP_SERVER 指向它。")
 
         _stop_server()
+        t0 = time.time()
         _start_server(entry)
         if not _wait_health(LOAD_TIMEOUT):
             tail = _log_tail()
             _stop_server()
+            _ui_log(f"模型 {entry['label']} 加载失败/超时（{LOAD_TIMEOUT}s）")
             raise gr.Error(f"加载 {entry['label']} 失败/超时（{LOAD_TIMEOUT}s）。\n日志尾部：\n{tail}")
+        _ui_log(f"模型 {entry['label']} 加载完成，用时 {time.time() - t0:.1f}s")
         return f"✅ 已加载：{entry['label']}"
 
 
@@ -661,6 +797,35 @@ _downloads = {}  # model_id -> {"proc": Popen, "log": path}
 def _dl_log_path(model_id):
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", model_id)
     return os.path.join(LOG_DIR, f"download_{safe}.log")
+
+
+def _dir_size_bytes(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def _fmt_bytes(n):
+    return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.1f} MB"
+
+
+def _download_progress_note(entry):
+    """Bytes already on disk for a running download. model_manager stages into
+    models/.engine_model_staging/<target>.partial/ and renames on completion;
+    fall back to the whole staging root for packages with composite targets."""
+    staging_root = os.path.join(MODELS_ROOT, ".engine_model_staging")
+    base = os.path.basename(entry.get("path", "").rstrip("/\\"))
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
+    staging = os.path.join(staging_root, safe + ".partial")
+    probe = staging if os.path.isdir(staging) else staging_root
+    if not os.path.isdir(probe):
+        return "尚未写入数据（正在连接/解析）"
+    return f"已下载 {_fmt_bytes(_dir_size_bytes(probe))}"
 
 
 def hf_token_present():
@@ -687,6 +852,8 @@ def download_model(model_id, hf_token="", proxy=""):
 
     # Pass a token to the child so gated/private HF repos don't 401.
     env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"    # progress lines land in the log immediately
+    env["PYTHONIOENCODING"] = "utf-8"
     tok = (hf_token or "").strip()
     if tok:
         env["HF_TOKEN"] = tok
@@ -709,12 +876,13 @@ def download_model(model_id, hf_token="", proxy=""):
         log = _dl_log_path(model_id)
         logf = open(log, "w", encoding="utf-8", errors="replace")
         proc = subprocess.Popen(
-            [sys.executable, MODEL_MANAGER, "install", dl_id,
+            [sys.executable, "-u", MODEL_MANAGER, "install", dl_id,
              "--models-root", MODELS_ROOT, "--overwrite"],
             cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
         _downloads[model_id] = {"proc": proc, "log": log}
-    return (f"{warn}{proxy_note}⏳ 已开始后台下载 **{entry['label']}**（{dl_id}）。\n"
-            f"完成后点『📊 下载进度』确认，再点旁边的『🔄 刷新』即可加载。\n日志：{log}")
+    _ui_log(f"开始后台下载 {entry['label']}（{dl_id}），日志：{log}")
+    return (f"{warn}{proxy_note}⏳ 已开始后台下载 **{entry['label']}**（{dl_id}），"
+            f"下方进度每几秒自动刷新。\n完成后点旁边的『🔄 刷新』即可加载。\n日志：{log}")
 
 
 def download_status(model_id):
@@ -727,12 +895,32 @@ def download_status(model_id):
     if rec is None:
         return f"⚪ {entry['label']} 未安装，未开始下载"
     code = rec["proc"].poll()
-    tail = _read_tail(rec["log"])
+    tail = _read_tail(rec["log"], n=12)
     if code is None:
-        return f"⏳ 正在下载 {entry['label']}…\n```\n{tail}\n```"
+        return (f"⏳ 正在下载 {entry['label']}… {_download_progress_note(entry)}"
+                f" · 更新于 {_ts()}\n```\n{tail}\n```")
+    if not rec.get("reported"):
+        rec["reported"] = True
+        _ui_log(f"{entry['label']} 下载进程结束 (exit {code})")
     if code == 0:
         return f"✅ {entry['label']} 下载进程完成，点旁边的『🔄 刷新』刷新可用列表。\n```\n{tail}\n```"
     return f"❌ {entry['label']} 下载失败 (exit {code})。\n```\n{tail}\n```"
+
+
+def _download_running(model_id):
+    rec = _downloads.get(model_id) if model_id else None
+    return rec is not None and rec["proc"].poll() is None
+
+
+def download_start(model_id, hf_token="", proxy=""):
+    """Click handler: kick off the download and arm the auto-refresh timer."""
+    msg = download_model(model_id, hf_token, proxy)
+    return msg, gr.Timer(active=_download_running(model_id))
+
+
+def download_status_tick(model_id):
+    """Timer tick: refresh status; stop the timer once the download is idle."""
+    return download_status(model_id), gr.Timer(active=_download_running(model_id))
 
 
 # --- task handlers ---------------------------------------------------------
@@ -786,19 +974,25 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         # Long text goes out as several bounded requests (concatenated below), so a
         # whole chapter neither hits the per-request timeout nor runs blind.
         chunks = _split_tts_chunks(text, prof.get("chunk_chars", 1000))
+        _ui_log(f"TTS 开始：model={model}，{len(chunks)} 段 / 共 {sum(len(c) for c in chunks)} 字")
         t_start = time.time()
         blobs = []
         for i, chunk in enumerate(chunks):
             if len(chunks) > 1:
                 progress((i, len(chunks)), desc=f"合成 {i + 1}/{len(chunks)} 段…")
             payload["input"] = chunk
+            t_chunk = time.time()
             try:
                 r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
             except requests.RequestException as e:
+                _ui_log(f"TTS 失败：段 {i + 1}/{len(chunks)} 无法连接 server")
                 raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
             if r.status_code != 200:
+                _ui_log(f"TTS 失败：段 {i + 1}/{len(chunks)}，server {r.status_code}")
                 raise server_error(entry, r.status_code, r.text)
             blobs.append(r.content)
+            _ui_log(f"TTS 段 {i + 1}/{len(chunks)} 完成（{len(chunk)} 字，"
+                    f"{time.time() - t_chunk:.1f}s）")
 
         out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_{int(time.time()*1000)}.wav")
         if len(blobs) == 1:
@@ -807,6 +1001,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         else:
             _concat_wavs(blobs, out)
         elapsed = time.time() - t_start
+        _ui_log(f"TTS 完成：{out}，总用时 {elapsed:.1f}s")
         parts_note = f"（{len(blobs)} 段）" if len(blobs) > 1 else ""
         return out, f"✅ 生成完成{parts_note}，用时 {elapsed:.1f}s。"
     except gr.Error as e:
@@ -821,20 +1016,28 @@ def do_asr(model, audio_path):
             raise gr.Error("请上传或录制音频")
         ensure_model_loaded(model, ASR_TASKS)
         entry = catalog_by_id(model)
+        dur = _audio_duration_seconds(audio_path)
+        dur_note = f"{dur:.1f}s" if dur is not None else "未知"
         payload = {"model": model, "audio": audio_path}
+        _ui_log(f"ASR 开始：model={model}，音频时长 {dur_note}")
         t_start = time.time()
         try:
             r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload, timeout=900)
         except requests.RequestException as e:
+            _ui_log("ASR 失败：无法连接 server")
             raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
         if r.status_code != 200:
-            raise server_error(entry, r.status_code, r.text)
+            _ui_log(f"ASR 失败：server {r.status_code}（音频 {dur_note}）")
+            extra = f"⏱ 本次音频时长约 {dur:.1f} 秒" if dur is not None else None
+            raise server_error(entry, r.status_code, r.text, extra=extra)
         elapsed = time.time() - t_start
+        _ui_log(f"ASR 完成：音频 {dur_note}，用时 {elapsed:.1f}s")
+        done = f"✅ 转写完成（音频 {dur_note}），用时 {elapsed:.1f}s。"
         try:
             data = r.json()
         except Exception:
-            return r.text, f"✅ 转写完成，用时 {elapsed:.1f}s。"
-        return (data.get("text") or str(data)), f"✅ 转写完成，用时 {elapsed:.1f}s。"
+            return r.text, done
+        return (data.get("text") or str(data)), done
     except gr.Error as e:
         return "", _msg_from_error(e)
     except Exception as e:
@@ -869,7 +1072,8 @@ def refresh():
         gr.update(choices=tts, value=tval),
         gr.update(choices=asr, value=aval),
         server_status(),
-        tts_hint_for(tval),
+        model_hint_for(tval),
+        model_hint_for(aval),
     )
 
 
@@ -877,11 +1081,9 @@ atexit.register(_stop_server)
 
 
 CUSTOM_CSS = """
-/* 音频控件用默认简洁外观：不要黑色/加重描边（避免与外层分组框叠出黑框）。*/
+
 .audio-default { border: none !important; box-shadow: none !important; }
 
-/* 模型管理下方四个按钮之间留一点间距，并使用与「生成语音」一致的圆角
-   （避免相邻按钮被 Gradio 拼接成方角）。*/
 .mm-btn-row { gap: 10px !important; }
 .mm-btn-row button { border-radius: var(--button-large-radius, var(--radius-lg)) !important; }
 
@@ -890,6 +1092,8 @@ CUSTOM_CSS = """
    0:00/总时长标签。放开这两层的高度让标签随内容下移；短音频（无滚动条）时
    min-height 保证布局与原来一致。 */
 .waveform-container, #waveform { height: auto !important; min-height: 58px; }
+
+.hint-small { opacity: 0.7; font-size: 0.85em; margin-top: -6px; }
 """
 
 
@@ -929,10 +1133,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                                     size="lg", min_width=100)
                         tts_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
                                                size="lg", min_width=100)
-                        tts_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
-                                                    size="lg", min_width=100)
                     tts_load_status = gr.Markdown("")
                     tts_dl_status = gr.Markdown("")
+                    tts_dl_timer = gr.Timer(3, active=False)
 
                 with gr.Group():
                     gr.Markdown("#### 🎧 参考音频（声音克隆）")
@@ -943,13 +1146,16 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     tts_upload = gr.Audio(
                         label="上传/录制参考音色（可选）", type="filepath",
                         elem_classes="audio-default")
+                    gr.Markdown(
+                        "*参考音色几秒到几十秒即可，几分钟的大文件预览可能要等几秒才出声波图。*",
+                        elem_classes="hint-small")
                     tts_ref_text = gr.Textbox(
                         label="参考文本 (克隆时填参考音频里说的内容，越准越好)", lines=2,
                         value="okay, I'm Cemo and what you just heard wasn't a human voice.")
 
                 # 切换模型后的提示，显示在参考音频整块下面
                 tts_hint = gr.Markdown(
-                    tts_hint_for(tts_init[0][1] if tts_init else None))
+                    model_hint_for(tts_init[0][1] if tts_init else None))
 
             # 右列：合成设置 + 合成内容 + 生成 + 输出
             with gr.Column(scale=1):
@@ -994,9 +1200,11 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     tts_msg = gr.Markdown("")
 
         tts_load_btn.click(load_tts, tts_model, [tts_load_status, status])
-        tts_dl_btn.click(download_model, [tts_model, hf_token, proxy], tts_dl_status)
-        tts_dl_stat_btn.click(download_status, tts_model, tts_dl_status)
-        tts_model.change(tts_hint_for, tts_model, tts_hint)
+        tts_dl_btn.click(download_start, [tts_model, hf_token, proxy],
+                         [tts_dl_status, tts_dl_timer])
+        tts_dl_timer.tick(download_status_tick, tts_model,
+                          [tts_dl_status, tts_dl_timer])
+        tts_model.change(model_hint_for, tts_model, tts_hint)
         tts_model.change(lambda: {}, None, tts_adv_state)  # reset knobs on model switch
         tts_builtin.change(on_builtin_voice_change, tts_builtin,
                            [tts_upload, tts_ref_text])
@@ -1022,15 +1230,20 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                                     size="lg", min_width=100)
                         asr_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
                                                size="lg", min_width=100)
-                        asr_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
-                                                    size="lg", min_width=100)
                     asr_load_status = gr.Markdown("")
                     asr_dl_status = gr.Markdown("")
+                    asr_dl_timer = gr.Timer(3, active=False)
 
                 with gr.Group():
                     gr.Markdown("#### 🎤 音频输入")
                     asr_audio = gr.Audio(label="上传/录制音频", type="filepath",
                                          elem_classes="audio-default")
+                    gr.Markdown(
+                        "*大文件预览可能要等几秒才出声波图（后台是正常的，可忽略命令窗口"
+                        "偶尔一闪而过的网络重试信息）。*",
+                        elem_classes="hint-small")
+                asr_hint = gr.Markdown(
+                    model_hint_for(asr_init[0][1] if asr_init else None))
                 asr_btn = gr.Button("📝 开始转写", variant="primary", size="lg")
 
             with gr.Column(scale=1):
@@ -1042,15 +1255,20 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     asr_msg = gr.Markdown("")
 
         asr_load_btn.click(load_asr, asr_model, [asr_load_status, status])
-        asr_dl_btn.click(download_model, [asr_model, hf_token, proxy], asr_dl_status)
-        asr_dl_stat_btn.click(download_status, asr_model, asr_dl_status)
+        asr_dl_btn.click(download_start, [asr_model, hf_token, proxy],
+                         [asr_dl_status, asr_dl_timer])
+        asr_dl_timer.tick(download_status_tick, asr_model,
+                          [asr_dl_status, asr_dl_timer])
+        asr_model.change(model_hint_for, asr_model, asr_hint)
         asr_btn.click(do_asr, [asr_model, asr_audio], [asr_out, asr_msg])
 
-    tts_refresh_btn.click(refresh, None, [tts_model, asr_model, status, tts_hint])
-    asr_refresh_btn.click(refresh, None, [tts_model, asr_model, status, tts_hint])
+    tts_refresh_btn.click(refresh, None,
+                          [tts_model, asr_model, status, tts_hint, asr_hint])
+    asr_refresh_btn.click(refresh, None,
+                          [tts_model, asr_model, status, tts_hint, asr_hint])
     gr.Markdown(
         "---\n<center><small>audio.cpp WebUI · 按需加载，同一时刻只驻留一个模型 · "
-        "模型下载在后台进行，可随时点击「下载进度」</small></center>")
+        "模型下载在后台进行，进度会自动刷新显示</small></center>")
 
 
 if __name__ == "__main__":
