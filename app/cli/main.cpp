@@ -24,6 +24,17 @@
 #include <omp.h>
 #endif
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 namespace {
 
 void print_task_list_help() {
@@ -389,6 +400,36 @@ void run_streaming(
 }  // namespace
 
 int main(int argc, char ** argv) {
+#ifdef _WIN32
+    // MSVC delivers argv in the ANSI code page, but the whole pipeline (tokenizers,
+    // JSON, file IO) treats strings as UTF-8, so non-ASCII text arguments (e.g. a
+    // Chinese --text) arrive mangled. Rebuild argv from the UTF-16 command line.
+    std::vector<std::string> utf8_arg_storage;
+    std::vector<char *> utf8_argv;
+    {
+        int wide_argc = 0;
+        wchar_t ** wide_argv = CommandLineToArgvW(GetCommandLineW(), &wide_argc);
+        if (wide_argv != nullptr) {
+            utf8_arg_storage.reserve(static_cast<size_t>(wide_argc));
+            for (int i = 0; i < wide_argc; ++i) {
+                const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide_argv[i], -1, nullptr, 0, nullptr, nullptr);
+                std::string arg(bytes > 0 ? static_cast<size_t>(bytes - 1) : 0, '\0');
+                if (bytes > 1) {
+                    WideCharToMultiByte(CP_UTF8, 0, wide_argv[i], -1, arg.data(), bytes, nullptr, nullptr);
+                }
+                utf8_arg_storage.push_back(std::move(arg));
+            }
+            LocalFree(wide_argv);
+            utf8_argv.reserve(utf8_arg_storage.size() + 1);
+            for (auto & arg : utf8_arg_storage) {
+                utf8_argv.push_back(arg.data());
+            }
+            utf8_argv.push_back(nullptr);
+            argc = static_cast<int>(utf8_arg_storage.size());
+            argv = utf8_argv.data();
+        }
+    }
+#endif
     try {
         using namespace minitts::cli;
 
