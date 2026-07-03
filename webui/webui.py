@@ -20,6 +20,7 @@ Env overrides:
     AUDIOCPP_NO_BROWSER=1        don't open a browser tab
 """
 import atexit
+import io
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import tempfile
 import threading
 import time
 import warnings
+import wave
 from urllib.parse import urlparse
 
 import requests
@@ -135,6 +137,12 @@ MODEL_PROFILES = {
             "`voice_samples`（逗号分隔的服务器本地 wav，最多 4 个），此时**不要**再上传参考音色。"
             "可调 `num_inference_steps` / `guidance_scale` / `max_length_times`。"),
         "wrap_speaker_script": True,
+        # VibeVoice has no internal text chunking. VRAM is bounded since the
+        # layerwise-prefill/gallocr decode-graph fix, so chunks no longer need to be
+        # tiny; 600 chars keeps each chunk's generation inside the default
+        # max_tokens=1200 budget (~1.5 frames/CJK char) and the KV capacity tier
+        # <= 2048 (~7.1 GB peak on 8 GB GPUs).
+        "chunk_chars": 600,
     },
     "qwen3_tts": {
         "input_hint": (
@@ -148,7 +156,11 @@ MODEL_PROFILES = {
         "input_hint": "🗣 **Chatterbox**（声音克隆）：需要一段参考音色（上传/录音），否则会报错。",
     },
 }
-DEFAULT_PROFILE = {"input_hint": "", "wrap_speaker_script": False, "default_options": {}}
+DEFAULT_PROFILE = {"input_hint": "", "wrap_speaker_script": False, "default_options": {},
+                   # Families with internal chunking handle long text fine; the client
+                   # split only exists to bound each HTTP request (no 900 s timeout)
+                   # and surface progress, so the budget can stay coarse.
+                   "chunk_chars": 1000}
 
 # One "Speaker N:" line (any speaker index) is enough to treat text as a script.
 _SPEAKER_RE = re.compile(r"^\s*Speaker\s+\d+\s*:", re.IGNORECASE | re.MULTILINE)
@@ -174,6 +186,71 @@ def _as_speaker_script(text):
         return text
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     return "\n".join(f"Speaker 0: {ln}" for ln in lines) if lines else text
+
+
+# --- client-side long-text chunking ------------------------------------------
+# Long text is synthesized as one HTTP request per chunk and concatenated here.
+# That keeps every request bounded (no 900 s timeout, works for families without
+# internal chunking) and lets the UI show real per-chunk progress.
+_SPEAKER_LINE_RE = re.compile(r"^\s*(Speaker\s+\d+\s*:)\s*(.*)$", re.IGNORECASE)
+_SENTENCE_RE = re.compile(r"[^。！？!?；;…]*[。！？!?；;…]+|[^。！？!?；;…]+$")
+
+
+def _split_long_line(line, budget):
+    """Split one overlong line at sentence ends into pieces of <= budget chars,
+    re-attaching its `Speaker N:` prefix (if any) to every piece."""
+    m = _SPEAKER_LINE_RE.match(line)
+    prefix, body = (m.group(1) + " ", m.group(2)) if m else ("", line.strip())
+    pieces, cur = [], ""
+    for sent in _SENTENCE_RE.findall(body):
+        if cur and len(cur) + len(sent) > budget:
+            pieces.append(prefix + cur)
+            cur = ""
+        cur += sent
+    if cur:
+        pieces.append(prefix + cur)
+    return pieces or [line]
+
+
+def _split_tts_chunks(text, budget):
+    """Group non-empty lines into chunks of <= budget chars. A line is never
+    split across chunks unless it alone exceeds the budget (then it is split at
+    sentence boundaries). Returns a list of chunk strings."""
+    units = []
+    for ln in (text or "").splitlines():
+        if not ln.strip():
+            continue
+        units.extend(_split_long_line(ln, budget) if len(ln) > budget else [ln])
+    chunks, cur, cur_len = [], [], 0
+    for unit in units:
+        sep = 1 if cur else 0  # the "\n" join separator counts toward the budget
+        if cur and cur_len + sep + len(unit) > budget:
+            chunks.append("\n".join(cur))
+            cur, cur_len, sep = [], 0, 0
+        cur.append(unit)
+        cur_len += sep + len(unit)
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks or ([text] if (text or "").strip() else [])
+
+
+def _concat_wavs(blobs, out_path):
+    """Concatenate same-format WAV byte blobs into one file at out_path."""
+    params, frames = None, []
+    for blob in blobs:
+        with wave.open(io.BytesIO(blob)) as w:
+            fmt = (w.getnchannels(), w.getsampwidth(), w.getframerate())
+            if params is None:
+                params = fmt
+            elif fmt != params:
+                raise gr.Error(f"分段音频格式不一致：{fmt} != {params}")
+            frames.append(w.readframes(w.getnframes()))
+    with wave.open(out_path, "wb") as w:
+        w.setnchannels(params[0])
+        w.setsampwidth(params[1])
+        w.setframerate(params[2])
+        for data in frames:
+            w.writeframes(data)
 
 
 def _parse_adv_options(raw):
@@ -662,7 +739,8 @@ def download_status(model_id):
 # Task handlers return (output, message): the reminder/status message is shown
 # inline under the output widget instead of as a Gradio popup card.
 def do_tts(model, text, language, uploaded_voice, builtin_voice,
-           reference_text, seed, max_tokens, adv_values, adv_options):
+           reference_text, seed, max_tokens, adv_values, adv_options,
+           progress=gr.Progress()):
     try:
         if not (text or "").strip():
             raise gr.Error("请输入要合成的文字")
@@ -694,7 +772,6 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
 
         payload = {
             "model": model,
-            "input": text,
             "language": language or "",
             "seed": int(seed),
             "max_tokens": int(max_tokens),
@@ -706,19 +783,32 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         if options:
             payload["options"] = options
 
+        # Long text goes out as several bounded requests (concatenated below), so a
+        # whole chapter neither hits the per-request timeout nor runs blind.
+        chunks = _split_tts_chunks(text, prof.get("chunk_chars", 1000))
         t_start = time.time()
-        try:
-            r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
-        except requests.RequestException as e:
-            raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
-        if r.status_code != 200:
-            raise server_error(entry, r.status_code, r.text)
+        blobs = []
+        for i, chunk in enumerate(chunks):
+            if len(chunks) > 1:
+                progress((i, len(chunks)), desc=f"合成 {i + 1}/{len(chunks)} 段…")
+            payload["input"] = chunk
+            try:
+                r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
+            except requests.RequestException as e:
+                raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+            if r.status_code != 200:
+                raise server_error(entry, r.status_code, r.text)
+            blobs.append(r.content)
 
         out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_{int(time.time()*1000)}.wav")
-        with open(out, "wb") as f:
-            f.write(r.content)
+        if len(blobs) == 1:
+            with open(out, "wb") as f:
+                f.write(blobs[0])
+        else:
+            _concat_wavs(blobs, out)
         elapsed = time.time() - t_start
-        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。"
+        parts_note = f"（{len(blobs)} 段）" if len(blobs) > 1 else ""
+        return out, f"✅ 生成完成{parts_note}，用时 {elapsed:.1f}s。"
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
@@ -794,6 +884,12 @@ CUSTOM_CSS = """
    （避免相邻按钮被 Gradio 拼接成方角）。*/
 .mm-btn-row { gap: 10px !important; }
 .mm-btn-row button { border-radius: var(--button-large-radius, var(--radius-lg)) !important; }
+
+/* 长音频的波形出现横向滚动条时，WaveSurfer 的滚动层（58px 内容 + 滚动条）会
+   溢出 Gradio 固定 58px 的 .waveform-container / #waveform，盖住下方的
+   0:00/总时长标签。放开这两层的高度让标签随内容下移；短音频（无滚动条）时
+   min-height 保证布局与原来一致。 */
+.waveform-container, #waveform { height: auto !important; min-height: 58px; }
 """
 
 
