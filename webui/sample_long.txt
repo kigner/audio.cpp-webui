@@ -1,6 +1,0 @@
-Welcome to this demonstration of long form text to speech.
-Each line in this file becomes one generation, and every clip is joined into a single audio file.
-Keep every line to a single sentence or a short paragraph.
-This way each line stays well within the model's per request token budget.
-Blank lines are simply skipped, so you can use them to group your text visually.
-When you are ready, replace this file with your own script and run the batch script again.

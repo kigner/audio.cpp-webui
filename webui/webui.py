@@ -369,25 +369,32 @@ def params_for(model_id):
 
 
 def _make_param_component(p):
-    """Build one Gradio control from a spec (type: slider|number|bool|text|choice)."""
+    """Build one Gradio control from a spec (type: slider|number|bool|text|choice).
+
+    interactive=True is forced: inside @gr.render a control that is only wired to
+    its own .change handler is otherwise inferred as output-only (read-only)."""
     t = p.get("type", "number")
     label = p.get("label", p.get("name", ""))
     info = p.get("info")
     if t == "bool":
-        return gr.Checkbox(label=label, info=info, value=bool(p.get("default", False)))
+        return gr.Checkbox(label=label, info=info, value=bool(p.get("default", False)),
+                           interactive=True)
     if t == "text":
         return gr.Textbox(label=label, info=info, value=p.get("default", ""),
-                          placeholder=p.get("placeholder", ""), lines=1)
+                          placeholder=p.get("placeholder", ""), lines=1,
+                          interactive=True)
     if t == "choice":
         return gr.Dropdown(label=label, info=info, choices=p.get("choices", []),
-                           value=p.get("default"))
+                           value=p.get("default"), interactive=True)
     if t == "slider":
         return gr.Slider(label=label, info=info,
                          minimum=p.get("minimum", 0), maximum=p.get("maximum", 1),
-                         step=p.get("step", 0.01), value=p.get("default", 0))
+                         step=p.get("step", 0.01), value=p.get("default", 0),
+                         interactive=True)
     return gr.Number(label=label, info=info, value=p.get("default"),
                      minimum=p.get("minimum"), maximum=p.get("maximum"),
-                     step=p.get("step"), precision=p.get("precision"))
+                     step=p.get("step"), precision=p.get("precision"),
+                     interactive=True)
 
 
 def _adv_updater(name):

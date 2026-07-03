@@ -14,6 +14,7 @@
 
 #include "../common/constant_tensor_cache.h"
 
+#include <ggml-alloc.h>
 #include <ggml-backend.h>
 #include <ggml.h>
 
@@ -33,7 +34,16 @@ namespace binding = modules::binding;
 constexpr int64_t kGroupedCachedAttentionMinSteps = 4096;
 constexpr int64_t kScratchTailCachedAttentionMinSteps = 32768;
 constexpr int64_t kLargeCacheGrowthStep = 2048;
-constexpr int64_t kLayerwisePrefillMinSteps = 2048;
+// At or above this threshold the prompt is prefilled layer-by-layer with small,
+// transient per-layer buffers so realistic reference-voice prompts stay bounded on
+// 8 GB GPUs. Below it a monolithic graph runs the whole prompt in one compute; its
+// intermediates are reused through gallocr, which in practice serves the one-step
+// negative (CFG) prefill at well under 1 MB. Do not raise this without validating
+// audio on multi-hundred-step prompts first: with gallocr the monolithic graph
+// produced babbling, never-EOS generations at ~341 prompt steps (suspected
+// flash-attention/compute-buffer interaction), while the same graph was numerically
+// fine with whole-context allocation — at 2.6 GB per 400-token prompt.
+constexpr int64_t kLayerwisePrefillMinSteps = 128;
 
 struct GgmlContextDeleter {
     void operator()(ggml_context * ctx) const noexcept {
@@ -452,24 +462,38 @@ public:
             return;
         }
         const auto & config = runtime_->assets().config.decoder;
+        // Inputs live in state_ctx_/state_buffer_ because positions_ and attention_mask_
+        // are written once here and reused across run() calls — gallocr-owned memory
+        // would be recycled for late-graph intermediates and clobber them. Graph
+        // intermediates go through gallocr_ so the prompt-squared attention buffers are
+        // reused across layers instead of held resident.
+        ggml_init_params state_params{ggml_tensor_overhead() * 16, nullptr, true};
+        state_ctx_.reset(ggml_init(state_params));
+        if (state_ctx_ == nullptr) {
+            throw std::runtime_error("failed to initialize VibeVoice decoder prefill state context");
+        }
         ggml_init_params params{graph_arena_bytes, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize VibeVoice decoder prefill graph context");
         }
 
+        core::ModuleBuildContext state_build{state_ctx_.get(), "vibevoice.decoder.prefill.state"};
         core::ModuleBuildContext ctx{ctx_.get(), "vibevoice.decoder.prefill"};
         auto x = core::make_tensor(
-            ctx,
+            state_build,
             GGML_TYPE_F32,
             core::TensorShape::from_dims({batch_size_, prompt_steps_, config.hidden_size}));
         input_ = x.tensor;
-        positions_ = ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, prompt_steps_);
+        ggml_set_input(input_);
+        positions_ = ggml_new_tensor_1d(state_ctx_.get(), GGML_TYPE_I32, prompt_steps_);
+        ggml_set_input(positions_);
         auto positions_value = core::wrap_tensor(
             positions_,
             core::TensorShape::from_dims({prompt_steps_}),
             GGML_TYPE_I32);
-        attention_mask_ = ggml_new_tensor_4d(ctx_.get(), GGML_TYPE_F16, prompt_steps_, prompt_steps_, 1, batch_size_);
+        attention_mask_ = ggml_new_tensor_4d(state_ctx_.get(), GGML_TYPE_F16, prompt_steps_, prompt_steps_, 1, batch_size_);
+        ggml_set_input(attention_mask_);
         auto attention_mask = core::wrap_tensor(
             attention_mask_,
             core::TensorShape::from_dims({batch_size_, 1, prompt_steps_, prompt_steps_}),
@@ -489,6 +513,10 @@ public:
                 std::nullopt,
                 attention_mask);
             x = layer_out.output;
+            // Read back after compute to seed the cached-step KV state; the output flag
+            // keeps gallocr from recycling their memory for later layers.
+            ggml_set_output(layer_out.key.tensor);
+            ggml_set_output(layer_out.value.tensor);
             keys_.push_back(layer_out.key.tensor);
             values_.push_back(layer_out.value.tensor);
         }
@@ -496,6 +524,7 @@ public:
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, binding::norm_data(constants, runtime_->weights().norm));
         hidden_output_ = x.tensor;
+        ggml_set_output(hidden_output_);
         auto logits = modules::LinearModule(
                           binding::linear_config(config.hidden_size, config.vocab_size, false))
                           .build(ctx, x, binding::linear_data(constants, runtime_->weights().token_embedding));
@@ -505,10 +534,19 @@ public:
         ggml_build_forward_expand(graph_, logits_output_);
         constants.finish_graph();
         constants.ensure_uploaded();
-        buffer_ = ggml_backend_alloc_ctx_tensors(ctx_.get(), runtime_->backend());
-        if (buffer_ == nullptr) {
+        state_buffer_ = ggml_backend_alloc_ctx_tensors(state_ctx_.get(), runtime_->backend());
+        if (state_buffer_ == nullptr) {
+            throw std::runtime_error("failed to allocate VibeVoice decoder prefill state");
+        }
+        gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(runtime_->backend()));
+        if (gallocr_ == nullptr || !ggml_gallocr_alloc_graph(gallocr_, graph_)) {
             throw std::runtime_error("failed to allocate VibeVoice decoder prefill graph");
         }
+        engine::debug::timing_log_scalar("vibevoice.decoder.prefill.prompt_steps", static_cast<int64_t>(prompt_steps_));
+        engine::debug::timing_log_scalar(
+            "vibevoice.decoder.prefill.buffer_bytes",
+            static_cast<uint64_t>(
+                ggml_backend_buffer_get_size(state_buffer_) + ggml_gallocr_get_buffer_size(gallocr_, 0)));
 
         const auto positions = build_position_values(prompt_steps_);
         ggml_backend_tensor_set(positions_, positions.data(), 0, positions.size() * sizeof(int32_t));
@@ -517,8 +555,11 @@ public:
 
     ~VibeVoiceDecoderPrefillGraph() {
         engine::core::release_backend_graph_resources(runtime_->backend(), graph_);
-        if (buffer_ != nullptr) {
-            ggml_backend_buffer_free(buffer_);
+        if (gallocr_ != nullptr) {
+            ggml_gallocr_free(gallocr_);
+        }
+        if (state_buffer_ != nullptr) {
+            ggml_backend_buffer_free(state_buffer_);
         }
     }
 
@@ -890,6 +931,7 @@ private:
     int64_t batch_size_ = 0;
     int64_t prompt_steps_ = 0;
     bool layerwise_ = false;
+    std::unique_ptr<ggml_context, GgmlContextDeleter> state_ctx_;
     std::unique_ptr<ggml_context, GgmlContextDeleter> ctx_;
     ggml_tensor * input_ = nullptr;
     ggml_tensor * positions_ = nullptr;
@@ -899,7 +941,8 @@ private:
     std::vector<ggml_tensor *> keys_;
     std::vector<ggml_tensor *> values_;
     ggml_cgraph * graph_ = nullptr;
-    ggml_backend_buffer_t buffer_ = nullptr;
+    ggml_backend_buffer_t state_buffer_ = nullptr;
+    ggml_gallocr_t gallocr_ = nullptr;
 };
 
 VibeVoiceDecoderLayerOutputs build_vibevoice_decoder_layer_scratch_tail(
@@ -929,20 +972,34 @@ public:
         const int64_t head_dim = require_head_dim(config);
         scratch_tail_ = cache_steps_ >= kScratchTailCachedAttentionMinSteps;
         const int64_t cache_tensor_steps = cache_steps_ + (scratch_tail_ ? 1 : 0);
+        // Only the step inputs and the KV cache tensors must persist across steps; they
+        // live in state_ctx_/state_buffer_. Graph intermediates go through gallocr_ so
+        // their memory is reused within a step instead of held resident per layer.
+        const size_t state_tensor_count = 4 + 2 * runtime_->weights().layers.size();
+        ggml_init_params state_params{ggml_tensor_overhead() * (state_tensor_count + 8), nullptr, true};
+        state_ctx_.reset(ggml_init(state_params));
+        if (state_ctx_ == nullptr) {
+            throw std::runtime_error("failed to initialize VibeVoice decoder cached step state context");
+        }
         ggml_init_params params{graph_arena_bytes, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize VibeVoice decoder cached step graph context");
         }
 
+        core::ModuleBuildContext state_build{state_ctx_.get(), "vibevoice.decoder.cached_step.state"};
         core::ModuleBuildContext ctx{ctx_.get(), "vibevoice.decoder.cached_step"};
-        auto x = core::make_tensor(ctx, GGML_TYPE_F32, core::TensorShape::from_dims({1, 1, config.hidden_size}));
+        auto x = core::make_tensor(state_build, GGML_TYPE_F32, core::TensorShape::from_dims({1, 1, config.hidden_size}));
         input_ = x.tensor;
-        positions_ = ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, 1);
+        ggml_set_input(input_);
+        positions_ = ggml_new_tensor_1d(state_ctx_.get(), GGML_TYPE_I32, 1);
+        ggml_set_input(positions_);
         auto positions_value = core::wrap_tensor(positions_, core::TensorShape::from_dims({1}), GGML_TYPE_I32);
-        cache_slot_ = ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, 1);
+        cache_slot_ = ggml_new_tensor_1d(state_ctx_.get(), GGML_TYPE_I32, 1);
+        ggml_set_input(cache_slot_);
         auto cache_slot_value = core::wrap_tensor(cache_slot_, core::TensorShape::from_dims({1}), GGML_TYPE_I32);
-        attention_mask_ = ggml_new_tensor_4d(ctx_.get(), GGML_TYPE_F16, cache_tensor_steps, 1, 1, 1);
+        attention_mask_ = ggml_new_tensor_4d(state_ctx_.get(), GGML_TYPE_F16, cache_tensor_steps, 1, 1, 1);
+        ggml_set_input(attention_mask_);
         auto attention_mask_value = core::wrap_tensor(
             attention_mask_,
             core::TensorShape::from_dims({1, 1, 1, cache_tensor_steps}),
@@ -957,11 +1014,11 @@ public:
         constants.begin_graph();
         for (const auto & layer : runtime_->weights().layers) {
             cache_keys.push_back(core::make_tensor(
-                ctx,
+                state_build,
                 GGML_TYPE_F32,
                 core::TensorShape::from_dims({1, cache_tensor_steps, config.num_key_value_heads, head_dim})));
             cache_values.push_back(core::make_tensor(
-                ctx,
+                state_build,
                 GGML_TYPE_F32,
                 core::TensorShape::from_dims({1, cache_tensor_steps, config.num_key_value_heads, head_dim})));
             auto layer_out = scratch_tail_
@@ -989,6 +1046,10 @@ public:
                       attention_mask_value);
             x = layer_out.output;
             if (scratch_tail_) {
+                // Read back after compute via key_sources_/value_sources_; the output flag
+                // keeps gallocr from recycling their memory for later layers.
+                ggml_set_output(layer_out.key.tensor);
+                ggml_set_output(layer_out.value.tensor);
                 key_sources_.push_back(ggml_view_1d(ctx_.get(), layer_out.key.tensor, config.num_key_value_heads * head_dim, 0));
                 value_sources_.push_back(ggml_view_1d(ctx_.get(), layer_out.value.tensor, config.num_key_value_heads * head_dim, 0));
             }
@@ -1004,6 +1065,7 @@ public:
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, binding::norm_data(constants, runtime_->weights().norm));
         hidden_output_ = x.tensor;
+        ggml_set_output(hidden_output_);
         auto logits = modules::LinearModule(
                           binding::linear_config(config.hidden_size, config.vocab_size, false))
                           .build(ctx, x, binding::linear_data(constants, runtime_->weights().token_embedding));
@@ -1012,17 +1074,44 @@ public:
         ggml_build_forward_expand(graph_, logits_output_);
         constants.finish_graph();
         constants.ensure_uploaded();
-        buffer_ = ggml_backend_alloc_ctx_tensors(ctx_.get(), runtime_->backend());
-        if (buffer_ == nullptr) {
+        state_buffer_ = ggml_backend_alloc_ctx_tensors(state_ctx_.get(), runtime_->backend());
+        if (state_buffer_ == nullptr) {
+            throw std::runtime_error("failed to allocate VibeVoice decoder cached step state");
+        }
+        gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(runtime_->backend()));
+        if (gallocr_ == nullptr || !ggml_gallocr_alloc_graph(gallocr_, graph_)) {
             throw std::runtime_error("failed to allocate VibeVoice decoder cached step graph");
         }
+        if (scratch_tail_) {
+            // The transfer views are not graph nodes, so gallocr never initializes them;
+            // bind them to their (now allocated) sources explicitly.
+            init_cache_views(key_sources_);
+            init_cache_views(value_sources_);
+            for (auto & slot : key_destinations_) {
+                init_cache_views(slot);
+            }
+            for (auto & slot : value_destinations_) {
+                init_cache_views(slot);
+            }
+        }
+        engine::debug::timing_log_scalar("vibevoice.decoder.cached_step.capacity", static_cast<int64_t>(cache_steps_));
+        engine::debug::timing_log_scalar(
+            "vibevoice.decoder.cached_step.state_bytes",
+            static_cast<uint64_t>(ggml_backend_buffer_get_size(state_buffer_)));
+        engine::debug::timing_log_scalar(
+            "vibevoice.decoder.cached_step.buffer_bytes",
+            static_cast<uint64_t>(
+                ggml_backend_buffer_get_size(state_buffer_) + ggml_gallocr_get_buffer_size(gallocr_, 0)));
         attention_mask_buffer_.assign(static_cast<size_t>(cache_tensor_steps), ggml_fp32_to_fp16(-std::numeric_limits<float>::infinity()));
     }
 
     ~VibeVoiceDecoderCachedStepGraph() {
         engine::core::release_backend_graph_resources(runtime_->backend(), graph_);
-        if (buffer_ != nullptr) {
-            ggml_backend_buffer_free(buffer_);
+        if (gallocr_ != nullptr) {
+            ggml_gallocr_free(gallocr_);
+        }
+        if (state_buffer_ != nullptr) {
+            ggml_backend_buffer_free(state_buffer_);
         }
     }
 
@@ -1100,6 +1189,14 @@ public:
     }
 
 private:
+    static void init_cache_views(std::vector<ggml_tensor *> & views) {
+        for (auto * view : views) {
+            if (ggml_backend_view_init(view) != GGML_STATUS_SUCCESS) {
+                throw std::runtime_error("failed to initialize VibeVoice decoder cached step cache view");
+            }
+        }
+    }
+
     void build_transfer_views(int64_t step_elems) {
         key_destinations_.assign(static_cast<size_t>(cache_steps_), {});
         value_destinations_.assign(static_cast<size_t>(cache_steps_), {});
@@ -1119,6 +1216,7 @@ private:
     const VibeVoiceDecoderWeightsRuntime * runtime_ = nullptr;
     int64_t cache_steps_ = 0;
     bool scratch_tail_ = false;
+    std::unique_ptr<ggml_context, GgmlContextDeleter> state_ctx_;
     std::unique_ptr<ggml_context, GgmlContextDeleter> ctx_;
     ggml_tensor * input_ = nullptr;
     ggml_tensor * positions_ = nullptr;
@@ -1133,7 +1231,8 @@ private:
     std::vector<std::vector<ggml_tensor *>> key_destinations_;
     std::vector<std::vector<ggml_tensor *>> value_destinations_;
     ggml_cgraph * graph_ = nullptr;
-    ggml_backend_buffer_t buffer_ = nullptr;
+    ggml_backend_buffer_t state_buffer_ = nullptr;
+    ggml_gallocr_t gallocr_ = nullptr;
 };
 
 class VibeVoiceDecoderCachedBatchStepGraph {
@@ -1153,35 +1252,48 @@ public:
         const int64_t head_dim = require_head_dim(config);
         step_elems_ = config.num_key_value_heads * head_dim;
 
+        // Same split as the single-sample cached step graph: persistent step inputs and
+        // KV cache in state_ctx_/state_buffer_, reusable intermediates through gallocr_.
+        const size_t state_tensor_count = 4 + 2 * runtime_->weights().layers.size();
+        ggml_init_params state_params{ggml_tensor_overhead() * (state_tensor_count + 8), nullptr, true};
+        state_ctx_.reset(ggml_init(state_params));
+        if (state_ctx_ == nullptr) {
+            throw std::runtime_error("failed to initialize VibeVoice decoder cached batch state context");
+        }
         ggml_init_params params{graph_arena_bytes, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize VibeVoice decoder cached batch graph context");
         }
 
+        core::ModuleBuildContext state_build{state_ctx_.get(), "vibevoice.decoder.cached_batch_step.state"};
         core::ModuleBuildContext ctx{ctx_.get(), "vibevoice.decoder.cached_batch_step"};
-        auto x = core::make_tensor(ctx, GGML_TYPE_F32, core::TensorShape::from_dims({batch_size_, 1, config.hidden_size}));
+        auto x = core::make_tensor(state_build, GGML_TYPE_F32, core::TensorShape::from_dims({batch_size_, 1, config.hidden_size}));
         input_ = x.tensor;
-        positions_ = ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, 1);
+        ggml_set_input(input_);
+        positions_ = ggml_new_tensor_1d(state_ctx_.get(), GGML_TYPE_I32, 1);
+        ggml_set_input(positions_);
         auto positions_value = core::wrap_tensor(positions_, core::TensorShape::from_dims({1}), GGML_TYPE_I32);
-        cache_slot_ = ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, 1);
+        cache_slot_ = ggml_new_tensor_1d(state_ctx_.get(), GGML_TYPE_I32, 1);
+        ggml_set_input(cache_slot_);
         auto cache_slot_value = core::wrap_tensor(cache_slot_, core::TensorShape::from_dims({1}), GGML_TYPE_I32);
         auto attention_mask = core::make_tensor(
-            ctx,
+            state_build,
             GGML_TYPE_F16,
             core::TensorShape::from_dims({batch_size_, 1, 1, cache_steps_}));
         attention_mask_ = attention_mask.tensor;
+        ggml_set_input(attention_mask_);
 
         graph_ = ggml_new_graph_custom(ctx_.get(), 65536, false);
         auto & constants = runtime_->constants();
         constants.begin_graph();
         for (const auto & layer : runtime_->weights().layers) {
             cache_keys_.push_back(core::make_tensor(
-                ctx,
+                state_build,
                 GGML_TYPE_F32,
                 core::TensorShape::from_dims({batch_size_, cache_steps_, config.num_key_value_heads, head_dim})));
             cache_values_.push_back(core::make_tensor(
-                ctx,
+                state_build,
                 GGML_TYPE_F32,
                 core::TensorShape::from_dims({batch_size_, cache_steps_, config.num_key_value_heads, head_dim})));
             auto layer_out = build_vibevoice_decoder_layer_static_tail(
@@ -1200,6 +1312,7 @@ public:
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, binding::norm_data(constants, runtime_->weights().norm));
         hidden_output_ = x.tensor;
+        ggml_set_output(hidden_output_);
         auto logits = modules::LinearModule(
                           binding::linear_config(config.hidden_size, config.vocab_size, false))
                           .build(ctx, x, binding::linear_data(constants, runtime_->weights().token_embedding));
@@ -1208,10 +1321,20 @@ public:
         ggml_build_forward_expand(graph_, logits_output_);
         constants.finish_graph();
         constants.ensure_uploaded();
-        buffer_ = ggml_backend_alloc_ctx_tensors(ctx_.get(), runtime_->backend());
-        if (buffer_ == nullptr) {
+        state_buffer_ = ggml_backend_alloc_ctx_tensors(state_ctx_.get(), runtime_->backend());
+        if (state_buffer_ == nullptr) {
+            throw std::runtime_error("failed to allocate VibeVoice decoder cached batch state");
+        }
+        gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(runtime_->backend()));
+        if (gallocr_ == nullptr || !ggml_gallocr_alloc_graph(gallocr_, graph_)) {
             throw std::runtime_error("failed to allocate VibeVoice decoder cached batch graph");
         }
+        engine::debug::timing_log_scalar(
+            "vibevoice.decoder.cached_batch_step.capacity", static_cast<int64_t>(cache_steps_));
+        engine::debug::timing_log_scalar(
+            "vibevoice.decoder.cached_batch_step.buffer_bytes",
+            static_cast<uint64_t>(
+                ggml_backend_buffer_get_size(state_buffer_) + ggml_gallocr_get_buffer_size(gallocr_, 0)));
         attention_mask_buffer_.assign(
             static_cast<size_t>(batch_size_ * cache_steps_),
             ggml_fp32_to_fp16(-std::numeric_limits<float>::infinity()));
@@ -1219,8 +1342,11 @@ public:
 
     ~VibeVoiceDecoderCachedBatchStepGraph() {
         engine::core::release_backend_graph_resources(runtime_->backend(), graph_);
-        if (buffer_ != nullptr) {
-            ggml_backend_buffer_free(buffer_);
+        if (gallocr_ != nullptr) {
+            ggml_gallocr_free(gallocr_);
+        }
+        if (state_buffer_ != nullptr) {
+            ggml_backend_buffer_free(state_buffer_);
         }
     }
 
@@ -1429,6 +1555,7 @@ public:
     int64_t step_elems_ = 0;
     int64_t valid_steps_ = 0;
     int64_t current_end_ = 0;
+    std::unique_ptr<ggml_context, GgmlContextDeleter> state_ctx_;
     std::unique_ptr<ggml_context, GgmlContextDeleter> ctx_;
     ggml_tensor * input_ = nullptr;
     ggml_tensor * positions_ = nullptr;
@@ -1441,7 +1568,8 @@ public:
     std::vector<core::TensorValue> cache_values_;
     std::vector<VibeVoiceDecoderCachedState *> states_;
     ggml_cgraph * graph_ = nullptr;
-    ggml_backend_buffer_t buffer_ = nullptr;
+    ggml_backend_buffer_t state_buffer_ = nullptr;
+    ggml_gallocr_t gallocr_ = nullptr;
 };
 
 VibeVoiceDecoderCachedState::VibeVoiceDecoderCachedState() = default;
