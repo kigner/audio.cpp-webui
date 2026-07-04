@@ -20,6 +20,7 @@ Env overrides:
     AUDIOCPP_NO_BROWSER=1        don't open a browser tab
 """
 import atexit
+import base64
 import io
 import json
 import logging
@@ -35,6 +36,7 @@ import warnings
 import wave
 from urllib.parse import urlparse
 
+import numpy as np
 import requests
 import gradio as gr
 
@@ -161,6 +163,30 @@ def _find_model_manager():
 
 MODEL_MANAGER = _find_model_manager()
 
+
+def _detect_vram_gb():
+    """本机 NVIDIA 显卡显存总量（GB，多卡取最大）；无 nvidia-smi/无 N 卡返回 None。
+    用于对照 catalog 条目的 min_vram_gb 估算值，提示“下载了也可能跑不动”。"""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+        vals = [float(line) for line in out.stdout.split() if line.strip()]
+        return round(max(vals) / 1024, 1) if vals else None
+    except Exception:
+        return None
+
+
+LOCAL_VRAM_GB = _detect_vram_gb()
+
+
+def _vram_shortfall(entry):
+    """条目估算显存超过本机显存时返回 (需要GB, 本机GB)，否则 None。"""
+    need = entry.get("min_vram_gb")
+    if need and LOCAL_VRAM_GB and float(need) > LOCAL_VRAM_GB:
+        return float(need), LOCAL_VRAM_GB
+    return None
+
 LANGS = ["", "english", "chinese", "french", "german", "italian",
          "japanese", "korean", "portuguese", "russian", "spanish", "Auto"]
 
@@ -168,6 +194,11 @@ LANGS = ["", "english", "chinese", "french", "german", "italian",
 # reference voice, which fits both plain TTS ("tts") and voice cloning ("clon").
 TTS_TASKS = ("tts", "clon")
 ASR_TASKS = ("asr",)
+GEN_TASKS = ("gen",)   # music/SFX generation, served via the generic /v1/tasks/run route
+VC_TASKS = ("vc", "svc", "s2s")           # 声音转换：源音频 + 目标音色，走 /v1/tasks/run
+SEP_TASKS = ("sep",)                      # 音源分离：多轨 named_audio_outputs
+ANALYZE_TASKS = ("vad", "diar", "align")  # 音频分析：segments / speaker_turns / words
+VDES_TASKS = ("vdes",)                    # 声音设计：文字 + 音色描述，走 /v1/audio/speech
 
 # Per-family behavior for the TTS tab, keyed by catalog `family`. This is how we
 # cope with each model wanting different input formats / options: the shared UI
@@ -216,6 +247,63 @@ MODEL_PROFILES = {
         # (qwen3_asr_audio_encoder_token_count) -> ~115 s of audio per request.
         "input_hint": "**Qwen3-ASR** 单次最长约 115 秒；更长的音频请先剪短或分段转写。",
     },
+    "ace_step": {
+        "input_hint": (
+            "**ACE-Step** 音乐生成/编辑：提示词写风格/乐器/情绪（英文效果最好），可选填歌词。"
+            "“高级参数”里的 task_route 默认 text2music（纯文生曲）；cover/repaint/extract 等"
+            "编辑类 route 需上传源音频。时长填 -1 表示自动。"),
+    },
+    "stable_audio": {
+        "input_hint": (
+            "**Stable Audio** 音乐/音效生成：提示词**仅支持英文**。music 版生成音乐、sfx 版生成"
+            "音效；上传源音频可做 init_audio/inpaint（在“高级参数”里选 audio_input_kind）。"
+            "不使用歌词。"),
+    },
+    "heartmula": {
+        "input_hint": (
+            "**HeartMuLa** 歌词+标签生成歌曲：必须在“高级参数”里填 `tags`（逗号分隔，如 "
+            "pop,bright,drums,female vocals），“歌词”填唱词。3B 模型，官方 120 秒长歌实测"
+            "峰值显存 ~25G（docs/memory_saver.md），8G 显卡基本跑不动；已默认开 mem_saver，"
+            "长歌曲可开 infinite_mode。"),
+    },
+    "vevo2": {
+        "input_hint": (
+            "**Vevo2 语音转换**：上传源语音 + 目标音色参考，默认 route=style_preserved_vc"
+            "（保留源语音的说话风格，只换音色）。style_converted_vc 等风格转换 route 需在"
+            "『其它参数(JSON)』里补 `style_ref`（服务器本地 wav 路径）/ `style_ref_text` / `target_text`。"),
+    },
+    "seed_vc": {
+        "input_hint": (
+            "**Seed-VC 语音转换**：上传源语音 + 目标音色参考（几秒到几十秒干净人声），"
+            "默认 route=v2_vc；v1_whisper_bigvgan_vc / v1_xlsr_hift_vc 旧路线可在高级参数里切换。"),
+    },
+    "miocodec": {
+        "input_hint": (
+            "**MioCodec 声音转换**：codec 重建式转换——源音频提供内容，参考音色提供说话人特征。"
+            "它同时也是 MioTTS 的依赖组件。"),
+    },
+    "htdemucs": {
+        "input_hint": "**HTDemucs 音源分离**：上传歌曲，输出 drums / bass / other / vocals 四条分轨；长音频耗时较长。",
+    },
+    "mel_band_roformer": {
+        "input_hint": "**Mel-Band RoFormer 人声分离**：上传歌曲，输出人声轨 + 伴奏轨（mixture − vocals）。",
+    },
+    "silero_vad": {
+        "input_hint": "**Silero VAD**：检测音频中的语音段。WAV 输入会自动转成 16 kHz 单声道后送模型。",
+    },
+    "marblenet_vad": {
+        "input_hint": "**MarbleNet VAD**：帧级语音活动检测，输出语音段列表。WAV 输入会自动转成 16 kHz 单声道。",
+    },
+    "sortformer_diar": {
+        "input_hint": (
+            "**Sortformer 说话人分离**：区分“谁在什么时间说话”，最多 4 个说话人。"
+            "WAV 输入会自动转成 16 kHz 单声道。"),
+    },
+    "qwen3_forced_aligner": {
+        "input_hint": (
+            "**Qwen3 强制对齐**：上传音频并在『对齐文本』里填音频中说的原文，输出逐词时间戳。"
+            "单次音频长度上限与 Qwen3-ASR 相同（约 115 秒）。"),
+    },
 }
 DEFAULT_PROFILE = {"input_hint": "", "wrap_speaker_script": False, "default_options": {},
                    # Families with internal chunking handle long text fine; the client
@@ -238,7 +326,16 @@ def profile_for(entry):
 
 def model_hint_for(model_id):
     entry = catalog_by_id(model_id) if model_id else None
-    return profile_for(entry)["input_hint"] if entry else ""
+    if not entry:
+        return ""
+    hint = profile_for(entry)["input_hint"]
+    short = _vram_shortfall(entry)
+    if short:
+        warn = (f"⚠️ **显存提示**：该模型按默认设置估算需 **≥{short[0]:g}G** 显存，"
+                f"本机检测到 **{short[1]:g}G**——即使能加载也会溢出到共享显存而大幅变慢"
+                + ("，下载前请三思。" if not entry["installed"] else "。"))
+        hint = warn + ("\n\n" + hint if hint else "")
+    return hint
 
 
 def resolve_language(prof, language):
@@ -346,6 +443,50 @@ def _audio_duration_seconds(path):
             return (w.getnframes() / float(rate)) if rate else None
     except Exception:
         return None
+
+
+def _to_16k_mono_wav(path, target_sr=16000):
+    """VAD / 说话人分离 / 强制对齐族要求 16 kHz 单声道输入（Silero、Sortformer 对
+    非 16k 直接报错），这里用 wave+numpy 把 PCM WAV 转换成 16k 单声道临时文件。
+    已是 16k 单声道、或非 PCM WAV（wave 读不了）时原样透传，由 server 决定成败。"""
+    try:
+        with wave.open(path, "rb") as w:
+            sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+            raw = w.readframes(w.getnframes())
+    except Exception:
+        return path
+    if sr == target_sr and ch == 1:
+        return path
+    if sw == 2:
+        data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    elif sw == 4:
+        data = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+    elif sw == 3:
+        b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
+        i24 = (b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) |
+               (b[:, 2].astype(np.int32) << 16))
+        i24 -= (i24 & 0x800000) << 1  # sign-extend 24-bit
+        data = i24.astype(np.float32) / 8388608.0
+    elif sw == 1:
+        data = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    else:
+        return path
+    if ch > 1:
+        data = data[: len(data) // ch * ch].reshape(-1, ch).mean(axis=1)
+    if sr != target_sr and len(data) > 0:
+        n_out = max(1, int(round(len(data) * target_sr / sr)))
+        x_old = np.arange(len(data), dtype=np.float64) / sr
+        x_new = np.arange(n_out, dtype=np.float64) / target_sr
+        data = np.interp(x_new, x_old, data).astype(np.float32)
+    fd, out = tempfile.mkstemp(prefix="audiocpp_16k_", suffix=".wav")
+    os.close(fd)
+    pcm = np.clip(data * 32767.0, -32768, 32767).astype(np.int16)
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(target_sr)
+        w.writeframes(pcm.tobytes())
+    return out
 
 
 def _parse_adv_options(raw):
@@ -497,12 +638,18 @@ def catalog_by_id(model_id):
 
 
 def choices_for_tasks(tasks):
-    """[(label, id)] for catalog models whose task is in `tasks`; missing ones flagged."""
+    """[(label, id)] for catalog models whose task is in `tasks`; missing ones flagged.
+    未安装且估算显存超过本机的条目额外标注最低显存，防止白下载。"""
     out = []
     for m in catalog_models():
         if m.get("task") not in tasks:
             continue
-        label = m["label"] if m["installed"] else m["label"] + " · 未安装"
+        label = m["label"]
+        if not m["installed"]:
+            label += " · 未安装"
+            short = _vram_shortfall(m)
+            if short:
+                label += f" ⚠️估算需≥{short[0]:g}G显存"
         out.append((label, m["id"]))
     return out
 
@@ -843,6 +990,12 @@ curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
 
 - **ASR 请求示例**：`-d '{{"model": "qwen3-asr", "audio": "D:/audio/in.wav"}}'`。
   注意 `voice_ref` / `audio` 填的都是 **server 所在机器上的文件路径**（不是浏览器上传）。
+- **音乐生成（gen 模型）**：走通用路由 `POST {SERVER}/v1/tasks/run`，body 形如
+  `{{"model": "ace-step", "request": {{"text": "提示词", "lyrics": "歌词", "duration_seconds": 30,
+  "options": {{"tags": "pop,bright"}}}}}}`，响应 JSON 的 `audio` 字段是 base64 WAV。
+- **其它任务（vc/svc/s2s/sep/vad/diar/align）**：同样走 `POST {SERVER}/v1/tasks/run`，`request` 里用
+  `audio`（源音频路径）/ `voice_ref`（目标音色）/ `text`（对齐文本）等字段；分离多轨在响应的
+  `named_audio_outputs`，VAD/说话人/对齐结果在 `segments` / `speaker_turns` / `words`。
 - server 的生命周期跟随本 WebUI 的**命令行窗口**：只关浏览器页面不影响，server 仍可被第三方调用；
   关掉命令窗口（webui.py 退出）才会连带关闭它。也可单独启动 server（如 run_server.bat）
   供第三方应用调用。
@@ -928,6 +1081,10 @@ def download_model(model_id, hf_token="", proxy=""):
     warn = "" if (tok or hf_token_present()) else (
         "⚠️ 未检测到 HF token —— 受限/gated 模型会 401。请在上方填入 token"
         "（或先 `huggingface-cli login`），受限模型还需先到其 HF 页面点同意。\n\n")
+    short = _vram_shortfall(entry)
+    if short:
+        warn = (f"⚠️ **显存不足警告**：该模型估算需 **≥{short[0]:g}G** 显存，本机只有 "
+                f"**{short[1]:g}G**——下载后大概率溢出到共享显存、速度很慢甚至跑不动。\n\n") + warn
 
     with _dl_lock:
         rec = _downloads.get(model_id)
@@ -986,6 +1143,31 @@ def download_status_tick(model_id):
 # --- task handlers ---------------------------------------------------------
 # Task handlers return (output, message): the reminder/status message is shown
 # inline under the output widget instead of as a Gradio popup card.
+def _merged_options(prof, adv_values, adv_options):
+    """请求 options 合并：family 默认值 -> 生成控件（仅用户改过的项）-> JSON 兜底框。"""
+    options = dict(prof.get("default_options", {}))
+    if isinstance(adv_values, dict):
+        options.update({k: v for k, v in adv_values.items()
+                        if v is not None and v != ""})
+    options.update(_parse_adv_options(adv_options))
+    return options
+
+
+def _run_task(entry, model, req, timeout, log_label):
+    """POST /v1/tasks/run（通用任务路由）并返回响应 JSON；
+    连接失败 / 非 200 统一转成带提示的 gr.Error。"""
+    try:
+        r = requests.post(f"{SERVER}/v1/tasks/run",
+                          json={"model": model, "request": req}, timeout=timeout)
+    except requests.RequestException as e:
+        _ui_log(f"{log_label}失败：无法连接 server")
+        raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+    if r.status_code != 200:
+        _ui_log(f"{log_label}失败：server {r.status_code}")
+        raise server_error(entry, r.status_code, r.text)
+    return r.json()
+
+
 def do_tts(model, text, language, uploaded_voice, builtin_voice,
            reference_text, seed, max_tokens, adv_values, adv_options,
            progress=gr.Progress()):
@@ -1002,12 +1184,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
 
         # Model-specific knobs travel in a nested "options" object; the server merges
         # every key into the request options and each model reads what it understands.
-        # Order: family defaults -> generated controls (user-changed only) -> JSON box.
-        options = dict(prof.get("default_options", {}))
-        if isinstance(adv_values, dict):
-            options.update({k: v for k, v in adv_values.items()
-                            if v is not None and v != ""})
-        options.update(_parse_adv_options(adv_options))
+        options = _merged_options(prof, adv_values, adv_options)
 
         voice_path = None
         if uploaded_voice:                      # gradio gives an absolute temp path
@@ -1104,37 +1281,303 @@ def do_asr(model, audio_path):
         return "", f"❌ 转写失败：{e}"
 
 
-def load_tts(model):
+def do_music_gen(model, text, lyrics, source_audio, duration, seed,
+                 adv_values, adv_options):
+    """Music/SFX generation via the generic /v1/tasks/run route. The request
+    object uses the CLI request-JSON fields (text/lyrics/duration_seconds/
+    task_route/audio + an options map); the response carries base64 WAV."""
     try:
-        s = ensure_model_loaded(model, TTS_TASKS)
+        if not (text or "").strip():
+            raise gr.Error("请输入提示词（想要什么样的音乐/音效）")
+        ensure_model_loaded(model, GEN_TASKS)
+        entry = catalog_by_id(model)
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        options = _merged_options(prof, adv_values, adv_options)
+
+        req = {"text": text, "seed": int(seed)}
+        # task_route is a top-level request field (not a model option); the
+        # generated controls funnel everything through `options`, so lift it out.
+        route = options.pop("task_route", None)
+        if route:
+            req["task_route"] = route
+        if (lyrics or "").strip():
+            req["lyrics"] = lyrics
+        if duration is not None and float(duration) != 0:
+            req["duration_seconds"] = float(duration)
+        if source_audio:
+            req["audio"] = source_audio
+        if options:
+            req["options"] = options
+
+        dur_note = req.get("duration_seconds", "自动")
+        _ui_log(f"音乐生成开始：model={model}，目标时长 {dur_note}s")
+        t_start = time.time()
+        data = _run_task(entry, model, req, timeout=1800, log_label="音乐生成")
+        b64 = data.get("audio")
+        if not b64 and data.get("named_audio_outputs"):
+            b64 = data["named_audio_outputs"][0].get("audio")
+        if not b64:
+            raise gr.Error("server 返回里没有音频数据（该模型可能不输出音频）")
+        out = os.path.join(OUTPUT_DIR, f"audiocpp_gen_{int(time.time()*1000)}.wav")
+        with open(out, "wb") as f:
+            f.write(base64.b64decode(b64))
+        elapsed = time.time() - t_start
+        _ui_log(f"音乐生成完成：{out}，用时 {elapsed:.1f}s")
+        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。"
     except gr.Error as e:
-        s = _msg_from_error(e)
-    return s, server_status()
+        return None, _msg_from_error(e)
+    except Exception as e:
+        return None, f"❌ 生成失败：{e}"
 
 
-def load_asr(model):
+def do_vc(model, source_audio, target_upload, builtin_voice, seed,
+          adv_values, adv_options):
+    """声音/歌声转换（vc/svc/s2s），走通用 /v1/tasks/run 路由：`audio` 是源音频，
+    `voice_ref` 是目标音色。seed_vc/miocodec 直接用这两个字段；vevo2 也接受它们
+    （audio_input/voice speaker 是 source_audio/target_voice 选项的回退），
+    风格转换类 route 的额外字段（style_ref 等）由“其它参数(JSON)”兜底。"""
     try:
-        s = ensure_model_loaded(model, ASR_TASKS)
+        if not source_audio:
+            raise gr.Error("请上传要转换的源音频")
+        ensure_model_loaded(model, VC_TASKS)
+        entry = catalog_by_id(model)
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        options = _merged_options(prof, adv_values, adv_options)
+
+        req = {"audio": source_audio, "seed": int(seed)}
+        voice_path = target_upload or (
+            os.path.join(PROMPTS_DIR, builtin_voice)
+            if builtin_voice and builtin_voice != "(none)" else None)
+        if voice_path:
+            req["voice_ref"] = voice_path
+        if options:
+            req["options"] = options
+
+        dur = _audio_duration_seconds(source_audio)
+        dur_note = f"{dur:.1f}s" if dur is not None else "未知"
+        _ui_log(f"声音转换开始：model={model}，源音频 {dur_note}")
+        t_start = time.time()
+        data = _run_task(entry, model, req, timeout=1800, log_label="声音转换")
+        b64 = data.get("audio")
+        if not b64 and data.get("named_audio_outputs"):
+            b64 = data["named_audio_outputs"][0].get("audio")
+        if not b64:
+            raise gr.Error("server 返回里没有音频数据")
+        out = os.path.join(OUTPUT_DIR, f"audiocpp_vc_{int(time.time()*1000)}.wav")
+        with open(out, "wb") as f:
+            f.write(base64.b64decode(b64))
+        elapsed = time.time() - t_start
+        _ui_log(f"声音转换完成：{out}，用时 {elapsed:.1f}s")
+        return out, f"✅ 转换完成，用时 {elapsed:.1f}s。"
     except gr.Error as e:
-        s = _msg_from_error(e)
-    return s, server_status()
+        return None, _msg_from_error(e)
+    except Exception as e:
+        return None, f"❌ 转换失败：{e}"
+
+
+# 分轨 id -> 中文标签；未收录的 id 原样显示。
+STEM_LABELS = {"vocals": "人声", "drums": "鼓", "bass": "贝斯", "other": "其它",
+               "instrumental": "伴奏", "accompaniment": "伴奏", "audio": "输出"}
+MAX_SEP_STEMS = 4
+
+
+def do_sep(model, audio_path):
+    """音源分离：响应里的 named_audio_outputs 每轨落盘成一个 wav，
+    前 MAX_SEP_STEMS 轨直接放进播放器，全部轨放进文件下载列表。"""
+    empty = [gr.update(value=None, visible=False) for _ in range(MAX_SEP_STEMS)]
+    try:
+        if not audio_path:
+            raise gr.Error("请上传要分离的音频")
+        ensure_model_loaded(model, SEP_TASKS)
+        entry = catalog_by_id(model)
+        dur = _audio_duration_seconds(audio_path)
+        dur_note = f"{dur:.1f}s" if dur is not None else "未知"
+        _ui_log(f"音源分离开始：model={model}，音频时长 {dur_note}")
+        t_start = time.time()
+        data = _run_task(entry, model, {"audio": audio_path},
+                         timeout=1800, log_label="音源分离")
+        stems = data.get("named_audio_outputs") or []
+        if not stems and data.get("audio"):
+            stems = [{"id": "audio", "audio": data["audio"]}]
+        if not stems:
+            raise gr.Error("server 返回里没有音轨数据")
+        ts = int(time.time() * 1000)
+        paths = []
+        for stem in stems:
+            sid = stem.get("id") or f"stem{len(paths)}"
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)
+            p = os.path.join(OUTPUT_DIR, f"audiocpp_sep_{ts}_{safe}.wav")
+            with open(p, "wb") as f:
+                f.write(base64.b64decode(stem["audio"]))
+            paths.append((sid, p))
+        updates = []
+        for i in range(MAX_SEP_STEMS):
+            if i < len(paths):
+                sid, p = paths[i]
+                zh = STEM_LABELS.get(sid)
+                updates.append(gr.update(
+                    value=p, visible=True, label=f"{zh}（{sid}）" if zh else sid))
+            else:
+                updates.append(gr.update(value=None, visible=False))
+        elapsed = time.time() - t_start
+        _ui_log(f"音源分离完成：{len(paths)} 轨，用时 {elapsed:.1f}s")
+        note = ("" if len(paths) <= MAX_SEP_STEMS
+                else f"，其余 {len(paths) - MAX_SEP_STEMS} 轨见下载列表")
+        return (*updates, [p for _, p in paths],
+                f"✅ 分离完成（{len(paths)} 轨）{note}，用时 {elapsed:.1f}s。")
+    except gr.Error as e:
+        return (*empty, None, _msg_from_error(e))
+    except Exception as e:
+        return (*empty, None, f"❌ 分离失败：{e}")
+
+
+# VAD/diar/align 输入统一转成 16 kHz 单声道后再发（见 _to_16k_mono_wav），
+# 所以响应里的 start_sample/end_sample 一律按 16000 换算成秒。
+SR_ANALYZE = 16000
+
+
+def _fmt_ts(samples):
+    return f"{samples / SR_ANALYZE:.2f}s"
+
+
+def do_analyze(model, audio_path, transcript, language):
+    """音频分析（vad/diar/align）：格式化 segments / speaker_turns / words 为
+    可读文本，原始 JSON 落盘供下载。"""
+    try:
+        if not audio_path:
+            raise gr.Error("请上传或录制音频")
+        ensure_model_loaded(model, ANALYZE_TASKS)
+        entry = catalog_by_id(model)
+        task = entry.get("task") if entry else ""
+        req = {"audio": _to_16k_mono_wav(audio_path)}
+        if task == "align":
+            if not (transcript or "").strip():
+                raise gr.Error("强制对齐需要在『对齐文本』里填音频中说的原文")
+            req["text"] = transcript.strip()
+            if (language or "").strip():
+                req["language"] = language.strip()
+        dur = _audio_duration_seconds(req["audio"])
+        dur_note = f"{dur:.1f}s" if dur is not None else "未知"
+        _ui_log(f"音频分析开始：model={model}（task={task}），音频 {dur_note}")
+        t_start = time.time()
+        data = _run_task(entry, model, req, timeout=900, log_label="音频分析")
+
+        lines = []
+        if data.get("segments"):
+            segs = data["segments"]
+            lines.append(f"共 {len(segs)} 个语音段：")
+            speech = 0
+            for i, s in enumerate(segs, 1):
+                lines.append(f"{i:3d}. {_fmt_ts(s['start_sample'])} → {_fmt_ts(s['end_sample'])}"
+                             f"　置信度 {s.get('confidence', 0):.2f}")
+                speech += s["end_sample"] - s["start_sample"]
+            lines.append(f"语音总时长约 {speech / SR_ANALYZE:.1f}s")
+        if data.get("speaker_turns"):
+            turns = data["speaker_turns"]
+            spk = sorted({t.get("speaker_id", "?") for t in turns})
+            lines.append(f"共 {len(turns)} 个发言段、{len(spk)} 个说话人（{', '.join(spk)}）：")
+            for i, t in enumerate(turns, 1):
+                lines.append(f"{i:3d}. {_fmt_ts(t['start_sample'])} → {_fmt_ts(t['end_sample'])}"
+                             f"　{t.get('speaker_id', '?')}　置信度 {t.get('confidence', 0):.2f}")
+        if data.get("words"):
+            lines.append(f"共 {len(data['words'])} 个词的时间戳：")
+            for w in data["words"]:
+                lines.append(f"{_fmt_ts(w['start_sample'])} → {_fmt_ts(w['end_sample'])}"
+                             f"　{w.get('word', '')}")
+        if data.get("text"):
+            lines.append(f"文本输出：{data['text']}")
+        if not lines:
+            lines.append("（模型没有返回可显示的分析结果——音频里可能没有检测到语音）")
+
+        json_path = os.path.join(OUTPUT_DIR, f"audiocpp_analyze_{int(time.time()*1000)}.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        elapsed = time.time() - t_start
+        _ui_log(f"音频分析完成：用时 {elapsed:.1f}s")
+        return ("\n".join(lines), json_path,
+                f"✅ 分析完成（音频 {dur_note}），用时 {elapsed:.1f}s。")
+    except gr.Error as e:
+        return "", None, _msg_from_error(e)
+    except Exception as e:
+        return "", None, f"❌ 分析失败：{e}"
+
+
+def _align_fields_visibility(model_id):
+    """音频分析页：只有 align 任务的模型才显示『对齐文本/语言』输入。"""
+    entry = catalog_by_id(model_id) if model_id else None
+    show = bool(entry) and entry.get("task") == "align"
+    return gr.update(visible=show), gr.update(visible=show)
+
+
+def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
+    """声音设计（vdes）：文字 + 音色描述走 /v1/audio/speech（instructions 字段
+    映射到模型的 instruct 选项），响应是 WAV 音频。"""
+    try:
+        if not (text or "").strip():
+            raise gr.Error("请输入要合成的文字")
+        if not (instruct or "").strip():
+            raise gr.Error("请填写『音色描述』——声音设计模型靠它决定生成什么样的声音")
+        ensure_model_loaded(model, VDES_TASKS)
+        entry = catalog_by_id(model)
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        options = _merged_options(prof, adv_values, adv_options)
+
+        payload = {"model": model, "input": text, "instructions": instruct,
+                   "seed": int(seed), "max_tokens": int(max_tokens)}
+        if options:
+            payload["options"] = options
+        _ui_log(f"声音设计开始：model={model}，{len(text)} 字")
+        t_start = time.time()
+        try:
+            r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
+        except requests.RequestException as e:
+            _ui_log("声音设计失败：无法连接 server")
+            raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+        if r.status_code != 200:
+            _ui_log(f"声音设计失败：server {r.status_code}")
+            raise server_error(entry, r.status_code, r.text)
+        out = os.path.join(OUTPUT_DIR, f"audiocpp_vdes_{int(time.time()*1000)}.wav")
+        with open(out, "wb") as f:
+            f.write(r.content)
+        elapsed = time.time() - t_start
+        _ui_log(f"声音设计完成：{out}，用时 {elapsed:.1f}s")
+        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。"
+    except gr.Error as e:
+        return None, _msg_from_error(e)
+    except Exception as e:
+        return None, f"❌ 生成失败：{e}"
+
+
+def _make_load_handler(tasks):
+    """『📥 加载模型』按钮的处理器工厂：按标签页各自的 task 集合校验并加载。"""
+    def _load(model):
+        try:
+            s = ensure_model_loaded(model, tasks)
+        except gr.Error as e:
+            s = _msg_from_error(e)
+        return s, server_status()
+    return _load
+
+
+# 标签页顺序（与 refresh() 的输出、_refresh_outputs 列表一一对应）：
+# TTS、ASR、音乐生成、声音转换、音源分离、音频分析、声音设计。
+TAB_SPECS = [TTS_TASKS, ASR_TASKS, GEN_TASKS, VC_TASKS,
+             SEP_TASKS, ANALYZE_TASKS, VDES_TASKS]
 
 
 def refresh():
+    """重读 catalog / 参数配置，刷新每个标签页的模型下拉和提示。
+    返回顺序：各页下拉更新（按 TAB_SPECS 顺序）、状态行、各页提示。"""
     global CATALOG, MODEL_PARAMS
     CATALOG = _load_catalog()
     MODEL_PARAMS = _load_model_params()
-    tts = choices_for_tasks(TTS_TASKS)
-    asr = choices_for_tasks(ASR_TASKS)
-    tval = tts[0][1] if tts else None
-    aval = asr[0][1] if asr else None
-    return (
-        gr.update(choices=tts, value=tval),
-        gr.update(choices=asr, value=aval),
-        server_status(),
-        model_hint_for(tval),
-        model_hint_for(aval),
-    )
+    dropdowns, hints = [], []
+    for tasks in TAB_SPECS:
+        choices = choices_for_tasks(tasks)
+        value = choices[0][1] if choices else None
+        dropdowns.append(gr.update(choices=choices, value=value))
+        hints.append(model_hint_for(value))
+    return (*dropdowns, server_status(), *hints)
 
 
 atexit.register(_stop_server)
@@ -1171,31 +1614,62 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 label="代理 (仅下载子进程使用)",
                 placeholder="http://127.0.0.1:7890")
 
-    tts_init = choices_for_tasks(TTS_TASKS)
-    asr_init = choices_for_tasks(ASR_TASKS)
+    # ---- 每个标签页共用的“模型管理”卡片、接线与高级参数渲染 ----
+    def _model_manager_block(task_label, tasks):
+        """标准“模型管理”卡片：模型下拉 + 加载/刷新/下载/进度按钮 + 状态区。
+        返回组件 dict；接线见 _wire_model_manager（刷新按钮统一接在文件末尾）。"""
+        choices = choices_for_tasks(tasks)
+        with gr.Group():
+            gr.Markdown("#### 🧩 模型管理")
+            model = gr.Dropdown(
+                label=f"模型列表 (task={task_label})", choices=choices,
+                value=(choices[0][1] if choices else None))
+            with gr.Row(elem_classes="mm-btn-row"):
+                load_btn = gr.Button("📥 加载模型", variant="primary",
+                                     size="lg", min_width=100)
+                refresh_btn = gr.Button("🔄 刷新列表", variant="primary",
+                                        size="lg", min_width=100)
+                dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
+                                   size="lg", min_width=100)
+                dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
+                                        size="lg", min_width=100)
+            load_status = gr.Markdown("")
+            dl_status = gr.Markdown("")
+            timer = gr.Timer(3, active=False)
+        return {"model": model, "load_btn": load_btn, "refresh_btn": refresh_btn,
+                "dl_btn": dl_btn, "dl_stat_btn": dl_stat_btn,
+                "load_status": load_status, "dl_status": dl_status, "timer": timer}
+
+    def _wire_model_manager(mm, tasks, hint):
+        mm["load_btn"].click(_make_load_handler(tasks), mm["model"],
+                             [mm["load_status"], status])
+        mm["dl_btn"].click(download_start, [mm["model"], hf_token, proxy],
+                           [mm["dl_status"], mm["timer"]])
+        mm["timer"].tick(download_status_tick, mm["model"],
+                         [mm["dl_status"], mm["timer"]])
+        mm["dl_stat_btn"].click(download_status, mm["model"], mm["dl_status"])
+        mm["model"].change(model_hint_for, mm["model"], hint)
+
+    def _render_param_controls(model_comp, state_comp, skip=()):
+        """“高级参数”折叠区内容：按所选模型的 family 动态生成控件（gr.render），
+        控件值写进共享 state（只有用户改过的项会随请求发送）。"""
+        @gr.render(inputs=model_comp)
+        def _render(model_id):
+            specs = [p for p in params_for(model_id) if p.get("name") not in skip]
+            if not specs:
+                gr.Markdown("*该模型无可调高级参数。*")
+                return
+            for p in specs:
+                comp = _make_param_component(p)
+                comp.change(_adv_updater(p["name"]), [state_comp, comp], state_comp)
 
     # ---------------- TTS / 声音克隆 ----------------
     with gr.Tab("🗣️ TTS / 声音克隆"):
         with gr.Row(equal_height=False):
             # 左列：模型管理 + 参考音频（声音克隆）
             with gr.Column(scale=1):
-                with gr.Group():
-                    gr.Markdown("#### 🧩 模型管理")
-                    tts_model = gr.Dropdown(
-                        label="模型列表 (task=tts)", choices=tts_init,
-                        value=(tts_init[0][1] if tts_init else None))
-                    with gr.Row(elem_classes="mm-btn-row"):
-                        tts_load_btn = gr.Button("📥 加载模型", variant="primary",
-                                                 size="lg", min_width=100)
-                        tts_refresh_btn = gr.Button("🔄 刷新列表", variant="primary",
-                                                    size="lg", min_width=100)
-                        tts_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
-                                               size="lg", min_width=100)
-                        tts_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
-                                                    size="lg", min_width=100)
-                    tts_load_status = gr.Markdown("")
-                    tts_dl_status = gr.Markdown("")
-                    tts_dl_timer = gr.Timer(3, active=False)
+                tts_mm = _model_manager_block("tts", TTS_TASKS)
+                tts_model = tts_mm["model"]
 
                 with gr.Group():
                     gr.Markdown("#### 🎧 参考音频（声音克隆）")
@@ -1214,8 +1688,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         value="okay, I'm Cemo and what you just heard wasn't a human voice.")
 
                 # 切换模型后的提示，显示在参考音频整块下面
-                tts_hint = gr.Markdown(
-                    model_hint_for(tts_init[0][1] if tts_init else None))
+                tts_hint = gr.Markdown(model_hint_for(tts_model.value))
 
             # 右列：合成设置 + 合成内容 + 生成 + 输出
             with gr.Column(scale=1):
@@ -1226,16 +1699,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         tts_maxtok = gr.Number(label="max_tokens", value=1200, precision=0)
                     tts_adv_state = gr.State({})
                     with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
-                        @gr.render(inputs=tts_model)
-                        def _render_tts_params(model_id):
-                            specs = params_for(model_id)
-                            if not specs:
-                                gr.Markdown("*该模型无可调高级参数。*")
-                                return
-                            for p in specs:
-                                comp = _make_param_component(p)
-                                comp.change(_adv_updater(p["name"]),
-                                            [tts_adv_state, comp], tts_adv_state)
+                        _render_param_controls(tts_model, tts_adv_state)
 
                     with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
                         tts_adv = gr.Textbox(
@@ -1259,13 +1723,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                        elem_classes="audio-default")
                     tts_msg = gr.Markdown("")
 
-        tts_load_btn.click(load_tts, tts_model, [tts_load_status, status])
-        tts_dl_btn.click(download_start, [tts_model, hf_token, proxy],
-                         [tts_dl_status, tts_dl_timer])
-        tts_dl_timer.tick(download_status_tick, tts_model,
-                          [tts_dl_status, tts_dl_timer])
-        tts_dl_stat_btn.click(download_status, tts_model, tts_dl_status)
-        tts_model.change(model_hint_for, tts_model, tts_hint)
+        _wire_model_manager(tts_mm, TTS_TASKS, tts_hint)
         tts_model.change(lambda: {}, None, tts_adv_state)  # reset knobs on model switch
         tts_builtin.change(on_builtin_voice_change, tts_builtin,
                            [tts_upload, tts_ref_text])
@@ -1283,23 +1741,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         with gr.Row(equal_height=False):
             # 左列：模型管理 + 音频输入
             with gr.Column(scale=1):
-                with gr.Group():
-                    gr.Markdown("#### 🧩 模型管理")
-                    asr_model = gr.Dropdown(
-                        label="模型列表 (task=asr)", choices=asr_init,
-                        value=(asr_init[0][1] if asr_init else None))
-                    with gr.Row(elem_classes="mm-btn-row"):
-                        asr_load_btn = gr.Button("📥 加载模型", variant="primary",
-                                                 size="lg", min_width=100)
-                        asr_refresh_btn = gr.Button("🔄 刷新列表", variant="primary",
-                                                    size="lg", min_width=100)
-                        asr_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
-                                               size="lg", min_width=100)
-                        asr_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
-                                                    size="lg", min_width=100)
-                    asr_load_status = gr.Markdown("")
-                    asr_dl_status = gr.Markdown("")
-                    asr_dl_timer = gr.Timer(3, active=False)
+                asr_mm = _model_manager_block("asr", ASR_TASKS)
+                asr_model = asr_mm["model"]
 
                 with gr.Group():
                     gr.Markdown("#### 🎤 音频输入")
@@ -1308,8 +1751,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Markdown(
                         "*大文件预览需等几秒才出声波图，属正常现象。*",
                         elem_classes="hint-small")
-                asr_hint = gr.Markdown(
-                    model_hint_for(asr_init[0][1] if asr_init else None))
+                asr_hint = gr.Markdown(model_hint_for(asr_model.value))
                 asr_btn = gr.Button("📝 开始转写", variant="primary", size="lg")
 
             with gr.Column(scale=1):
@@ -1320,20 +1762,252 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         placeholder="转写结果将显示在这里……")
                     asr_msg = gr.Markdown("")
 
-        asr_load_btn.click(load_asr, asr_model, [asr_load_status, status])
-        asr_dl_btn.click(download_start, [asr_model, hf_token, proxy],
-                         [asr_dl_status, asr_dl_timer])
-        asr_dl_timer.tick(download_status_tick, asr_model,
-                          [asr_dl_status, asr_dl_timer])
-        asr_dl_stat_btn.click(download_status, asr_model, asr_dl_status)
-        asr_model.change(model_hint_for, asr_model, asr_hint)
+        _wire_model_manager(asr_mm, ASR_TASKS, asr_hint)
         asr_btn.click(lambda: ("", ""), None, [asr_out, asr_msg]).then(
             do_asr, [asr_model, asr_audio], [asr_out, asr_msg])
 
-    tts_refresh_btn.click(refresh, None,
-                          [tts_model, asr_model, status, tts_hint, asr_hint])
-    asr_refresh_btn.click(refresh, None,
-                          [tts_model, asr_model, status, tts_hint, asr_hint])
+    # ---------------- 音乐 / 音效生成 ----------------
+    with gr.Tab("🎵 音乐生成"):
+        with gr.Row(equal_height=False):
+            # 左列：模型管理 + 源音频（编辑类用法）
+            with gr.Column(scale=1):
+                gen_mm = _model_manager_block("gen", GEN_TASKS)
+                gen_model = gen_mm["model"]
+
+                with gr.Group():
+                    gr.Markdown("#### 🎧 源音频（可选，仅编辑类用法）")
+                    gen_audio = gr.Audio(
+                        label="上传源音频（ACE-Step cover/repaint 等、Stable Audio init/inpaint 用）",
+                        type="filepath", elem_classes="audio-default")
+
+                gen_hint = gr.Markdown(model_hint_for(gen_model.value))
+
+            # 右列：生成设置 + 提示词/歌词 + 生成 + 输出
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### ⚙️ 生成设置")
+                    with gr.Row():
+                        gen_duration = gr.Number(
+                            label="时长(秒)（ACE-Step 可填 -1 自动）", value=30, precision=1)
+                        gen_seed = gr.Number(label="seed", value=1234, precision=0)
+                    gen_adv_state = gr.State({})
+                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                        _render_param_controls(gen_model, gen_adv_state)
+
+                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                        gen_adv = gr.Textbox(
+                            label="",
+                            placeholder='{"tags": "pop,bright,drums", "num_inference_steps": 8}',
+                            lines=3)
+
+                with gr.Group():
+                    gr.Markdown("#### ✍️ 提示词与歌词")
+                    gen_text = gr.Textbox(
+                        label="提示词（风格/乐器/情绪，英文效果最好）", lines=3,
+                        value="uplifting pop with bright synths and driving drums")
+                    gen_lyrics = gr.Textbox(
+                        label="歌词（可选；ACE-Step / HeartMuLa 用）", lines=4)
+
+                gen_btn = gr.Button("🎵 生成音乐", variant="primary", size="lg")
+                with gr.Group():
+                    gr.Markdown("#### 🔊 输出音频")
+                    gen_out = gr.Audio(label="输出音频", type="filepath",
+                                       elem_classes="audio-default")
+                    gen_msg = gr.Markdown("")
+
+        _wire_model_manager(gen_mm, GEN_TASKS, gen_hint)
+        gen_model.change(lambda: {}, None, gen_adv_state)  # reset knobs on model switch
+        gen_btn.click(lambda: (None, ""), None, [gen_out, gen_msg]).then(
+            do_music_gen,
+            [gen_model, gen_text, gen_lyrics, gen_audio, gen_duration, gen_seed,
+             gen_adv_state, gen_adv],
+            [gen_out, gen_msg])
+
+    # ---------------- 声音转换 (vc / svc / s2s) ----------------
+    with gr.Tab("🎭 声音转换"):
+        with gr.Row(equal_height=False):
+            # 左列：模型管理 + 源音频 + 目标音色
+            with gr.Column(scale=1):
+                vc_mm = _model_manager_block("vc/svc/s2s", VC_TASKS)
+                vc_model = vc_mm["model"]
+
+                with gr.Group():
+                    gr.Markdown("#### 🎙️ 源音频（要转换的内容）")
+                    vc_source = gr.Audio(label="上传/录制源音频", type="filepath",
+                                         elem_classes="audio-default")
+                with gr.Group():
+                    gr.Markdown("#### 🎧 目标音色（转换成谁的声音）")
+                    vc_builtin = gr.Dropdown(
+                        label="内置参考音色",
+                        choices=["(none)"] + builtin_voices(), value="(none)",
+                        info="上传的音色优先于内置音色")
+                    vc_target = gr.Audio(label="上传/录制目标音色", type="filepath",
+                                         elem_classes="audio-default")
+
+                vc_hint = gr.Markdown(model_hint_for(vc_model.value))
+
+            # 右列：转换设置 + 转换 + 输出
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### ⚙️ 转换设置")
+                    vc_seed = gr.Number(label="seed", value=1234, precision=0)
+                    vc_adv_state = gr.State({})
+                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                        _render_param_controls(vc_model, vc_adv_state)
+                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                        vc_adv = gr.Textbox(
+                            label="",
+                            placeholder='{"route": "style_converted_vc", "style_ref": "D:/style.wav", "target_text": "……"}',
+                            lines=3)
+
+                vc_btn = gr.Button("🎭 开始转换", variant="primary", size="lg")
+                with gr.Group():
+                    gr.Markdown("#### 🔊 输出音频")
+                    vc_out = gr.Audio(label="输出音频", type="filepath",
+                                      elem_classes="audio-default")
+                    vc_msg = gr.Markdown("")
+
+        _wire_model_manager(vc_mm, VC_TASKS, vc_hint)
+        vc_model.change(lambda: {}, None, vc_adv_state)  # reset knobs on model switch
+        vc_builtin.change(lambda n: on_builtin_voice_change(n)[0], vc_builtin, vc_target)
+        vc_btn.click(lambda: (None, ""), None, [vc_out, vc_msg]).then(
+            do_vc,
+            [vc_model, vc_source, vc_target, vc_builtin, vc_seed,
+             vc_adv_state, vc_adv],
+            [vc_out, vc_msg])
+
+    # ---------------- 音源分离 (sep) ----------------
+    with gr.Tab("🎚️ 音源分离"):
+        with gr.Row(equal_height=False):
+            # 左列：模型管理 + 输入音频
+            with gr.Column(scale=1):
+                sep_mm = _model_manager_block("sep", SEP_TASKS)
+                sep_model = sep_mm["model"]
+
+                with gr.Group():
+                    gr.Markdown("#### 🎵 输入音频")
+                    sep_audio = gr.Audio(label="上传要分离的歌曲/音频", type="filepath",
+                                         elem_classes="audio-default")
+                sep_hint = gr.Markdown(model_hint_for(sep_model.value))
+                sep_btn = gr.Button("🎚️ 开始分离", variant="primary", size="lg")
+
+            # 右列：分离结果（各分轨播放器 + 文件下载）
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### 🔊 分离结果")
+                    sep_stems = [gr.Audio(label=f"音轨 {i + 1}", type="filepath",
+                                          visible=False, elem_classes="audio-default")
+                                 for i in range(MAX_SEP_STEMS)]
+                    sep_files = gr.File(label="全部音轨文件", file_count="multiple",
+                                        interactive=False)
+                    sep_msg = gr.Markdown("")
+
+        _wire_model_manager(sep_mm, SEP_TASKS, sep_hint)
+        sep_btn.click(
+            lambda: (*(gr.update(value=None, visible=False)
+                       for _ in range(MAX_SEP_STEMS)), None, ""),
+            None, [*sep_stems, sep_files, sep_msg]).then(
+            do_sep, [sep_model, sep_audio], [*sep_stems, sep_files, sep_msg])
+
+    # ---------------- 音频分析 (vad / diar / align) ----------------
+    with gr.Tab("🔎 音频分析"):
+        with gr.Row(equal_height=False):
+            # 左列：模型管理 + 音频输入（align 模型多出对齐文本/语言）
+            with gr.Column(scale=1):
+                ana_mm = _model_manager_block("vad/diar/align", ANALYZE_TASKS)
+                ana_model = ana_mm["model"]
+
+                with gr.Group():
+                    gr.Markdown("#### 🎤 音频输入")
+                    ana_audio = gr.Audio(label="上传/录制音频", type="filepath",
+                                         elem_classes="audio-default")
+                    gr.Markdown(
+                        "*WAV 输入会自动转成 16 kHz 单声道后送模型，结果时间轴也按 16 kHz 换算。*",
+                        elem_classes="hint-small")
+                    _ana_is_align = bool(
+                        ana_model.value and
+                        (catalog_by_id(ana_model.value) or {}).get("task") == "align")
+                    ana_text = gr.Textbox(
+                        label="对齐文本（align 模型必填：音频中说的原文）", lines=3,
+                        visible=_ana_is_align)
+                    ana_lang = gr.Textbox(
+                        label="语言（可选，如 English / Chinese）",
+                        visible=_ana_is_align)
+                ana_hint = gr.Markdown(model_hint_for(ana_model.value))
+                ana_btn = gr.Button("🔎 开始分析", variant="primary", size="lg")
+
+            # 右列：分析结果
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### 📄 分析结果")
+                    ana_out = gr.Textbox(
+                        label="结果（时间单位：秒）", lines=14,
+                        placeholder="语音段 / 说话人 / 逐词时间戳将显示在这里……")
+                    ana_json = gr.File(label="原始 JSON 结果", interactive=False)
+                    ana_msg = gr.Markdown("")
+
+        _wire_model_manager(ana_mm, ANALYZE_TASKS, ana_hint)
+        ana_model.change(_align_fields_visibility, ana_model, [ana_text, ana_lang])
+        ana_btn.click(lambda: ("", None, ""), None, [ana_out, ana_json, ana_msg]).then(
+            do_analyze, [ana_model, ana_audio, ana_text, ana_lang],
+            [ana_out, ana_json, ana_msg])
+
+    # ---------------- 声音设计 (vdes) ----------------
+    with gr.Tab("🎨 声音设计"):
+        with gr.Row(equal_height=False):
+            # 左列：模型管理 + 生成设置
+            with gr.Column(scale=1):
+                vdes_mm = _model_manager_block("vdes", VDES_TASKS)
+                vdes_model = vdes_mm["model"]
+
+                with gr.Group():
+                    gr.Markdown("#### ⚙️ 生成设置")
+                    with gr.Row():
+                        vdes_seed = gr.Number(label="seed", value=1234, precision=0)
+                        vdes_maxtok = gr.Number(label="max_tokens", value=1200, precision=0)
+                    vdes_adv_state = gr.State({})
+                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                        # instruct 有专用的『音色描述』输入框，这里不重复生成
+                        _render_param_controls(vdes_model, vdes_adv_state, skip=("instruct",))
+                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                        vdes_adv = gr.Textbox(label="", placeholder='{"temperature": 0.9}',
+                                              lines=3)
+                vdes_hint = gr.Markdown(model_hint_for(vdes_model.value))
+
+            # 右列：设计内容 + 生成 + 输出
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown("#### ✍️ 设计内容")
+                    vdes_instruct = gr.Textbox(
+                        label="音色描述（用文字描述想要的声音）", lines=3,
+                        placeholder="例：低沉磁性的中年男声，语速偏慢，带播音腔")
+                    vdes_text = gr.Textbox(
+                        label="要合成的文字", lines=5,
+                        value="你好，这是 audio.cpp 用文字描述设计出来的声音。")
+
+                vdes_btn = gr.Button("🎨 生成语音", variant="primary", size="lg")
+                with gr.Group():
+                    gr.Markdown("#### 🔊 输出音频")
+                    vdes_out = gr.Audio(label="输出音频", type="filepath",
+                                        elem_classes="audio-default")
+                    vdes_msg = gr.Markdown("")
+
+        _wire_model_manager(vdes_mm, VDES_TASKS, vdes_hint)
+        vdes_model.change(lambda: {}, None, vdes_adv_state)  # reset knobs on model switch
+        vdes_btn.click(lambda: (None, ""), None, [vdes_out, vdes_msg]).then(
+            do_vdes,
+            [vdes_model, vdes_text, vdes_instruct, vdes_seed, vdes_maxtok,
+             vdes_adv_state, vdes_adv],
+            [vdes_out, vdes_msg])
+
+    # 顺序与 refresh()/TAB_SPECS 一致：各页下拉、状态行、各页提示。
+    _refresh_outputs = [
+        tts_model, asr_model, gen_model, vc_model, sep_model, ana_model, vdes_model,
+        status,
+        tts_hint, asr_hint, gen_hint, vc_hint, sep_hint, ana_hint, vdes_hint,
+    ]
+    for _mm in (tts_mm, asr_mm, gen_mm, vc_mm, sep_mm, ana_mm, vdes_mm):
+        _mm["refresh_btn"].click(refresh, None, _refresh_outputs)
     gr.Markdown(
         "---\n<center><small>audio.cpp WebUI · 按需加载，同一时刻只驻留一个模型 · "
         "模型下载在后台进行，进度会自动刷新，也可随时点击「下载进度」手动刷新</small></center>")
