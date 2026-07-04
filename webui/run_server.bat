@@ -5,7 +5,8 @@ cd /d "%~dp0"
 call "%~dp0_env.bat"
 
 REM ============================================================
-REM  API server mode (OpenAI-compatible HTTP, GPU/CUDA only).
+REM  API server mode (OpenAI-compatible HTTP; backend auto-detected:
+REM  CUDA when an NVIDIA driver + gpu build exist, else CPU).
 REM
 REM  Usage:  run_server.bat <model_id> [port] [device]
 REM    e.g.  run_server.bat qwen3-tts 8080        (TTS server on :8080)
@@ -26,8 +27,13 @@ if "%DEVICE%"=="" set "DEVICE=0"
 set "HOST=%AUDIOCPP_HOST%"
 if not defined HOST set "HOST=127.0.0.1"
 
-if not defined HAS_CUDA ( echo [ERROR] server is GPU-only and no CUDA driver was detected. & goto :end )
-if not exist "%SERVER_EXE%" ( echo [ERROR] gpu server not found: %SERVER_EXE% & goto :end )
+if not exist "%SERVER_EXE%" ( echo [ERROR] server exe not found: %SERVER_EXE% & goto :end )
+if /I "%BACKEND%"=="cpu" echo [run_server] no CUDA detected - CPU backend (slower; model coverage may be lower)
+
+REM cpu backend: threads = ggml compute threads, keep one core for the system
+set "SRV_THREADS=1"
+if /I "%BACKEND%"=="cpu" set /a "SRV_THREADS=%NUMBER_OF_PROCESSORS%-1"
+if %SRV_THREADS% LSS 1 set "SRV_THREADS=1"
 
 REM --- resolve family/task + absolute model path from the catalog id ---
 set "STATUS="
@@ -40,10 +46,10 @@ REM --- write a single-model temp config with an ABSOLUTE path, named per-port s
 REM     two instances never clash. UTF-8, no BOM. Avoids the config-dir-relative
 REM     path resolution in app/server/config.cpp. ---
 set "RUNCONFIG=%TEMP%\audiocpp_server_%PORT%.json"
-powershell -NoProfile -Command "$m=[ordered]@{id='%MODEL_ID%';family='%FAMILY%';path='%MODEL%';task='%TASK%';mode='offline'}; $c=[ordered]@{host='%HOST%';port=[int]'%PORT%';device=[int]'%DEVICE%';threads=1;models=@($m)}; [IO.File]::WriteAllText('%RUNCONFIG%', ($c | ConvertTo-Json -Depth 20))"
+powershell -NoProfile -Command "$m=[ordered]@{id='%MODEL_ID%';family='%FAMILY%';path='%MODEL%';task='%TASK%';mode='offline'}; $c=[ordered]@{host='%HOST%';port=[int]'%PORT%';backend='%BACKEND%';device=[int]'%DEVICE%';threads=[int]'%SRV_THREADS%';models=@($m)}; [IO.File]::WriteAllText('%RUNCONFIG%', ($c | ConvertTo-Json -Depth 20))"
 if not exist "%RUNCONFIG%" ( echo [ERROR] failed to write runtime config %RUNCONFIG% & goto :end )
 
-echo [run_server] %MODEL_ID% (%FAMILY%, %TASK%)  GPU device %DEVICE%
+echo [run_server] %MODEL_ID% (%FAMILY%, %TASK%)  backend %BACKEND%  device %DEVICE%
 echo   URL    : http://%HOST%:%PORT%
 echo   Health : http://%HOST%:%PORT%/health
 echo   Models : http://%HOST%:%PORT%/v1/models

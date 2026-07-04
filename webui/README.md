@@ -8,7 +8,7 @@
 |---|---|---|
 | `run_cli_tts.bat` | 单句/单次命令行 TTS | `run_cli_tts.bat qwen3-tts "你好世界"` |
 | `run_tts_long.bat` | 长文本（整份 .txt）合成为一个 wav | `run_tts_long.bat qwen3-tts "D:\books\ch1.txt"` |
-| `run_server.bat` | OpenAI 兼容 HTTP API 服务（GPU） | `run_server.bat qwen3-tts 8080` |
+| `run_server.bat` | OpenAI 兼容 HTTP API 服务 | `run_server.bat qwen3-tts 8080` |
 | `run_webui.bat` | Gradio 网页界面（按需起服务） | `run_webui.bat` |
 | `_env.bat` | 共享环境探测（**不直接运行**） | 被上面四个 `call` |
 
@@ -23,7 +23,7 @@
   `python tools/model_manager.py install <download_id>` 安装（见 `models_catalog.json`）。
 - **后端自动选择：** 检测到 CUDA（NVIDIA 驱动）就用 GPU，否则回退 CPU。
   想强制某个后端，设环境变量 `AUDIOCPP_BACKEND=gpu`（=cuda）或 `AUDIOCPP_BACKEND=cpu`。
-  （`run_server.bat` 只有 GPU，见下。）
+  CLI、server、WebUI 都遵循这一检测（无 N 卡的机器自动落到 CPU 版，速度较慢、部分大模型不实用）。
 - **路径基准：** 脚本内相对路径（如 `voice\demo_01_man.wav`、`output\xxx.wav`）都相对 `webui\` 目录。
 - **可执行文件来源：** 自动定位整合包 `..\audiocpp-portable`（内含 `cpu\ gpu\ models\`），
   脚本被拷进整合包时也能自识别。
@@ -37,7 +37,7 @@
 - `BUNDLE` — 整合包根目录（含 `cpu\ gpu\ models\`）
 - `HAS_CUDA` — 是否检测到 CUDA（`nvcuda.dll` 或 `nvidia-smi`）
 - `BACKEND` / `CLI_EXE` — 选定的后端（`cuda`/`cpu`）与对应的 `audiocpp_cli.exe`
-- `SERVER_EXE` — `gpu\audiocpp_server.exe`（server 仅 GPU）
+- `SERVER_EXE` — 按 `BACKEND` 选 `gpu\` 或 `cpu\` 的 `audiocpp_server.exe`（cpu 版缺失时回退 gpu 版）
 - `PY` — 带依赖的 Python（供 `run_webui.bat` 用）
 
 改动探测逻辑只需改这一个文件。
@@ -105,9 +105,10 @@ run_tts_long.bat qwen3-tts "D:\books\chapter1.txt" "output\ch1.wav"
 
 ---
 
-## 3. `run_server.bat` — HTTP API 服务（仅 GPU）
+## 3. `run_server.bat` — HTTP API 服务
 
-启动一个 OpenAI 兼容的 HTTP 服务，供**其它应用**调用。服务只用 GPU（只有 `gpu\` 版 server）。
+启动一个 OpenAI 兼容的 HTTP 服务，供**其它应用**调用。后端自动检测：有 CUDA 用 GPU，
+否则用 CPU 版 server（CPU 下自动把 ggml 线程数设为核数-1；速度较慢，部分大模型不实用）。
 
 ```
 用法: run_server.bat <model_id> [port] [device]
@@ -175,7 +176,8 @@ curl http://127.0.0.1:8080/v1/models
 - **按需加载**：不需要先跑 `run_server.bat`——在界面里选模型点“加载”/“生成”时，WebUI 会自动
   起/切换底层的 `audiocpp_server`（一次一个模型在显存里，换模型即重启）。
 - 界面里可上传参考音色、下载未安装的模型、填 HF token / 代理等。
-- 环境变量 `AUDIOCPP_BACKEND=cpu` 让 WebUI 用 CPU 版 server。
+- 后端自动检测（同上：有 CUDA 用 GPU，否则 CPU）；`AUDIOCPP_BACKEND=gpu|cpu` 可强制。
+  CPU 模式下 ggml 线程数自动设为核数-1（可用 `AUDIOCPP_THREADS=N` 覆盖），且不再显示显存警告。
 
 > 网页界面（7860）是给人用的；要给**其它程序**当 API，请用 `run_server.bat` 起的 **8080** 那个服务，
 > 或让 WebUI 起来后直接打它的 8080 端口（见 `run_server.bat` 的端点表）。

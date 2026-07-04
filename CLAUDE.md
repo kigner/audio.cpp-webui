@@ -130,8 +130,10 @@ implement the loader+session against the runtime interfaces, add every `.cpp` to
   batch. `app/cli/main.cpp` is the dispatch: parse args → load model → create session → run.
 - `app/workflow` (namespace `minitts::app`) — experimental JSON pipelines (chunk/merge multi-step
   audio workflows); `audiocpp_cli --pipeline <json>`.
-- `app/server` — `audiocpp_server`, a CUDA-only HTTP adapter over the registry (`/health`,
-  `/v1/models`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/tasks/run`).
+- `app/server` — `audiocpp_server`, an HTTP adapter over the registry (`/health`,
+  `/v1/models`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/tasks/run`). CUDA is the
+  optimized path, but the binary builds on any backend config and honors `"backend": "cpu"`
+  (config default is `cuda`, so CPU-only builds need it set explicitly).
 
 Note: app-layer code uses the legacy `minitts::*` namespace while framework/model code is `engine::*`.
 

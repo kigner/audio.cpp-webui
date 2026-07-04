@@ -33,8 +33,9 @@ if /I "%BACKEND%"=="cuda" ( set "CLI_EXE=%BUNDLE%\gpu\audiocpp_cli.exe" ) else (
 REM cpu exe missing but gpu exe present -> the gpu build can also run --backend cpu
 if /I "%BACKEND%"=="cpu" if not exist "%CLI_EXE%" if exist "%BUNDLE%\gpu\audiocpp_cli.exe" set "CLI_EXE=%BUNDLE%\gpu\audiocpp_cli.exe"
 
-REM --- server is CUDA-only (only the gpu\ build exists) ---
-set "SERVER_EXE=%BUNDLE%\gpu\audiocpp_server.exe"
+REM --- server exe follows BACKEND; cpu exe missing -> the gpu build can also run --backend cpu ---
+if /I "%BACKEND%"=="cuda" ( set "SERVER_EXE=%BUNDLE%\gpu\audiocpp_server.exe" ) else ( set "SERVER_EXE=%BUNDLE%\cpu\audiocpp_server.exe" )
+if /I "%BACKEND%"=="cpu" if not exist "%SERVER_EXE%" if exist "%BUNDLE%\gpu\audiocpp_server.exe" set "SERVER_EXE=%BUNDLE%\gpu\audiocpp_server.exe"
 
 REM --- python with webui deps (bundle self-contained -> shipped bundle -> dev project venv) ---
 set "PY=%~dp0..\audiocpp-portable\venv\python.exe"

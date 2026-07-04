@@ -14,7 +14,11 @@ Just launch this (it starts the server for you):
     venv\\Scripts\\python audiocpp-portable\\webui.py
 
 Env overrides:
-    AUDIOCPP_BACKEND=gpu|cpu     which bin dir to launch the server from (default gpu)
+    AUDIOCPP_BACKEND=gpu|cpu     which bin dir to launch the server from
+                                 (default: auto — gpu when an NVIDIA driver and the
+                                 gpu server build are both present, else cpu)
+    AUDIOCPP_THREADS=N           ggml compute threads (default 1; cpu backend
+                                 defaults to all cores minus one)
     AUDIOCPP_SERVER=http://...   talk to an already-running server instead of managing one
     AUDIOCPP_LOAD_TIMEOUT=300    seconds to wait for a model to finish loading
     AUDIOCPP_NO_BROWSER=1        don't open a browser tab
@@ -26,6 +30,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -143,7 +148,33 @@ def _find_bundle_root():
 
 BUNDLE_ROOT = _find_bundle_root()
 
-BACKEND = os.environ.get("AUDIOCPP_BACKEND", "gpu").strip().lower()
+def _detect_backend():
+    """Which bundle build (gpu/ or cpu/) to launch. AUDIOCPP_BACKEND=gpu|cuda|cpu
+    wins; otherwise auto-detect: gpu when an NVIDIA driver AND the gpu server
+    build are both present, else cpu (the server runs fine on the cpu backend,
+    just slower and with lower model coverage)."""
+    env = os.environ.get("AUDIOCPP_BACKEND", "").strip().lower()
+    if env in ("gpu", "cuda"):
+        return "gpu"
+    if env:
+        return env
+    if os.name == "nt":
+        has_nvidia = os.path.isfile(os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvcuda.dll"))
+    else:
+        has_nvidia = shutil.which("nvidia-smi") is not None
+    if has_nvidia and os.path.isfile(os.path.join(BUNDLE_ROOT, "gpu", "audiocpp_server.exe")):
+        return "gpu"
+    if os.path.isfile(os.path.join(BUNDLE_ROOT, "cpu", "audiocpp_server.exe")):
+        return "cpu"
+    return "gpu"
+
+
+BACKEND = _detect_backend()
+# The server's own backend name: bin dirs are gpu/ vs cpu/, but the server takes
+# cuda|cpu|vulkan|metal, and its config default is "cuda" — which a CPU-only
+# build rejects at startup, so the temp config must always spell it out.
+SERVER_BACKEND = "cuda" if BACKEND == "gpu" else BACKEND
 SERVER_EXE = os.path.join(BUNDLE_ROOT, BACKEND, "audiocpp_server.exe")
 LOG_PATH = os.path.join(LOG_DIR, "audiocpp_server_webui.log")
 LOAD_TIMEOUT = int(os.environ.get("AUDIOCPP_LOAD_TIMEOUT", "300"))
@@ -182,6 +213,8 @@ LOCAL_VRAM_GB = _detect_vram_gb()
 
 def _vram_shortfall(entry):
     """条目估算显存超过本机显存时返回 (需要GB, 本机GB)，否则 None。"""
+    if BACKEND == "cpu":
+        return None  # CPU 后端跑在系统内存里，显存对照不适用
     need = entry.get("min_vram_gb")
     if need and LOCAL_VRAM_GB and float(need) > LOCAL_VRAM_GB:
         return float(need), LOCAL_VRAM_GB
@@ -598,7 +631,11 @@ MODEL_PARAMS = _load_model_params()
 HOST = CATALOG.get("host", "127.0.0.1")
 PORT = int(CATALOG.get("port", 8080))
 DEVICE = int(CATALOG.get("device", 0))
-THREADS = int(CATALOG.get("threads", 1))
+THREADS = int(os.environ.get("AUDIOCPP_THREADS") or CATALOG.get("threads", 1))
+if BACKEND == "cpu" and THREADS <= 1:
+    # catalog 里的 threads=1 是按 CUDA 调的（GPU 路径不吃这个值）；CPU 后端的
+    # ggml 计算线程数就是它，单线程没法用 —— 默认全核减一，留一个核给 UI/系统。
+    THREADS = max(1, (os.cpu_count() or 4) - 1)
 
 # If the user points us at an existing server, keep everything consistent with it.
 _ENV_SERVER = os.environ.get("AUDIOCPP_SERVER")
@@ -771,7 +808,7 @@ def _write_temp_config(entry):
     for key in ("config", "weight", "load_options", "session_options"):
         if entry.get(key) is not None:
             model[key] = entry[key]
-    cfg = {"host": HOST, "port": PORT, "device": DEVICE,
+    cfg = {"host": HOST, "port": PORT, "backend": SERVER_BACKEND, "device": DEVICE,
            "threads": THREADS, "models": [model]}
     fd, path = tempfile.mkstemp(prefix="audiocpp_webui_cfg_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -909,7 +946,8 @@ def _start_server(entry):
         creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
     _loaded_id = entry["id"]
-    _ui_log(f"启动 audiocpp_server（backend={BACKEND}），加载模型 {entry['label']} …")
+    extra = f"，threads={THREADS}" if SERVER_BACKEND == "cpu" else ""
+    _ui_log(f"启动 audiocpp_server（backend={SERVER_BACKEND}{extra}），加载模型 {entry['label']} …")
     threading.Thread(target=_pump_server_output, args=(_server_proc,),
                      daemon=True).start()
 
