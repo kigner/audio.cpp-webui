@@ -178,7 +178,7 @@ ASR_TASKS = ("asr",)
 MODEL_PROFILES = {
     "vibevoice": {
         "input_hint": (
-            "🗣 **VibeVoice** 要求多说话人脚本，每行 `Speaker N: 内容`（N 从 0 起）。"
+            "**VibeVoice** 要求多说话人脚本，每行 `Speaker N: 内容`（N 从 0 起）。"
             "只填普通文字会自动包成 `Speaker 0: ...`。多角色不同音色请在下方“高级参数”里用 "
             "`voice_samples`（逗号分隔的服务器本地 wav，最多 4 个），此时**不要**再上传参考音色。"
             "可调 `num_inference_steps` / `guidance_scale` / `max_length_times`。"),
@@ -192,19 +192,29 @@ MODEL_PROFILES = {
     },
     "qwen3_tts": {
         "input_hint": (
-            "🗣 **Qwen3-TTS** 是声音克隆：建议上传/选一段干净的单人参考音色，并在“参考文本”里"
+            "**Qwen3-TTS** 是声音克隆：建议上传/选一段干净的单人参考音色，并在“参考文本”里"
             "填该音频对应的原话，否则可能很快截断。"),
     },
     "pocket_tts": {
-        "input_hint": "🗣 **PocketTTS** 需要参考音色：必须上传/录制或选一个内置参考音色，否则会报错。",
+        "input_hint": "**PocketTTS** 需要参考音色：必须上传/录制或选一个内置参考音色，否则会报错。",
     },
     "chatterbox": {
-        "input_hint": "🗣 **Chatterbox**（声音克隆）：需要一段参考音色（上传/录音），否则会报错。",
+        "input_hint": (
+            "**Chatterbox**（声音克隆）：需要一段参考音色（上传/录音），否则会报错。"
+            "语言只支持 english / spanish / french / german / italian / portuguese / korean"
+            "（**无中文/日文/俄文，也没有自动检测**）；选“留空”用默认（英语）。"),
+        # Chatterbox validates against 2-letter ISO codes (no zh/ja/ru, no auto),
+        # so the shared dropdown's friendly names are translated here; names not
+        # listed are genuinely unsupported by the model and rejected up front.
+        "lang_map": {
+            "english": "en", "spanish": "es", "french": "fr", "german": "de",
+            "italian": "it", "portuguese": "pt", "korean": "ko",
+        },
     },
     "qwen3_asr": {
         # Encoder cap: max_source_positions=1500 tokens at 13 tokens/second
         # (qwen3_asr_audio_encoder_token_count) -> ~115 s of audio per request.
-        "input_hint": "📝 **Qwen3-ASR** 单次最长约 115 秒；更长的音频请先剪短或分段转写。",
+        "input_hint": "**Qwen3-ASR** 单次最长约 115 秒；更长的音频请先剪短或分段转写。",
     },
 }
 DEFAULT_PROFILE = {"input_hint": "", "wrap_speaker_script": False, "default_options": {},
@@ -229,6 +239,28 @@ def profile_for(entry):
 def model_hint_for(model_id):
     entry = catalog_by_id(model_id) if model_id else None
     return profile_for(entry)["input_hint"] if entry else ""
+
+
+def resolve_language(prof, language):
+    """Translate the shared language dropdown into what the selected family
+    expects. Most families (Qwen3-TTS, VibeVoice, …) take the UI's friendly
+    names as-is, so they have no `lang_map` and the value passes through. A
+    family with a restricted language set (Chatterbox: 2-letter ISO codes, no
+    Chinese/Japanese/Russian, no auto-detect) supplies a `lang_map`; its names
+    are converted and anything it can't do — including "Auto" — is rejected here
+    with an actionable message instead of a raw server 500."""
+    lang = (language or "").strip()
+    lang_map = prof.get("lang_map")
+    if not lang_map:
+        return lang
+    if not lang:
+        return ""                       # 留空 = 用模型默认
+    code = lang_map.get(lang.lower())
+    if code is not None:
+        return code
+    raise gr.Error(
+        f"所选模型不支持语言「{language}」。请改选：{' / '.join(lang_map)}，"
+        "或“留空”用模型默认。")
 
 
 def _as_speaker_script(text):
@@ -333,6 +365,9 @@ def _parse_adv_options(raw):
 # like "requires a session voice via --voice-ref" becomes "请上传参考音色".
 # Ordered specific -> generic; server_error() takes the FIRST match.
 ERROR_HINTS = [
+    (re.compile(r"unsupported Chatterbox language", re.I),
+     "🌐 Chatterbox 只支持 en/es/fr/de/it/pt/ko（无中文/日文/俄文，也没有自动检测）。"
+     "请在“语言”里改选受支持的语言，或“留空”用默认（英语）。"),
     (re.compile(r"max_source_positions", re.I),
      "⏱ 音频过长：Qwen3-ASR 编码器上限 1500 token（约 13 token/秒），"
      "单次最多约 115 秒。请把音频剪短或分段后再转写。"),
@@ -783,10 +818,35 @@ def ensure_model_loaded(model_id, expect_tasks=None):
 
 def server_status():
     if server_alive():
-        who = "webui 管理" if _server_proc is not None else "外部"
         ids = ", ".join(loaded_ids()) or "(none)"
-        return f"✅ server @ {SERVER} · backend={BACKEND} · 已加载：{ids} · {who}"
-    return f"⚪ server 未运行 @ {SERVER} — 选择模型并点『加载模型』会自动启动"
+        return f"✅ server @ {SERVER} · backend={BACKEND} · model id={ids}"
+    return f"⚪ server 未运行 @ {SERVER} — 选择模型并点『📥 加载模型』会自动启动"
+
+
+def _api_usage_md():
+    """状态行下方折叠区的第三方调用说明。端点/字段以 app/server/README.md 为准；
+    URL 取运行时的 SERVER，避免和 AUDIOCPP_SERVER / catalog 配置不一致。"""
+    return f"""
+第三方应用可以直接调用本 WebUI 启动的 `audiocpp_server`（OpenAI 风格 HTTP API），不经过本页面。
+
+- **URL 怎么填**：API 地址是 `{SERVER}`；OpenAI 兼容客户端的 Base URL 填 `{SERVER}/v1`。
+  生成语音：`POST {SERVER}/v1/audio/speech` · 音频转写：`POST {SERVER}/v1/audio/transcriptions`
+- **模型名称怎么填**：`model` 填模型 id（与本页模型列表一致，如 `qwen3-tts`、`vibevoice`），
+  且必须是**当前已加载**的那个 —— server 同一时刻只驻留一个模型，先在本页点『📥 加载模型』；
+  可用 `GET {SERVER}/v1/models` 查看当前可用的 id。
+- **TTS 请求示例**（响应默认是 WAV 音频；加 `"response_format": "json"` 改为返回 base64 的 JSON）：
+
+```bash
+curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
+  -d '{{"model": "qwen3-tts", "input": "你好，audio.cpp。", "voice_ref": "D:/voices/ref.wav", "reference_text": "参考音频里的原话", "seed": 1234}}'
+```
+
+- **ASR 请求示例**：`-d '{{"model": "qwen3-asr", "audio": "D:/audio/in.wav"}}'`。
+  注意 `voice_ref` / `audio` 填的都是 **server 所在机器上的文件路径**（不是浏览器上传）。
+- server 的生命周期跟随本 WebUI 的**命令行窗口**：只关浏览器页面不影响，server 仍可被第三方调用；
+  关掉命令窗口（webui.py 退出）才会连带关闭它。也可单独启动 server（如 run_server.bat）
+  供第三方应用调用。
+"""
 
 
 # --- background model downloads (via tools/model_manager.py) ----------------
@@ -882,7 +942,7 @@ def download_model(model_id, hf_token="", proxy=""):
         _downloads[model_id] = {"proc": proc, "log": log}
     _ui_log(f"开始后台下载 {entry['label']}（{dl_id}），日志：{log}")
     return (f"{warn}{proxy_note}⏳ 已开始后台下载 **{entry['label']}**（{dl_id}），"
-            f"下方进度每几秒自动刷新。\n完成后点旁边的『🔄 刷新』即可加载。\n日志：{log}")
+            f"下方进度每几秒自动刷新。\n完成后点旁边的『🔄 刷新列表』即可加载。\n日志：{log}")
 
 
 def download_status(model_id):
@@ -903,7 +963,7 @@ def download_status(model_id):
         rec["reported"] = True
         _ui_log(f"{entry['label']} 下载进程结束 (exit {code})")
     if code == 0:
-        return f"✅ {entry['label']} 下载进程完成，点旁边的『🔄 刷新』刷新可用列表。\n```\n{tail}\n```"
+        return f"✅ {entry['label']} 下载进程完成，点旁边的『🔄 刷新列表』刷新可用列表。\n```\n{tail}\n```"
     return f"❌ {entry['label']} 下载失败 (exit {code})。\n```\n{tail}\n```"
 
 
@@ -960,7 +1020,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
 
         payload = {
             "model": model,
-            "language": language or "",
+            "language": resolve_language(prof, language),
             "seed": int(seed),
             "max_tokens": int(max_tokens),
         }
@@ -1093,17 +1153,15 @@ CUSTOM_CSS = """
    min-height 保证布局与原来一致。 */
 .waveform-container, #waveform { height: auto !important; min-height: 58px; }
 
-.hint-small { opacity: 0.7; font-size: 0.85em; margin-top: -6px; }
+.hint-small { opacity: 0.7; font-size: 0.85em; margin-top: 2px; }
 """
 
 
 with gr.Blocks(title="audio.cpp WebUI") as demo:
-    gr.Markdown(
-        "# 🎙️ audio.cpp WebUI\n"
-        "本地语音合成与识别 —— 声音克隆（TTS）与音频转写（ASR）。**按需加载**："
-        "选择模型后由 WebUI 自动启动/切换本地 `audiocpp_server`，同一时刻只加载一个模型（省显存）。"
-        "模型可在后台下载，不影响当前操作。")
+    gr.Markdown("# 🎙️ audio.cpp WebUI")
     status = gr.Markdown(server_status())
+    with gr.Accordion("🔌 API 调用说明：第三方应用如何用本 server 生成语音", open=False):
+        gr.Markdown(_api_usage_md())
     with gr.Accordion("🔐 下载设置：HF token / 代理（可选，不保存）", open=False):
         with gr.Row():
             hf_token = gr.Textbox(
@@ -1133,6 +1191,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                                     size="lg", min_width=100)
                         tts_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
                                                size="lg", min_width=100)
+                        tts_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
+                                                    size="lg", min_width=100)
                     tts_load_status = gr.Markdown("")
                     tts_dl_status = gr.Markdown("")
                     tts_dl_timer = gr.Timer(3, active=False)
@@ -1147,7 +1207,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         label="上传/录制参考音色（可选）", type="filepath",
                         elem_classes="audio-default")
                     gr.Markdown(
-                        "*参考音色几秒到几十秒即可，几分钟的大文件预览可能要等几秒才出声波图。*",
+                        "*参考音色几秒到几十秒即可；大文件预览需等几秒才出声波图。*",
                         elem_classes="hint-small")
                     tts_ref_text = gr.Textbox(
                         label="参考文本 (克隆时填参考音频里说的内容，越准越好)", lines=2,
@@ -1190,7 +1250,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         value="Hello, this is audio dot cpp speaking from a web page.")
                     tts_lang = gr.Dropdown(
                         label="语言 (Auto=自动 / 留空=用模型默认)", choices=LANGS,
-                        value="Auto")
+                        value="chinese")
 
                 tts_btn = gr.Button("🎵 生成语音", variant="primary", size="lg")
                 with gr.Group():
@@ -1204,14 +1264,19 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                          [tts_dl_status, tts_dl_timer])
         tts_dl_timer.tick(download_status_tick, tts_model,
                           [tts_dl_status, tts_dl_timer])
+        tts_dl_stat_btn.click(download_status, tts_model, tts_dl_status)
         tts_model.change(model_hint_for, tts_model, tts_hint)
         tts_model.change(lambda: {}, None, tts_adv_state)  # reset knobs on model switch
         tts_builtin.change(on_builtin_voice_change, tts_builtin,
                            [tts_upload, tts_ref_text])
-        tts_btn.click(do_tts,
-                      [tts_model, tts_text, tts_lang, tts_upload, tts_builtin,
-                       tts_ref_text, tts_seed, tts_maxtok, tts_adv_state, tts_adv],
-                      [tts_out, tts_msg])
+        # Clear the previous run's audio + status message the moment 生成 is
+        # clicked, so a prior message doesn't linger next to the new run's
+        # progress indicator (outputs otherwise update only when do_tts returns).
+        tts_btn.click(lambda: (None, ""), None, [tts_out, tts_msg]).then(
+            do_tts,
+            [tts_model, tts_text, tts_lang, tts_upload, tts_builtin,
+             tts_ref_text, tts_seed, tts_maxtok, tts_adv_state, tts_adv],
+            [tts_out, tts_msg])
 
     # ---------------- ASR / 音频转写 ----------------
     with gr.Tab("📝 ASR / 音频转写"):
@@ -1230,6 +1295,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                                     size="lg", min_width=100)
                         asr_dl_btn = gr.Button("⬇️ 下载模型", variant="primary",
                                                size="lg", min_width=100)
+                        asr_dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
+                                                    size="lg", min_width=100)
                     asr_load_status = gr.Markdown("")
                     asr_dl_status = gr.Markdown("")
                     asr_dl_timer = gr.Timer(3, active=False)
@@ -1239,8 +1306,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     asr_audio = gr.Audio(label="上传/录制音频", type="filepath",
                                          elem_classes="audio-default")
                     gr.Markdown(
-                        "*大文件预览可能要等几秒才出声波图（后台是正常的，可忽略命令窗口"
-                        "偶尔一闪而过的网络重试信息）。*",
+                        "*大文件预览需等几秒才出声波图，属正常现象。*",
                         elem_classes="hint-small")
                 asr_hint = gr.Markdown(
                     model_hint_for(asr_init[0][1] if asr_init else None))
@@ -1259,8 +1325,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                          [asr_dl_status, asr_dl_timer])
         asr_dl_timer.tick(download_status_tick, asr_model,
                           [asr_dl_status, asr_dl_timer])
+        asr_dl_stat_btn.click(download_status, asr_model, asr_dl_status)
         asr_model.change(model_hint_for, asr_model, asr_hint)
-        asr_btn.click(do_asr, [asr_model, asr_audio], [asr_out, asr_msg])
+        asr_btn.click(lambda: ("", ""), None, [asr_out, asr_msg]).then(
+            do_asr, [asr_model, asr_audio], [asr_out, asr_msg])
 
     tts_refresh_btn.click(refresh, None,
                           [tts_model, asr_model, status, tts_hint, asr_hint])
@@ -1268,7 +1336,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                           [tts_model, asr_model, status, tts_hint, asr_hint])
     gr.Markdown(
         "---\n<center><small>audio.cpp WebUI · 按需加载，同一时刻只驻留一个模型 · "
-        "模型下载在后台进行，进度会自动刷新显示</small></center>")
+        "模型下载在后台进行，进度会自动刷新，也可随时点击「下载进度」手动刷新</small></center>")
 
 
 if __name__ == "__main__":
