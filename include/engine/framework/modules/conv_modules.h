@@ -92,6 +92,10 @@ struct ConvTranspose1dWeights {
     std::optional<core::TensorValue> bias;
 };
 
+bool is_conv_transpose1d_col2im_fast_path_eligible(
+    const core::ModuleBuildContext & ctx,
+    const ConvTranspose1dConfig & config) noexcept;
+
 class ConvTranspose1dModule {
 public:
     explicit ConvTranspose1dModule(ConvTranspose1dConfig config);

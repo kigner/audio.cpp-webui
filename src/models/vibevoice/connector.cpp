@@ -1,6 +1,7 @@
 #include "engine/models/vibevoice/connector.h"
 
 #include "engine/framework/core/backend_weight_store.h"
+#include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/weight_binding.h"
@@ -262,7 +263,12 @@ VibeVoiceConnectorWeightsRuntime::VibeVoiceConnectorWeightsRuntime(
     if (threads_ <= 0) {
         throw std::runtime_error("VibeVoice connector weights runtime requires positive thread count");
     }
+    const auto backend_started = std::chrono::steady_clock::now();
     backend_ = core::init_backend({backend_type, device, threads_});
+    engine::debug::timing_log_scalar(
+        "vibevoice.runtime.connector_backend_init_ms",
+        engine::debug::elapsed_ms(backend_started));
+    const auto weights_started = std::chrono::steady_clock::now();
     weights_ = std::make_shared<VibeVoiceConnectorWeightsBundle>(
         load_vibevoice_connector_weights(
             *assets_,
@@ -270,6 +276,9 @@ VibeVoiceConnectorWeightsRuntime::VibeVoiceConnectorWeightsRuntime(
             backend_type,
             weight_context_bytes,
             weight_storage_type));
+    engine::debug::timing_log_scalar(
+        "vibevoice.runtime.connector_weights_load_ms",
+        engine::debug::elapsed_ms(weights_started));
     acoustic_constants_ = std::make_unique<common::ConstantTensorCache>(
         backend_,
         threads_,

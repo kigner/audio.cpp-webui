@@ -7,6 +7,8 @@ import argparse
 import json
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,7 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CASES = REPO_ROOT / "tools" / "audiocpp_cli" / "audiocpp_cli_path_cases.json"
 DEFAULT_AUDIOCPP_CLI_BIN = REPO_ROOT / "build" / "bin" / "audiocpp_cli"
 DEFAULT_MODELS_ROOT = REPO_ROOT / "models"
-DEFAULT_THREADS = 1
+DEFAULT_THREADS = 8
+DEFAULT_RESOURCE_SAMPLE_MS = 100
 
 
 def option_value(value: Any) -> str:
@@ -30,6 +33,114 @@ def option_value(value: Any) -> str:
 def append_key_values(command: list[str], flag: str, values: dict[str, Any]) -> None:
     for key, value in values.items():
         command.extend([flag, f"{key}={option_value(value)}"])
+
+
+@dataclass
+class ResourceMetrics:
+    observed_peak_rss_bytes: int = 0
+    observed_peak_vram_bytes: int = 0
+    sample_ms: int = DEFAULT_RESOURCE_SAMPLE_MS
+    samples: int = 0
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "observed_peak_rss_bytes": self.observed_peak_rss_bytes,
+            "observed_peak_rss_mib": round(self.observed_peak_rss_bytes / 1024.0 / 1024.0, 2),
+            "observed_peak_vram_bytes": self.observed_peak_vram_bytes,
+            "observed_peak_vram_mib": round(self.observed_peak_vram_bytes / 1024.0 / 1024.0, 2),
+            "sample_ms": self.sample_ms,
+            "samples": self.samples,
+        }
+
+
+class ResourceMonitor:
+    def __init__(self, root_pid: int, device: int, sample_ms: int) -> None:
+        if sample_ms <= 0:
+            raise RuntimeError("--resource-sample-ms must be positive")
+        try:
+            import psutil  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError("--measure-resources requires the psutil Python package") from exc
+        try:
+            import pynvml  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError("--measure-resources requires the pynvml Python package") from exc
+
+        self.psutil = psutil
+        self.pynvml = pynvml
+        self.root = psutil.Process(root_pid)
+        self.metrics = ResourceMetrics(sample_ms=sample_ms)
+        pynvml.nvmlInit()
+        try:
+            self.handle = pynvml.nvmlDeviceGetHandleByIndex(device)
+        except Exception:
+            pynvml.nvmlShutdown()
+            raise
+
+    def close(self) -> None:
+        self.pynvml.nvmlShutdown()
+
+    def sample(self) -> None:
+        pids = self.process_tree_pids()
+        rss = self.process_tree_rss(pids)
+        vram = self.process_tree_vram(pids)
+        self.metrics.samples += 1
+        self.metrics.observed_peak_rss_bytes = max(self.metrics.observed_peak_rss_bytes, rss)
+        self.metrics.observed_peak_vram_bytes = max(self.metrics.observed_peak_vram_bytes, vram)
+
+    def process_tree_pids(self) -> set[int]:
+        try:
+            processes = [self.root, *self.root.children(recursive=True)]
+        except self.psutil.NoSuchProcess:
+            return set()
+        return {process.pid for process in processes}
+
+    def process_tree_rss(self, pids: set[int]) -> int:
+        rss = 0
+        for pid in pids:
+            try:
+                rss += self.psutil.Process(pid).memory_info().rss
+            except self.psutil.NoSuchProcess:
+                continue
+        return rss
+
+    def process_tree_vram(self, pids: set[int]) -> int:
+        process_memory: dict[int, int] = {}
+        for getter_name in ("nvmlDeviceGetComputeRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses"):
+            getter = getattr(self.pynvml, getter_name, None)
+            if getter is None:
+                continue
+            try:
+                gpu_processes = getter(self.handle)
+            except self.pynvml.NVMLError_NotSupported:
+                continue
+            for gpu_process in gpu_processes:
+                pid = int(gpu_process.pid)
+                if pid not in pids:
+                    continue
+                used = int(gpu_process.usedGpuMemory)
+                process_memory[pid] = max(process_memory.get(pid, 0), used)
+        return sum(process_memory.values())
+
+
+def validate_resource_monitor(args: argparse.Namespace) -> None:
+    if not args.measure_resources:
+        return
+    if args.resource_sample_ms <= 0:
+        raise RuntimeError("--resource-sample-ms must be positive")
+    try:
+        import psutil  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError("--measure-resources requires the psutil Python package") from exc
+    try:
+        import pynvml  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("--measure-resources requires the pynvml Python package") from exc
+    pynvml.nvmlInit()
+    try:
+        pynvml.nvmlDeviceGetHandleByIndex(args.device)
+    finally:
+        pynvml.nvmlShutdown()
 
 
 def load_cases(path: Path) -> dict[str, Any]:
@@ -279,25 +390,54 @@ def run_case(args: argparse.Namespace, case: dict[str, Any], out_root: Path) -> 
     command = build_command(args, case, case_dir)
     (case_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
     print(f"[RUN] {case['id']}: {case.get('coverage', '')}", flush=True)
-    result = subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    (case_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
-    (case_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
-    if result.returncode != 0:
-        raise RuntimeError(f"{case['id']} failed with exit code {result.returncode}; see {case_dir}")
-    verify_case(case, case_dir, result.stdout)
-    return {
+    stdout_path = case_dir / "stdout.log"
+    stderr_path = case_dir / "stderr.log"
+    metrics: ResourceMetrics | None = None
+    with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open("w", encoding="utf-8") as stderr_handle:
+        proc = subprocess.Popen(
+            command,
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+        monitor: ResourceMonitor | None = None
+        try:
+            if args.measure_resources:
+                try:
+                    monitor = ResourceMonitor(proc.pid, args.device, args.resource_sample_ms)
+                    while proc.poll() is None:
+                        monitor.sample()
+                        time.sleep(args.resource_sample_ms / 1000.0)
+                    monitor.sample()
+                    metrics = monitor.metrics
+                except Exception:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                    raise
+            returncode = proc.wait()
+        finally:
+            if monitor is not None:
+                monitor.close()
+
+    stdout = stdout_path.read_text(encoding="utf-8")
+    if returncode != 0:
+        raise RuntimeError(f"{case['id']} failed with exit code {returncode}; see {case_dir}")
+    verify_case(case, case_dir, stdout)
+    result = {
         "id": case["id"],
-        "returncode": result.returncode,
+        "returncode": returncode,
         "dir": str(case_dir),
         "coverage": case.get("coverage", ""),
     }
+    if metrics is not None:
+        result["resources"] = metrics.to_json()
+    return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -308,6 +448,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", default="cuda", choices=["cpu", "cuda", "vulkan", "metal", "best"])
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS)
+    parser.add_argument("--measure-resources", action="store_true", help="Record observed peak RSS and GPU memory per case")
+    parser.add_argument("--resource-sample-ms", type=int, default=DEFAULT_RESOURCE_SAMPLE_MS)
     parser.add_argument("--out-root", type=Path)
     parser.add_argument("--only", action="append", default=[], help="Case id or comma-separated case ids")
     parser.add_argument("--family", help="Run only cases for one family")
@@ -332,6 +474,7 @@ def main() -> int:
                 print(f"{gap.get('family', '')}\t{gap.get('model', '')}\t{gap.get('reason', '')}")
         return 0
 
+    validate_resource_monitor(args)
     if not args.audiocpp_cli_bin.exists():
         raise RuntimeError(f"missing audiocpp_cli binary: {args.audiocpp_cli_bin}")
     stamp = datetime.now().strftime("audiocpp_cli_path_%Y%m%d_%H%M%S")

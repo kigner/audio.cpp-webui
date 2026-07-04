@@ -144,6 +144,21 @@ std::optional<std::filesystem::path> suffixed_json_path(
     return base->parent_path() / (base->stem().string() + "_" + request_id + base->extension().string());
 }
 
+void write_wav_output(
+    const std::filesystem::path & path,
+    const engine::audio::AudioBuffer & audio) {
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    const auto tmp = path.parent_path() / (path.filename().string() + ".tmp");
+    std::filesystem::remove(tmp);
+    engine::audio::WavPcm16Sink().write(tmp, audio);
+    if (std::filesystem::exists(path)) {
+        std::filesystem::remove(path);
+    }
+    std::filesystem::rename(tmp, path);
+}
+
 std::string batch_manifest_to_json(const AppBatchResult & batch) {
     std::ostringstream out;
     out << "{\"requests\":[";
@@ -195,10 +210,7 @@ void emit_task_result(
     const std::optional<std::filesystem::path> & turns_out,
     const std::optional<std::filesystem::path> & words_out) {
     if (result.audio_output.has_value() && audio_out.has_value()) {
-        if (!audio_out->parent_path().empty()) {
-            std::filesystem::create_directories(audio_out->parent_path());
-        }
-        engine::audio::WavPcm16Sink().write(*audio_out, engine::audio::AudioBuffer{
+        write_wav_output(*audio_out, engine::audio::AudioBuffer{
             result.audio_output->sample_rate,
             result.audio_output->channels,
             result.audio_output->samples,
@@ -208,11 +220,8 @@ void emit_task_result(
         if (result.named_audio_outputs.size() != 1) {
             throw std::runtime_error("--out requires exactly one audio output");
         }
-        if (!audio_out->parent_path().empty()) {
-            std::filesystem::create_directories(audio_out->parent_path());
-        }
         const auto & audio = result.named_audio_outputs.front().audio;
-        engine::audio::WavPcm16Sink().write(*audio_out, engine::audio::AudioBuffer{
+        write_wav_output(*audio_out, engine::audio::AudioBuffer{
             audio.sample_rate,
             audio.channels,
             audio.samples,
@@ -225,7 +234,7 @@ void emit_task_result(
             std::filesystem::create_directories(*audio_out_dir);
             for (const auto & output : result.named_audio_outputs) {
                 const auto path = *audio_out_dir / (output.id + ".wav");
-                engine::audio::WavPcm16Sink().write(path, engine::audio::AudioBuffer{
+                write_wav_output(path, engine::audio::AudioBuffer{
                     output.audio.sample_rate,
                     output.audio.channels,
                     output.audio.samples,
@@ -305,14 +314,20 @@ void emit_task_result(
 void emit_batch_result(
     const AppBatchResult & batch,
     const FileOutputPolicy & policy) {
+    emit_batch_summary(batch, policy);
+    for (size_t i = 0; i < batch.results.size(); ++i) {
+        emit_batch_item_result(i, batch.results[i], policy);
+    }
+}
+
+void emit_batch_summary(
+    const AppBatchResult & batch,
+    const FileOutputPolicy & policy) {
     if (batch.merged_audio.has_value()) {
         if (!policy.audio_out.has_value()) {
             throw std::runtime_error("merged batch audio requires --out");
         }
-        if (!policy.audio_out->parent_path().empty()) {
-            std::filesystem::create_directories(policy.audio_out->parent_path());
-        }
-        engine::audio::WavPcm16Sink().write(*policy.audio_out, engine::audio::AudioBuffer{
+        write_wav_output(*policy.audio_out, engine::audio::AudioBuffer{
             batch.merged_audio->sample_rate,
             batch.merged_audio->channels,
             batch.merged_audio->samples,
@@ -327,36 +342,38 @@ void emit_batch_result(
         std::ofstream(*policy.batch_manifest_out) << batch_manifest_to_json(batch) << "\n";
         std::cout << "batch_manifest_out=" << policy.batch_manifest_out->string() << "\n";
     }
+}
 
-    for (size_t i = 0; i < batch.results.size(); ++i) {
-        const auto & item = batch.results[i];
-        const std::string request_id = safe_output_name(item.id);
-        std::cout << "request_index=" << i << "\n";
-        std::cout << "request_id=" << request_id << "\n";
+void emit_batch_item_result(
+    size_t index,
+    const AppRequestResult & item,
+    const FileOutputPolicy & policy) {
+    const std::string request_id = safe_output_name(item.id);
+    std::cout << "request_index=" << index << "\n";
+    std::cout << "request_id=" << request_id << "\n";
 
-        std::optional<std::filesystem::path> audio_out;
-        std::optional<std::filesystem::path> named_out_dir;
-        std::optional<std::filesystem::path> artifact_out_dir;
-        if (policy.output_dir.has_value()) {
-            if (item.result.audio_output.has_value()) {
-                audio_out = *policy.output_dir / (request_id + ".wav");
-            }
-            if (!item.result.named_audio_outputs.empty()) {
-                named_out_dir = *policy.output_dir / request_id;
-            }
-            if (!item.result.output_artifacts.empty()) {
-                artifact_out_dir = *policy.output_dir / request_id;
-            }
+    std::optional<std::filesystem::path> audio_out;
+    std::optional<std::filesystem::path> named_out_dir;
+    std::optional<std::filesystem::path> artifact_out_dir;
+    if (policy.output_dir.has_value()) {
+        if (item.result.audio_output.has_value()) {
+            audio_out = *policy.output_dir / (request_id + ".wav");
         }
-        emit_task_result(
-            item.result,
-            audio_out,
-            named_out_dir,
-            artifact_out_dir,
-            suffixed_json_path(policy.segments_base, request_id),
-            suffixed_json_path(policy.turns_base, request_id),
-            suffixed_json_path(policy.words_base, request_id));
+        if (!item.result.named_audio_outputs.empty()) {
+            named_out_dir = *policy.output_dir / request_id;
+        }
+        if (!item.result.output_artifacts.empty()) {
+            artifact_out_dir = *policy.output_dir / request_id;
+        }
     }
+    emit_task_result(
+        item.result,
+        audio_out,
+        named_out_dir,
+        artifact_out_dir,
+        suffixed_json_path(policy.segments_base, request_id),
+        suffixed_json_path(policy.turns_base, request_id),
+        suffixed_json_path(policy.words_base, request_id));
 }
 
 }  // namespace minitts::app

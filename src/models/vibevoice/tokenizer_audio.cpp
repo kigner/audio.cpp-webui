@@ -3,6 +3,7 @@
 #include "engine/framework/audio/conversion.h"
 #include "engine/framework/audio/resampling.h"
 #include "engine/framework/core/backend_weight_store.h"
+#include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
@@ -1672,7 +1673,12 @@ VibeVoiceTokenizerWeightsRuntime::VibeVoiceTokenizerWeightsRuntime(
     if (threads_ <= 0) {
         throw std::runtime_error("VibeVoice tokenizer weights runtime requires positive thread count");
     }
+    const auto backend_started = std::chrono::steady_clock::now();
     backend_ = core::init_backend({backend_type, device, threads_});
+    engine::debug::timing_log_scalar(
+        "vibevoice.runtime.tokenizer_backend_init_ms",
+        engine::debug::elapsed_ms(backend_started));
+    const auto weights_started = std::chrono::steady_clock::now();
     weights_ = std::make_shared<VibeVoiceTokenizerWeightsBundle>(
         load_vibevoice_tokenizer_weights(
             *assets_,
@@ -1680,6 +1686,9 @@ VibeVoiceTokenizerWeightsRuntime::VibeVoiceTokenizerWeightsRuntime(
             backend_type,
             weight_context_bytes,
             weight_storage_type));
+    engine::debug::timing_log_scalar(
+        "vibevoice.runtime.tokenizer_weights_load_ms",
+        engine::debug::elapsed_ms(weights_started));
     acoustic_encoder_constants_ = std::make_unique<common::ConstantTensorCache>(
         backend_,
         threads_,

@@ -50,6 +50,7 @@ public:
         const Qwen3TalkerPrefill & prefill,
         const Qwen3TTSGenerationOptions & options,
         float repetition_penalty = 1.05F);
+    int64_t release_cached_step_graph();
 
 private:
     std::unique_ptr<Impl> impl_;

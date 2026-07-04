@@ -6,7 +6,7 @@ Tired of juggling a dozen Conda environments, hundreds of Python packages, and d
 
 > [!IMPORTANT]
 > **CUDA performance headline:** multiple TTS paths already run **1.8x-5.0x faster than their Python reference paths** while cutting end-to-end latency by **45%-80%**.
-> **VibeVoice 1.5B:** generates a **90-minute podcast in 22 minutes** with **10 diffusion steps** and without quantization, runs about **4x faster than real time**, and is **2.8x faster than Python**.
+> **VibeVoice 1.5B:** generates a **93.9-minute podcast in 18.2 minutes** with **10 diffusion steps** and without quantization, running about **5.15x faster than real time**.
 
 It is built for real end-to-end execution rather than one-off model demos: the same runtime powers TTS, voice cloning, voice conversion, ASR, diarization, VAD, source separation, alignment, codec-style models, and higher-level workflows through a common framework surface.
 
@@ -20,14 +20,22 @@ Highlights:
 
 <p><strong><span style="font-size:1.1em;">The goal of the framework is to provide highly optimized, reusable building blocks for audio-related models, so new model integrations can be brought up faster, shared components can be improved once and benefit many families, and real end-to-end inference paths can stay efficient, maintainable, and portable.</span></strong></p>
 
+> [!TIP]
+> **Contribution focus:** the most helpful contributions right now are improvements to the UI, API server, and pipeline/workflow subsystems. These areas make the existing model surface easier to use, serve, compose, and validate. See [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
+>
+> **New model PRs:** before starting a new model port, **please check the supported model table because several families are already implemented or under testing**. If you do add a model, follow the validation style in [PR #19](https://github.com/0xShug0/audio.cpp/pull/19): include exact build/run commands, model paths or package ids, generated outputs, parity or path-test results, and relevant performance or memory notes.
+
 ## News
 
 > [!IMPORTANT]
-> **2026-06-30:** VibeVoice 1.5B is now released in the framework, bringing long-form, multi-speaker dialogue TTS into the normal audio.cpp model surface.
+> **2026-07-03:** Conv1DTransp module CUDA optimization: VibeVoice reaches **5.15x realtime** on **93.9-minute long-form generation**. Overall, VibeVoice inference time was reduced by **73.17%**, PocketTTS by **35.32%**, Chatterbox by **33.56%**, Qwen3-TTS by **30.60%**, HeartMuLa by **17.03%**, and VoxCPM2 by **14.7%** compared with the previous release.
 
-> [!TIP]
-> **2026-06-30:** More detailed usage documentation is now available in [docs/usage.md](docs/usage.md), covering model setup, CLI usage, server usage, and common workflows.
+> [!IMPORTANT]
+> **2026-07-02:** Music generation and source separation expanded in the released framework surface: ACE-Step 1.5 Turbo/Base, HeartMuLa, Stable Audio 3 Small Music/SFX and Medium, Mel-Band RoFormer, and HTDemucs are now available through the normal audio.cpp CLI/framework paths.
 
+- **2026-07-02:** VibeVoice 7B joins the 1.5B model, and full fine-tune adapters — language-model LoRA plus fine-tuned diffusion head and acoustic/semantic connectors — can now be merged at load time through `--load-option vibevoice.lora`.
+- **2026-06-30:** VibeVoice 1.5B is now released in the framework, bringing long-form, multi-speaker dialogue TTS into the normal audio.cpp model surface.
+- **2026-06-30:** More detailed usage documentation is now available in [docs/usage.md](docs/usage.md), covering model setup, CLI usage, server usage, and common workflows.
 - **2026-06-26:** The speech intelligence side grew with released Citrinet ASR, MarbleNet VAD, and Sortformer diarization paths.
 - **2026-06-25:** The first release wave landed with TTS, voice cloning, voice conversion, alignment, VAD, codec, and multilingual generation support across Chatterbox, MioCodec, MioTTS, OmniVoice, PocketTTS, Qwen3, SeedVC, Silero VAD, Vevo2, and VoxCPM2.
 
@@ -36,14 +44,18 @@ Highlights:
 Current model status in the framework:
 
 - `released`: The model is fully wired into the broader framework surface and ready for normal use.
-- `integration`: The model is end-to-end working and optimized, but not yet fully wired into the broader framework surface. Those models are expected to be added to the broader framework surface gradually over time.
-- `optimization`: The model is end-to-end working, but still needs more optimization work before it should be treated like a released or integration-level path.
+- `testing`: The model is implemented and working in this repo, and is still being validated, polished, or promoted into the broader released surface.
+- `optimization`: The model is end-to-end working, but still needs more optimization work before it should be treated like a released or testing-level path.
 
 | Family | Task | Supported language(s) | Supported variant(s) in this repo | Release status |
 |---|---|---|---|---|
+| **ace_step** | music generation, music editing | 50+ langs | ACE-Step 1.5 Turbo and Base with acestep-5Hz-lm-1.7B | **released** |
 | **chatterbox** | TTS, voice cloning | ar, da, de, el, en, es, fi, fr, hi, it, ko, ms, nl, no, pl, pt, sv, sw, tr | Chatterbox with 0.5B backbone | **released** |
 | **citrinet_asr** | ASR | en | Citrinet-256 | **released** |
+| **heartmula** | music generation | zh, en, ja, ko, es | HeartMuLa-oss-3B with HeartCodec-oss | **released** |
+| **htdemucs** | source separation | lang agnostic | HTDemucs, HTDemucs_ft | **released** |
 | **marblenet_vad** | VAD | lang agnostic | MarbleNet VAD | **released** |
+| **mel_band_roformer** | vocal separation | lang agnostic | Mel-Band RoFormer MLX vocal separation variants | **released** |
 | **miocodec** | audio codec, voice conversion backend | lang agnostic | MioCodec v2, 25 Hz, 44.1 kHz | **released** |
 | **miotts** | TTS, voice cloning | en, ja | MioTTS-1.7B | **released** |
 | **omnivoice** | TTS, voice cloning, voice design | 646+ langs | OmniVoice, Qwen3-0.6B based | **released** |
@@ -54,21 +66,18 @@ Current model status in the framework:
 | **seed_vc** | voice conversion | lang agnostic | SeedVC XLS-R + HiFT, SeedVC Whisper-small + BigVGAN | **released** |
 | **silero_vad** | VAD | lang agnostic | Silero VAD | **released** |
 | **sortformer_diar** | diarization | en | Sortformer-4spk-v1 | **released** |
+| **stable_audio** | music generation, sound generation, audio editing | en | Stable Audio 3 Small Music, Stable Audio 3 Small SFX, Stable Audio 3 Medium | **released** |
 | **vevo2** | TTS, singing generation, voice conversion, singing conversion, editing | en, zh | Vevo2 with Qwen2.5-0.5B AR model | **released** |
-| **vibevoice** | TTS, multi-speaker dialogue TTS | en, zh | VibeVoice-1.5B | **released** |
+| **vibevoice** | TTS, multi-speaker dialogue TTS | en, zh | VibeVoice-1.5B, VibeVoice-7B | **released** |
 | **voxcpm2** | TTS, voice cloning, voice design | ar, da, de, el, en, es, fi, fr, he, hi, id, it, ja, km, ko, lo, ms, my, nl, no, pl, pt, ru, sv, sw, th, tl, tr, vi, zh | VoxCPM2-2B, 48 kHz | **released** |
-| ace_step | music generation | 50+ langs | ACE-Step 1.5 with acestep-5Hz-lm-1.7B | integration |
 | audio_flamingo_next | audio understanding, ASR, audio captioning, audio QA | en, multilingual audio understanding | Audio Flamingo Next Instruct, Qwen2-7B based | optimization |
-| demucs | source separation | lang agnostic | HTDemucs, HTDemucs_ft | integration |
-| heartmula | music generation | zh, en, ja, ko, es | HeartMuLa-oss-3B with HeartCodec-oss | integration |
-| higgs_tts | TTS, voice cloning, expressive speech | 100+ languages | Higgs Audio v3 TTS 4B | integration |
-| irodori_tts | TTS, voice cloning, voice design | ja | Irodori-TTS-500M-v3, Irodori-TTS-600M-v3-VoiceDesign | integration |
-| kokoro_tts | TTS | en-us, en-gb | Kokoro-82M | integration |
-| moss_tts | TTS, voice cloning | zh, yue, en, ar, cs, da, nl, fi, fr, de, el, he, hi, hu, it, ja, ko, mk, ms, fa, pl, pt, ro, ru, es, sw, sv, tl, th, tr, vi | MOSS-TTS-Nano-100M | integration |
-| parakeet_tdt | ASR | en, es, fr, de, da, nl, fi, it, pl, pt, ru, bg, cs, el | Parakeet-TDT-0.6B-v3 | integration |
-| roformer | vocal separation | lang agnostic | Mel-Band-Roformer vocal separation variants | integration |
-| stable_audio | music generation, sound generation, audio editing | en | Stable Audio 3 Small Music, Stable Audio 3 Small SFX, Stable Audio 3 Medium | integration |
-| supertonic | TTS | en | Supertonic 3 | integration |
+| higgs_tts | TTS, voice cloning, expressive speech | 100+ languages | Higgs Audio v3 TTS 4B | testing |
+| index_tts2 | TTS, voice cloning, expressive speech | zh, en | IndexTTS-2 | testing |
+| irodori_tts | TTS, voice cloning, voice design | ja | Irodori-TTS-500M-v3, Irodori-TTS-600M-v3-VoiceDesign | testing |
+| kokoro_tts | TTS | en-us, en-gb | Kokoro-82M | testing |
+| moss_tts | TTS, voice cloning | zh, yue, en, ar, cs, da, nl, fi, fr, de, el, he, hi, hu, it, ja, ko, mk, ms, fa, pl, pt, ro, ru, es, sw, sv, tl, th, tr, vi | MOSS-TTS-Local | testing |
+| parakeet_tdt | ASR | en, es, fr, de, da, nl, fi, it, pl, pt, ru, bg, cs, el | Parakeet-TDT-0.6B-v3 | testing |
+| supertonic | TTS | en | Supertonic 3 | testing |
 
 PocketTTS language selection is a model-load option. When the model path points at the PocketTTS root, the loader uses `english` unless you pass `--load-option language=<name>`. Kyutai's normal non-English PocketTTS releases are smaller distilled language models intended for the fast PocketTTS path. The `_24l` variants are larger 24-layer, undistilled preview models that can sound better but are slower. Kyutai currently publishes French only as `french_24l`, not as a normal distilled `french` language directory, so French is not listed as a normal PocketTTS language here.
 
@@ -330,6 +339,7 @@ Useful CLI features:
 - `--inspect` prints discovered configs, weights, and capabilities
 - `--list-loaders` prints registered model families
 - `--batch-text-file <txt>` runs one offline request per non-empty line
+- `--batch-text-dir <dir>` runs one offline request per `.txt`, `.md`, or `.json` file, normalizing each file as one paragraph
 - `--batch-audio-dir <dir>` runs one offline request per `.wav`
 - `--request-sequence <json>` runs a multi-request offline session
 - `--batch-merge-audio none|concat` controls batch audio merge behavior
@@ -394,7 +404,7 @@ Recommended top-level install packages:
 
 | Package id | Model | HF ready-to-use repo |
 |---|---|---|
-| `ace_step` | ACE-Step 1.5 | No |
+| `ace_step` | ACE-Step 1.5 Turbo/Base | No |
 | `chatterbox` | Chatterbox | **Yes** |
 | `citrinet_asr` | Citrinet ASR converted layout | No |
 | `heartmula` | HeartMuLa | No |
@@ -404,10 +414,10 @@ Recommended top-level install packages:
 | `irodori_tts_600m_v3_voice_design` | Irodori-TTS 600M v3 VoiceDesign | No |
 | `kokoro_82m_bf16` | Kokoro 82M bf16 | **Yes** |
 | `marblenet_vad` | MarbleNet VAD converted layout | No |
-| `mel_band_roformer` | Mel RoFormer MLX | **Yes** |
+| `mel_band_roformer` | Mel-Band RoFormer MLX | **Yes** |
 | `miocodec_25hz_44k_v2` | MioCodec 25Hz 44.1kHz v2 | No |
 | `miotts_1_7b` | MioTTS 1.7B | No |
-| `moss_tts` | MOSS TTS Nano 100M | No |
+| `moss_tts` | MOSS-TTS-Local | No |
 | `omnivoice` | OmniVoice | **Yes** |
 | `parakeet_tdt_0_6b_v3` | Parakeet TDT 0.6B v3 | **Yes** |
 | `pocket_tts` | PocketTTS | **Yes** |
@@ -425,6 +435,7 @@ Recommended top-level install packages:
 | `supertonic_3` | Supertonic 3 | **Yes** |
 | `vevo2` | Vevo2 | No |
 | `vibevoice_1_5b` | VibeVoice 1.5B | No |
+| `vibevoice_7b` | VibeVoice 7B | No |
 | `voxcpm2` | VoxCPM2 | No |
 
 > [!WARNING]
@@ -492,6 +503,7 @@ cat > server.json <<'JSON'
 {
   "host": "127.0.0.1",
   "port": 8080,
+  "backend": "cuda",
   "device": 0,
   "threads": 1,
   "lazy_load": true,
@@ -522,6 +534,8 @@ JSON
 ```
 
 Set `"lazy_load": true` to register configured model ids at startup while loading each model only on first use. Use per-model `"lazy": true` or `"lazy": false` to override that default.
+
+Set top-level `"backend"` to `"cuda"`, `"cpu"`, `"vulkan"`, or `"metal"`. CUDA is the optimized path for audio.cpp; CPU, Vulkan, and Metal are intended for portability and testing when the binary is built with that backend, but performance and model coverage may be lower.
 
 > [!WARNING]
 > Lazy loading does not unload models after a request. Once a model is first used, the server keeps that model and session in memory for reuse until the server exits.
@@ -557,6 +571,9 @@ The main app-facing test tooling under `tools/` is `tools/audiocpp_cli/run_audio
 The Python-reference side of these tests usually requires more time-consuming setup than the C++ path because different models rely on different Python reference repos and dependency stacks. In practice, the framework-side tooling is fast to iterate on once models are installed, while Python parity runs often need extra environment preparation before they are ready.
 
 ## Performance Metrics
+
+> [!WARNING]
+> These Python-relative numbers were measured for the initial release. Several model paths have improved substantially since then, so the figures below should be read as the original release baseline rather than the latest peak performance.
 
 All performance metrics in this section were measured on Ubuntu with the CUDA backend on an NVIDIA GeForce RTX 5090. The Python-relative one-shot and long-lived-session comparisons come from direct framework/runtime API benchmark calls, not from `audiocpp_cli`; CLI path tests are separate and include app-layer request parsing, output writing, and other user-facing overhead.
 
@@ -626,6 +643,10 @@ For long-form TTS tests, each run uses the same 6,026-character, 1,028-word inpu
 | vevo2 | 457.68 | 52.47 | 0.115 | 8.72x |
 | voxcpm2 | 315.84 | 72.70 | 0.230 | 4.34x |
 | vibevoice | 5615.73 | 1376.84 | 0.245 | 4.08x |
+
+## Runtime Memory Options
+
+Some models expose memory-saver session options such as `ace_step.mem_saver=true`, `heartmula.mem_saver=true`, `stable_audio.mem_saver=true`, and `omnivoice.mem_saver=true`. These options keep the default output path unchanged but release staged graph/cache state after request phases to reduce resident VRAM; later requests may rebuild released graphs.
 
 ## Precision/Quantization Support
 

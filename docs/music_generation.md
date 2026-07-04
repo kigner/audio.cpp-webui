@@ -17,7 +17,7 @@ ACE-Step generates and edits music from prompts, lyrics, and optional source aud
 | Family | `ace_step` |
 | Model directory | `models/Ace-Step1.5` |
 | Task | `gen` |
-| Routes | `text2music`, `complete`, `lego`, `extract`, `cover-nofsq`, `repaint` |
+| Routes | `text2music`, `complete`, `lego`, `extract`, `cover`, `cover-nofsq`, `repaint` |
 | Main inputs | Prompt text, optional lyrics, optional source audio depending on route |
 | Languages | 19+ lyric languages supported by the model |
 
@@ -27,13 +27,14 @@ audiocpp_cli --task gen --family ace_step --model models/Ace-Step1.5 --backend c
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `--task-route` | `text2music`, `complete`, `lego`, `extract`, `cover-nofsq`, `repaint` | `text2music` | ACE-Step operation. |
+| `--task-route` | `text2music`, `complete`, `lego`, `extract`, `cover`, `cover-nofsq`, `repaint` | `text2music` | ACE-Step operation. |
 | `--text` | text | required | Music prompt or edit instruction. |
 | `--lyrics` | text | empty string | Vocal lyrics. |
 | `--audio` | WAV path | not set | Source audio for edit/extract/cover routes. |
 | `--duration-seconds` | float, `-1` for auto | `-1` | Target duration. |
 | `--num-inference-steps` | integer | `8` | Diffusion denoising steps. |
 | `--guidance-scale` | float | `1.0` | Diffusion guidance scale. |
+| `--session-option ace_step.mem_saver=true|false` | bool | `false` | Release staged graph/cache state after request phases to reduce resident VRAM. Later requests may rebuild released graphs. |
 
 ## Stable Audio
 
@@ -64,13 +65,14 @@ audiocpp_cli --task gen --family stable_audio --model models/stable-audio-3-smal
 |---|---|---:|---|
 | `--text` | prompt text | required | Music or sound-effect prompt. |
 | `--audio` | WAV path | not set | Source audio for init-audio or inpainting. |
-| `--duration-seconds` | seconds | `120` | Target duration per prompt. |
+| `--duration-seconds` | `seconds[,seconds...]` | `120` | Target duration per prompt. Use one value for all prompts, or one comma-separated value per Stable Audio `batch_size` item. |
 | `--num-inference-steps` | integer | `8` | RF diffusion steps. |
 | `--guidance-scale` | float | `1.0` | Classifier-free guidance scale. |
 | `--request-option audio_input_kind=<kind>` | `init_audio`, `inpaint_audio` | `init_audio` when `--audio` is provided | How the source audio is used. |
 | `--request-option init_noise_level=<float>` | `0..1` | `1.0` | Strength for init-audio conditioning. |
 | `--request-option inpaint_mask_start_seconds=<list>` | comma-separated seconds | not set | Inpaint region start times. |
 | `--request-option inpaint_mask_end_seconds=<list>` | comma-separated seconds | not set | Inpaint region end times. |
+| `--session-option stable_audio.mem_saver=true|false` | bool | `false` | Release staged graph/cache state after request phases to reduce resident VRAM. Later requests may rebuild released graphs. |
 
 ## HeartMuLa
 
@@ -113,5 +115,6 @@ audiocpp_cli --task gen --family heartmula --model models/HeartMuLa --backend cu
 | `--text-chunk-size` | chars | `4096` | Text chunk size for infinite mode. |
 | `--request-option infinite_chunk_audio_length_ms=<n>` | milliseconds | `240000` | Per-chunk audio cap for infinite mode. |
 | `--seed` | integer | `1234` | Generation seed. |
+| `--session-option heartmula.mem_saver=true|false` | bool | `false` | Release staged graph/cache state after AR/codec phases and infinite-mode chunks to reduce resident VRAM. Later requests may rebuild released graphs. |
 
 For backend weight-type controls, use `audiocpp_cli --inspect --model <model-dir> --family <family>`.

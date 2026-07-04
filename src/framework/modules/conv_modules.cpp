@@ -130,6 +130,65 @@ core::TensorValue add_bias_if_needed(
     return core::wrap_tensor(ggml_add(ctx.ggml, output_contiguous.tensor, bias_expanded.tensor), output.shape, GGML_TYPE_F32);
 }
 
+core::TensorValue build_conv_transpose1d_cuda_col2im_path(
+    core::ModuleBuildContext & ctx,
+    const ConvTranspose1dConfig & config,
+    const core::TensorValue & input,
+    const ConvTranspose1dWeights & weights,
+    const core::TensorShape & output_shape) {
+    if (!is_conv_transpose1d_col2im_fast_path_eligible(ctx, config)) {
+        throw std::runtime_error("ConvTranspose1dModule CUDA col2im path was requested for an ineligible config");
+    }
+    const auto input_contiguous = core::ensure_backend_addressable_layout(ctx, input);
+    auto weight_contiguous = tensor_layout::ensure_contiguous_layout_if_needed(ctx, weights.weight);
+    if (weight_contiguous.type != GGML_TYPE_F32) {
+        weight_contiguous = core::wrap_tensor(ggml_cast(ctx.ggml, weight_contiguous.tensor, GGML_TYPE_F32), weight_contiguous.shape, GGML_TYPE_F32);
+    }
+    auto * weight_perm = ggml_reshape_2d(
+        ctx.ggml,
+        ggml_cont(ctx.ggml, ggml_permute(ctx.ggml, weight_contiguous.tensor, 1, 2, 0, 3)),
+        config.in_channels,
+        config.kernel_size * config.out_channels);
+    ggml_tensor * bias_matrix = nullptr;
+    if (config.use_bias) {
+        if (!weights.bias.has_value()) {
+            throw std::runtime_error("ConvTranspose1dModule col2im fast path requires bias when use_bias is true");
+        }
+        core::validate_shape(*weights.bias, core::TensorShape::from_dims({config.out_channels}), "bias");
+        bias_matrix = ggml_reshape_2d(ctx.ggml, weights.bias->tensor, 1, config.out_channels);
+    }
+    core::TensorValue output;
+    for (int64_t batch_index = 0; batch_index < input.shape.dims[0]; ++batch_index) {
+        auto * batch_input = ggml_view_2d(
+            ctx.ggml,
+            input_contiguous.tensor,
+            input_contiguous.tensor->ne[0],
+            input_contiguous.tensor->ne[1],
+            input_contiguous.tensor->nb[1],
+            static_cast<size_t>(batch_index) * input_contiguous.tensor->nb[2]);
+        auto * transposed_input = ggml_cont(ctx.ggml, ggml_transpose(ctx.ggml, batch_input));
+        auto * columns = ggml_mul_mat(ctx.ggml, weight_perm, transposed_input);
+        auto * batch_output = ggml_col2im_1d(
+            ctx.ggml,
+            columns,
+            config.stride,
+            static_cast<int>(config.out_channels),
+            config.padding);
+        if (bias_matrix != nullptr) {
+            batch_output = ggml_add(ctx.ggml, batch_output, bias_matrix);
+        }
+        auto batch_value = core::wrap_tensor(
+            ggml_reshape_3d(ctx.ggml, batch_output, batch_output->ne[0], batch_output->ne[1], 1),
+            core::TensorShape::from_dims({1, config.out_channels, batch_output->ne[0]}),
+            GGML_TYPE_F32);
+        if (batch_value.shape.dims[2] != output_shape.dims[2]) {
+            throw std::runtime_error("ConvTranspose1dModule col2im fast path produced unexpected frame count");
+        }
+        output = output.valid() ? ConcatModule({0}).build(ctx, output, batch_value) : batch_value;
+    }
+    return output;
+}
+
 core::TensorValue view_batch_matrix(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input,
@@ -147,6 +206,12 @@ core::TensorValue view_batch_matrix(
 }
 
 }  // namespace
+
+bool is_conv_transpose1d_col2im_fast_path_eligible(
+    const core::ModuleBuildContext & ctx,
+    const ConvTranspose1dConfig & config) noexcept {
+    return ctx.backend_type == core::BackendType::Cuda && config.dilation == 1;
+}
 
 Conv1dModule::Conv1dModule(Conv1dConfig config) : config_(config) {
     if (config_.in_channels <= 0 || config_.out_channels <= 0 || config_.kernel_size <= 0) {
@@ -347,6 +412,9 @@ core::TensorValue ConvTranspose1dModule::build(
         "weight");
     const auto output_shape = core::TensorShape::from_dims(
         {input.shape.dims[0], config_.out_channels, conv_transpose1d_output_frames(config_, input.shape.dims[2])});
+    if (is_conv_transpose1d_col2im_fast_path_eligible(ctx, config_)) {
+        return build_conv_transpose1d_cuda_col2im_path(ctx, config_, input, weights, output_shape);
+    }
     const auto input_contiguous = ensure_f32(ctx, tensor_layout::ensure_contiguous_layout_if_needed(ctx, input));
     const auto weight_contiguous = conv_transpose1d_weight(ctx, weights.weight);
     core::TensorValue output;

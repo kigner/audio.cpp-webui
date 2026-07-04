@@ -45,7 +45,6 @@ constexpr int64_t kDecodeSamplesPerCode = 1920;
 constexpr int64_t kChunkCodes = 64;
 constexpr int64_t kLeftContextCodes = 25;
 constexpr float kCodebookEps = 1.0e-5F;
-constexpr float kSnakeEps = 1.0e-9F;
 constexpr float kMaskNegInf = -1.0e9F;
 
 struct GgmlContextDeleter {
@@ -579,7 +578,8 @@ core::TensorValue causal_conv_transpose1d(
         static_cast<int>(weights.stride),
         0,
         1,
-        weights.use_bias}).build(build_ctx, input, binding::conv_transpose1d_data(constants, weights.weight, weights.bias));
+        weights.use_bias,
+    }).build(build_ctx, input, binding::conv_transpose1d_data(constants, weights.weight, weights.bias));
     if (right_trim <= 0) {
         return output_bct;
     }
@@ -600,18 +600,35 @@ core::TensorValue causal_conv_transpose1d(
         GGML_TYPE_F32);
 }
 
+std::vector<float> snake_alpha_exp(const std::vector<float> & alpha) {
+    std::vector<float> out(alpha.size());
+    std::transform(alpha.begin(), alpha.end(), out.begin(), [](float value) { return std::exp(value); });
+    return out;
+}
+
+std::vector<float> snake_inv_beta_exp(const std::vector<float> & beta) {
+    std::vector<float> out(beta.size());
+    std::transform(beta.begin(), beta.end(), out.begin(), [](float value) { return 1.0F / (std::exp(value) + 1.0e-9F); });
+    return out;
+}
+
 core::TensorValue snake_beta(
     core::ModuleBuildContext & build_ctx,
     const core::TensorValue & input,
-    const core::TensorValue & alpha_param,
-    const core::TensorValue & beta_param,
-    const core::TensorValue & eps_tensor) {
-    auto * alpha = ggml_exp(build_ctx.ggml, alpha_param.tensor);
-    auto * beta = ggml_exp(build_ctx.ggml, beta_param.tensor);
-    auto * periodic = ggml_sqr(build_ctx.ggml, ggml_sin(build_ctx.ggml, ggml_mul(build_ctx.ggml, input.tensor, alpha)));
-    auto * denom = ggml_add(build_ctx.ggml, beta, eps_tensor.tensor);
+    common::ConstantTensorCache & constants,
+    const std::vector<float> & alpha,
+    const std::vector<float> & beta) {
+    auto alpha_exp = constants.make_f32(
+        core::TensorShape::from_dims({1, static_cast<int64_t>(alpha.size()), 1}),
+        snake_alpha_exp(alpha));
+    auto inv_beta_exp = constants.make_f32(
+        core::TensorShape::from_dims({1, static_cast<int64_t>(beta.size()), 1}),
+        snake_inv_beta_exp(beta));
+    auto * periodic = ggml_sqr(
+        build_ctx.ggml,
+        ggml_sin(build_ctx.ggml, ggml_mul(build_ctx.ggml, input.tensor, alpha_exp.tensor)));
     return core::wrap_tensor(
-        ggml_add(build_ctx.ggml, input.tensor, ggml_div(build_ctx.ggml, periodic, denom)),
+        ggml_add(build_ctx.ggml, input.tensor, ggml_mul(build_ctx.ggml, periodic, inv_beta_exp.tensor)),
         input.shape,
         GGML_TYPE_F32);
 }
@@ -851,21 +868,20 @@ core::TensorValue residual_unit(
     core::ModuleBuildContext & build_ctx,
     const core::TensorValue & input,
     const ResidualUnitWeights & weights,
-    common::ConstantTensorCache & constants,
-    const core::TensorValue & snake_eps) {
+    common::ConstantTensorCache & constants) {
     auto hidden = snake_beta(
         build_ctx,
         input,
-        constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(weights.act1_alpha.size()), 1}), weights.act1_alpha),
-        constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(weights.act1_beta.size()), 1}), weights.act1_beta),
-        snake_eps);
+        constants,
+        weights.act1_alpha,
+        weights.act1_beta);
     hidden = causal_conv1d(build_ctx, hidden, weights.conv1, constants);
     hidden = snake_beta(
         build_ctx,
         hidden,
-        constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(weights.act2_alpha.size()), 1}), weights.act2_alpha),
-        constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(weights.act2_beta.size()), 1}), weights.act2_beta),
-        snake_eps);
+        constants,
+        weights.act2_alpha,
+        weights.act2_beta);
     hidden = causal_conv1d(build_ctx, hidden, weights.conv2, constants);
     return modules::AddModule{}.build(build_ctx, input, hidden);
 }
@@ -972,25 +988,24 @@ public:
             hidden = convnext(build_ctx, hidden, stage.convnext, constants);
         }
         hidden = causal_conv1d(build_ctx, hidden, weights_->decoder_input_conv, constants);
-        auto snake_eps = constants.make_f32(core::TensorShape::from_dims({1, 1, 1}), std::vector<float>{kSnakeEps});
         for (const auto & block : weights_->decoder_blocks) {
             hidden = snake_beta(
                 build_ctx,
                 hidden,
-                constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(block.input_alpha.size()), 1}), block.input_alpha),
-                constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(block.input_beta.size()), 1}), block.input_beta),
-                snake_eps);
+                constants,
+                block.input_alpha,
+                block.input_beta);
             hidden = causal_conv_transpose1d(build_ctx, hidden, block.upconv, constants);
             for (const auto & unit : block.residual_units) {
-                hidden = residual_unit(build_ctx, hidden, unit, constants, snake_eps);
+                hidden = residual_unit(build_ctx, hidden, unit, constants);
             }
         }
         hidden = snake_beta(
             build_ctx,
             hidden,
-            constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(weights_->output_alpha.size()), 1}), weights_->output_alpha),
-            constants.make_f32(core::TensorShape::from_dims({1, static_cast<int64_t>(weights_->output_beta.size()), 1}), weights_->output_beta),
-            snake_eps);
+            constants,
+            weights_->output_alpha,
+            weights_->output_beta);
         output_ = ggml_clamp(ctx_.get(), causal_conv1d(build_ctx, hidden, weights_->output_conv, constants).tensor, -1.0F, 1.0F);
         ggml_set_output(output_);
         graph_ = ggml_new_graph_custom(ctx_.get(), graph_node_capacity(config), false);

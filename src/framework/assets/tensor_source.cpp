@@ -13,6 +13,9 @@
 namespace engine::assets {
 namespace {
 
+constexpr int64_t kParallelF32ConvertElements = 1ll << 20;
+constexpr int64_t kF32ConvertChunkElements = 1ll << 16;
+
 core::TensorShape shape_from_dims(const std::vector<int64_t> & dims) {
     if (dims.empty() || dims.size() > core::kMaxTensorRank) {
         throw std::runtime_error("tensor rank must be between 1 and 4");
@@ -219,6 +222,48 @@ void set_backend_tensor_from_f32(
     const auto bytes = quantize_f32_rows(name, values, shape, type);
     set_tensor_bytes(tensor, bytes.data(), bytes.size(), name);
 }
+
+}  // namespace
+
+void set_backend_tensor_from_f32_parallel(
+    ggml_tensor * tensor,
+    std::string_view name,
+    const std::vector<float> & values,
+    const core::TensorShape & shape,
+    ggml_type type) {
+    if (static_cast<int64_t>(values.size()) < kParallelF32ConvertElements ||
+        (type != GGML_TYPE_F16 && type != GGML_TYPE_BF16)) {
+        set_backend_tensor_from_f32(tensor, name, values, shape, type);
+        return;
+    }
+
+    if (type == GGML_TYPE_F16) {
+        std::vector<ggml_fp16_t> converted(values.size());
+        const int64_t count = static_cast<int64_t>(values.size());
+        const int64_t chunks = (count + kF32ConvertChunkElements - 1) / kF32ConvertChunkElements;
+        #pragma omp parallel for schedule(static)
+        for (int64_t chunk = 0; chunk < chunks; ++chunk) {
+            const int64_t offset = chunk * kF32ConvertChunkElements;
+            const int64_t length = std::min(kF32ConvertChunkElements, count - offset);
+            ggml_fp32_to_fp16_row(values.data() + offset, converted.data() + offset, length);
+        }
+        set_tensor_bytes(tensor, converted.data(), converted.size() * sizeof(ggml_fp16_t), name);
+        return;
+    }
+
+    std::vector<ggml_bf16_t> converted(values.size());
+    const int64_t count = static_cast<int64_t>(values.size());
+    const int64_t chunks = (count + kF32ConvertChunkElements - 1) / kF32ConvertChunkElements;
+    #pragma omp parallel for schedule(static)
+    for (int64_t chunk = 0; chunk < chunks; ++chunk) {
+        const int64_t offset = chunk * kF32ConvertChunkElements;
+        const int64_t length = std::min(kF32ConvertChunkElements, count - offset);
+        ggml_fp32_to_bf16_row(values.data() + offset, converted.data() + offset, length);
+    }
+    set_tensor_bytes(tensor, converted.data(), converted.size() * sizeof(ggml_bf16_t), name);
+}
+
+namespace {
 
 std::vector<std::byte> encode_f32_tensor_data(
     std::string_view name,

@@ -84,7 +84,12 @@ AcousticPreparedRuntime AcousticModel::prepare_runtime(
         && runtime_cache_.threads == threads
         && runtime_cache_.manifest == &manifest
         && runtime_cache_.prompt_capacity >= prompt_capacity
-        && runtime_cache_.initial_cache_capacity >= initial_cache_capacity
+        // The step runtime bakes the voice-prefix slot layout at creation: prompt KV
+        // destinations start at initial_cache_capacity and the prefix attention view
+        // spans exactly that many slots. Reusing a runtime built for a different prefix
+        // length misaligns the KV slots against the cache validity accounting, so the
+        // prefix capacity must match exactly (not merely fit).
+        && runtime_cache_.initial_cache_capacity == initial_cache_capacity
         && runtime_cache_.max_steps_capacity >= max_steps_capacity
         && runtime_cache_.flow_weights_view_context_bytes == flow_weights_view_context_bytes
         && runtime_cache_.flow_step_graph_context_bytes == flow_step_graph_context_bytes;

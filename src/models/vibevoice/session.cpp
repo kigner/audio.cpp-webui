@@ -2,11 +2,14 @@
 
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/assets/tensor_source.h"
+#include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/runtime/options.h"
+#include "engine/models/vibevoice/lora.h"
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -15,6 +18,8 @@
 
 namespace engine::models::vibevoice {
 namespace {
+
+using Clock = std::chrono::steady_clock;
 
 constexpr size_t kMaxReferenceVoiceStates = 4;
 constexpr int64_t kCudaVoicePromptMaxSeconds = 30;
@@ -52,6 +57,8 @@ const runtime::SessionOptions & require_supported_backend_options(const runtime:
             key == "vibevoice.decoder_weight_type" ||
             key == "vibevoice.diffusion_head_weight_type") {
             validate_weight_storage(engine::assets::parse_tensor_storage_type(value), key.c_str());
+        } else if (key == "vibevoice.lora" || key == "vibevoice.lora_scale") {
+            // Validated where the adapter is loaded.
         } else if (key.rfind("vibevoice.", 0) == 0) {
             throw std::runtime_error("unknown VibeVoice session option: " + key);
         }
@@ -195,7 +202,7 @@ VibeVoiceSession::VibeVoiceSession(
     std::shared_ptr<const VibeVoiceAssets> assets)
     : runtime::RuntimeSessionBase(require_supported_backend_options(options)),
       task_(task),
-      assets_(require_assets(std::move(assets))),
+      assets_(apply_vibevoice_finetune_options(require_assets(std::move(assets)), options.options)),
       text_tokenizer_(assets_),
       audio_tokenizer_(
           assets_,
@@ -265,6 +272,7 @@ void VibeVoiceSession::prepare(const runtime::SessionPreparationRequest & reques
 
 runtime::TaskResult VibeVoiceSession::run(const runtime::TaskRequest & request) {
     require_prepared("VibeVoice run");
+    const auto wall_start = Clock::now();
     auto vibevoice_request = make_request(request);
     auto result = generate_vibevoice(
         vibevoice_request,
@@ -277,6 +285,7 @@ runtime::TaskResult VibeVoiceSession::run(const runtime::TaskRequest & request) 
         negative_decoder_cache_);
     runtime::TaskResult out;
     out.audio_output = std::move(result.audio);
+    engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
     return out;
 }
 

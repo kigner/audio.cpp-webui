@@ -180,6 +180,7 @@ HttpRequest read_http_request(SocketHandle socket) {
     }
     const auto query = request.path.find('?');
     if (query != std::string::npos) {
+        request.query = request.path.substr(query + 1);
         request.path = request.path.substr(0, query);
     }
 

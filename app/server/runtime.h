@@ -34,10 +34,15 @@ private:
     void load_models();
     void ensure_model_loaded_locked(LoadedModel & model);
     LoadedModel & require_model(const engine::io::json::Value & body);
-    engine::runtime::TaskResult run_model(LoadedModel & model, const engine::runtime::TaskRequest & request);
+    struct TimedTaskResult;
+    TimedTaskResult run_model(LoadedModel & model, const engine::runtime::TaskRequest & request);
     HttpResponse handle_speech(const std::string & body_text);
-    HttpResponse handle_transcription(const std::string & body_text);
+    HttpResponse handle_transcription(const HttpRequest & request);
+    HttpResponse handle_transcription_json(const std::string & body_text);
+    HttpResponse handle_transcription_multipart(const std::string & body_text, const std::string & boundary);
+    HttpResponse run_transcription(LoadedModel & model, const engine::runtime::TaskRequest & request);
     HttpResponse handle_generic_run(const std::string & body_text);
+    HttpResponse handle_voices(const HttpRequest & request) const;
     std::string models_json() const;
 
     ServerConfig config_;

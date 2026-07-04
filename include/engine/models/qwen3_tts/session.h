@@ -62,6 +62,7 @@ private:
     engine::assets::TensorStorageType speech_encoder_weight_storage_type_ = engine::assets::TensorStorageType::Native;
     engine::assets::TensorStorageType speech_decoder_weight_storage_type_ = engine::assets::TensorStorageType::Native;
     engine::assets::TensorStorageType conv_weight_storage_type_ = engine::assets::TensorStorageType::F32;
+    bool mem_saver_ = false;
     Qwen3TextTokenizer text_tokenizer_;
     Qwen3Talker talker_;
     std::shared_ptr<const Qwen3TalkerWeightsRuntime> talker_weights_;

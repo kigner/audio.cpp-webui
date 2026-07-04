@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include "../cli/args.h"
 #include "../cli/request.h"
 
 #include "engine/framework/io/json.h"
@@ -20,12 +21,21 @@ std::unordered_map<std::string, std::string> options_from_object(const engine::i
 
 }  // namespace
 
+engine::core::BackendType parse_server_backend(const std::string & value) {
+    auto backend = minitts::cli::parse_backend(value);
+    if (backend == engine::core::BackendType::BestAvailable) {
+        throw std::runtime_error("unsupported server backend: " + value);
+    }
+    return backend;
+}
+
 ServerConfig load_server_config(const std::filesystem::path & path) {
     const auto root = engine::io::json::parse_file(path);
     const auto base = path.parent_path();
     ServerConfig config;
     config.host = engine::io::json::optional_string(root, "host", config.host);
     config.port = engine::io::json::optional_i32(root, "port", config.port);
+    config.backend = parse_server_backend(engine::io::json::optional_string(root, "backend", "cuda"));
     config.device = engine::io::json::optional_i32(root, "device", config.device);
     config.threads = engine::io::json::optional_i32(root, "threads", config.threads);
     config.lazy_load = engine::io::json::optional_bool(root, "lazy_load", config.lazy_load);

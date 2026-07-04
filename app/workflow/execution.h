@@ -2,7 +2,9 @@
 
 #include "engine/framework/runtime/session.h"
 
+#include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -46,6 +48,7 @@ AppBatchResult run_offline_batch(
     engine::runtime::IVoiceTaskSession & session,
     engine::runtime::IOfflineVoiceTaskSession & offline,
     const AppBatchRequest & batch,
-    AudioMergeMode audio_merge_mode);
+    AudioMergeMode audio_merge_mode,
+    const std::function<void(size_t, const AppRequestResult &)> & on_result = {});
 
 }  // namespace minitts::app

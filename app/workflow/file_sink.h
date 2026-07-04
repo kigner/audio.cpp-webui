@@ -2,6 +2,7 @@
 
 #include "execution.h"
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -26,6 +27,13 @@ void emit_task_result(
     const std::optional<std::filesystem::path> & segments_out,
     const std::optional<std::filesystem::path> & turns_out,
     const std::optional<std::filesystem::path> & words_out);
+void emit_batch_item_result(
+    size_t index,
+    const AppRequestResult & item,
+    const FileOutputPolicy & policy);
+void emit_batch_summary(
+    const AppBatchResult & batch,
+    const FileOutputPolicy & policy);
 void emit_batch_result(
     const AppBatchResult & batch,
     const FileOutputPolicy & policy);

@@ -8,6 +8,7 @@ namespace minitts::server {
 struct HttpRequest {
     std::string method;
     std::string path;
+    std::string query;  // raw query string, e.g. "model=pocket-tts" (no leading '?')
     std::unordered_map<std::string, std::string> headers;
     std::string body;
 };

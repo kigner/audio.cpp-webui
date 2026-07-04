@@ -1,0 +1,613 @@
+#include "engine/models/heartmula/assets.h"
+
+#include "engine/framework/assets/resource_bundle.h"
+#include "engine/framework/io/filesystem.h"
+#include "engine/framework/io/json.h"
+
+#include <algorithm>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+
+namespace engine::models::heartmula {
+namespace json = engine::io::json;
+namespace {
+
+std::filesystem::path resolve_model_root(const std::filesystem::path & model_path) {
+    if (engine::io::is_existing_directory(model_path)) {
+        return std::filesystem::weakly_canonical(model_path);
+    }
+    if (engine::io::is_existing_file(model_path)) {
+        return std::filesystem::weakly_canonical(model_path.parent_path());
+    }
+    throw std::runtime_error("HeartMuLa model path does not exist: " + model_path.string());
+}
+
+assets::ResourceBundle make_resource_bundle(const std::filesystem::path & model_path) {
+    assets::ResourceBundle resources(resolve_model_root(model_path));
+    resources.add_model_files({
+        {"tokenizer_json", "tokenizer.json", true},
+        {"generation_config", "gen_config.json", true},
+        {"mula_config", "HeartMuLa-oss-3B/config.json", true},
+        {"mula_index", "HeartMuLa-oss-3B/model.safetensors.index.json", true},
+        {"codec_config", "HeartCodec-oss/config.json", true},
+        {"codec_index", "HeartCodec-oss/model.safetensors.index.json", true},
+    });
+    return resources;
+}
+
+void require_positive(int64_t value, const char * label) {
+    if (value <= 0) {
+        throw std::runtime_error(std::string("HeartMuLa config contains non-positive ") + label);
+    }
+}
+
+void require_positive_f32(float value, const char * label) {
+    if (value <= 0.0F) {
+        throw std::runtime_error(std::string("HeartMuLa config contains non-positive ") + label);
+    }
+}
+
+void require_string_value(const std::string & actual, const char * expected, const char * label) {
+    if (actual != expected) {
+        throw std::runtime_error(
+            std::string("HeartMuLa config ") + label + " mismatch: expected " + expected + ", got " + actual);
+    }
+}
+
+void require_divisible(int64_t value, int64_t divisor, const char * label) {
+    if (divisor <= 0 || value % divisor != 0) {
+        throw std::runtime_error(std::string("HeartMuLa config invalid divisibility for ") + label);
+    }
+}
+
+void require_equal(int64_t actual, int64_t expected, const char * label) {
+    if (actual != expected) {
+        throw std::runtime_error(
+            std::string("HeartMuLa config ") + label + " mismatch: expected " + std::to_string(expected) +
+            ", got " + std::to_string(actual));
+    }
+}
+
+void require_non_empty(const std::vector<int64_t> & values, const char * label) {
+    if (values.empty()) {
+        throw std::runtime_error(std::string("HeartMuLa config contains empty ") + label);
+    }
+}
+
+void require_positive_values(const std::vector<int64_t> & values, const char * label) {
+    for (const auto value : values) {
+        require_positive(value, label);
+    }
+}
+
+int64_t pow2_i64(size_t exponent) {
+    int64_t value = 1;
+    for (size_t i = 0; i < exponent; ++i) {
+        value *= 2;
+    }
+    return value;
+}
+
+int64_t llama_mlp_hidden_dim(int64_t dim) {
+    const int64_t multiple_of = 256;
+    int64_t hidden_dim = 4 * dim;
+    hidden_dim = 2 * hidden_dim / 3;
+    return multiple_of * ((hidden_dim + multiple_of - 1) / multiple_of);
+}
+
+HeartMuLaTransformerConfig transformer_flavor_config(const std::string & flavor) {
+    HeartMuLaTransformerConfig config;
+    config.flavor = flavor;
+    if (flavor == "llama-3B") {
+        config.num_layers = 28;
+        config.num_heads = 24;
+        config.num_kv_heads = 8;
+        config.embed_dim = 3072;
+        config.max_seq_len = 8192;
+        config.intermediate_dim = 8192;
+    } else if (flavor == "llama-300M") {
+        config.num_layers = 3;
+        config.num_heads = 8;
+        config.num_kv_heads = 4;
+        config.embed_dim = 3072;
+        config.max_seq_len = 2048;
+        config.intermediate_dim = 8192;
+    } else {
+        throw std::runtime_error("HeartMuLa unsupported transformer flavor: " + flavor);
+    }
+    require_divisible(config.embed_dim, config.num_heads, (flavor + " hidden/head").c_str());
+    require_divisible(config.num_heads, config.num_kv_heads, (flavor + " grouped query heads").c_str());
+    config.head_dim = config.embed_dim / config.num_heads;
+    return config;
+}
+
+HeartMuLaConfig parse_mula_config(const assets::ResourceBundle & resources) {
+    const auto root = resources.parse_json("mula_config");
+    HeartMuLaConfig config;
+    config.model_type = json::optional_string(root, "model_type", "");
+    require_string_value(config.model_type, "heartmula", "model_type");
+    config.torch_dtype = json::optional_string(root, "torch_dtype", config.torch_dtype);
+    require_string_value(config.torch_dtype, "float32", "torch_dtype");
+    config.backbone_flavor = json::require_string(root, "backbone_flavor");
+    config.decoder_flavor = json::require_string(root, "decoder_flavor");
+    config.text_vocab_size = json::require_i64(root, "text_vocab_size");
+    config.audio_vocab_size = json::require_i64(root, "audio_vocab_size");
+    config.audio_num_codebooks = json::require_i64(root, "audio_num_codebooks");
+    config.muq_dim = json::require_i64(root, "muq_dim");
+    config.backbone = transformer_flavor_config(config.backbone_flavor);
+    config.decoder = transformer_flavor_config(config.decoder_flavor);
+
+    require_positive(config.text_vocab_size, "text_vocab_size");
+    require_positive(config.audio_vocab_size, "audio_vocab_size");
+    require_positive(config.audio_num_codebooks, "audio_num_codebooks");
+    require_positive(config.muq_dim, "muq_dim");
+    if (config.audio_num_codebooks < 2) {
+        throw std::runtime_error("HeartMuLa audio_num_codebooks must be at least 2");
+    }
+    return config;
+}
+
+HeartMuLaGenerationConfig parse_generation_config(const assets::ResourceBundle & resources) {
+    const auto root = resources.parse_json("generation_config");
+    HeartMuLaGenerationConfig config;
+    config.text_bos_id = json::require_i64(root, "text_bos_id");
+    config.text_eos_id = json::require_i64(root, "text_eos_id");
+    config.audio_eos_id = json::require_i64(root, "audio_eos_id");
+    config.empty_id = json::require_i64(root, "empty_id");
+    require_positive(config.text_bos_id, "text_bos_id");
+    require_positive(config.text_eos_id, "text_eos_id");
+    require_positive(config.audio_eos_id, "audio_eos_id");
+    return config;
+}
+
+HeartCodecConfig parse_codec_config(const assets::ResourceBundle & resources) {
+    const auto root = resources.parse_json("codec_config");
+    HeartCodecConfig config;
+    config.model_type = json::optional_string(root, "model_type", "");
+    require_string_value(config.model_type, "heartcodec", "codec model_type");
+    config.torch_dtype = json::optional_string(root, "torch_dtype", config.torch_dtype);
+    require_string_value(config.torch_dtype, "float32", "codec torch_dtype");
+    config.dim = json::require_i64(root, "dim");
+    config.codebook_size = json::require_i64(root, "codebook_size");
+    config.decay = json::optional_f32(root, "decay", config.decay);
+    config.commitment_weight = json::optional_f32(root, "commitment_weight", config.commitment_weight);
+    config.threshold_ema_dead_code = json::require_i64(root, "threshold_ema_dead_code");
+    config.use_cosine_sim = json::optional_bool(root, "use_cosine_sim", config.use_cosine_sim);
+    config.codebook_dim = json::require_i64(root, "codebook_dim");
+    config.num_quantizers = json::require_i64(root, "num_quantizers");
+    config.attention_head_dim = json::require_i64(root, "attention_head_dim");
+    config.in_channels = json::require_i64(root, "in_channels");
+    config.norm_type = json::require_string(root, "norm_type");
+    config.num_attention_heads = json::require_i64(root, "num_attention_heads");
+    config.num_layers = json::require_i64(root, "num_layers");
+    config.num_layers_2 = json::require_i64(root, "num_layers_2");
+    config.out_channels = json::require_i64(root, "out_channels");
+    config.num_bands = json::require_i64(root, "num_bands");
+    config.sample_rate = static_cast<int>(json::require_i64(root, "sample_rate"));
+    config.causal = json::optional_bool(root, "causal", config.causal);
+    config.num_samples = json::require_i64(root, "num_samples");
+    config.downsample_factors = json::require_i64_array(root, "downsample_factors");
+    config.downsample_kernel_sizes = json::require_i64_array(root, "downsample_kernel_sizes");
+    config.upsample_factors = json::require_i64_array(root, "upsample_factors");
+    config.upsample_kernel_sizes = json::require_i64_array(root, "upsample_kernel_sizes");
+    config.latent_hidden_dim = json::require_i64(root, "latent_hidden_dim");
+    config.default_kernel_size = json::require_i64(root, "default_kernel_size");
+    config.delay_kernel_size = json::require_i64(root, "delay_kernel_size");
+    config.init_channel = json::require_i64(root, "init_channel");
+    config.res_kernel_size = json::require_i64(root, "res_kernel_size");
+
+    require_positive(config.dim, "codec dim");
+    require_positive(config.codebook_size, "codec codebook_size");
+    require_positive_f32(config.decay, "codec decay");
+    require_positive_f32(config.commitment_weight, "codec commitment_weight");
+    require_positive(config.threshold_ema_dead_code, "codec threshold_ema_dead_code");
+    require_positive(config.codebook_dim, "codec codebook_dim");
+    require_positive(config.num_quantizers, "codec num_quantizers");
+    require_positive(config.attention_head_dim, "codec attention_head_dim");
+    require_positive(config.in_channels, "codec in_channels");
+    require_positive(config.num_attention_heads, "codec num_attention_heads");
+    require_positive(config.num_layers, "codec num_layers");
+    require_positive(config.num_layers_2, "codec num_layers_2");
+    require_positive(config.out_channels, "codec out_channels");
+    require_positive(config.num_bands, "codec num_bands");
+    require_positive(config.sample_rate, "codec sample_rate");
+    require_positive(config.num_samples, "codec num_samples");
+    require_positive(config.latent_hidden_dim, "codec latent_hidden_dim");
+    require_positive(config.default_kernel_size, "codec default_kernel_size");
+    require_positive(config.delay_kernel_size, "codec delay_kernel_size");
+    require_positive(config.init_channel, "codec init_channel");
+    require_positive(config.res_kernel_size, "codec res_kernel_size");
+    require_non_empty(config.downsample_factors, "downsample_factors");
+    require_non_empty(config.downsample_kernel_sizes, "downsample_kernel_sizes");
+    require_non_empty(config.upsample_factors, "upsample_factors");
+    require_non_empty(config.upsample_kernel_sizes, "upsample_kernel_sizes");
+    require_positive_values(config.downsample_factors, "downsample_factors");
+    require_positive_values(config.downsample_kernel_sizes, "downsample_kernel_sizes");
+    require_positive_values(config.upsample_factors, "upsample_factors");
+    require_positive_values(config.upsample_kernel_sizes, "upsample_kernel_sizes");
+    require_equal(
+        static_cast<int64_t>(config.downsample_factors.size()),
+        static_cast<int64_t>(config.downsample_kernel_sizes.size()),
+        "downsample factor/kernel count");
+    require_equal(
+        static_cast<int64_t>(config.upsample_factors.size()),
+        static_cast<int64_t>(config.upsample_kernel_sizes.size()),
+        "upsample factor/kernel count");
+    require_string_value(config.norm_type, "ada_norm_single", "codec norm_type");
+    if (!config.causal) {
+        throw std::runtime_error("HeartCodec config must be causal");
+    }
+    return config;
+}
+
+class ShardedTensorSource final : public assets::TensorSource {
+public:
+    ShardedTensorSource(
+        std::filesystem::path index_path,
+        std::string model_label,
+        std::unordered_map<std::string, std::string> weight_map,
+        std::unordered_map<std::string, std::shared_ptr<const assets::TensorSource>> shard_sources)
+        : index_path_(std::move(index_path)),
+          model_label_(std::move(model_label)),
+          weight_map_(std::move(weight_map)),
+          shard_sources_(std::move(shard_sources)) {}
+
+    const std::filesystem::path & source_path() const noexcept override {
+        return index_path_;
+    }
+
+    bool has_tensor(std::string_view name) const noexcept override {
+        const auto route = weight_map_.find(std::string(name));
+        if (route == weight_map_.end()) {
+            return false;
+        }
+        const auto source = shard_sources_.find(route->second);
+        return source != shard_sources_.end() && source->second->has_tensor(name);
+    }
+
+    assets::TensorMetadata require_metadata(std::string_view name) const override {
+        return source_for(name)->require_metadata(name);
+    }
+
+    std::vector<assets::TensorMetadata> tensors() const override {
+        std::vector<assets::TensorMetadata> out;
+        out.reserve(weight_map_.size());
+        for (const auto & [name, _] : weight_map_) {
+            out.push_back(require_metadata(name));
+        }
+        std::sort(out.begin(), out.end(), [](const auto & lhs, const auto & rhs) {
+            return lhs.name < rhs.name;
+        });
+        return out;
+    }
+
+    void release_storage() const override {
+        for (const auto & [_, source] : shard_sources_) {
+            source->release_storage();
+        }
+    }
+
+    assets::RawTensorData require_tensor_data(std::string_view name) const override {
+        return source_for(name)->require_tensor_data(name);
+    }
+
+    std::vector<float> require_f32(
+        std::string_view name,
+        const std::optional<std::vector<int64_t>> & expected_shape) const override {
+        return source_for(name)->require_f32(name, expected_shape);
+    }
+
+    std::optional<std::vector<float>> optional_f32(
+        std::string_view name,
+        const std::optional<std::vector<int64_t>> & expected_shape) const override {
+        if (!has_tensor(name)) {
+            return std::nullopt;
+        }
+        return require_f32(name, expected_shape);
+    }
+
+    void set_backend_tensor(
+        ggml_tensor * tensor,
+        std::string_view name,
+        assets::TensorStorageType storage_type,
+        const std::vector<int64_t> & expected_shape) const override {
+        source_for(name)->set_backend_tensor(tensor, name, storage_type, expected_shape);
+    }
+
+    void set_backend_f32_tensor(
+        ggml_tensor * tensor,
+        std::string_view name,
+        const std::vector<int64_t> & expected_shape) const override {
+        source_for(name)->set_backend_f32_tensor(tensor, name, expected_shape);
+    }
+
+    int64_t require_i64_scalar(std::string_view name) const override {
+        return source_for(name)->require_i64_scalar(name);
+    }
+
+private:
+    std::shared_ptr<const assets::TensorSource> source_for(std::string_view name) const {
+        const auto route = weight_map_.find(std::string(name));
+        if (route == weight_map_.end()) {
+            throw std::runtime_error("missing HeartMuLa " + model_label_ + " tensor route: " + std::string(name));
+        }
+        const auto source = shard_sources_.find(route->second);
+        if (source == shard_sources_.end()) {
+            throw std::runtime_error("missing HeartMuLa " + model_label_ + " tensor shard source: " + route->second);
+        }
+        return source->second;
+    }
+
+    std::filesystem::path index_path_;
+    std::string model_label_;
+    std::unordered_map<std::string, std::string> weight_map_;
+    std::unordered_map<std::string, std::shared_ptr<const assets::TensorSource>> shard_sources_;
+};
+
+std::unordered_map<std::string, std::string> parse_weight_map(
+    const engine::io::json::Value & index_root,
+    const char * label) {
+    const auto & weight_map_object = index_root.require("weight_map").as_object();
+    std::unordered_map<std::string, std::string> weight_map;
+    weight_map.reserve(weight_map_object.size());
+    for (const auto & [name, value] : weight_map_object) {
+        weight_map.emplace(name, value.as_string());
+    }
+    if (weight_map.empty()) {
+        throw std::runtime_error(std::string("HeartMuLa ") + label + " safetensors index has an empty weight_map");
+    }
+    return weight_map;
+}
+
+std::vector<std::filesystem::path> shard_paths_from_weight_map(
+    const std::filesystem::path & model_root,
+    const std::unordered_map<std::string, std::string> & weight_map,
+    const char * label) {
+    std::set<std::string> names;
+    for (const auto & [_, file_name] : weight_map) {
+        names.insert(file_name);
+    }
+    std::vector<std::filesystem::path> paths;
+    paths.reserve(names.size());
+    for (const auto & name : names) {
+        const auto path = model_root / name;
+        if (!engine::io::is_existing_file(path)) {
+            throw std::runtime_error(std::string("missing HeartMuLa ") + label + " safetensors shard: " + path.string());
+        }
+        paths.push_back(std::filesystem::weakly_canonical(path));
+    }
+    return paths;
+}
+
+std::shared_ptr<const assets::TensorSource> open_sharded_tensor_source(
+    const std::filesystem::path & index_path,
+    const std::filesystem::path & model_root,
+    const std::unordered_map<std::string, std::string> & weight_map,
+    const char * label) {
+    std::unordered_map<std::string, std::shared_ptr<const assets::TensorSource>> shard_sources;
+    for (const auto & path : shard_paths_from_weight_map(model_root, weight_map, label)) {
+        shard_sources.emplace(path.filename().string(), assets::open_tensor_source(path));
+    }
+    return std::make_shared<ShardedTensorSource>(index_path, label, weight_map, std::move(shard_sources));
+}
+
+void fill_paths(
+    HeartMuLaAssetPaths & paths,
+    const assets::ResourceBundle & resources,
+    const std::unordered_map<std::string, std::string> & mula_weight_map,
+    const std::unordered_map<std::string, std::string> & codec_weight_map) {
+    paths.model_root = resources.model_root();
+    paths.tokenizer_json_path = resources.require_file("tokenizer_json");
+    paths.generation_config_path = resources.require_file("generation_config");
+    paths.mula_config_path = resources.require_file("mula_config");
+    paths.mula_index_path = resources.require_file("mula_index");
+    paths.codec_config_path = resources.require_file("codec_config");
+    paths.codec_index_path = resources.require_file("codec_index");
+    paths.mula_shard_paths = shard_paths_from_weight_map(paths.mula_index_path.parent_path(), mula_weight_map, "LM");
+    paths.codec_shard_paths = shard_paths_from_weight_map(paths.codec_index_path.parent_path(), codec_weight_map, "codec");
+}
+
+std::string shape_string(const std::vector<int64_t> & shape) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << shape[i];
+    }
+    out << "]";
+    return out.str();
+}
+
+void require_tensor_metadata(
+    const assets::TensorSource & source,
+    const std::string & name,
+    std::initializer_list<int64_t> expected_shape) {
+    const auto expected = std::vector<int64_t>(expected_shape);
+    const auto metadata = source.require_metadata(name);
+    if (metadata.shape != expected) {
+        throw std::runtime_error(
+            "HeartMuLa tensor shape mismatch for " + name + ": expected " + shape_string(expected) + ", got " +
+            shape_string(metadata.shape));
+    }
+}
+
+void validate_mula_weight_anchors(const HeartMuLaAssets & assets) {
+    const auto & config = assets.mula_config;
+    const auto & weights = *assets.mula_weights;
+    const auto & backbone = config.backbone;
+    const auto & decoder = config.decoder;
+    require_tensor_metadata(weights, "text_embeddings.weight", {config.text_vocab_size, backbone.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "audio_embeddings.weight",
+        {config.audio_vocab_size * config.audio_num_codebooks, backbone.embed_dim});
+    require_tensor_metadata(weights, "unconditional_text_embedding.weight", {1, backbone.embed_dim});
+    require_tensor_metadata(weights, "projection.weight", {decoder.embed_dim, backbone.embed_dim});
+    require_tensor_metadata(weights, "codebook0_head.weight", {config.audio_vocab_size, backbone.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "audio_head",
+        {config.audio_num_codebooks - 1, decoder.embed_dim, config.audio_vocab_size});
+    require_tensor_metadata(weights, "muq_linear.weight", {backbone.embed_dim, config.muq_dim});
+    require_tensor_metadata(weights, "muq_linear.bias", {backbone.embed_dim});
+    require_tensor_metadata(weights, "backbone.norm.scale", {backbone.embed_dim});
+    require_tensor_metadata(weights, "decoder.norm.scale", {decoder.embed_dim});
+    require_tensor_metadata(weights, "backbone.layers.0.attn.q_proj.weight", {backbone.embed_dim, backbone.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "backbone.layers.0.attn.k_proj.weight",
+        {backbone.num_kv_heads * backbone.head_dim, backbone.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "backbone.layers.0.attn.v_proj.weight",
+        {backbone.num_kv_heads * backbone.head_dim, backbone.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "backbone.layers.0.attn.output_proj.weight",
+        {backbone.embed_dim, backbone.embed_dim});
+    require_tensor_metadata(weights, "backbone.layers.0.mlp.w1.weight", {backbone.intermediate_dim, backbone.embed_dim});
+    require_tensor_metadata(weights, "backbone.layers.0.mlp.w2.weight", {backbone.embed_dim, backbone.intermediate_dim});
+    require_tensor_metadata(weights, "backbone.layers.0.mlp.w3.weight", {backbone.intermediate_dim, backbone.embed_dim});
+    require_tensor_metadata(weights, "backbone.layers.0.sa_norm.scale", {backbone.embed_dim});
+    require_tensor_metadata(weights, "backbone.layers.0.mlp_norm.scale", {backbone.embed_dim});
+    require_tensor_metadata(weights, "decoder.layers.0.attn.q_proj.weight", {decoder.embed_dim, decoder.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "decoder.layers.0.attn.k_proj.weight",
+        {decoder.num_kv_heads * decoder.head_dim, decoder.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "decoder.layers.0.attn.v_proj.weight",
+        {decoder.num_kv_heads * decoder.head_dim, decoder.embed_dim});
+    require_tensor_metadata(
+        weights,
+        "decoder.layers.0.attn.output_proj.weight",
+        {decoder.embed_dim, decoder.embed_dim});
+    require_tensor_metadata(weights, "decoder.layers.0.mlp.w1.weight", {decoder.intermediate_dim, decoder.embed_dim});
+    require_tensor_metadata(weights, "decoder.layers.0.mlp.w2.weight", {decoder.embed_dim, decoder.intermediate_dim});
+    require_tensor_metadata(weights, "decoder.layers.0.mlp.w3.weight", {decoder.intermediate_dim, decoder.embed_dim});
+    require_tensor_metadata(weights, "decoder.layers.0.sa_norm.scale", {decoder.embed_dim});
+    require_tensor_metadata(weights, "decoder.layers.0.mlp_norm.scale", {decoder.embed_dim});
+}
+
+void validate_codec_weight_anchors(const HeartMuLaAssets & assets) {
+    const auto & config = assets.codec_config;
+    const auto & weights = *assets.codec_weights;
+    const auto estimator_dim = config.num_attention_heads * config.attention_head_dim;
+    const auto estimator_mlp_dim = llama_mlp_hidden_dim(estimator_dim);
+    const auto decoder_in_channels = config.init_channel * pow2_i64(config.upsample_factors.size());
+    const auto first_decoder_out_channels = decoder_in_channels / 2;
+    require_tensor_metadata(weights, "flow_matching.cond_feature_emb.weight", {config.dim, config.dim});
+    require_tensor_metadata(weights, "flow_matching.cond_feature_emb.bias", {config.dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.vq_embed.layers.0._codebook.embed",
+        {1, config.codebook_size, config.codebook_dim});
+    require_tensor_metadata(weights, "flow_matching.zero_cond_embedding1", {config.dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.proj_in.ffn_1.weight",
+        {estimator_dim, config.in_channels, 3});
+    require_tensor_metadata(weights, "flow_matching.estimator.proj_in.ffn_1.bias", {estimator_dim});
+    require_tensor_metadata(weights, "flow_matching.estimator.proj_in.ffn_2.weight", {estimator_dim, estimator_dim});
+    require_tensor_metadata(weights, "flow_matching.estimator.scale_shift_table", {2, estimator_dim});
+    require_tensor_metadata(weights, "flow_matching.estimator.scale_shift_table_2", {2, estimator_dim * 2});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.attn.q_proj.weight",
+        {estimator_dim, estimator_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.attn.k_proj.weight",
+        {estimator_dim, estimator_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.attn.v_proj.weight",
+        {estimator_dim, estimator_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.attn.o_proj.weight",
+        {estimator_dim, estimator_dim});
+    require_tensor_metadata(weights, "flow_matching.estimator.transformer_blocks.0.attn_norm.weight", {estimator_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.mlp.gate.weight",
+        {estimator_mlp_dim, estimator_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.mlp.up.weight",
+        {estimator_mlp_dim, estimator_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.mlp.down.weight",
+        {estimator_dim, estimator_mlp_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.transformer_blocks.0.scale_shift_table",
+        {6, estimator_dim});
+    require_tensor_metadata(
+        weights,
+        "flow_matching.estimator.proj_out.ffn_2.weight",
+        {config.out_channels, config.out_channels});
+    require_tensor_metadata(
+        weights,
+        "scalar_model.encoder.0.parametrizations.weight.original1",
+        {config.init_channel, config.num_bands, config.default_kernel_size});
+    require_tensor_metadata(
+        weights,
+        "scalar_model.encoder.1.conv.weight",
+        {config.init_channel, config.init_channel, config.default_kernel_size});
+    require_tensor_metadata(
+        weights,
+        "scalar_model.decoder.0.parametrizations.weight.original1",
+        {decoder_in_channels, config.latent_hidden_dim, config.delay_kernel_size});
+    require_tensor_metadata(
+        weights,
+        "scalar_model.decoder.1.up_conv.layer.parametrizations.weight.original1",
+        {decoder_in_channels, first_decoder_out_channels, config.upsample_kernel_sizes.front()});
+}
+
+}  // namespace
+
+HeartMuLaAssetPaths resolve_heartmula_assets(const std::filesystem::path & model_path) {
+    auto resources = make_resource_bundle(model_path);
+    const auto mula_index = resources.parse_json("mula_index");
+    const auto codec_index = resources.parse_json("codec_index");
+    const auto mula_weight_map = parse_weight_map(mula_index, "LM");
+    const auto codec_weight_map = parse_weight_map(codec_index, "codec");
+    HeartMuLaAssetPaths paths;
+    fill_paths(paths, resources, mula_weight_map, codec_weight_map);
+    return paths;
+}
+
+std::shared_ptr<const HeartMuLaAssets> load_heartmula_assets(const std::filesystem::path & model_path) {
+    auto resources = make_resource_bundle(model_path);
+    const auto mula_index = resources.parse_json("mula_index");
+    const auto codec_index = resources.parse_json("codec_index");
+    const auto mula_weight_map = parse_weight_map(mula_index, "LM");
+    const auto codec_weight_map = parse_weight_map(codec_index, "codec");
+    HeartMuLaAssets assets;
+    fill_paths(assets.paths, resources, mula_weight_map, codec_weight_map);
+    assets.mula_config = parse_mula_config(resources);
+    assets.generation_config = parse_generation_config(resources);
+    assets.codec_config = parse_codec_config(resources);
+    assets.mula_weights =
+        open_sharded_tensor_source(assets.paths.mula_index_path, assets.paths.mula_index_path.parent_path(), mula_weight_map, "LM");
+    assets.codec_weights = open_sharded_tensor_source(
+        assets.paths.codec_index_path,
+        assets.paths.codec_index_path.parent_path(),
+        codec_weight_map,
+        "codec");
+    validate_mula_weight_anchors(assets);
+    validate_codec_weight_anchors(assets);
+    return std::make_shared<HeartMuLaAssets>(std::move(assets));
+}
+
+}  // namespace engine::models::heartmula

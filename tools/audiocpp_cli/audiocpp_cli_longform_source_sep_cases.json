@@ -1,0 +1,38 @@
+{
+  "cases": [
+    {
+      "id": "htdemucs_pd_song_source_separation",
+      "coverage": "HTDemucs source separation on a public-domain three-minute mixed music recording",
+      "family": "htdemucs",
+      "model": "models/htdemucs",
+      "task": "sep",
+      "mode": "offline",
+      "outputs": [
+        "named_audio"
+      ],
+      "requests": [
+        {
+          "id": "st_louis_blues_190s",
+          "audio": "resources/st_louis_blues_pd_190s.wav"
+        }
+      ]
+    },
+    {
+      "id": "mel_band_roformer_pd_song_vocal",
+      "coverage": "Mel-band RoFormer vocal separation on a public-domain three-minute mixed music recording",
+      "family": "mel_band_roformer",
+      "model": "models/mel-roformer-mlx",
+      "task": "sep",
+      "mode": "offline",
+      "outputs": [
+        "named_audio"
+      ],
+      "requests": [
+        {
+          "id": "st_louis_blues_190s",
+          "audio": "resources/st_louis_blues_pd_190s.wav"
+        }
+      ]
+    }
+  ]
+}

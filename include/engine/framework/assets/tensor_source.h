@@ -127,6 +127,12 @@ public:
     const TensorSource & source,
     std::string_view name,
     TensorStorageType requested_type);
+void set_backend_tensor_from_f32_parallel(
+    ggml_tensor * tensor,
+    std::string_view name,
+    const std::vector<float> & values,
+    const core::TensorShape & shape,
+    ggml_type type);
 std::shared_ptr<const TensorSource> open_tensor_source(const std::filesystem::path & path);
 
 }  // namespace engine::assets

@@ -176,14 +176,15 @@ audiocpp_cli --task gen --family ace_step --model models/Ace-Step1.5 --backend c
 | `--request-option sampler_mode=<name>` | `euler`, `heun` | `euler` | Diffusion sampler mode. |
 | `--request-option retake_seed=<n>` | integer, `-1` to clear | not set | Optional retake noise seed. |
 | `--request-option retake_variance=<float>` | float | `0.0` | Retake noise mixing strength. |
-| `--request-option flow_edit_morph=true|false` | bool | `false` | Parsed for text2music, but the required flow-edit diffusion overlay is not implemented. |
-| `--request-option dcw_enabled=true|false` | bool | `false` | Parsed dynamic-cfg wavelet option. Keep disabled unless validating that experimental path. |
+| `--request-option flow_edit_morph=true|false` | bool | `false` | Status: parsed for text2music, but not usable because the flow-edit diffusion overlay is not implemented. |
+| `--request-option dcw_enabled=true|false` | bool | `false` | Status: experimental dynamic-cfg wavelet path. Keep disabled unless validating that path. |
 
 ## Model Selection
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `--session-option ace_step.dit_model_path=<dir>` | `acestep-v15-turbo`, `acestep-v15-base` | `acestep-v15-turbo` | Select DiT variant inside the model root. |
-| `--session-option ace_step.lm_model_path=<dir>` | model subdir | `acestep-5Hz-lm-1.7B` | Select planner LM. |
+| `--load-option ace_step.dit_model_path=<dir>` | `acestep-v15-turbo`, `acestep-v15-base` | `acestep-v15-turbo` | Select DiT variant inside the model root. |
+| `--load-option ace_step.lm_model_path=<dir>` | model subdir | `acestep-5Hz-lm-1.7B` | Select planner LM. |
 | `--session-option ace_step.dit_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | DiT weight type. |
-| `--session-option ace_step.lm_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Planner LM weight type. |
+| `--session-option ace_step.planner_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Planner LM weight type. |
+| `--session-option ace_step.mem_saver=true|false` | bool | `false` | Release staged graph/cache state after request phases to reduce resident VRAM. Later requests may rebuild released graphs. |

@@ -48,7 +48,8 @@ AppBatchResult run_offline_batch(
     engine::runtime::IVoiceTaskSession & session,
     engine::runtime::IOfflineVoiceTaskSession & offline,
     const AppBatchRequest & batch,
-    AudioMergeMode audio_merge_mode) {
+    AudioMergeMode audio_merge_mode,
+    const std::function<void(size_t, const AppRequestResult &)> & on_result) {
     if (batch.requests.empty()) {
         throw std::runtime_error("offline batch requires at least one request");
     }
@@ -60,6 +61,9 @@ AppBatchResult run_offline_batch(
             item.id,
             offline.run(item.request),
         });
+        if (on_result) {
+            on_result(out.results.size() - 1, out.results.back());
+        }
     }
     if (audio_merge_mode == AudioMergeMode::Concat) {
         out.merged_audio = concat_audio_outputs(out.results, out.chapters);

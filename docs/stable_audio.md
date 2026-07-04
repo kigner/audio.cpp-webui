@@ -73,7 +73,7 @@ audiocpp_cli --task gen --family stable_audio --model models/stable-audio-3-medi
 |---|---|---:|---|
 | `--text` | prompt text | required | Music or sound-effect prompt. |
 | `--audio` | WAV path | not set | Source audio for init-audio or inpainting. |
-| `--duration-seconds` | seconds | `120` | Target duration per prompt. |
+| `--duration-seconds` | `seconds[,seconds...]` | `120` | Target duration per prompt. Use one value for all prompts, or one comma-separated value per Stable Audio `batch_size` item. |
 | `--num-inference-steps` | integer | `8` | RF diffusion steps. |
 | `--guidance-scale` | float | `1.0` | Classifier-free guidance scale. |
 | `--seed` | integer | random if omitted | Generation seed. |
@@ -88,5 +88,6 @@ audiocpp_cli --task gen --family stable_audio --model models/stable-audio-3-medi
 | `--request-option init_noise_level=<float>` | `0..1` | `1.0` | Strength for audio-conditioned generation. |
 | `--request-option inpaint_mask_start_seconds=<list>` | comma-separated seconds | not set | Inpaint region start times. |
 | `--request-option inpaint_mask_end_seconds=<list>` | comma-separated seconds | not set | Inpaint region end times. |
+| `--session-option stable_audio.mem_saver=true|false` | bool | `false` | Release staged graph/cache state after conditioner, diffusion, and autoencoder phases to reduce resident VRAM. Later requests may rebuild released graphs. |
 
 For backend weight-type controls, use `audiocpp_cli --inspect --model <model-dir> --family stable_audio`.

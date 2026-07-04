@@ -84,6 +84,9 @@ public:
             "speech_tokenizer/config.json",
         };
         inspection.metadata.weight_candidates = {"model.safetensors", "speech_tokenizer/model.safetensors"};
+        inspection.cli.session_options = {
+            {"qwen3_tts.mem_saver", "true|false", "Release the talker cached-step graph after each request; default false."},
+        };
         if (assets->config.variant == Qwen3TTSVariant::Base) {
             inspection.capabilities.supported_tasks = {
                 {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline}},

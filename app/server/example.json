@@ -1,6 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 8080,
+  "backend": "cuda",
   "device": 0,
   "threads": 1,
   "lazy_load": true,

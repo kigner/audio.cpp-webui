@@ -47,7 +47,7 @@ void print_task_list_help() {
         << "    --backend cpu|cuda|vulkan|metal|best\n"
         << "    --mode offline|streaming  default offline\n"
         << "    --device <n>\n"
-        << "    --threads <n>  Backend and OpenMP worker threads, default 1\n"
+        << "    --threads <n>  Backend and OpenMP worker threads, default 4\n"
         << "    --registry-config <path>\n"
         << "    --config <id>\n"
         << "    --weight <id>\n"
@@ -59,11 +59,12 @@ void print_task_list_help() {
         << "  Batch:\n"
         << "    --request-sequence <json>  Run JSON requests in one offline session\n"
         << "    --batch-text-file <txt>  Run one offline request per non-empty line\n"
+        << "    --batch-text-dir <dir>  Run one offline request per .txt, .md, or .json file\n"
         << "    --batch-audio-dir <dir>  Run one offline request per .wav file\n"
         << "    --batch-audio-role audio|voice_ref|source_audio|target_voice|prosody_ref|style_ref\n"
         << "    --batch-merge-audio none|concat\n"
         << "    --batch-manifest-out <json>\n"
-        << "    Shared CLI inputs and options are defaults for --batch-text-file and --batch-audio-dir\n"
+        << "    Shared CLI inputs and options are defaults for --batch-text-file, --batch-text-dir, and --batch-audio-dir\n"
         << "  Pipelines:\n"
         << "    --pipeline <json>  Run a JSON app workflow instead of a raw task\n"
         << "    --list-pipelines\n"
@@ -182,6 +183,7 @@ void print_model_common_options(const engine::runtime::ModelInspection & inspect
             << "    --text <text>\n"
             << "    --audio <wav>\n"
             << "    --batch-text-file <txt>\n"
+            << "    --batch-text-dir <dir>\n"
             << "    --language <code>\n"
             << "    --duration-seconds <float>\n"
             << "    --guidance-scale <float>\n"
@@ -199,6 +201,7 @@ void print_model_common_options(const engine::runtime::ModelInspection & inspect
         std::cout
             << "    --text <text>\n"
             << "    --batch-text-file <txt>\n"
+            << "    --batch-text-dir <dir>\n"
             << "    --language <code>\n"
             << "    --voice-ref <wav>\n"
             << "    --voice-id <id>\n"
@@ -464,7 +467,7 @@ int main(int argc, char ** argv) {
         const auto model_arg = find_arg(argc, argv, "--model");
         const auto pipeline_arg = find_arg(argc, argv, "--pipeline");
         if (pipeline_arg.has_value()) {
-            const int threads = parse_int_arg(argc, argv, "--threads", 1);
+            const int threads = parse_int_arg(argc, argv, "--threads", 4);
             if (threads <= 0) {
                 throw std::runtime_error("--threads must be positive");
             }
@@ -537,7 +540,7 @@ int main(int argc, char ** argv) {
         engine::runtime::SessionOptions session_options;
         session_options.backend.type = parse_backend(find_arg(argc, argv, "--backend").value_or("cpu"));
         session_options.backend.device = parse_int_arg(argc, argv, "--device", 0);
-        const int threads = parse_int_arg(argc, argv, "--threads", 1);
+        const int threads = parse_int_arg(argc, argv, "--threads", 4);
         if (threads <= 0) {
             throw std::runtime_error("--threads must be positive");
         }
@@ -572,24 +575,26 @@ int main(int argc, char ** argv) {
                     ? engine::runtime::TaskRequest{}
                     : build_request_from_cli(argc, argv);
             const auto batch_request = build_batch_request_from_cli(argc, argv, base_request);
+            const minitts::app::FileOutputPolicy output_policy{
+                optional_path_arg(argc, argv, "--out"),
+                optional_path_arg(argc, argv, "--out-dir"),
+                optional_path_arg(argc, argv, "--segments-out"),
+                optional_path_arg(argc, argv, "--turns-out"),
+                optional_path_arg(argc, argv, "--words-out"),
+                optional_path_arg(argc, argv, "--batch-manifest-out"),
+            };
+            std::cout << "family=" << session->family() << "\n";
+            std::cout << "task=" << engine::runtime::to_string(session->task_kind()) << "\n";
+            std::cout << "mode=" << engine::runtime::to_string(session->run_mode()) << "\n";
             const auto batch_result = minitts::app::run_offline_batch(
                 *session,
                 *offline,
                 batch_request,
-                merge_mode);
-            std::cout << "family=" << session->family() << "\n";
-            std::cout << "task=" << engine::runtime::to_string(session->task_kind()) << "\n";
-            std::cout << "mode=" << engine::runtime::to_string(session->run_mode()) << "\n";
-            minitts::app::emit_batch_result(
-                batch_result,
-                minitts::app::FileOutputPolicy{
-                    optional_path_arg(argc, argv, "--out"),
-                    optional_path_arg(argc, argv, "--out-dir"),
-                    optional_path_arg(argc, argv, "--segments-out"),
-                    optional_path_arg(argc, argv, "--turns-out"),
-                    optional_path_arg(argc, argv, "--words-out"),
-                    optional_path_arg(argc, argv, "--batch-manifest-out"),
+                merge_mode,
+                [&](size_t index, const minitts::app::AppRequestResult & item) {
+                    minitts::app::emit_batch_item_result(index, item, output_policy);
                 });
+            minitts::app::emit_batch_summary(batch_result, output_policy);
             return 0;
         }
 

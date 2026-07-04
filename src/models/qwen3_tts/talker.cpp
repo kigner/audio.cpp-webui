@@ -100,6 +100,40 @@ struct PromptEmbeddingState {
     std::vector<float> tts_pad;
 };
 
+bool speech_codes_equal(const Qwen3SpeechCodes & lhs, const Qwen3SpeechCodes & rhs) {
+    return lhs.frames == rhs.frames &&
+           lhs.code_groups == rhs.code_groups &&
+           lhs.codes == rhs.codes;
+}
+
+bool speaker_embedding_equal(const Qwen3SpeakerEmbedding & lhs, const Qwen3SpeakerEmbedding & rhs) {
+    return lhs.dims == rhs.dims &&
+           lhs.values == rhs.values;
+}
+
+bool talker_prefill_equal(const Qwen3TalkerPrefill & lhs, const Qwen3TalkerPrefill & rhs) {
+    if (lhs.prompt_mode != rhs.prompt_mode ||
+        lhs.input_ids != rhs.input_ids ||
+        lhs.instruct_ids != rhs.instruct_ids ||
+        lhs.reference_ids != rhs.reference_ids ||
+        lhs.speaker != rhs.speaker ||
+        lhs.language != rhs.language ||
+        lhs.icl_mode != rhs.icl_mode ||
+        lhs.x_vector_only_mode != rhs.x_vector_only_mode ||
+        lhs.reference_codes.has_value() != rhs.reference_codes.has_value() ||
+        lhs.speaker_embedding.has_value() != rhs.speaker_embedding.has_value()) {
+        return false;
+    }
+    if (lhs.reference_codes.has_value() && !speech_codes_equal(*lhs.reference_codes, *rhs.reference_codes)) {
+        return false;
+    }
+    if (lhs.speaker_embedding.has_value() &&
+        !speaker_embedding_equal(*lhs.speaker_embedding, *rhs.speaker_embedding)) {
+        return false;
+    }
+    return true;
+}
+
 struct DecoderLayerOutputs {
     core::TensorValue output;
     core::TensorValue key;
@@ -1438,7 +1472,10 @@ public:
         auto & constants = weights_->code_predictor_constants();
         constants.begin_graph();
         build_prefill_graph(ctx, constants);
-        step_graph_ = build_step_graph(ctx, constants);
+        step_graphs_.reserve(static_cast<size_t>(code_groups_ - 2));
+        for (int64_t group = 1; group < code_groups_ - 1; ++group) {
+            step_graphs_.push_back(build_step_graph(ctx, constants, group));
+        }
         constants.finish_graph();
         constants.ensure_uploaded();
         buffer_ = ggml_backend_alloc_ctx_tensors(ctx_.get(), weights_->backend());
@@ -1452,7 +1489,9 @@ public:
 
     ~CodePredictorGraph() {
         engine::core::release_backend_graph_resources(weights_->backend(), prefill_graph_);
-        engine::core::release_backend_graph_resources(weights_->backend(), step_graph_.graph);
+        for (auto & step_graph : step_graphs_) {
+            engine::core::release_backend_graph_resources(weights_->backend(), step_graph.graph);
+        }
         if (buffer_ != nullptr) {
             ggml_backend_buffer_free(buffer_);
         }
@@ -1506,7 +1545,7 @@ private:
         ggml_tensor * position = nullptr;
         ggml_tensor * cache_slot = nullptr;
         ggml_tensor * attention_mask = nullptr;
-        std::vector<ggml_tensor *> logits_by_group;
+        ggml_tensor * logits = nullptr;
         ggml_cgraph * graph = nullptr;
     };
 
@@ -1566,7 +1605,10 @@ private:
         ggml_build_forward_expand(prefill_graph_, prefill_logits_);
     }
 
-    StepGraph build_step_graph(core::ModuleBuildContext & ctx, common::ConstantTensorCache & constants) {
+    StepGraph build_step_graph(
+        core::ModuleBuildContext & ctx,
+        common::ConstantTensorCache & constants,
+        int64_t group) {
         const auto & root_config = weights_->assets().config;
         const auto & config = root_config.code_predictor;
         const auto & tensor_weights = weights_->weights();
@@ -1600,16 +1642,13 @@ private:
         }
         x = modules::RMSNormModule({config.hidden_size, config.rms_norm_eps, true, false})
                 .build(ctx, x, binding::norm_data(constants, tensor_weights.code_predictor.norm));
-        step.logits_by_group.reserve(static_cast<size_t>(code_groups_ - 2));
-        for (int64_t group = 1; group < code_groups_ - 1; ++group) {
-            const auto & step_head = tensor_weights.code_predictor.lm_heads.at(static_cast<size_t>(group));
-            auto logits = modules::LinearModule(
-                              binding::linear_config(config.hidden_size, config.vocab_size, false))
-                              .build(ctx, x, binding::linear_data(constants, step_head));
-            step.logits_by_group.push_back(logits.tensor);
-            ggml_set_output(logits.tensor);
-            ggml_build_forward_expand(step.graph, logits.tensor);
-        }
+        const auto & step_head = tensor_weights.code_predictor.lm_heads.at(static_cast<size_t>(group));
+        auto logits = modules::LinearModule(
+                          binding::linear_config(config.hidden_size, config.vocab_size, false))
+                          .build(ctx, x, binding::linear_data(constants, step_head));
+        step.logits = logits.tensor;
+        ggml_set_output(step.logits);
+        ggml_build_forward_expand(step.graph, step.logits);
         return step;
     }
 
@@ -1645,26 +1684,27 @@ private:
         if (valid_steps_ <= 0 || valid_steps_ >= code_groups_) {
             throw std::runtime_error("Qwen3 code predictor cache state is invalid for step");
         }
+        auto & step_graph = step_graphs_.at(static_cast<size_t>(group - 1));
         auto timing_start = Clock::now();
-        ggml_backend_tensor_set(step_graph_.input, embedding.data(), 0, embedding.size() * sizeof(float));
+        ggml_backend_tensor_set(step_graph.input, embedding.data(), 0, embedding.size() * sizeof(float));
         const int32_t position = static_cast<int32_t>(current_end_);
-        ggml_backend_tensor_set(step_graph_.position, &position, 0, sizeof(position));
+        ggml_backend_tensor_set(step_graph.position, &position, 0, sizeof(position));
         const int32_t cache_slot = static_cast<int32_t>(valid_steps_);
-        ggml_backend_tensor_set(step_graph_.cache_slot, &cache_slot, 0, sizeof(cache_slot));
+        ggml_backend_tensor_set(step_graph.cache_slot, &cache_slot, 0, sizeof(cache_slot));
         std::fill(step_attention_mask_buffer_.begin(), step_attention_mask_buffer_.end(), ggml_fp32_to_fp16(-INFINITY));
         for (int64_t i = 0; i < valid_steps_; ++i) {
             step_attention_mask_buffer_[static_cast<size_t>(i)] = ggml_fp32_to_fp16(0.0F);
         }
         step_attention_mask_buffer_[static_cast<size_t>(cache_slot)] = ggml_fp32_to_fp16(0.0F);
         ggml_backend_tensor_set(
-            step_graph_.attention_mask,
+            step_graph.attention_mask,
             step_attention_mask_buffer_.data(),
             0,
             step_attention_mask_buffer_.size() * sizeof(ggml_fp16_t));
         timing_.input_upload_ms += engine::debug::elapsed_ms(timing_start, Clock::now());
         core::set_backend_threads(weights_->backend(), weights_->threads());
         timing_start = Clock::now();
-        const ggml_status status = engine::core::compute_backend_graph(weights_->backend(), step_graph_.graph);
+        const ggml_status status = engine::core::compute_backend_graph(weights_->backend(), step_graph.graph);
         ggml_backend_synchronize(weights_->backend());
         timing_.graph_compute_ms += engine::debug::elapsed_ms(timing_start, Clock::now());
         if (status != GGML_STATUS_SUCCESS) {
@@ -1672,7 +1712,7 @@ private:
         }
         ++valid_steps_;
         ++current_end_;
-        return read_logits(step_graph_.logits_by_group.at(static_cast<size_t>(group - 1)));
+        return read_logits(step_graph.logits);
     }
 
     Qwen3TalkerPrefillLogits read_logits(ggml_tensor * logits_tensor) {
@@ -1695,7 +1735,7 @@ private:
     ggml_tensor * prefill_positions_ = nullptr;
     ggml_tensor * prefill_logits_ = nullptr;
     ggml_cgraph * prefill_graph_ = nullptr;
-    StepGraph step_graph_;
+    std::vector<StepGraph> step_graphs_;
     std::vector<ggml_fp16_t> step_attention_mask_buffer_;
     int64_t valid_steps_ = 0;
     int64_t current_end_ = 0;
@@ -1731,7 +1771,13 @@ public:
         }
         std::mt19937 rng(options.seed);
         const auto prompt_state_start = Clock::now();
-        const auto state = build_prompt_state(request, weights_->assets().config, weights_->weights());
+        if (!cached_prompt_state_.has_value() ||
+            !cached_prompt_prefill_.has_value() ||
+            !talker_prefill_equal(*cached_prompt_prefill_, request)) {
+            cached_prompt_state_ = build_prompt_state(request, weights_->assets().config, weights_->weights());
+            cached_prompt_prefill_ = request;
+        }
+        const auto & state = *cached_prompt_state_;
         const auto prompt_state_end = Clock::now();
         const auto & config = weights_->assets().config.talker;
         const int64_t prompt_steps = static_cast<int64_t>(state.prompt.size()) / config.hidden_size;
@@ -1873,6 +1919,12 @@ public:
         return out;
     }
 
+    int64_t release_cached_step_graph() {
+        const int64_t released_steps = cached_step_graph_ != nullptr ? cached_step_graph_->cache_steps() : 0;
+        cached_step_graph_.reset();
+        return released_steps;
+    }
+
 private:
     TalkerPrefillGraph::OutputWithCache run_prefill_embeddings_with_state(
         const std::vector<float> & embeddings,
@@ -1898,6 +1950,8 @@ private:
     std::unique_ptr<TalkerPrefillGraph> graph_;
     std::unique_ptr<TalkerCachedStepGraph> cached_step_graph_;
     std::unique_ptr<CodePredictorGraph> code_predictor_graph_;
+    std::optional<Qwen3TalkerPrefill> cached_prompt_prefill_;
+    std::optional<PromptEmbeddingState> cached_prompt_state_;
 };
 
 Qwen3TalkerStepRuntime::Qwen3TalkerStepRuntime(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
@@ -1913,6 +1967,10 @@ Qwen3TalkerCodes Qwen3TalkerStepRuntime::generate(
     const Qwen3TTSGenerationOptions & options,
     float repetition_penalty) {
     return impl_->generate(prefill, options, repetition_penalty);
+}
+
+int64_t Qwen3TalkerStepRuntime::release_cached_step_graph() {
+    return impl_->release_cached_step_graph();
 }
 
 Qwen3Talker::Qwen3Talker(Qwen3TTSTalkerConfig config) : config_(std::move(config)) {}

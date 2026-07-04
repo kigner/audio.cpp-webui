@@ -105,6 +105,13 @@ core::BackendConfig voice_prompt_backend_config(const runtime::SessionOptions & 
     return config;
 }
 
+bool mem_saver_from_options(const runtime::SessionOptions & options) {
+    if (const auto value = runtime::find_option(options.options, {"qwen3_tts.mem_saver", "mem_saver"})) {
+        return runtime::parse_bool_option(*value, "qwen3_tts.mem_saver");
+    }
+    return false;
+}
+
 void validate_talker_weight_storage(engine::assets::TensorStorageType storage_type) {
     if (storage_type == engine::assets::TensorStorageType::Native ||
         storage_type == engine::assets::TensorStorageType::F32 ||
@@ -145,6 +152,7 @@ Qwen3TTSSession::Qwen3TTSSession(
     : RuntimeSessionBase(options),
       task_(task),
       assets_(require_assets(std::move(assets))),
+      mem_saver_(mem_saver_from_options(options)),
       text_tokenizer_(assets_),
       talker_(assets_->config.talker),
       voice_prompt_context_(voice_prompt_backend_config(options)) {
@@ -199,7 +207,8 @@ Qwen3TTSSession::Qwen3TTSSession(
             key != "qwen3_tts.conv_weight_type" &&
             key != "qwen3_tts.talker_weight_type" &&
             key != "qwen3_tts.speech_encoder_weight_type" &&
-            key != "qwen3_tts.speech_decoder_weight_type") {
+            key != "qwen3_tts.speech_decoder_weight_type" &&
+            key != "qwen3_tts.mem_saver") {
             throw std::runtime_error("unknown Qwen3 TTS session option: " + key);
         }
     }
@@ -269,6 +278,16 @@ void Qwen3TTSSession::prepare(const runtime::SessionPreparationRequest & request
 runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
     require_prepared("Qwen3 TTS run");
     const auto wall_start = Clock::now();
+    auto release_talker_cached_step_graph = [&]() {
+        if (mem_saver_) {
+            const auto release_start = Clock::now();
+            const int64_t released_steps = talker_step_->release_cached_step_graph();
+            debug::timing_log_scalar(
+                "qwen3_tts.talker.cached_step_release_ms",
+                engine::debug::elapsed_ms(release_start, Clock::now()));
+            debug::timing_log_scalar("qwen3_tts.talker.cached_step_released_steps", released_steps);
+        }
+    };
     const int64_t text_chunk_size =
         engine::text::parse_text_chunk_size_override(request.options).value_or(kDefaultTextChunkSize);
     const auto chunk_requests = runtime::chunk_text_request(request, text_chunk_size);
@@ -298,6 +317,7 @@ runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
                 speech_decoder_->decode(codes.generated_codes));
             decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
         }
+        release_talker_cached_step_graph();
         runtime::TaskResult result;
         result.audio_output = std::move(merged_audio);
         debug::timing_log_scalar("qwen3_tts.voice_design_prefill_build_ms", prefill_ms);
@@ -332,6 +352,7 @@ runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
                 speech_decoder_->decode(codes.generated_codes));
             decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
         }
+        release_talker_cached_step_graph();
         runtime::TaskResult result;
         result.audio_output = std::move(merged_audio);
         debug::timing_log_scalar("qwen3_tts.custom_voice_prefill_build_ms", prefill_ms);
@@ -382,6 +403,7 @@ runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
                 codes.generated_codes));
         decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
     }
+    release_talker_cached_step_graph();
     runtime::TaskResult result;
     result.audio_output = std::move(merged_audio);
     debug::timing_log_scalar("qwen3_tts.voice_prompt_ms", prompt_ms);
