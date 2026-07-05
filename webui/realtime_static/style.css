@@ -1347,6 +1347,8 @@ body.cam-on .footer {
   background: var(--bg-elev);
   color: var(--text);
   width: min(500px, 92vw);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
   box-shadow: var(--shadow-soft);
 }
 .modal::backdrop {
@@ -1360,6 +1362,15 @@ body.cam-on .footer {
   gap: 16px;
   padding: 22px 24px 20px;
   overflow-x: hidden;
+}
+
+#settings-modal {
+  width: min(940px, 94vw);
+}
+
+#settings-modal .modal-content {
+  gap: 12px;
+  padding: 18px 20px 16px;
 }
 
 .modal-header {
@@ -1407,6 +1418,21 @@ body.cam-on .footer {
 }
 .field textarea {
   min-height: 84px;
+}
+
+#settings-modal .field {
+  gap: 5px;
+}
+
+#settings-modal .field input,
+#settings-modal .field select,
+#settings-modal .field textarea {
+  padding: 8px 10px;
+}
+
+#settings-modal .field textarea {
+  min-height: 68px;
+  resize: none;
 }
 .field input:focus,
 .field select:focus,
@@ -1638,6 +1664,47 @@ body.cam-on .footer {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted, #888);
+}
+
+@media (min-width: 761px) {
+  #settings-modal .settings-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+  }
+
+  #settings-modal .settings-column {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  #settings-modal .settings-group-title {
+    margin: 0 0 -2px;
+  }
+
+  #settings-modal .field-row {
+    gap: 10px;
+  }
+
+  #settings-modal .modal-footer {
+    padding-top: 2px;
+  }
+}
+
+@media (max-width: 760px) {
+  #settings-modal {
+    width: min(500px, 92vw);
+  }
+
+  #settings-modal .settings-grid,
+  #settings-modal .settings-column {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
 }
 
 /* ─── Chat button + badge ────────────────────────────────────────────── */

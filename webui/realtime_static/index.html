@@ -132,7 +132,9 @@
 
         <div class="tab-panels">
           <section class="tab-panel active" role="tabpanel">
-            <p class="settings-group-title">TTS · audio.cpp 语音合成服务</p>
+            <div class="settings-grid">
+              <div class="settings-column">
+                <p class="settings-group-title">TTS · audio.cpp 语音合成服务</p>
             <div class="field-row">
               <label class="field">
                 <span>TTS server URL</span>
@@ -174,7 +176,9 @@
               <input id="asr-language" type="text" autocomplete="off" spellcheck="false" placeholder="(自动)" />
             </label>
 
-            <p class="settings-group-title">LLM · Chat Completions</p>
+              </div>
+              <div class="settings-column">
+                <p class="settings-group-title">LLM · Chat Completions</p>
             <div class="field-row">
               <label class="field">
                 <span>LLM base URL</span>
@@ -215,6 +219,8 @@
               <input id="rt-url" type="text" autocomplete="off" spellcheck="false" placeholder="ws://127.0.0.1:8765/v1/realtime" />
               <small>改这个需要重新连接才生效。上面的 TTS/ASR/LLM 参数可在通话中实时保存。</small>
             </label>
+              </div>
+            </div>
           </section>
         </div>
 

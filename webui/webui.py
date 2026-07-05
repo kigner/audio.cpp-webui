@@ -763,6 +763,8 @@ ERROR_HINTS = [
     (re.compile(r"unsupported Chatterbox language", re.I),
      "🌐 Chatterbox 只支持 en/es/fr/de/it/pt/ko（无中文/日文/俄文，也没有自动检测）。"
      "请在“语言”里改选受支持的语言，或“留空”用默认（英语）。"),
+    (re.compile(r"Stable Audio.{0,80}(English|prompt)|prompt.{0,80}(English|Stable Audio)", re.I),
+     "🎵 Stable Audio 的提示词只支持英文。请把“提示词”改成英文后重试。"),
     (re.compile(r"max_source_positions", re.I),
      "⏱ 音频过长：Qwen3-ASR 编码器上限 1500 token（约 13 token/秒），"
      "单次最多约 115 秒。请把音频剪短或分段后再转写。"),
@@ -790,13 +792,15 @@ def _extract_server_message(text):
 def server_error(entry, status, text, extra=None):
     """Build a friendly gr.Error from a non-200 server response."""
     msg = _extract_server_message(text)
-    parts = [f"❌ server {status}：{msg[:400]}"]
     hint = next((h for pat, h in ERROR_HINTS if pat.search(msg)), None)
+    parts = [f"❌ server {status}"]
     if hint:
         parts.append("💡 " + hint)
+    else:
+        parts[0] = f"❌ server {status}：{msg[:400]}"
     if extra:
         parts.append(extra)
-    if entry:
+    if entry and not hint:
         ih = profile_for(entry).get("input_hint")
         if ih:
             parts.append("ℹ️ " + ih)
@@ -1973,14 +1977,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Markdown("#### 🎧 参考音频（声音克隆）")
                     tts_builtin = gr.Dropdown(
                         label="内置参考音色",
-                        choices=["(none)"] + builtin_voices(), value="(none)",
-                        info="上传/录音的音色优先于内置音色")
+                        choices=["(none)"] + builtin_voices(), value="(none)")
                     tts_upload = gr.Audio(
                         label="上传/录制参考音色（可选）", type="filepath",
                         elem_classes="audio-default")
-                    gr.Markdown(
-                        "*参考音色几秒到几十秒即可；大文件预览需等几秒才出声波图。*",
-                        elem_classes="hint-small")
                     tts_ref_text = gr.Textbox(
                         label="参考文本 (克隆时填参考音频里说的内容，越准越好)", lines=2,
                         value="okay, I'm Cemo and what you just heard wasn't a human voice.")
@@ -2046,9 +2046,6 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Markdown("#### 🎤 音频输入")
                     asr_audio = gr.Audio(label="上传/录制音频", type="filepath",
                                          elem_classes="audio-default")
-                    gr.Markdown(
-                        "*大文件预览需等几秒才出声波图，属正常现象。*",
-                        elem_classes="hint-small")
                 asr_hint = gr.Markdown(model_hint_for(asr_model.value))
                 asr_btn = gr.Button("📝 开始转写", variant="primary", size="lg")
 
@@ -2137,8 +2134,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Markdown("#### 🎧 目标音色（转换成谁的声音）")
                     vc_builtin = gr.Dropdown(
                         label="内置参考音色",
-                        choices=["(none)"] + builtin_voices(), value="(none)",
-                        info="上传的音色优先于内置音色")
+                        choices=["(none)"] + builtin_voices(), value="(none)")
                     vc_target = gr.Audio(label="上传/录制目标音色", type="filepath",
                                          elem_classes="audio-default")
 
