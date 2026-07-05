@@ -254,6 +254,22 @@ MODEL_PROFILES = {
         # <= 2048 (~7.1 GB peak on 8 GB GPUs).
         "chunk_chars": 600,
     },
+    "voxcpm2": {
+        "input_hint": (
+            "**VoxCPM2** 声音克隆：上传/选一段干净的单人参考音色，并在“参考文本”里填该音频"
+            "对应的原话。长文本会分段合成后拼接；8G 显卡已默认 q8_0 量化权重。"),
+        # 8G 4060 实测标定（2026-07-05，CLI --log + nvidia-smi 抓峰值）：
+        # - 峰值 ≈ 固定基线 + audiovae 解码图。基线（权重+KV+生成图）与文本长度/
+        #   max_tokens 无关：max_tokens 128/300/1200 峰值都是 7634MiB（生成会提前
+        #   遇停止符，解码图按实际帧数而非 max_tokens 建）。所以 chunk_chars / max_tokens
+        #   都压不动基线——真正的杠杆是**权重量化**（catalog session_options 里已设
+        #   voxcpm2.weight_type=q8_0：bf16 权重 4.6G，峰值 7634→5549MiB）。
+        # - audiovae 解码图仍随每段音频长度涨：容量取「≥latent_frames 的最小 2 的幂」
+        #   (audiovae.cpp:724)，~1.28MB/帧。q8_0 下实测 ~53 字→cap512→6366MiB，
+        #   ~106 字→cap1024→7722MiB（偏紧）。所以每段要短：60 字→cap≤512→~6.4G，
+        #   留 ~1.7G 给其它占 GPU 的程序。想少接缝可上调，但注意 8G 边界。
+        "chunk_chars": 60,
+    },
     "qwen3_tts": {
         "input_hint": (
             "**Qwen3-TTS** 是声音克隆：建议上传/选一段干净的单人参考音色，并在“参考文本”里"
@@ -303,7 +319,22 @@ MODEL_PROFILES = {
         "input_hint": (
             "**Vevo2 语音转换**：上传源语音 + 目标音色参考，默认 route=style_preserved_vc"
             "（保留源语音的说话风格，只换音色）。style_converted_vc 等风格转换 route 需在"
-            "『其它参数(JSON)』里补 `style_ref`（服务器本地 wav 路径）/ `style_ref_text` / `target_text`。"),
+            "『其它参数(JSON)』里补 `style_ref`（服务器本地 wav 路径）/ `style_ref_text` / `target_text`。"
+            "长音频按『目标音色时长 + 每段源时长 ≤ 显存预算』自适应分段后拼接，"
+            "参考音色超过约 10s 会自动截短（8G 显存限制）。"),
+        # 8G 4060 实测标定（2026-07-04/07-05）：FM 图一次建图，序列长度 =
+        # 目标音色(prompt) + 源(target) 帧数（均 50fps，见 fm.cpp:782 cond_frames =
+        # prompt_frames + target_frames）。cond≈25s（源15s+参考10s）就把 8G 吃满、
+        # 峰值溢出到共享显存（idle 已占 7.9G/8G）；cond≈20s 勉强、30s 必炸。所以按
+        # (预算 − 参考时长) 反推每段源时长，并把参考截到 ≤ ref_max，令 cond 稳定
+        # 落在预算内；各段源仍补零到等长以复用缓存图。带 target_text 的编辑类 route
+        # 不适合分段（会把文本对不上），这类输入本身也放不进显存。
+        # 权重加载后约占 5.5-6G，留给图的只有 ~2G；18s 源(cond≈21) 只剩 ~350MB，
+        # 所以预算取 16（cond≈16，留 ~0.8-1.2G 给峰值/其它占用 GPU 的程序）。
+        "vc_chunk_seconds": 15,          # 每段源时长上限（会被显存预算进一步压低）
+        "vc_fm_budget_seconds": 16,      # 参考 + 每段源 的总时长预算（8G 安全线）
+        "vc_ref_max_seconds": 10,        # 目标音色参考截断上限
+        "vc_min_chunk_seconds": 6,       # 每段源时长下限，避免切得过碎
     },
     "seed_vc": {
         "input_hint": (
@@ -447,17 +478,22 @@ def _split_tts_chunks(text, budget):
     return chunks or ([text] if (text or "").strip() else [])
 
 
-def _concat_wavs(blobs, out_path):
-    """Concatenate same-format WAV byte blobs into one file at out_path."""
+def _concat_wavs(blobs, out_path, keep_ratios=None):
+    """Concatenate same-format WAV byte blobs into one file at out_path.
+    keep_ratios[i]：每段只保留前一部分（分段转换把源补零到等长后，
+    按有效占比截掉对应输出的尾部静音）。"""
     params, frames = None, []
-    for blob in blobs:
+    for i, blob in enumerate(blobs):
         with wave.open(io.BytesIO(blob)) as w:
             fmt = (w.getnchannels(), w.getsampwidth(), w.getframerate())
             if params is None:
                 params = fmt
             elif fmt != params:
                 raise gr.Error(f"分段音频格式不一致：{fmt} != {params}")
-            frames.append(w.readframes(w.getnframes()))
+            n = w.getnframes()
+            if keep_ratios is not None:
+                n = max(1, min(n, int(round(n * keep_ratios[i]))))
+            frames.append(w.readframes(n))
     with wave.open(out_path, "wb") as w:
         w.setnchannels(params[0])
         w.setsampwidth(params[1])
@@ -476,6 +512,110 @@ def _audio_duration_seconds(path):
             return (w.getnframes() / float(rate)) if rate else None
     except Exception:
         return None
+
+
+# 已转码文件缓存：gradio 的临时路径按内容哈希命名，同一上传重复运行不重复转码。
+_WAV_CACHE = {}
+
+
+def _find_ffmpeg():
+    """转码用的 ffmpeg：随 webui 分发的 webui\\ffmpeg.exe 优先，其次 PATH。"""
+    bundled = os.path.join(HERE, "ffmpeg.exe")
+    if os.path.exists(bundled):
+        return bundled
+    found = shutil.which("ffmpeg")
+    if not found:
+        raise gr.Error("找不到 ffmpeg.exe（应随 webui 一起放在 webui 目录），无法转码非 WAV 音频。")
+    return found
+
+
+def _ensure_ascii_path(path):
+    """若路径含非 ASCII 字符，复制到纯 ASCII 临时文件。
+    C++ server 在 Windows 上无法打开含中文等字符的路径。"""
+    try:
+        path.encode("ascii")
+        return path
+    except UnicodeEncodeError:
+        pass
+    fd, out = tempfile.mkstemp(prefix="audiocpp_asc_", suffix=".wav")
+    os.close(fd)
+    shutil.copy2(path, out)
+    return out
+
+
+def _stage_upload(path):
+    """上传/录制完成后立即把文件复制成一个短的纯 ASCII 临时名再交回控件。
+    Gradio 6 在 Windows 上用原始文件名（可能含中文、括号或很长）拼服务端路径，
+    含非 ASCII 或超长的路径前端取不到，声波图一直转不出来（源音频名如
+    `把酒叹平生_(Vocals)_(No Reverb).wav` 就是这样卡住）；换成短 ASCII 名后波形
+    能正常渲染（也顺带给 C++ server 备好可打开的路径）。已是短 ASCII 名的
+    （麦克风录音等）原样返回，不做多余复制。"""
+    if not path or not os.path.exists(path):
+        return path
+    try:
+        path.encode("ascii")
+        if len(path) < 180:
+            return path                 # 已是短 ASCII 路径：前端能直接渲染
+    except UnicodeEncodeError:
+        pass                            # 含中文等非 ASCII：必须换名
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        ext.encode("ascii")
+        if not 0 < len(ext) <= 8:
+            ext = ".wav"
+    except UnicodeEncodeError:
+        ext = ".wav"
+    fd, out = tempfile.mkstemp(prefix="audiocpp_up_", suffix=ext)
+    os.close(fd)
+    shutil.copy2(path, out)
+    return out
+
+
+def _ensure_wav(path, target_sr=None):
+    """server 端只有 WAV 读取器（其它格式报 invalid WAV RIFF header），Gradio 上传
+    的 flac/mp3/ogg/m4a 等在这里先用 ffmpeg 转成 16-bit PCM WAV 临时文件再发；
+    已是 RIFF/WAVE 的原样透传。target_sr：模型 prepare() 硬校验采样率的族（音源
+    分离要 44.1k）传入目标值，采样率不符的输入（含 WAV）顺带重采样。"""
+    if not path:
+        return path
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError as e:
+        raise gr.Error(f"读不到音频文件 {path}：{e}")
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        if target_sr is None:
+            return _ensure_ascii_path(path)
+        try:
+            with wave.open(path, "rb") as w:
+                if w.getframerate() == target_sr:
+                    return _ensure_ascii_path(path)
+        except Exception:
+            pass                    # 非 PCM WAV：wave 读不了，交给 ffmpeg 重写
+    key = (path, target_sr)
+    cached = _WAV_CACHE.get(key)
+    if cached and os.path.exists(cached):
+        return cached
+    ffmpeg = _find_ffmpeg()
+    ext = os.path.splitext(path)[1].lower() or "（无扩展名）"
+    fd, out = tempfile.mkstemp(prefix="audiocpp_in_", suffix=".wav")
+    os.close(fd)
+    cmd = [ffmpeg, "-y", "-v", "error", "-i", path, "-map", "0:a:0"]
+    if target_sr:
+        cmd += ["-ar", str(target_sr)]
+    cmd += ["-c:a", "pcm_s16le", out]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not os.path.getsize(out):
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        err = (proc.stderr or "").strip()[-300:]
+        raise gr.Error(f"ffmpeg 转码 {ext} → wav 失败：{err or '未知错误'}")
+    note = f"，重采样到 {target_sr}Hz" if target_sr else ""
+    _ui_log(f"输入转码：{os.path.basename(path)}（{ext}）→ 16-bit PCM WAV{note}")
+    _WAV_CACHE[key] = out
+    return out
 
 
 def _to_16k_mono_wav(path, target_sr=16000):
@@ -522,6 +662,81 @@ def _to_16k_mono_wav(path, target_sr=16000):
     return out
 
 
+def _split_wav_chunks(path, max_seconds, min_search_frac=0.6, win_ms=50):
+    """把 PCM WAV 切成若干段临时 wav，返回 [(路径, 有效占比)]。用于 vevo2 歌声
+    转换：FM 图按整段长度一次建图，8G 卡放不下长音频；且同一 server 上不同长度
+    的请求会重建图并叠加占用显存（实测 20s 成功后 17s 反要 9.9GB），而形状相同
+    的请求可复用缓存图（实测显存平稳）。所以**每段都补零到恰好 max_seconds**，
+    占比供拼接时截掉补零对应的尾部输出。切点选在
+    [起点+max*min_search_frac, 起点+max] 区间内能量最低的 win_ms 窗口中心
+    （典型是呼吸/间奏处）；读不了的（非 PCM WAV）原样返回不分段。"""
+    try:
+        with wave.open(path, "rb") as w:
+            sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+            n = w.getnframes()
+            raw = w.readframes(n)
+    except Exception:
+        return [(path, 1.0)]            # 非 PCM WAV：不分段，交给 server
+    if sw != 2 or n <= 0:
+        return [(path, 1.0)]
+    data = np.frombuffer(raw, dtype=np.int16)
+    frames = data.reshape(-1, ch) if ch > 1 else data.reshape(-1, 1)
+    mono = np.abs(frames.astype(np.float32)).mean(axis=1)
+    win = max(1, int(sr * win_ms / 1000.0))
+    env_len = max(1, len(mono) // win)
+    env = mono[: env_len * win].reshape(env_len, win).mean(axis=1)
+
+    max_f, lo_f = int(max_seconds * sr), int(max_seconds * min_search_frac * sr)
+    spans, pos = [], 0
+    while n - pos > max_f:
+        w0 = min((pos + lo_f) // win, env_len - 1)
+        w1 = min((pos + max_f) // win, env_len)
+        wi = w0 + int(np.argmin(env[w0:w1])) if w1 > w0 else w1 - 1
+        cut = min(n, wi * win + win // 2)
+        spans.append((pos, cut))
+        pos = cut
+    if pos < n:
+        spans.append((pos, n))
+    outs = []
+    for i, (a, b) in enumerate(spans):
+        fd, out = tempfile.mkstemp(prefix=f"audiocpp_vcseg{i}_", suffix=".wav")
+        os.close(fd)
+        seg = frames[a:b]
+        if len(seg) < max_f:            # 全部段补零到等长，保证图形状一致
+            pad = np.zeros((max_f - len(seg), ch), dtype=np.int16)
+            seg = np.concatenate([seg, pad], axis=0)
+        with wave.open(out, "wb") as ww:
+            ww.setnchannels(ch)
+            ww.setsampwidth(sw)
+            ww.setframerate(sr)
+            ww.writeframes(seg.tobytes())
+        outs.append((out, (b - a) / float(max_f)))
+    return outs
+
+
+def _trim_wav_seconds(path, max_seconds):
+    """把 PCM WAV 截到前 max_seconds 秒。vevo2 的音色参考超过约 10s 对音色几乎
+    没有额外贡献，却会让 FM 图的 prompt 段变长、和源音频一起把显存吃满，所以
+    转换前先截短。短于上限、或非 PCM WAV（wave 读不了）的原样返回。"""
+    try:
+        with wave.open(path, "rb") as w:
+            sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+            keep = int(max_seconds * sr)
+            if keep <= 0 or w.getnframes() <= keep:
+                return path
+            raw = w.readframes(keep)
+    except Exception:
+        return path
+    fd, out = tempfile.mkstemp(prefix="audiocpp_ref_", suffix=".wav")
+    os.close(fd)
+    with wave.open(out, "wb") as ww:
+        ww.setnchannels(ch)
+        ww.setsampwidth(sw)
+        ww.setframerate(sr)
+        ww.writeframes(raw)
+    return out
+
+
 def _parse_adv_options(raw):
     raw = (raw or "").strip()
     if not raw:
@@ -539,6 +754,12 @@ def _parse_adv_options(raw):
 # like "requires a session voice via --voice-ref" becomes "请上传参考音色".
 # Ordered specific -> generic; server_error() takes the FIRST match.
 ERROR_HINTS = [
+    (re.compile(r"failed to allocate .{0,40}graph|out of memory|cudaMalloc", re.I),
+     "🧠 显存不足：这次请求的计算图放不进剩余显存，通常是音频/文本太长。"
+     "请剪短或分段后重试。"),
+    (re.compile(r"invalid WAV RIFF header", re.I),
+     "🎵 server 只支持 WAV 音频：上传的文件 webui 会自动转码，"
+     "手动填路径的参数（如 voice_samples）请先转成 .wav。"),
     (re.compile(r"unsupported Chatterbox language", re.I),
      "🌐 Chatterbox 只支持 en/es/fr/de/it/pt/ko（无中文/日文/俄文，也没有自动检测）。"
      "请在“语言”里改选受支持的语言，或“留空”用默认（英语）。"),
@@ -1240,7 +1461,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
             "max_tokens": int(max_tokens),
         }
         if voice_path:
-            payload["voice_ref"] = voice_path
+            payload["voice_ref"] = _ensure_wav(voice_path)
         if (reference_text or "").strip():
             payload["reference_text"] = reference_text
         if options:
@@ -1289,6 +1510,7 @@ def do_asr(model, audio_path):
     try:
         if not audio_path:
             raise gr.Error("请上传或录制音频")
+        audio_path = _ensure_wav(audio_path)
         ensure_model_loaded(model, ASR_TASKS)
         entry = catalog_by_id(model)
         dur = _audio_duration_seconds(audio_path)
@@ -1343,7 +1565,7 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         if duration is not None and float(duration) != 0:
             req["duration_seconds"] = float(duration)
         if source_audio:
-            req["audio"] = source_audio
+            req["audio"] = _ensure_wav(source_audio)
         if options:
             req["options"] = options
 
@@ -1369,11 +1591,13 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
 
 
 def do_vc(model, source_audio, target_upload, builtin_voice, seed,
-          adv_values, adv_options):
+          adv_values, adv_options, progress=gr.Progress()):
     """声音/歌声转换（vc/svc/s2s），走通用 /v1/tasks/run 路由：`audio` 是源音频，
     `voice_ref` 是目标音色。seed_vc/miocodec 直接用这两个字段；vevo2 也接受它们
     （audio_input/voice speaker 是 source_audio/target_voice 选项的回退），
-    风格转换类 route 的额外字段（style_ref 等）由“其它参数(JSON)”兜底。"""
+    风格转换类 route 的额外字段（style_ref 等）由“其它参数(JSON)”兜底。
+    profile 带 vc_chunk_seconds 的族（vevo2 FM 图按整段建，8G 卡长音频必炸）
+    超限时按低能量点分段逐段转换，同一 voice_ref 保证各段音色一致，最后拼接。"""
     try:
         if not source_audio:
             raise gr.Error("请上传要转换的源音频")
@@ -1382,31 +1606,63 @@ def do_vc(model, source_audio, target_upload, builtin_voice, seed,
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
 
-        req = {"audio": source_audio, "seed": int(seed)}
+        source_audio = _ensure_wav(source_audio)
+        req = {"seed": int(seed)}
         voice_path = target_upload or (
             os.path.join(PROMPTS_DIR, builtin_voice)
             if builtin_voice and builtin_voice != "(none)" else None)
         if voice_path:
-            req["voice_ref"] = voice_path
+            ref_wav = _ensure_wav(voice_path)
+            ref_cap = prof.get("vc_ref_max_seconds")
+            if ref_cap:                     # 参考音色截短，别让 prompt 段吃满显存
+                ref_wav = _trim_wav_seconds(ref_wav, ref_cap)
+            req["voice_ref"] = ref_wav
         if options:
             req["options"] = options
 
+        # vevo2 的 FM 图一次建图，序列长度 = 参考音色(prompt) + 每段源(target)。按
+        # 显存预算反推每段源时长（预算 − 参考时长），令 cond 稳定落在 8G 内；没有
+        # 显存预算/参考时的族仍按 vc_chunk_seconds 上限或整段发送。
+        chunk_cap = prof.get("vc_chunk_seconds")
+        ref_sec = _audio_duration_seconds(req.get("voice_ref")) or 0.0
+        if chunk_cap and prof.get("vc_fm_budget_seconds"):
+            min_chunk = prof.get("vc_min_chunk_seconds", 6)
+            budget = prof["vc_fm_budget_seconds"]
+            chunk_cap = int(max(min_chunk, min(chunk_cap, round(budget - ref_sec))))
+        pieces = (_split_wav_chunks(source_audio, chunk_cap)
+                  if chunk_cap else [(source_audio, 1.0)])
         dur = _audio_duration_seconds(source_audio)
         dur_note = f"{dur:.1f}s" if dur is not None else "未知"
-        _ui_log(f"声音转换开始：model={model}，源音频 {dur_note}")
+        seg_note = (f"，参考 {ref_sec:.0f}s，自适应分 {len(pieces)} 段（每段 ≤{chunk_cap}s）"
+                    if len(pieces) > 1 else "")
+        _ui_log(f"声音转换开始：model={model}，源音频 {dur_note}{seg_note}")
         t_start = time.time()
-        data = _run_task(entry, model, req, timeout=1800, log_label="声音转换")
-        b64 = data.get("audio")
-        if not b64 and data.get("named_audio_outputs"):
-            b64 = data["named_audio_outputs"][0].get("audio")
-        if not b64:
-            raise gr.Error("server 返回里没有音频数据")
+        blobs, ratios = [], []
+        for i, (piece, ratio) in enumerate(pieces):
+            if len(pieces) > 1:
+                progress((i, len(pieces)), desc=f"转换 {i + 1}/{len(pieces)} 段…")
+            req["audio"] = piece
+            t_seg = time.time()
+            data = _run_task(entry, model, req, timeout=1800, log_label="声音转换")
+            b64 = data.get("audio")
+            if not b64 and data.get("named_audio_outputs"):
+                b64 = data["named_audio_outputs"][0].get("audio")
+            if not b64:
+                raise gr.Error("server 返回里没有音频数据")
+            blobs.append(base64.b64decode(b64))
+            ratios.append(ratio)
+            if len(pieces) > 1:
+                _ui_log(f"声音转换段 {i + 1}/{len(pieces)} 完成（{time.time() - t_seg:.1f}s）")
         out = os.path.join(OUTPUT_DIR, f"audiocpp_vc_{int(time.time()*1000)}.wav")
-        with open(out, "wb") as f:
-            f.write(base64.b64decode(b64))
+        if len(blobs) == 1 and ratios[0] >= 1.0:
+            with open(out, "wb") as f:
+                f.write(blobs[0])
+        else:
+            _concat_wavs(blobs, out, keep_ratios=ratios)
         elapsed = time.time() - t_start
         _ui_log(f"声音转换完成：{out}，用时 {elapsed:.1f}s")
-        return out, f"✅ 转换完成，用时 {elapsed:.1f}s。"
+        parts_note = f"（{len(blobs)} 段拼接）" if len(blobs) > 1 else ""
+        return out, f"✅ 转换完成{parts_note}，用时 {elapsed:.1f}s。"
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
@@ -1417,6 +1673,9 @@ def do_vc(model, source_audio, target_upload, builtin_voice, seed,
 STEM_LABELS = {"vocals": "人声", "drums": "鼓", "bass": "贝斯", "other": "其它",
                "instrumental": "伴奏", "accompaniment": "伴奏", "audio": "输出"}
 MAX_SEP_STEMS = 4
+# 分离族（htdemucs / mel-band-roformer）的 prepare() 硬校验 44.1kHz（模型配置
+# sample_rate），不自己重采样；其它采样率的输入在 webui 侧先转到 44.1k。
+SEP_SR = 44100
 
 
 def do_sep(model, audio_path):
@@ -1426,6 +1685,7 @@ def do_sep(model, audio_path):
     try:
         if not audio_path:
             raise gr.Error("请上传要分离的音频")
+        audio_path = _ensure_wav(audio_path, target_sr=SEP_SR)
         ensure_model_loaded(model, SEP_TASKS)
         entry = catalog_by_id(model)
         dur = _audio_duration_seconds(audio_path)
@@ -1487,7 +1747,7 @@ def do_analyze(model, audio_path, transcript, language):
         ensure_model_loaded(model, ANALYZE_TASKS)
         entry = catalog_by_id(model)
         task = entry.get("task") if entry else ""
-        req = {"audio": _to_16k_mono_wav(audio_path)}
+        req = {"audio": _to_16k_mono_wav(_ensure_wav(audio_path))}
         if task == "align":
             if not (transcript or "").strip():
                 raise gr.Error("强制对齐需要在『对齐文本』里填音频中说的原文")
@@ -2037,6 +2297,12 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
             [vdes_model, vdes_text, vdes_instruct, vdes_seed, vdes_maxtok,
              vdes_adv_state, vdes_adv],
             [vdes_out, vdes_msg])
+
+    # 上传/录制后把文件换成短 ASCII 临时名，绕过 Gradio 在 Windows 上无法渲染
+    # 含中文/超长文件名的声波图（见 _stage_upload）。只接输入类音频控件。
+    for _in_audio in (tts_upload, asr_audio, gen_audio, vc_source, vc_target,
+                      sep_audio, ana_audio):
+        _in_audio.upload(_stage_upload, _in_audio, _in_audio)
 
     # 顺序与 refresh()/TAB_SPECS 一致：各页下拉、状态行、各页提示。
     _refresh_outputs = [

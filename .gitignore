@@ -38,3 +38,4 @@ __pycache__/
 !/webui/output/.gitkeep
 /webui/logs/*
 !/webui/logs/.gitkeep
+/webui/third_party/

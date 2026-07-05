@@ -42,4 +42,7 @@ set "PY=%~dp0..\audiocpp-portable\venv\python.exe"
 if not exist "%PY%" set "PY=%~dp0..\venv\python.exe"
 if not exist "%PY%" set "PY=%~dp0..\venv\Scripts\python.exe"
 
+REM --- bundled ffmpeg (webui.py transcodes non-WAV uploads with it): put this folder on PATH ---
+if exist "%~dp0ffmpeg.exe" set "PATH=%~dp0;%PATH%"
+
 goto :eof
