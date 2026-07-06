@@ -43,7 +43,13 @@ set AUDIOCPP_ASR_LANGUAGE=zh
 
 REM --- LLM: DeepSeek Chat Completions API ---
 set AUDIOCPP_LLM_BASE_URL=https://api.deepseek.com/v1
-set AUDIOCPP_LLM_API_KEY=sk-2920141d1b4643979055ebe2cc14809b
+if not defined AUDIOCPP_LLM_API_KEY if exist "%~dp0llm_api_key.txt" (
+  for /f "usebackq delims=" %%K in ("%~dp0llm_api_key.txt") do if not defined AUDIOCPP_LLM_API_KEY set "AUDIOCPP_LLM_API_KEY=%%K"
+)
+if not defined AUDIOCPP_LLM_API_KEY (
+  echo [realtime] WARNING: AUDIOCPP_LLM_API_KEY is empty.
+  echo [realtime] Set it in the environment or put the key in webui\llm_api_key.txt
+)
 set AUDIOCPP_LLM_MODEL=deepseek-chat
 
 REM --- Port for the realtime WebSocket backend ---
@@ -56,5 +62,6 @@ echo [realtime] expects ASR @ http://127.0.0.1:8081  (run_server.bat qwen3-asr 8
 echo.
 
 cd /d "%~dp0"
+start "" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:%AUDIOCPP_REALTIME_PORT%/realtime/'"
 "%VENV_PYTHON%" realtime_server.py
 pause

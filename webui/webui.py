@@ -135,11 +135,12 @@ def _find_bundle_root():
     """Locate the integrated bundle (holds cpu/ gpu/ models/ assets/ tools/).
 
     Works both in the dev tree (this file lives in webui/, next to
-    audiocpp-portable/) and when webui/ is copied into the bundle for
-    distribution (then the bundle is this file's own dir). Override with
+    audiocpp-portable/) and when webui/ is copied under the bundle for
+    distribution (then the bundle is this file's parent dir). Override with
     AUDIOCPP_BUNDLE."""
     for c in (os.environ.get("AUDIOCPP_BUNDLE"),
-              HERE,                                         # webui shipped inside the bundle
+              HERE,                                         # webui.py directly in the bundle
+              PROJECT_ROOT,                                 # webui/ shipped under the bundle
               os.path.join(PROJECT_ROOT, "audiocpp-portable")):
         if c and (os.path.isdir(os.path.join(c, "gpu")) or os.path.isdir(os.path.join(c, "cpu"))):
             return c

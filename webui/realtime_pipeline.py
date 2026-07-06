@@ -41,6 +41,7 @@ from typing import Any, Iterator, Optional
 import numpy as np
 import requests
 import torch
+import httpx
 
 logger = logging.getLogger("realtime.pipeline")
 
@@ -49,7 +50,11 @@ PIPELINE_SR = 16000
 VAD_FRAME = 512            # silero window at 16 kHz (~32 ms)
 CHUNK_SAMPLES = 512        # samples per outbound audio chunk at 16 kHz
 _SENTENCE_END = re.compile(r"[.!?。！？…\n]")
+_CLAUSE_END = re.compile(r"[,;:，、；：]")
+_SOFT_BREAK = re.compile(r"\s+")
 _MIN_TTS_CHARS = 6         # don't synthesize tiny fragments on their own
+_TARGET_TTS_CHARS = 36     # small chunks keep first audio responsive on local GPUs
+_MAX_TTS_CHARS = 72        # force a chunk even if the LLM avoids punctuation
 
 
 # ── cancel scope (cooperative cancellation for barge-in) ───────────────
@@ -173,7 +178,7 @@ class _VADStage:
         cancel_scope: CancelScope,
         threshold: float = 0.5,
         min_speech_ms: int = 200,
-        min_silence_ms: int = 600,
+        min_silence_ms: int = 450,
     ):
         self._out = out_events
         self._turns = turn_queue
@@ -273,6 +278,7 @@ class _STTStage:
         self._server_url = server_url.rstrip("/")
         self._model_id = model_id
         self._language = language
+        self._http = requests.Session()
 
     def configure(self, server_url: Optional[str] = None, model_id: Optional[str] = None,
                   language: Optional[str] = None) -> None:
@@ -292,7 +298,7 @@ class _STTStage:
             payload: dict[str, Any] = {"model": self._model_id, "audio": tmp.name}
             if self._language:
                 payload["language"] = self._language
-            r = requests.post(
+            r = self._http.post(
                 f"{self._server_url}/v1/audio/transcriptions", json=payload, timeout=60)
             if r.status_code != 200:
                 logger.error("ASR error %s: %s", r.status_code, r.text[:200])
@@ -331,6 +337,7 @@ class _LLMStage:
         self._model = model
         self._system = instructions.strip() or self.DEFAULT_SYSTEM
         self._messages: list[dict[str, Any]] = [{"role": "system", "content": self._system}]
+        self._http = httpx.Client(timeout=60.0)
 
     def configure(self, base_url: Optional[str] = None, api_key: Optional[str] = None,
                   model: Optional[str] = None, instructions: Optional[str] = None) -> None:
@@ -355,8 +362,6 @@ class _LLMStage:
             self._messages = [self._messages[0]] + self._messages[-20:]
 
     def stream(self, cancel_scope: CancelScope, gen: int) -> Iterator[str]:
-        import httpx
-
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -364,28 +369,27 @@ class _LLMStage:
             "model": self._model, "messages": self._messages, "stream": True,
         }
         try:
-            with httpx.Client(timeout=60.0) as http:
-                with http.stream("POST", f"{self._base_url}/chat/completions",
-                                 json=payload, headers=headers) as resp:
-                    if resp.status_code != 200:
-                        resp.read()
-                        logger.error("LLM API error %s: %s", resp.status_code, resp.text[:300])
+            with self._http.stream("POST", f"{self._base_url}/chat/completions",
+                                   json=payload, headers=headers) as resp:
+                if resp.status_code != 200:
+                    resp.read()
+                    logger.error("LLM API error %s: %s", resp.status_code, resp.text[:300])
+                    return
+                for line in resp.iter_lines():
+                    if cancel_scope.is_stale(gen):
                         return
-                    for line in resp.iter_lines():
-                        if cancel_scope.is_stale(gen):
-                            return
-                        if not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            return
-                        try:
-                            data = json.loads(data_str)
-                            content = data["choices"][0]["delta"].get("content", "")
-                            if content:
-                                yield content
-                        except (json.JSONDecodeError, KeyError, IndexError):
-                            continue
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        return
+                    try:
+                        data = json.loads(data_str)
+                        content = data["choices"][0]["delta"].get("content", "")
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
         except httpx.RequestError as exc:
             logger.error("LLM API unreachable (%s): %r", self._base_url, exc)
 
@@ -398,6 +402,7 @@ class _TTSStage:
 
     def __init__(self, server_url: str):
         self._server_url = server_url.rstrip("/")
+        self._http = requests.Session()
 
     def configure(self, server_url: Optional[str] = None) -> None:
         if server_url:
@@ -413,7 +418,7 @@ class _TTSStage:
         if reference_text:
             payload["reference_text"] = reference_text
         try:
-            r = requests.post(
+            r = self._http.post(
                 f"{self._server_url}/v1/audio/speech", json=payload, timeout=120)
         except requests.RequestException as exc:
             logger.error("TTS server unreachable (%s): %r", self._server_url, exc)
@@ -584,11 +589,6 @@ class RealtimePipeline:
                     self._tts_pending -= 1
                 continue
             step = CHUNK_SAMPLES * 2
-            # Emit the sentence text just before the first audio chunk so the
-            # frontend shows the transcript synchronised with audio playback
-            # rather than with LLM token generation (which is much faster,
-            # especially with local TTS adding seconds of synthesis latency).
-            self._out_events.put(AssistantText(text=text))
             for i in range(0, len(pcm), step):
                 if self._cancel_scope.is_stale(gen):
                     break
@@ -636,10 +636,10 @@ class RealtimePipeline:
             full += token
             pending += token
             while True:
-                sentence, pending = self._split_sentence(pending)
-                if sentence is None:
+                chunk, pending = self._split_speakable(pending)
+                if chunk is None:
                     break
-                self._speak(sentence, gen, tts_model, tts_voice, tts_ref, tts_ref_text)
+                self._speak(chunk, gen, tts_model, tts_voice, tts_ref, tts_ref_text)
 
         if self._cancel_scope.is_stale(gen):
             return
@@ -659,17 +659,56 @@ class RealtimePipeline:
         self._out_events.put(ResponseDone())
 
     @staticmethod
-    def _split_sentence(buf: str) -> tuple[Optional[str], str]:
-        """Pull the first complete sentence off ``buf`` if one is ready and long
-        enough to be worth synthesizing; else return (None, buf)."""
-        match = _SENTENCE_END.search(buf)
-        if not match:
+    def _split_speakable(buf: str) -> tuple[Optional[str], str]:
+        """Pull one short, speakable chunk from ``buf``.
+
+        audio.cpp's HTTP TTS endpoint returns a whole WAV per request, so we
+        simulate streaming by feeding it compact clauses instead of waiting for
+        an entire assistant paragraph. Sentence punctuation wins; clause
+        punctuation is allowed once the chunk is useful; a long punctuation-free
+        span is force-split near a word boundary.
+        """
+        text = buf.lstrip()
+        if not text:
+            return None, ""
+
+        sentence = _SENTENCE_END.search(text)
+        if sentence and sentence.end() <= _TARGET_TTS_CHARS:
+            end = sentence.end()
+            head, tail = text[:end], text[end:]
+            if len(head.strip()) >= _MIN_TTS_CHARS or tail.strip():
+                return head.strip(), tail
+
+        if len(text) >= _TARGET_TTS_CHARS:
+            clause = None
+            for match in _CLAUSE_END.finditer(text):
+                if match.end() >= _MIN_TTS_CHARS:
+                    clause = match
+                    if match.end() >= _TARGET_TTS_CHARS:
+                        break
+            if clause and clause.end() <= _MAX_TTS_CHARS:
+                end = clause.end()
+                return text[:end].strip(), text[end:]
+
+        if sentence and sentence.end() <= _MAX_TTS_CHARS:
+            end = sentence.end()
+            head, tail = text[:end], text[end:]
+            if len(head.strip()) >= _MIN_TTS_CHARS or tail.strip():
+                return head.strip(), tail
+
+        if len(text) < _MAX_TTS_CHARS:
             return None, buf
-        end = match.end()
-        head, tail = buf[:end], buf[end:]
-        if len(head.strip()) < _MIN_TTS_CHARS and tail.strip() == "":
-            return None, buf  # wait for more before speaking a tiny fragment
-        return head.strip(), tail
+
+        window = text[:_MAX_TTS_CHARS]
+        split_at = 0
+        for match in _SOFT_BREAK.finditer(window):
+            if match.end() >= _TARGET_TTS_CHARS:
+                split_at = match.end()
+                break
+            split_at = match.end()
+        if split_at < _MIN_TTS_CHARS:
+            split_at = _MAX_TTS_CHARS
+        return text[:split_at].strip(), text[split_at:]
 
     def _speak(self, text: str, gen: int, model: str, voice: str,
                voice_ref: str, reference_text: str) -> None:
@@ -678,6 +717,11 @@ class RealtimePipeline:
         text = text.strip()
         if not text:
             return
+        # Match the original speech-to-speech architecture: text reaches the
+        # client as soon as the LLM has a speakable sentence, while TTS works in
+        # the background. This keeps the side panel from sitting blank during
+        # local TTS latency.
+        self._out_events.put(AssistantText(text=text))
         with self._tts_lock:
             self._tts_pending += 1
         self._tts_queue.put((text, gen, model, voice, voice_ref, reference_text))

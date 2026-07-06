@@ -7,8 +7,9 @@ REM  IMPORTANT: no setlocal/endlocal here on purpose, so the vars it
 REM  sets survive back in the caller's scope.
 REM ============================================================
 
-REM --- bundle root (holds cpu\ gpu\ models\): sibling ..\audiocpp-portable, else this folder ---
+REM --- bundle root (holds cpu\ gpu\ models\): sibling ..\audiocpp-portable, parent bundle, else this folder ---
 set "BUNDLE=%~dp0..\audiocpp-portable"
+if not exist "%BUNDLE%\gpu\audiocpp_cli.exe" if not exist "%BUNDLE%\cpu\audiocpp_cli.exe" set "BUNDLE=%~dp0.."
 if not exist "%BUNDLE%\gpu\audiocpp_cli.exe" if not exist "%BUNDLE%\cpu\audiocpp_cli.exe" set "BUNDLE=%~dp0."
 
 REM --- CUDA present? driver DLL, or nvidia-smi on PATH ---

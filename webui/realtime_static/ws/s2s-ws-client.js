@@ -100,6 +100,20 @@ function _codedError(message, code, extra) {
   return err;
 }
 
+function _joinTranscript(prev, next) {
+  const a = (prev || "").trim();
+  const b = (next || "").trim();
+  if (!a) return b;
+  if (!b) return a;
+  if (/[\s([{（《“‘]$/.test(a) || /^[\s,.;:!?，。！？、；：）\]}》”’]/.test(b)) {
+    return `${a}${b}`;
+  }
+  if (/[\u3400-\u9fff]$/.test(a) || /^[\u3400-\u9fff]/.test(b)) {
+    return `${a}${b}`;
+  }
+  return `${a} ${b}`;
+}
+
 // The s2s pipeline runs internally at 16 kHz mono PCM. The WebRTC transport
 // resamples to 48 kHz for Opus, but the WebSocket transport emits the
 // native pipeline rate. We don't (can't) override it via `audio.output.format`
@@ -812,7 +826,7 @@ export class S2sWsRealtimeClient extends EventTarget {
         this._asstTranscriptByResp.delete(rid); // segment finished; next one starts fresh
         if (segment) {
           const prev = this._asstFullByResp.get(rid) || "";
-          this._asstFullByResp.set(rid, prev ? `${prev} ${segment}` : segment);
+          this._asstFullByResp.set(rid, _joinTranscript(prev, segment));
         }
         const full = this._asstFullByResp.get(rid) || "";
         if (full) {

@@ -364,11 +364,9 @@ export class ChatView {
       if (!entry) {
         const bubble = this._spawnBubble("assistant", d.text);
         this._asstByResp.set(rid, { bubble, hist: this._appendHistMsg("assistant", d.text, false) });
-        this._bumpDismiss(bubble);
       } else {
         this._updateBubbleText(entry.bubble, d.text);
         this._updateHistMsg(entry.hist, d.text, false);
-        this._bumpDismiss(entry.bubble);
       }
       this._markUnread();
     }
@@ -397,6 +395,7 @@ export class ChatView {
         this._updateHistMsg(hist, transcript, false);
       }
       if (hist) this._markHistInterrupted(hist);
+      if (entry?.bubble) this._bumpDismiss(entry.bubble, 6000);
       this._asstByResp.delete(responseId);
       return;
     }
@@ -405,6 +404,7 @@ export class ChatView {
     // release the map entry. The bubble already auto-dismisses on its timer and
     // the history row persists as the conversation log. Crucially we do NOT
     // touch user state here — that lifecycle is fully independent.
+    if (entry?.bubble) this._bumpDismiss(entry.bubble, 6000);
     this._asstByResp.delete(responseId);
   }
 

@@ -69,6 +69,25 @@ def _generate_id(prefix: str = "id") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def _join_transcript(parts: list[str]) -> str:
+    out = ""
+    for part in parts:
+        text = (part or "").strip()
+        if not text:
+            continue
+        if not out:
+            out = text
+        elif (out[-1].isspace() or text[0].isspace()
+              or text[0] in ",.;:!?，。！？、；：）]}》”’"
+              or out[-1] in "([{（《“‘"
+              or "\u3400" <= out[-1] <= "\u9fff"
+              or "\u3400" <= text[0] <= "\u9fff"):
+            out += text
+        else:
+            out += " " + text
+    return out.strip()
+
+
 def _resolve_voice_ref(path: str) -> str:
     """If *path* is relative, resolve it against the webui/ directory so the
     C++ TTS server (whose CWD may be anywhere) can open it."""
@@ -145,9 +164,12 @@ def create_app() -> FastAPI:
     async def config():
         """Return the env-default pipeline config so the browser Settings panel
         can pre-fill fields (TTS/ASR/LLM URLs, model ids, voice_ref, etc.).
-        The API key is included so a key set via env shows up pre-filled; it is
-        a localhost-only server with no auth, treat the network as trusted."""
-        return defaults
+        Do not echo the LLM API key back to the browser; the pipeline can still
+        use the env-provided key as its server-side default."""
+        public_defaults = dict(defaults)
+        public_defaults["llm_api_key"] = ""
+        public_defaults["llm_api_key_set"] = bool(defaults.get("llm_api_key"))
+        return public_defaults
 
     @app.websocket("/v1/realtime")
     async def ws_realtime(ws: WebSocket):
@@ -182,7 +204,7 @@ def create_app() -> FastAPI:
                 return current_resp_id
 
             while True:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.01)
                 for event in pipeline.drain_events():
                     if isinstance(event, SpeechStarted):
                         current_resp_id = None  # barge-in: new turn, new response
@@ -230,7 +252,7 @@ def create_app() -> FastAPI:
                         })
                     elif isinstance(event, ResponseDone):
                         rid = current_resp_id or _ensure_resp_id()
-                        full_transcript = " ".join(_full_parts).strip()
+                        full_transcript = _join_transcript(_full_parts)
                         await ws.send_json({
                             "type": "response.done",
                             "response": {

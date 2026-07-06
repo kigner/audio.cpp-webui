@@ -25,6 +25,17 @@ Highlights:
 >
 > **New model PRs:** before starting a new model port, **please check the supported model table because several families are already implemented or under testing**. If you do add a model, follow the validation style in [PR #19](https://github.com/0xShug0/audio.cpp/pull/19): include exact build/run commands, model paths or package ids, generated outputs, parity or path-test results, and relevant performance or memory notes.
 
+## WebUI and Local Helper Scripts
+
+The `webui/` directory contains a Windows-friendly local launcher layer for audio.cpp:
+
+- `run_webui.bat` starts the Gradio WebUI at `http://127.0.0.1:7860`, with on-demand model loading, model switching, model download support, reference voice upload/recording, generated controls for advanced model parameters, and inline run/error status.
+- `run_realtime.bat` starts the realtime voice chat page backed by local ASR, LLM, and audio.cpp TTS services.
+- `run_server.bat` starts an OpenAI-compatible HTTP API server for other applications.
+- `run_cli_tts.bat` and `run_tts_long.bat` cover quick one-shot TTS and long-text batch synthesis workflows.
+
+For full setup notes, script arguments, environment variables, API examples, WebUI advanced-parameter behavior, common model ids, and troubleshooting, see [webui/README.md](webui/README.md).
+
 ## News
 
 > [!IMPORTANT]

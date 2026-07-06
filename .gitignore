@@ -39,3 +39,4 @@ __pycache__/
 /webui/logs/*
 !/webui/logs/.gitkeep
 /webui/third_party/
+/webui/llm_api_key.txt

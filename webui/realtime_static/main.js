@@ -62,6 +62,11 @@ const DEFAULTS = {
 function loadSettings() {
   const s = {};
   for (const [k, def] of Object.entries(DEFAULTS)) {
+    if (k === "llmKey") {
+      localStorage.removeItem(STORAGE[k]);
+      s[k] = def;
+      continue;
+    }
     const v = localStorage.getItem(STORAGE[k]);
     s[k] = v === null ? def : v;
   }
@@ -103,6 +108,10 @@ async function refreshEnvDefaults() {
 
 function saveSettings(s) {
   for (const k of Object.keys(DEFAULTS)) {
+    if (k === "llmKey") {
+      localStorage.removeItem(STORAGE[k]);
+      continue;
+    }
     localStorage.setItem(STORAGE[k], String(s[k] ?? ""));
   }
 }
@@ -142,8 +151,8 @@ const STATE_VIEWS = {
   "your-turn":     { caption: "准备就绪",  disabled: true  },
   listening:       { caption: "",              disabled: false },
   "user-speaking": { caption: "",              disabled: false },
-  processing:      { caption: "",              disabled: false },
-  "ai-speaking":   { caption: "",              disabled: false },
+  processing:      { caption: "正在生成回复",  disabled: false },
+  "ai-speaking":   { caption: "正在播放",      disabled: false },
   error:           { caption: "点击重试",  disabled: false },
 };
 const LIVE_STATES = new Set(["listening", "user-speaking", "processing", "ai-speaking"]);
@@ -402,9 +411,10 @@ async function doStart() {
     chat.clear();
     setState("connecting");
     setCaption("请求麦克风权限…", "muted");
-    if (!audioContext) audioContext = createResumedAudioContext();
+    if (!audioContext || audioContext.state === "closed") audioContext = createResumedAudioContext();
     try { await primeMicPermission(); } catch (err) {
       if (audioContext) void audioContext.close().catch(() => {});
+      audioContext = null;
       throw err;
     }
     const gateThreshold = Number(settings.noiseGate) || GATE_DEFAULT_DB;
@@ -439,17 +449,34 @@ async function doStart() {
     });
     try { await c.connect(); chat.reset(); } catch (err) {
       if (audioContext) void audioContext.close().catch(() => {});
+      audioContext = null;
       throw err;
     }
   }
 }
 
-function doStop() {
-  if (client) { client.close(); client = null; }
+async function doStop() {
+  const activeClient = client;
+  client = null;
+  if (activeClient) {
+    try {
+      await activeClient.close();
+    } catch (err) {
+      console.warn("[main] error closing client:", err);
+    }
+  } else if (audioContext && audioContext.state !== "closed") {
+    try {
+      await audioContext.close();
+    } catch {
+      // ignored
+    }
+  }
+  audioContext = null;
   if (micStream) {
     for (const track of micStream.getTracks()) track.stop();
     micStream = null;
   }
+  paintInputLevel(0);
   muted = false;
   micBtn.classList.remove("muted");
   queueBar.hidden = true;
@@ -469,7 +496,7 @@ circleBtn.addEventListener("click", async () => {
   }
 });
 
-stopBtn.addEventListener("click", () => doStop());
+stopBtn.addEventListener("click", () => { void doStop(); });
 
 micBtn.addEventListener("click", () => {
   muted = !muted;
@@ -478,8 +505,8 @@ micBtn.addEventListener("click", () => {
   client?.setMuted(muted);
 });
 
-queueLeave.addEventListener("click", () => doStop());
-queueFunnelLeave?.addEventListener("click", () => doStop());
+queueLeave.addEventListener("click", () => { void doStop(); });
+queueFunnelLeave?.addEventListener("click", () => { void doStop(); });
 queueFunnelJoin?.addEventListener("click", () => {
   queueFunnel.hidden = true;
   client?.join();
@@ -523,8 +550,10 @@ settingsModal?.addEventListener("close", () => {
   if (client) {
     if (next.rtUrl !== prevRtUrl) {
       // Realtime backend URL changed — must reconnect.
-      doStop();
-      setTimeout(() => doStart(), 150);
+      void (async () => {
+        await doStop();
+        setTimeout(() => { void doStart(); }, 150);
+      })();
     } else {
       client.updateAppConfig(appConfigFromSettings(next));
       const thr = Number(settings.noiseGate);
@@ -534,7 +563,7 @@ settingsModal?.addEventListener("close", () => {
 });
 
 // Cleanup on page unload
-window.addEventListener("beforeunload", () => { doStop(); });
+window.addEventListener("beforeunload", () => { void doStop(); });
 
 // ── Init ───────────────────────────────────────────────────────────────
 chat = new ChatView();
