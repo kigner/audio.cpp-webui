@@ -3124,4 +3124,180 @@ AceStepPlan AceStepPlannerRuntime::generate(const AceStepRequest & request, bool
     return plan;
 }
 
+AceStepPlan AceStepPlannerRuntime::understand(
+    const std::string & audio_codes_text,
+    const AceStepRequest & request) const {
+    const auto total_start = Clock::now();
+    const auto & config = assets_->config.planner;
+
+    // Prompt mirrors Python build_formatted_prompt_for_understanding: the
+    // system message carries the understand instruction, the user message is
+    // the raw audio-code token string.
+    const std::string user_content =
+        audio_codes_text.empty() ? std::string("NO USER INPUT") : audio_codes_text;
+    const std::string formatted = tokenizer_.apply_chat_template(
+        std::string("# Instruction\n") + kDefaultLmUnderstandInstruction + "\n\n",
+        user_content,
+        true);
+    const AceStepPlannerPreparedInput prepared{
+        formatted,
+        trim_to_valid_tokens(tokenizer_.tokenize_text(formatted, generation_.max_prompt_tokens))};
+
+    const int64_t max_lyrics_tokens = 2048;
+    const int64_t max_new_tokens = generation_.max_cot_tokens + max_lyrics_tokens;
+    const auto & prompt_ids = prepared.tokenized_prompt.input_ids;
+    if (static_cast<int64_t>(prompt_ids.size()) + max_new_tokens > config.max_position_embeddings) {
+        throw std::runtime_error("ACE-Step planner understand request exceeds max_position_embeddings");
+    }
+    engine::debug::trace_log_scalar("ace_step.planner.understand.prompt_tokens", prompt_ids.size());
+
+    auto prefill_runtime = planner_prefill_weights_runtime_ != nullptr
+        ? planner_prefill_weights_runtime_
+        : weights_runtime_;
+    const int64_t required_cache_steps = static_cast<int64_t>(prompt_ids.size()) + max_new_tokens;
+    if (!decode_graph_ || !decode_graph_->can_run(*weights_runtime_, required_cache_steps)) {
+        decode_graph_ = std::make_unique<DecodeGraph>(
+            weights_runtime_,
+            required_cache_steps,
+            decode_graph_arena_bytes_);
+    }
+    const bool use_metal_prompt_step_prefill = prefill_runtime->backend_type() == core::BackendType::Metal;
+    if (!use_metal_prompt_step_prefill &&
+        (!prefill_graph_ || !prefill_graph_->can_run(*prefill_runtime, static_cast<int64_t>(prompt_ids.size())))) {
+        prefill_graph_ = std::make_unique<PrefillGraph>(
+            prefill_runtime,
+            static_cast<int64_t>(prompt_ids.size()),
+            decode_graph_arena_bytes_);
+    }
+    PrefillOutput prefill;
+    if (use_metal_prompt_step_prefill) {
+        prefill = run_decode_graph_prompt_prefill(*decode_graph_, prepared.tokenized_prompt);
+    } else {
+        prefill = prefill_graph_->run(prompt_ids, prepared.tokenized_prompt.attention_mask);
+    }
+    std::vector<float> logits = std::move(prefill.logits);
+    decode_graph_->import_state(prefill.kv_state);
+
+    std::vector<int32_t> generated;
+    generated.reserve(static_cast<size_t>(max_new_tokens));
+
+    // Phase A: constrained CoT metadata (<think>bpm/caption/.../timesignature</think>).
+    // A neutral request (no user metas, no duration) lets the FSM derive every
+    // field from the audio codes instead of echoing request values. The forced
+    // eos at end-of-turn is NOT fed back: lyrics continue right after </think>.
+    AceStepRequest cot_request;
+    cot_request.generation.duration_seconds = 0.0F;
+    Phase1ConstrainedDecoder constrained_decoder(
+        tokenizer_,
+        config,
+        cot_request,
+        is_audio_code_token_,
+        phase1_constraints_);
+    for (int64_t step = 0; step < generation_.max_cot_tokens; ++step) {
+        const int32_t token = constrained_decoder.select_next_token(logits);
+        if (is_eos(config, token)) {
+            break;
+        }
+        generated.push_back(token);
+        constrained_decoder.observe_token(token);
+        if (constrained_decoder.completed()) {
+            break;
+        }
+        decode_graph_->run_step_into(token, logits);
+    }
+    const size_t cot_token_count = generated.size();
+
+    // Phase B: free-form lyrics after </think>, temperature sampling with
+    // audio-code tokens masked out, until eos or the token budget runs out.
+    std::mt19937 rng(request.generation.seed);
+    const float temperature = request.generation.lm_temperature;
+    const auto sample_lyrics_token = [&](const std::vector<float> & step_logits) {
+        const auto allowed = [&](size_t index) {
+            return index >= is_audio_code_token_.size() || is_audio_code_token_[index] == 0;
+        };
+        if (!(temperature > 0.0F)) {
+            size_t best = 0;
+            float best_logit = -std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < step_logits.size(); ++i) {
+                if (allowed(i) && step_logits[i] > best_logit) {
+                    best_logit = step_logits[i];
+                    best = i;
+                }
+            }
+            return static_cast<int32_t>(best);
+        }
+        float max_logit = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < step_logits.size(); ++i) {
+            if (allowed(i) && step_logits[i] > max_logit) {
+                max_logit = step_logits[i];
+            }
+        }
+        double total = 0.0;
+        std::vector<double> weights(step_logits.size(), 0.0);
+        for (size_t i = 0; i < step_logits.size(); ++i) {
+            if (allowed(i)) {
+                weights[i] = std::exp(static_cast<double>((step_logits[i] - max_logit) / temperature));
+                total += weights[i];
+            }
+        }
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        double target = dist(rng) * total;
+        for (size_t i = 0; i < weights.size(); ++i) {
+            target -= weights[i];
+            if (target <= 0.0 && weights[i] > 0.0) {
+                return static_cast<int32_t>(i);
+            }
+        }
+        return static_cast<int32_t>(config.eos_token_id);
+    };
+    for (int64_t step = 0; step < max_lyrics_tokens; ++step) {
+        const int32_t token = sample_lyrics_token(logits);
+        if (is_eos(config, token)) {
+            break;
+        }
+        generated.push_back(token);
+        decode_graph_->run_step_into(token, logits);
+    }
+    engine::debug::trace_log_scalar("ace_step.planner.understand.cot_tokens", cot_token_count);
+    engine::debug::trace_log_scalar(
+        "ace_step.planner.understand.lyrics_tokens",
+        generated.size() - cot_token_count);
+
+    const std::string output_text = tokenizer_.decode(generated, false);
+    AceStepPlan plan = ace_step_parse_lm_output(output_text);
+
+    // Lyrics = everything after </think>, minus an optional "# Lyric" header
+    // and the trailing end-of-turn token (Python _extract_lyrics_from_output).
+    const auto trim = [](std::string value) {
+        const auto first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) {
+            return std::string();
+        }
+        const auto last = value.find_last_not_of(" \t\r\n");
+        return value.substr(first, last - first + 1);
+    };
+    const size_t think_end = output_text.find("</think>");
+    if (think_end != std::string::npos) {
+        std::string lyrics = output_text.substr(think_end + std::string("</think>").size());
+        const size_t im_end = lyrics.find("<|im_end|>");
+        if (im_end != std::string::npos) {
+            lyrics.resize(im_end);
+        }
+        lyrics = trim(std::move(lyrics));
+        if (!lyrics.empty() && lyrics.front() == '#') {
+            const size_t line_end = lyrics.find('\n');
+            const std::string header = lyrics.substr(0, line_end);
+            if (header.find("Lyric") != std::string::npos || header.find("lyric") != std::string::npos) {
+                lyrics = line_end == std::string::npos ? std::string() : trim(lyrics.substr(line_end + 1));
+            }
+        }
+        plan.lyrics = std::move(lyrics);
+    }
+
+    engine::debug::timing_log_scalar(
+        "ace_step.planner.understand.total_ms",
+        engine::debug::elapsed_ms(total_start, Clock::now()));
+    return plan;
+}
+
 }  // namespace engine::models::ace_step

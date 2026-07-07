@@ -55,9 +55,19 @@
   ],
 
   "ace_step": [
-    {"name": "task_route", "type": "choice", "label": "task_route（操作类型）", "default": "text2music", "choices": ["text2music", "complete", "lego", "extract", "cover", "cover-nofsq", "repaint"], "info": "text2music 纯文生曲；其余 route 需上传源音频"},
+    {"name": "task_route", "type": "choice", "label": "task_route（操作类型）", "default": "text2music", "choices": ["text2music", "complete", "lego", "extract", "cover", "cover-nofsq", "repaint", "remix"], "info": "text2music 纯文生曲；cover=换词翻唱（原版 Remix 主路线，配合下面两个【cover】滑条）；remix=flow-edit 精细换词；其余 route 需上传源音频"},
     {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 8, "minimum": 1, "step": 1, "precision": 0, "info": "扩散去噪步数"},
-    {"name": "guidance_scale", "type": "slider", "label": "guidance_scale", "default": 1.0, "minimum": 0.0, "maximum": 5.0, "step": 0.1}
+    {"name": "guidance_scale", "type": "slider", "label": "guidance_scale", "default": 1.0, "minimum": 0.0, "maximum": 5.0, "step": 0.1},
+    {"name": "audio_cover_strength", "type": "slider", "label": "【cover】Remix 强度 audio_cover_strength", "default": 1.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "多少比例的去噪步参考源曲结构：1=贴近原曲、0=自由发挥；原版 Remix 建议 0.5。仅 cover/cover-nofsq 路线生效"},
+    {"name": "cover_noise_strength", "type": "slider", "label": "【cover】旋律保持 cover_noise_strength", "default": 0.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "从源曲部分加噪的起点开始去噪：0=不保旋律、0.1~0.25=推荐区间（保旋律又能换词换风格）、越高越贴原曲。仅 cover 路线生效"},
+    {"name": "source_caption", "type": "text", "label": "【remix】source_caption（源歌曲描述）", "default": "", "placeholder": "留空=用主提示词；点『🔍 分析源音频』自动填", "info": "flow-edit 的源侧文本条件，描述源歌曲本来的风格"},
+    {"name": "source_lyrics", "type": "text", "lines": 4, "label": "【remix】source_lyrics（源歌曲原歌词）", "default": "", "placeholder": "带 [Verse] [Chorus] 标签；点『🔍 分析源音频』自动填", "info": "flow-edit 的源侧歌词；新歌词写在主界面『歌词』框"},
+    {"name": "flow_edit_n_min", "type": "slider", "label": "【remix】flow_edit_n_min（编辑起点）", "default": 0.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "跳过前面高噪声步的比例：0=从头编辑；调大更保源曲但换词更弱"},
+    {"name": "flow_edit_n_max", "type": "slider", "label": "【remix】flow_edit_n_max（编辑终点）", "default": 1.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "1=全程配对编辑；调低到 0.7~0.9 时收尾只朝新歌词去噪——歌词唱不出来时优先调这个"},
+    {"name": "flow_edit_n_avg", "type": "number", "label": "【remix】flow_edit_n_avg（每步平均次数）", "default": 1, "minimum": 1, "maximum": 4, "step": 1, "precision": 0, "info": "每步多次采样取平均，2 更稳但更慢"},
+    {"name": "bpm", "type": "number", "label": "【曲谱】BPM", "default": 0, "minimum": 0, "step": 1, "precision": 0, "info": "0=不指定；点『🔍 分析源音频』自动填"},
+    {"name": "keyscale", "type": "text", "label": "【曲谱】调性 keyscale", "default": "", "placeholder": "如 F major / c# minor", "info": "留空=不指定；分析后自动填"},
+    {"name": "timesignature", "type": "text", "label": "【曲谱】拍号 timesignature", "default": "", "placeholder": "如 4", "info": "留空=不指定；分析后自动填"}
   ],
 
   "stable_audio": [

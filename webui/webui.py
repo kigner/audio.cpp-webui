@@ -105,7 +105,13 @@ def _silence_h11_content_length_race():
     class _DropContentLengthRace(logging.Filter):
         def filter(self, record):
             exc = record.exc_info[1] if record.exc_info else None
-            if isinstance(exc, LocalProtocolError) and "declared Content-Length" in str(exc):
+            msg = str(exc or "")
+            if isinstance(exc, LocalProtocolError) and "declared Content-Length" in msg:
+                return False
+            # uvicorn with httptools raises this RuntimeError when the browser
+            # aborts/replaces a large audio preview fetch. The request is already
+            # dead; do not spam a full ASGI traceback for this benign preview race.
+            if isinstance(exc, RuntimeError) and "Response content shorter than Content-Length" in msg:
                 return False
             return True
 
@@ -301,7 +307,9 @@ MODEL_PROFILES = {
         "input_hint": (
             "**ACE-Step** 音乐生成/编辑：提示词写风格/乐器/情绪（英文效果最好），可选填歌词。"
             "“高级参数”里的 task_route 默认 text2music（纯文生曲）；cover/repaint/extract 等"
-            "编辑类 route 需上传源音频。时长填 -1 表示自动。"),
+            "编辑类 route 需上传源音频。时长填 -1 表示自动。上传源音频后可点"
+            "『🔍 分析源音频』反推源曲描述/歌词/BPM/调性并自动填入高级参数"
+            "（remix/cover 换词前建议先分析）。"),
     },
     "stable_audio": {
         "input_hint": (
@@ -544,32 +552,85 @@ def _ensure_ascii_path(path):
     return out
 
 
-def _stage_upload(path):
-    """上传/录制完成后立即把文件复制成一个短的纯 ASCII 临时名再交回控件。
-    Gradio 6 在 Windows 上用原始文件名（可能含中文、括号或很长）拼服务端路径，
-    含非 ASCII 或超长的路径前端取不到，声波图一直转不出来（源音频名如
-    `把酒叹平生_(Vocals)_(No Reverb).wav` 就是这样卡住）；换成短 ASCII 名后波形
-    能正常渲染（也顺带给 C++ server 备好可打开的路径）。已是短 ASCII 名的
-    （麦克风录音等）原样返回，不做多余复制。"""
-    if not path or not os.path.exists(path):
-        return path
-    try:
-        path.encode("ascii")
-        if len(path) < 180:
-            return path                 # 已是短 ASCII 路径：前端能直接渲染
-    except UnicodeEncodeError:
-        pass                            # 含中文等非 ASCII：必须换名
+def _wait_file_stable(path, timeout=8.0, interval=0.08, stable_ticks=3):
+    """Wait until a just-uploaded/recorded file stops changing on disk.
+    On Windows, the browser can start/restart audio preview fetches while Gradio
+    is still replacing a large temp file. Waiting for a few equal size samples
+    before copying avoids half-written preview files."""
+    if not path:
+        return False
+    deadline = time.time() + timeout
+    last_size = -1
+    ticks = 0
+    while time.time() < deadline:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = -1
+        if size > 0 and size == last_size:
+            ticks += 1
+            if ticks >= stable_ticks:
+                return True
+        else:
+            last_size = size
+            ticks = 0
+        time.sleep(interval)
+    return os.path.exists(path)
+
+
+def _safe_audio_ext(path):
     ext = os.path.splitext(path)[1].lower()
     try:
         ext.encode("ascii")
-        if not 0 < len(ext) <= 8:
-            ext = ".wav"
+        if 0 < len(ext) <= 8:
+            return ext
+    except Exception:
+        pass
+    return ".wav"
+
+
+def _stage_upload(path, force_copy=False):
+    """上传/录制完成后，把输入音频换成短 ASCII 临时名再交回控件。
+
+    关键点：长音频即使路径本身已经是短 ASCII，也强制复制到一个新的稳定文件。
+    否则在同一个 gr.Audio 控件里点 X 清空再上传长音频时，旧预览 fetch 与新预览
+    fetch 容易竞态，前端波形会卡住；短音频通常因为读取很快不明显。"""
+    if not path or not os.path.exists(path):
+        return path
+
+    _wait_file_stable(path)
+
+    # 已经是我们 staging 过的文件，不要再次复制，避免 .change / .upload 回写后循环。
+    base = os.path.basename(path)
+    if base.startswith(("audiocpp_up_", "audiocpp_rec_", "audiocpp_asc_")):
+        return path
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+
+    must_copy = force_copy or size >= 4 * 1024 * 1024
+    try:
+        path.encode("ascii")
+        ascii_short = len(path) < 180
     except UnicodeEncodeError:
-        ext = ".wav"
+        ascii_short = False
+        must_copy = True
+
+    if ascii_short and not must_copy:
+        return path
+
+    ext = _safe_audio_ext(path)
     fd, out = tempfile.mkstemp(prefix="audiocpp_up_", suffix=ext)
     os.close(fd)
     shutil.copy2(path, out)
     return out
+
+
+def _stage_recording(path):
+    """麦克风录音结束后总是换成一个新的稳定临时文件。"""
+    return _stage_upload(path, force_copy=True)
 
 
 def _ensure_wav(path, target_sr=None):
@@ -971,8 +1032,8 @@ def _make_param_component(p):
                            interactive=True)
     if t == "text":
         return gr.Textbox(label=label, info=info, value=p.get("default", ""),
-                          placeholder=p.get("placeholder", ""), lines=1,
-                          interactive=True)
+                          placeholder=p.get("placeholder", ""),
+                          lines=int(p.get("lines", 1)), interactive=True)
     if t == "choice":
         return gr.Dropdown(label=label, info=info, choices=p.get("choices", []),
                            value=p.get("default"), interactive=True)
@@ -1166,8 +1227,13 @@ def _start_server(entry):
     cfg = _write_temp_config(entry)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     _open_log_file(truncate=True)
+    # --log 会打开 engine 的 [TRACE]/[TIMING] 调试输出，日常太吵，默认关闭；
+    # 排查推理问题时设 AUDIOCPP_SERVER_DEBUG=1 再启动 webui。
+    cmd = [SERVER_EXE, "--config", cfg, "--host", HOST, "--port", str(PORT)]
+    if os.environ.get("AUDIOCPP_SERVER_DEBUG") == "1":
+        cmd.append("--log")
     _server_proc = subprocess.Popen(
-        [SERVER_EXE, "--config", cfg, "--host", HOST, "--port", str(PORT)],
+        cmd,
         cwd=BUNDLE_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
@@ -1595,6 +1661,64 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         return None, f"❌ 生成失败：{e}"
 
 
+# analyze 返回的字段 -> ACE-Step 高级参数（model_params.json 里的 name）
+_ANALYZE_FILL_MAP = (("caption", "source_caption"), ("lyrics", "source_lyrics"),
+                     ("bpm", "bpm"), ("keyscale", "keyscale"),
+                     ("timesignature", "timesignature"))
+
+
+def do_music_analyze(model, source_audio, seed, adv_values):
+    """『🔍 分析源音频』（仅 ACE-Step）：task_route=analyze 把源音频编码成语义 code，
+    再用 5Hz LM 反推 caption/歌词/BPM/调性/拍号，回填到高级参数
+    （写进 state 并通过 prefill state 触发控件重渲染，让填进去的值可见可改）。
+    返回 (adv_state, prefill, message)。"""
+    adv_values = dict(adv_values or {})
+    try:
+        if not source_audio:
+            raise gr.Error("请先上传源音频")
+        entry = catalog_by_id(model)
+        if not entry or entry.get("family") != "ace_step":
+            raise gr.Error("只有 ACE-Step 支持源音频分析，请先在模型列表选 ACE-Step")
+        ensure_model_loaded(model, GEN_TASKS)
+
+        req = {"text": "analyze", "task_route": "analyze",
+               "audio": _ensure_wav(source_audio), "seed": int(seed)}
+        dur = _audio_duration_seconds(req["audio"])
+        dur_note = f"{dur:.1f}s" if dur is not None else "未知"
+        _ui_log(f"源音频分析开始：model={model}，音频 {dur_note}")
+        t_start = time.time()
+        data = _run_task(entry, model, req, timeout=1800, log_label="源音频分析")
+        raw = data.get("text") or ""
+        try:
+            info = json.loads(raw)
+        except Exception:
+            raise gr.Error(f"server 返回的分析结果不是 JSON：{raw[:200]}")
+        elapsed = time.time() - t_start
+
+        for src, dst in _ANALYZE_FILL_MAP:
+            v = info.get(src)
+            if v is None or v == "" or v == 0:
+                continue
+            adv_values[dst] = v
+
+        lines = [f"✅ 分析完成（音频 {dur_note}），用时 {elapsed:.1f}s，"
+                 "已回填到『高级参数』（可改）。做 remix/cover 前请核对歌词。"]
+        for key, label in (("caption", "描述"), ("bpm", "BPM"), ("keyscale", "调性"),
+                           ("timesignature", "拍号"), ("language", "语言"),
+                           ("genres", "流派"), ("duration", "时长(s)")):
+            v = info.get(key)
+            if v not in (None, "", 0):
+                lines.append(f"- **{label}**：{v}")
+        if info.get("lyrics"):
+            lines.append(f"- **歌词**：\n```\n{info['lyrics']}\n```")
+        _ui_log(f"源音频分析完成：用时 {elapsed:.1f}s")
+        return adv_values, dict(adv_values), "\n".join(lines)
+    except gr.Error as e:
+        return adv_values, gr.skip(), _msg_from_error(e)
+    except Exception as e:
+        return adv_values, gr.skip(), f"❌ 分析失败：{e}"
+
+
 def do_vc(model, source_audio, target_upload, builtin_voice, seed,
           adv_values, adv_options, progress=gr.Progress()):
     """声音/歌声转换（vc/svc/s2s），走通用 /v1/tasks/run 路由：`audio` 是源音频，
@@ -1914,7 +2038,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 label="HF token (下载受限模型时用)", type="password",
                 placeholder="hf_xxx —— 或先在命令行运行 huggingface-cli login")
             proxy = gr.Textbox(
-                label="代理 (仅下载子进程使用)",
+                label="代理 (仅下载模型时使用)",
                 placeholder="http://127.0.0.1:7890")
 
     # ---- 每个标签页共用的“模型管理”卡片、接线与高级参数渲染 ----
@@ -1953,16 +2077,23 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         mm["dl_stat_btn"].click(download_status, mm["model"], mm["dl_status"])
         mm["model"].change(model_hint_for, mm["model"], hint)
 
-    def _render_param_controls(model_comp, state_comp, skip=()):
+    def _render_param_controls(model_comp, state_comp, skip=(), prefill_comp=None):
         """“高级参数”折叠区内容：按所选模型的 family 动态生成控件（gr.render），
-        控件值写进共享 state（只有用户改过的项会随请求发送）。"""
-        @gr.render(inputs=model_comp)
-        def _render(model_id):
+        控件值写进共享 state（只有用户改过的项会随请求发送）。
+        传入 prefill_comp（gr.State dict）时它也是渲染输入：程序化回填
+        （如『🔍 分析源音频』）写 prefill 触发重渲染，把值显示在控件上。"""
+        inputs = [model_comp] if prefill_comp is None else [model_comp, prefill_comp]
+
+        @gr.render(inputs=inputs)
+        def _render(model_id, prefill=None):
             specs = [p for p in params_for(model_id) if p.get("name") not in skip]
             if not specs:
                 gr.Markdown("*该模型无可调高级参数。*")
                 return
+            prefill = prefill or {}
             for p in specs:
+                if p["name"] in prefill:
+                    p = {**p, "default": prefill[p["name"]]}
                 comp = _make_param_component(p)
                 comp.change(_adv_updater(p["name"]), [state_comp, comp], state_comp)
 
@@ -2075,6 +2206,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gen_audio = gr.Audio(
                         label="上传源音频（ACE-Step cover/repaint 等、Stable Audio init/inpaint 用）",
                         type="filepath", elem_classes="audio-default")
+                    gen_ana_btn = gr.Button(
+                        "🔍 分析源音频（ACE-Step：反推描述/歌词/BPM/调性，自动填高级参数）")
+                    gen_ana_msg = gr.Markdown("")
 
                 gen_hint = gr.Markdown(model_hint_for(gen_model.value))
 
@@ -2087,8 +2221,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                             label="时长(秒)（ACE-Step 可填 -1 自动）", value=30, precision=1)
                         gen_seed = gr.Number(label="seed", value=1234, precision=0)
                     gen_adv_state = gr.State({})
+                    gen_prefill = gr.State({})   # 『🔍 分析源音频』回填 -> 触发控件重渲染
                     with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
-                        _render_param_controls(gen_model, gen_adv_state)
+                        _render_param_controls(gen_model, gen_adv_state,
+                                               prefill_comp=gen_prefill)
 
                     with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
                         gen_adv = gr.Textbox(
@@ -2112,7 +2248,12 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gen_msg = gr.Markdown("")
 
         _wire_model_manager(gen_mm, GEN_TASKS, gen_hint)
-        gen_model.change(lambda: {}, None, gen_adv_state)  # reset knobs on model switch
+        gen_model.change(lambda: ({}, {}), None,
+                         [gen_adv_state, gen_prefill])  # reset knobs on model switch
+        gen_ana_btn.click(lambda: "⏳ 分析中……（首次需先『📥 加载模型』；1 分钟音频约几十秒）",
+                          None, gen_ana_msg).then(
+            do_music_analyze, [gen_model, gen_audio, gen_seed, gen_adv_state],
+            [gen_adv_state, gen_prefill, gen_ana_msg])
         gen_btn.click(lambda: (None, ""), None, [gen_out, gen_msg]).then(
             do_music_gen,
             [gen_model, gen_text, gen_lyrics, gen_audio, gen_duration, gen_seed,
@@ -2299,7 +2440,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
     # 含中文/超长文件名的声波图（见 _stage_upload）。只接输入类音频控件。
     for _in_audio in (tts_upload, asr_audio, gen_audio, vc_source, vc_target,
                       sep_audio, ana_audio):
-        _in_audio.upload(_stage_upload, _in_audio, _in_audio)
+        # upload: 长文件强制换成新的稳定临时文件，避免 X 清空后再次上传长音频时
+        # 前端复用旧 preview 状态导致波形不渲染。
+        _in_audio.upload(lambda p: _stage_upload(p, force_copy=True), _in_audio, _in_audio)
+        # microphone: 录音完成不是 upload 事件，单独接 stop_recording。
+        _in_audio.stop_recording(_stage_recording, _in_audio, _in_audio)
+        # clear: 明确把后端值置空，避免长音频 preview fetch 被中断后控件状态残留。
+        _in_audio.clear(lambda: None, None, _in_audio)
 
     # 顺序与 refresh()/TAB_SPECS 一致：各页下拉、状态行、各页提示。
     _refresh_outputs = [

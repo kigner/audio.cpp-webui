@@ -278,6 +278,24 @@ AceStepRequest ace_step_parse_request(const runtime::TaskRequest &request) {
         flow_edit_morph.has_value()) {
         out.generation.flow_edit_morph = runtime::parse_bool_option(*flow_edit_morph, "flow_edit_morph");
     }
+    // Flow-edit remix parameters
+    if (const auto source_caption = runtime::find_option(request.options, {"source_caption"});
+        source_caption.has_value()) {
+        out.source_caption = *source_caption;
+    }
+    if (const auto source_lyrics = runtime::find_option(request.options, {"source_lyrics"});
+        source_lyrics.has_value()) {
+        out.source_lyrics = *source_lyrics;
+    }
+    out.generation.flow_edit_n_min =
+        runtime::parse_float_option(request.options, {"flow_edit_n_min"})
+            .value_or(out.generation.flow_edit_n_min);
+    out.generation.flow_edit_n_max =
+        runtime::parse_float_option(request.options, {"flow_edit_n_max"})
+            .value_or(out.generation.flow_edit_n_max);
+    out.generation.flow_edit_n_avg =
+        runtime::parse_i64_option(request.options, {"flow_edit_n_avg"})
+            .value_or(out.generation.flow_edit_n_avg);
     return out;
 }
 

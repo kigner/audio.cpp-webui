@@ -59,6 +59,9 @@ public:
 
     AceStepPlannerPreparedInput prepare_prompt(const AceStepRequest & request) const;
     AceStepPlan generate(const AceStepRequest & request, bool generate_audio_codes = true) const;
+    // Reverse inference: audio-code tokens in, metadata (constrained CoT) plus
+    // free-form lyrics out. Mirrors Python understand_audio_from_codes.
+    AceStepPlan understand(const std::string & audio_codes_text, const AceStepRequest & request) const;
     void release_graph_workspace() const;
     std::string decode_tokens(const std::vector<int32_t> & token_ids) const;
     AceStepPlan parse_output(const std::string & output_text) const;

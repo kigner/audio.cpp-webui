@@ -30,6 +30,11 @@ public:
         const AceStepRequest & request,
         const AceStepTaskRoute & route,
         const AceStepPlan & plan) const;
+    // Analyze route: source audio -> VAE latents -> cover-tokenizer semantic
+    // codes (5Hz), the input for the planner's understand() reverse inference.
+    std::vector<int32_t> encode_source_audio_codes(
+        const runtime::AudioBuffer & audio,
+        uint32_t seed) const;
     void prepare_runtime() const;
     void release_runtime_graphs() const;
 
