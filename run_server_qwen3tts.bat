@@ -51,10 +51,10 @@ if %SRV_THREADS% LSS 1 set "SRV_THREADS=1"
 
 REM --- resolve family/task + absolute model path from the catalog id ---
 set "STATUS="
-for /f "usebackq tokens=1-4 delims=|" %%A in (`powershell -NoProfile -Command "$c=Get-Content -Raw -Encoding utf8 'configs\models_catalog.json' | ConvertFrom-Json; $m=$c.models | Where-Object { $_.id -eq '%MODEL_ID%' } | Select-Object -First 1; if (-not $m) { 'ERR|unknown id|.|.'; exit }; if ($m.family -ne 'qwen3_tts' -or $m.task -ne 'tts') { 'ERR|not qwen3_tts tts|.|.'; exit }; $p = Join-Path (Resolve-Path '%BUNDLE%').Path $m.path; if (-not (Test-Path $p)) { 'ERR|not installed|.|.'; exit }; 'OK|' + $m.family + '|' + $m.task + '|' + $p"`) do (
+for /f "usebackq tokens=1-4 delims=|" %%A in (`powershell -NoProfile -Command "$c=Get-Content -Raw -Encoding utf8 '%WEBUI_DIR%\configs\models_catalog.json' | ConvertFrom-Json; $m=$c.models | Where-Object { $_.id -eq '%MODEL_ID%' } | Select-Object -First 1; if (-not $m) { 'ERR|unknown id|.|.'; exit }; if ($m.family -ne 'qwen3_tts' -or $m.task -ne 'tts') { 'ERR|not qwen3_tts tts|.|.'; exit }; $p = Join-Path (Resolve-Path '%BUNDLE%').Path $m.path; if (-not (Test-Path $p)) { 'ERR|not installed|.|.'; exit }; 'OK|' + $m.family + '|' + $m.task + '|' + $p"`) do (
   set "STATUS=%%A" & set "FAMILY=%%B" & set "TASK=%%C" & set "MODEL=%%D"
 )
-if /I not "%STATUS%"=="OK" ( echo [ERROR] bad Qwen3-TTS model id "%MODEL_ID%": %FAMILY% - see configs\models_catalog.json & goto :end )
+if /I not "%STATUS%"=="OK" ( echo [ERROR] bad Qwen3-TTS model id "%MODEL_ID%": %FAMILY% - see %WEBUI_DIR%\configs\models_catalog.json & goto :end )
 
 REM --- write a single-model runtime config. Explicit mem_saver=false matters for
 REM     realtime short-turn reuse: do not release cached step graphs per request. ---
@@ -63,7 +63,7 @@ powershell -NoProfile -Command "$opts=[ordered]@{'qwen3_tts.mem_saver'='false'};
 if not exist "%RUNCONFIG%" ( echo [ERROR] failed to write runtime config %RUNCONFIG% & goto :end )
 
 if not "%WARMUP%"=="0" (
-  set "WARMUP_VOICE=%~dp0voice\demo_01_man.wav"
+  set "WARMUP_VOICE=%WEBUI_DIR%\voice\demo_01_man.wav"
   set "WARMUP_TEXT=okay, I'm Cemo and what you just heard wasn't a human voice."
   start "" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Seconds 8; $body=@{model='%MODEL_ID%';input='Hi.';voice_ref='%WARMUP_VOICE:\=/%';reference_text='%WARMUP_TEXT%';max_tokens=80;response_format='json'} | ConvertTo-Json -Depth 5; try { Invoke-RestMethod -Uri 'http://%HOST%:%PORT%/v1/audio/speech' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 300 | Out-Null; Write-Host '[qwen3tts] warmup done' } catch { Write-Host ('[qwen3tts] warmup skipped: ' + $_.Exception.Message) }"
 )

@@ -1,15 +1,14 @@
 @echo off
+setlocal
+chcp 65001 >nul
 cd /d "%~dp0"
+call "%~dp0_env.bat"
 
-set VENV_PYTHON=%~dp0..\audiocpp-portable\venv\python.exe
-if not exist "%VENV_PYTHON%" set VENV_PYTHON=%~dp0..\venv\python.exe
-if not exist "%VENV_PYTHON%" set VENV_PYTHON=%~dp0..\venv\Scripts\python.exe
-if not exist "%VENV_PYTHON%" (
-  echo venv python not found
+if not exist "%PY%" (
+  echo [realtime] venv python not found: %PY%
   pause
   exit /b 1
 )
-
 REM ============================================================
 REM  Realtime voice: VAD(silero) -> ASR -> LLM -> TTS, served on
 REM  ws://127.0.0.1:8765/v1/realtime + http://127.0.0.1:8765/realtime/
@@ -30,10 +29,10 @@ REM ============================================================
 
 REM --- TTS: audio.cpp C++ server (must be running on :8080) ---
 REM     voice_ref uses an ABSOLUTE path so the C++ server finds it regardless
-REM     of its working directory. %~dp0 = this bat's dir (webui\).
+REM     of its working directory. WEBUI_DIR points at the webui\ folder.
 set AUDIOCPP_TTS_SERVER=http://127.0.0.1:8080
 set AUDIOCPP_TTS_MODEL=qwen3-tts
-set AUDIOCPP_TTS_VOICE_REF=%~dp0voice/demo_01_man.wav
+set "AUDIOCPP_TTS_VOICE_REF=%WEBUI_DIR%\voice\demo_01_man.wav"
 set AUDIOCPP_TTS_REF_TEXT=okay, I'm Cemo and what you just heard wasn't a human voice.
 
 REM --- ASR: audio.cpp C++ server (must be running on :8081) ---
@@ -43,8 +42,8 @@ set AUDIOCPP_ASR_LANGUAGE=zh
 
 REM --- LLM: DeepSeek Chat Completions API ---
 set AUDIOCPP_LLM_BASE_URL=https://api.deepseek.com/v1
-if not defined AUDIOCPP_LLM_API_KEY if exist "%~dp0llm_api_key.txt" (
-  for /f "usebackq delims=" %%K in ("%~dp0llm_api_key.txt") do if not defined AUDIOCPP_LLM_API_KEY set "AUDIOCPP_LLM_API_KEY=%%K"
+if not defined AUDIOCPP_LLM_API_KEY if exist "%WEBUI_DIR%\llm_api_key.txt" (
+  for /f "usebackq delims=" %%K in ("%WEBUI_DIR%\llm_api_key.txt") do if not defined AUDIOCPP_LLM_API_KEY set "AUDIOCPP_LLM_API_KEY=%%K"
 )
 if not defined AUDIOCPP_LLM_API_KEY (
   echo [realtime] WARNING: AUDIOCPP_LLM_API_KEY is empty.
@@ -63,5 +62,6 @@ echo.
 
 cd /d "%~dp0"
 start "" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:%AUDIOCPP_REALTIME_PORT%/realtime/'"
-"%VENV_PYTHON%" realtime_server.py
+"%PY%" "%WEBUI_DIR%\realtime_server.py"
+endlocal
 pause

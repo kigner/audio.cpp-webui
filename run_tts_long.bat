@@ -11,7 +11,7 @@ REM  Usage:  run_tts_long.bat <model_id> <text_file.txt> [out.wav]
 REM    e.g.  run_tts_long.bat qwen3-tts "sample_long.txt"
 REM          run_tts_long.bat qwen3-tts "D:\books\chapter1.txt" "output\ch1.wav"
 REM
-REM  <model_id> is an entry in configs\models_catalog.json.
+REM  <model_id> is an entry in %WEBUI_DIR%\configs\models_catalog.json.
 REM  <text_file.txt> may be ANY path (relative to here, or a full absolute path).
 REM  Output defaults to output\<txt name>.wav.
 REM  Backend auto-picks CUDA, falls back to CPU (set AUDIOCPP_BACKEND=cpu to force).
@@ -32,7 +32,7 @@ REM      "Speaker 0:" automatically (for multi-speaker, prefix lines yourself).
 REM ============================================================
 
 REM ---- editable voice defaults (blank VOICE_REF for non-clone models) ----
-set "VOICE_REF=voice\zh-Bowen_man.wav"
+set "VOICE_REF=%WEBUI_DIR%\voice\zh-Bowen_man.wav"
 set "REF_TEXT=简单来说，人工智能是一门致力于让计算机和机器像人一样思考和行动的科学领域。它的目标是模拟、延伸和扩展人的智能，让机器能够胜任通常需要人类智慧才能完成的任务，比如解决问题、感知环境、理解语言，甚至进行创造。AI是一个非常广泛的领域，它包含了计算机科学、语言学、神经科学，甚至哲学和心理学等多个学科的知识。"
 set "LANGUAGE=chinese"
 set "MAX_TOKENS=1200"
@@ -44,17 +44,20 @@ set "TEXTFILE=%~2"
 set "OUT=%~3"
 if "%MODEL_ID%"=="" goto :usage
 if "%TEXTFILE%"=="" goto :usage
+if not "%TEXTFILE:~1,1%"==":" if not "%TEXTFILE:~0,1%"=="\" if not exist "%TEXTFILE%" if exist "%WEBUI_DIR%\%TEXTFILE%" set "TEXTFILE=%WEBUI_DIR%\%TEXTFILE%"
 if not exist "%TEXTFILE%" ( echo [ERROR] text file not found: %TEXTFILE% & goto :end )
-if "%OUT%"=="" set "OUT=output\%~n2.wav"
+if "%OUT%"=="" set "OUT=%WEBUI_DIR%\output\%~n2.wav"
+if not "%OUT%"=="" if not "%OUT:~1,1%"==":" if not "%OUT:~0,1%"=="\" set "OUT=%WEBUI_DIR%\%OUT%"
+if not "%VOICE_REF%"=="" if not "%VOICE_REF:~1,1%"==":" if not "%VOICE_REF:~0,1%"=="\" if exist "%WEBUI_DIR%\%VOICE_REF%" set "VOICE_REF=%WEBUI_DIR%\%VOICE_REF%"
 
 if not exist "%CLI_EXE%" ( echo [ERROR] cli exe not found: %CLI_EXE% & goto :end )
 
 REM --- resolve family + absolute model path from the catalog id ---
 set "STATUS="
-for /f "usebackq tokens=1-4 delims=|" %%A in (`powershell -NoProfile -Command "$c=Get-Content -Raw 'configs\models_catalog.json' | ConvertFrom-Json; $m=$c.models | Where-Object { $_.id -eq '%MODEL_ID%' } | Select-Object -First 1; if (-not $m) { 'ERR|unknown id|.|.'; exit }; $p = Join-Path (Resolve-Path '%BUNDLE%').Path $m.path; if (-not (Test-Path $p)) { 'ERR|not installed|.|.'; exit }; 'OK|' + $m.family + '|' + $m.task + '|' + $p"`) do (
+for /f "usebackq tokens=1-4 delims=|" %%A in (`powershell -NoProfile -Command "$c=Get-Content -Raw '%WEBUI_DIR%\configs\models_catalog.json' | ConvertFrom-Json; $m=$c.models | Where-Object { $_.id -eq '%MODEL_ID%' } | Select-Object -First 1; if (-not $m) { 'ERR|unknown id|.|.'; exit }; $p = Join-Path (Resolve-Path '%BUNDLE%').Path $m.path; if (-not (Test-Path $p)) { 'ERR|not installed|.|.'; exit }; 'OK|' + $m.family + '|' + $m.task + '|' + $p"`) do (
   set "STATUS=%%A" & set "FAMILY=%%B" & set "TASK=%%C" & set "MODEL=%%D"
 )
-if /I not "%STATUS%"=="OK" ( echo [ERROR] bad model id "%MODEL_ID%": %FAMILY% - see configs\models_catalog.json & goto :end )
+if /I not "%STATUS%"=="OK" ( echo [ERROR] bad model id "%MODEL_ID%": %FAMILY% - see %WEBUI_DIR%\configs\models_catalog.json & goto :end )
 
 REM --- VibeVoice needs a "Speaker N:" script; default lines without one to Speaker 0 ---
 set "VV_TMP="
@@ -76,7 +79,7 @@ echo.
 REM  set AUDIOCPP_LOG=1 to capture framework timing logs (incl. vibevoice.*.buffer_bytes VRAM)
 REM  directly to vv_vram.log next to this script (flushed per line -> survives an OOM crash).
 set "LOG_ARG="
-if /I "%AUDIOCPP_LOG%"=="1" set "LOG_ARG=--log-file "%~dp0vv_vram.log""
+if /I "%AUDIOCPP_LOG%"=="1" set "LOG_ARG=--log-file "%WEBUI_DIR%\vv_vram.log""
 
 "%CLI_EXE%" ^
   --task tts --family %FAMILY% --mode offline ^
@@ -99,7 +102,7 @@ goto :end
 echo Usage: %~nx0 ^<model_id^> ^<text_file.txt^> [out.wav]
 echo   e.g. %~nx0 qwen3-tts "sample_long.txt"
 echo        %~nx0 qwen3-tts "D:\books\chapter1.txt" "output\ch1.wav"
-echo Model ids are the entries in configs\models_catalog.json.
+echo Model ids are the entries in %WEBUI_DIR%\configs\models_catalog.json.
 echo Edit VOICE_REF / REF_TEXT near the top for other voices; blank VOICE_REF for non-clone models.
 
 :end

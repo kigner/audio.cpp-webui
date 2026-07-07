@@ -13,9 +13,9 @@ if not defined AUDIOCPP_BACKEND (
 REM Python (with gradio/requests/torch/safetensors/...) is located by _env.bat (PY).
 if not exist "%PY%" (
   echo [run_webui] no Python with deps found. Looked for:
-  echo   %~dp0..\audiocpp-portable\venv\python.exe   ^(dev: bundle venv^)
-  echo   %~dp0..\venv\python.exe                     ^(shipped bundle venv^)
-  echo   %~dp0..\venv\Scripts\python.exe             ^(dev: project venv^)
+  echo   %BUNDLE%\venv\python.exe                  ^(bundle venv^)
+  echo   %ROOT%\venv\python.exe                      ^(root venv^)
+  echo   %ROOT%\venv\Scripts\python.exe              ^(project venv^)
   echo Install into one of them: gradio requests torch safetensors pyyaml huggingface_hub
   pause
   exit /b 1
@@ -26,7 +26,7 @@ echo [run_webui] the WebUI starts/switches audiocpp_server on demand
 echo [run_webui]   pick a model in the UI and click "load" (no need to run run_server.bat)
 echo [run_webui]   backend: %AUDIOCPP_BACKEND%  (auto-detected; override with AUDIOCPP_BACKEND=gpu or cpu)
 echo [run_webui] UI -^> http://127.0.0.1:7860
-"%PY%" webui.py
+"%PY%" "%WEBUI_DIR%\webui.py"
 
 endlocal
 pause

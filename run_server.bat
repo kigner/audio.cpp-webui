@@ -12,7 +12,7 @@ REM  Usage:  run_server.bat <model_id> [port] [device]
 REM    e.g.  run_server.bat qwen3-tts 8080        (TTS server on :8080)
 REM          run_server.bat qwen3-asr 8081        (ASR server on :8081, 2nd window)
 REM
-REM  <model_id> is an entry in configs\models_catalog.json.
+REM  <model_id> is an entry in %WEBUI_DIR%\configs\models_catalog.json.
 REM  Run it TWICE in two windows with different ids + ports to serve two models
 REM  at once (e.g. one TTS + one ASR). Both models must fit in GPU memory.
 REM  Set AUDIOCPP_HOST=0.0.0.0 to expose on the LAN (no auth — trusted nets only).
@@ -37,10 +37,10 @@ if %SRV_THREADS% LSS 1 set "SRV_THREADS=1"
 
 REM --- resolve family/task + absolute model path from the catalog id ---
 set "STATUS="
-for /f "usebackq tokens=1-4 delims=|" %%A in (`powershell -NoProfile -Command "$c=Get-Content -Raw -Encoding utf8 'configs\models_catalog.json' | ConvertFrom-Json; $m=$c.models | Where-Object { $_.id -eq '%MODEL_ID%' } | Select-Object -First 1; if (-not $m) { 'ERR|unknown id|.|.'; exit }; $p = Join-Path (Resolve-Path '%BUNDLE%').Path $m.path; if (-not (Test-Path $p)) { 'ERR|not installed|.|.'; exit }; 'OK|' + $m.family + '|' + $m.task + '|' + $p"`) do (
+for /f "usebackq tokens=1-4 delims=|" %%A in (`powershell -NoProfile -Command "$c=Get-Content -Raw -Encoding utf8 '%WEBUI_DIR%\configs\models_catalog.json' | ConvertFrom-Json; $m=$c.models | Where-Object { $_.id -eq '%MODEL_ID%' } | Select-Object -First 1; if (-not $m) { 'ERR|unknown id|.|.'; exit }; $p = Join-Path (Resolve-Path '%BUNDLE%').Path $m.path; if (-not (Test-Path $p)) { 'ERR|not installed|.|.'; exit }; 'OK|' + $m.family + '|' + $m.task + '|' + $p"`) do (
   set "STATUS=%%A" & set "FAMILY=%%B" & set "TASK=%%C" & set "MODEL=%%D"
 )
-if /I not "%STATUS%"=="OK" ( echo [ERROR] bad model id "%MODEL_ID%": %FAMILY% - see configs\models_catalog.json & goto :end )
+if /I not "%STATUS%"=="OK" ( echo [ERROR] bad model id "%MODEL_ID%": %FAMILY% - see %WEBUI_DIR%\configs\models_catalog.json & goto :end )
 
 REM --- write a single-model temp config with an ABSOLUTE path, named per-port so
 REM     two instances never clash. UTF-8, no BOM. Avoids the config-dir-relative
@@ -64,11 +64,11 @@ goto :end
 echo Usage: %~nx0 ^<model_id^> [port] [device]
 echo   e.g. %~nx0 qwen3-tts 8080        (TTS server on :8080)
 echo        %~nx0 qwen3-asr 8081        (ASR server on :8081, run in a 2nd window)
-echo Model ids are the entries in configs\models_catalog.json.
+echo Model ids are the entries in %WEBUI_DIR%\configs\models_catalog.json.
 echo.
 echo This server takes the reference voice PER REQUEST (not baked into the server).
-echo TTS example (uses the ready template configs\req_speech.json):
-echo   curl http://127.0.0.1:8080/v1/audio/speech -H "Content-Type: application/json" -o output\out_server.wav -d @configs\req_speech.json
+echo TTS example (uses the ready template %WEBUI_DIR%\configs\req_speech.json):
+echo   curl http://127.0.0.1:8080/v1/audio/speech -H "Content-Type: application/json" -o %WEBUI_DIR%\output\out_server.wav -d @%WEBUI_DIR%\configs\req_speech.json
 echo ASR example:
 echo   curl http://127.0.0.1:8081/v1/audio/transcriptions -H "Content-Type: application/json" -d "{\"model\":\"qwen3-asr\",\"audio\":\"D:/path/to/input.wav\"}"
 
