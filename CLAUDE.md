@@ -1,5 +1,5 @@
 # CLAUDE.md
-
+记住使用中文对话。
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 `audio.cpp` is a C++17 audio-model inference framework built on vendored `ggml`. One static
