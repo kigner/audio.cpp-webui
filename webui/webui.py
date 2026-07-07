@@ -470,6 +470,52 @@ def _as_speaker_script(text):
     return "\n".join(f"Speaker 0: {ln}" for ln in lines) if lines else text
 
 
+def _vibevoice_punctuate_script(text):
+    """VibeVoice is much less stable on tiny lines without sentence punctuation."""
+    out = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = _SPEAKER_LINE_RE.match(line)
+        if not m:
+            out.append(line)
+            continue
+        prefix, body = m.group(1), m.group(2).strip()
+        if body and body[-1] not in "。！？!?.,;；:":
+            body += "。"
+        out.append(f"{prefix} {body}" if body else prefix)
+    return "\n".join(out) if out else text
+
+
+def _vibevoice_text_max_tokens(chunk, ui_default=1200):
+    """Estimate VibeVoice speech tokens from text, not reference-prompt length."""
+    body = re.sub(r"(?im)^\s*Speaker\s+\d+\s*:\s*", "", chunk or "")
+    cjk = sum(1 for ch in body if "\u4e00" <= ch <= "\u9fff")
+    non_space = sum(1 for ch in body if not ch.isspace())
+    non_cjk = max(0, non_space - cjk)
+    pauses = sum(1 for ch in body if ch in "，。！？；：,.!?;:")
+    estimate = int(cjk * 2.2 + non_cjk * 0.45 + pauses * 3.0 + 8)
+    return max(18, min(int(ui_default), estimate))
+
+
+# VibeVoice 1.5B 对超短脚本从第 1 帧起整段胡言乱语——模型级缺陷（长播客数据训练，
+# 短文本 OOD），与参考音色/CFG/扩散步数/中英文/seed 全部无关（2026-07-08 A/B+ASR
+# 转写实测：27 字必炸、40 字逐字正确；按上面估算公式 69 token 炸 / 87 token 过）。
+# 低于阈值直接拦截；生成出来只会是垃圾，调参数救不了。
+_VIBEVOICE_MIN_EST_TOKENS = 85
+
+
+def _merge_short_vibevoice_tail(chunks):
+    """分段时留下的过短尾段同样会胡言乱语：并回前一段。前段最多超预算几十字，
+    仍在 max_tokens=1200 封顶的显存包络内。"""
+    while len(chunks) > 1 and (
+            _vibevoice_text_max_tokens(chunks[-1]) < _VIBEVOICE_MIN_EST_TOKENS):
+        tail = chunks.pop()
+        chunks[-1] = chunks[-1] + "\n" + tail
+    return chunks
+
+
 # --- client-side long-text chunking ------------------------------------------
 # Long text is synthesized as one HTTP request per chunk and concatenated here.
 # That keeps every request bounded (no 900 s timeout, works for families without
@@ -1574,13 +1620,24 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
     try:
         if not (text or "").strip():
             raise gr.Error("请输入要合成的文字")
-        ensure_model_loaded(model, TTS_TASKS)
 
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
 
         if prof.get("wrap_speaker_script"):     # e.g. VibeVoice needs Speaker N: lines
             text = _as_speaker_script(text)
+            text = _vibevoice_punctuate_script(text)
+
+        # 超短文本拦截（见 _VIBEVOICE_MIN_EST_TOKENS）——放在模型加载之前，
+        # 免得为一个注定被拒的请求重启 server。
+        is_vibevoice = bool(entry) and entry.get("family") == "vibevoice"
+        if is_vibevoice and _vibevoice_text_max_tokens(text) < _VIBEVOICE_MIN_EST_TOKENS:
+            raise gr.Error(
+                "VibeVoice 是长文模型，过短的文本会整段胡言乱语（模型特性，调参数救不了）。"
+                "请把正文加长到 ≥40 个汉字（英文约 ≥35 词），"
+                "或改用 qwen3-tts / voxcpm2 / pocket-tts 等对短句稳定的模型。")
+
+        ensure_model_loaded(model, TTS_TASKS)
 
         # Model-specific knobs travel in a nested "options" object; the server merges
         # every key into the request options and each model reads what it understands.
@@ -1591,8 +1648,12 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
             voice_path = uploaded_voice
         elif builtin_voice and builtin_voice != "(none)":
             voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
+        has_voice_samples = "voice_samples" in options or "vibevoice.voice_samples" in options
+        if is_vibevoice and voice_path and not has_voice_samples:
+            options["voice_samples"] = _ensure_wav(voice_path)
+            voice_path = None
         # voice_samples (multi-speaker) can't be combined with a single voice_ref.
-        if "voice_samples" in options and voice_path:
+        if has_voice_samples and voice_path:
             voice_path = None
 
         payload = {
@@ -1601,6 +1662,9 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
             "seed": int(seed),
             "max_tokens": int(max_tokens),
         }
+        auto_vibevoice_max_tokens = (
+            is_vibevoice and int(max_tokens) == 1200
+        )
         if voice_path:
             payload["voice_ref"] = _ensure_wav(voice_path)
         if (reference_text or "").strip():
@@ -1611,6 +1675,8 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         # Long text goes out as several bounded requests (concatenated below), so a
         # whole chapter neither hits the per-request timeout nor runs blind.
         chunks = _split_tts_chunks(text, prof.get("chunk_chars", 1000))
+        if is_vibevoice:
+            chunks = _merge_short_vibevoice_tail(chunks)
         _ui_log(f"TTS 开始：model={model}，{len(chunks)} 段 / 共 {sum(len(c) for c in chunks)} 字")
         t_start = time.time()
         blobs = []
@@ -1618,6 +1684,8 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
             if len(chunks) > 1:
                 progress((i, len(chunks)), desc=f"合成 {i + 1}/{len(chunks)} 段…")
             payload["input"] = chunk
+            if auto_vibevoice_max_tokens:
+                payload["max_tokens"] = _vibevoice_text_max_tokens(chunk, int(max_tokens))
             t_chunk = time.time()
             try:
                 r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)

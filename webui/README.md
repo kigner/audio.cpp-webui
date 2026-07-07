@@ -15,6 +15,10 @@ HTTP API 服务、图形界面。所有脚本都可以**双击运行**，也可�
 > 长文本合成不再需要单独脚本（原 `run_tts_long.bat` 已移除）：WebUI 的 TTS 标签页会自动
 > 把长文本分段（VibeVoice 600 字/段，其它模型 1000 字/段），逐段合成后拼接成一个 wav。
 > 命令行等价物是 `audiocpp_cli` 的 `--batch-text-file <txt> --batch-merge-audio concat`。
+>
+> 反过来，**VibeVoice 对过短文本（约 <40 个汉字）会整段胡言乱语**——模型特性，与音色/
+> 参数/seed 无关，WebUI 会直接拦截并提示加长文本或改用其它模型；分段后的过短尾段也会
+> 自动并回前一段。短句测试请用 `qwen3-tts` / `voxcpm2` / `pocket-tts`。
 
 ---
 

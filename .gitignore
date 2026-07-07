@@ -40,3 +40,5 @@ __pycache__/
 !/webui/logs/.gitkeep
 /webui/third_party/
 /webui/llm_api_key.txt
+# personal voice recording — stays local, repo is public
+/webui/voice/my-record.wav
