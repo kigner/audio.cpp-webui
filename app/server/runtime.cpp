@@ -400,6 +400,17 @@ engine::runtime::TaskRequest build_openai_transcription_request(const Value & bo
     if (const auto * value = body.find("language")) {
         request.options["language"] = value->as_string();
     }
+    // Optional guidance fields. qwen3_asr reads the biasing/context prompt and
+    // the forced language from text_input (Qwen3ASRSession::make_request), not
+    // from options; leave text_input unset when neither field is present.
+    const auto * language = body.find("language");
+    const auto * context = body.find("context");
+    if (language != nullptr || context != nullptr) {
+        request.text_input = engine::runtime::Transcript{
+            context != nullptr ? context->as_string() : std::string{},
+            language != nullptr ? language->as_string() : std::string{},
+        };
+    }
     return request;
 }
 

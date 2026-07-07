@@ -108,10 +108,13 @@ def _silence_h11_content_length_race():
             msg = str(exc or "")
             if isinstance(exc, LocalProtocolError) and "declared Content-Length" in msg:
                 return False
-            # uvicorn with httptools raises this RuntimeError when the browser
-            # aborts/replaces a large audio preview fetch. The request is already
-            # dead; do not spam a full ASGI traceback for this benign preview race.
-            if isinstance(exc, RuntimeError) and "Response content shorter than Content-Length" in msg:
+            # uvicorn with httptools raises these RuntimeErrors on the same
+            # preview race: "shorter" when the browser aborts/replaces the
+            # fetch, "longer" when gradio sized Content-Length off a large
+            # upload still being written to disk and the file grew mid-stream.
+            # The request is already dead / the browser refetches; do not spam
+            # a full ASGI traceback for either direction.
+            if isinstance(exc, RuntimeError) and "than Content-Length" in msg:
                 return False
             return True
 
@@ -301,7 +304,13 @@ MODEL_PROFILES = {
     "qwen3_asr": {
         # Encoder cap: max_source_positions=1500 tokens at 13 tokens/second
         # (qwen3_asr_audio_encoder_token_count) -> ~115 s of audio per request.
-        "input_hint": "**Qwen3-ASR** 单次最长约 115 秒；更长的音频请先剪短或分段转写。",
+        # 但 8G 卡上先撞显存：thinker prefill 图随时长超线性膨胀（4060 8G 实测
+        # 65s 可过、70s 要 13.2GB、75s 要 14.6GB），所以客户端按 max_input_seconds
+        # =60s 在静音处切段逐段转写再拼接，顺带解决 70~115s 音频原本的 OOM。
+        "input_hint": ("**Qwen3-ASR**：长音频 webui 会自动在静音处按 ≤60 秒分段转写并拼接结果。"
+                       "『转写选项』里可选强制语种、上下文提示（人名/术语偏置），"
+                       "以及对话模式（需要已安装 Sortformer 说话人分离模型）。"),
+        "max_input_seconds": 60,
     },
     "ace_step": {
         "input_hint": (
@@ -378,6 +387,21 @@ MODEL_PROFILES = {
             "单次音频长度上限与 Qwen3-ASR 相同（约 115 秒）。"),
     },
 }
+# Qwen3-ASR 可强制的语种（模型 config.json 的 support_languages，prompt 里用英文名；
+# 留空/Auto = 自动检测）。citrinet 等其它 ASR 族忽略该字段。
+QWEN3_ASR_LANGUAGES = [
+    ("中文", "Chinese"), ("英语", "English"), ("粤语", "Cantonese"),
+    ("日语", "Japanese"), ("韩语", "Korean"), ("俄语", "Russian"),
+    ("法语", "French"), ("德语", "German"), ("西班牙语", "Spanish"),
+    ("葡萄牙语", "Portuguese"), ("意大利语", "Italian"), ("阿拉伯语", "Arabic"),
+    ("印尼语", "Indonesian"), ("泰语", "Thai"), ("越南语", "Vietnamese"),
+    ("土耳其语", "Turkish"), ("印地语", "Hindi"), ("马来语", "Malay"),
+    ("荷兰语", "Dutch"), ("瑞典语", "Swedish"), ("丹麦语", "Danish"),
+    ("芬兰语", "Finnish"), ("波兰语", "Polish"), ("捷克语", "Czech"),
+    ("菲律宾语", "Filipino"), ("波斯语", "Persian"), ("希腊语", "Greek"),
+    ("罗马尼亚语", "Romanian"), ("匈牙利语", "Hungarian"), ("马其顿语", "Macedonian"),
+]
+
 DEFAULT_PROFILE = {"input_hint": "", "wrap_speaker_script": False, "default_options": {},
                    # Families with internal chunking handle long text fine; the client
                    # split only exists to bound each HTTP request (no 900 s timeout)
@@ -724,14 +748,17 @@ def _to_16k_mono_wav(path, target_sr=16000):
     return out
 
 
-def _split_wav_chunks(path, max_seconds, min_search_frac=0.6, win_ms=50):
+def _split_wav_chunks(path, max_seconds, min_search_frac=0.6, win_ms=50,
+                      pad_to_max=True):
     """把 PCM WAV 切成若干段临时 wav，返回 [(路径, 有效占比)]。用于 vevo2 歌声
     转换：FM 图按整段长度一次建图，8G 卡放不下长音频；且同一 server 上不同长度
     的请求会重建图并叠加占用显存（实测 20s 成功后 17s 反要 9.9GB），而形状相同
     的请求可复用缓存图（实测显存平稳）。所以**每段都补零到恰好 max_seconds**，
     占比供拼接时截掉补零对应的尾部输出。切点选在
     [起点+max*min_search_frac, 起点+max] 区间内能量最低的 win_ms 窗口中心
-    （典型是呼吸/间奏处）；读不了的（非 PCM WAV）原样返回不分段。"""
+    （典型是呼吸/间奏处）；读不了的（非 PCM WAV）原样返回不分段。
+    pad_to_max=False：不补零（ASR 分段转写用——补出的尾部静音只会浪费编码器
+    token 甚至诱发幻听，转写也不需要各段图形状一致）。"""
     try:
         with wave.open(path, "rb") as w:
             sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
@@ -764,7 +791,7 @@ def _split_wav_chunks(path, max_seconds, min_search_frac=0.6, win_ms=50):
         fd, out = tempfile.mkstemp(prefix=f"audiocpp_vcseg{i}_", suffix=".wav")
         os.close(fd)
         seg = frames[a:b]
-        if len(seg) < max_f:            # 全部段补零到等长，保证图形状一致
+        if pad_to_max and len(seg) < max_f:  # 全部段补零到等长，保证图形状一致
             pad = np.zeros((max_f - len(seg), ch), dtype=np.int16)
             seg = np.concatenate([seg, pad], axis=0)
         with wave.open(out, "wb") as ww:
@@ -830,6 +857,10 @@ ERROR_HINTS = [
     (re.compile(r"max_source_positions", re.I),
      "⏱ 音频过长：Qwen3-ASR 编码器上限 1500 token（约 13 token/秒），"
      "单次最多约 115 秒。请把音频剪短或分段后再转写。"),
+    (re.compile(r"exceeds fixed graph capacity|session_len_sec exceeds", re.I),
+     "📏 音频超过模型的固定图容量（Sortformer 默认 20 秒、上限约 120 秒）。"
+     "webui 的说话人分离/对话模式会按时长自动重载；仍报错说明超过 120 秒上限，"
+     "请先剪短音频。"),
     (re.compile(r"combine voice_samples|voice_samples.{0,20}voice_ref", re.I),
      "🔀 voice_samples 与单个参考音色不能同时用：多说话人时请不要上传参考音色。"),
     (re.compile(r"cached voice id", re.I),
@@ -938,6 +969,7 @@ else:
 _proc_lock = threading.Lock()
 _server_proc = None      # subprocess.Popen we launched, or None
 _loaded_id = None        # model id our managed server is serving
+_loaded_session_options = None   # 随本次加载写进 server config 的 session_options
 
 
 def catalog_models():
@@ -1104,7 +1136,8 @@ def _write_temp_config(entry):
 
 
 def _stop_server():
-    global _server_proc, _loaded_id
+    global _server_proc, _loaded_id, _loaded_session_options
+    _loaded_session_options = None
     proc, _server_proc, _loaded_id = _server_proc, None, None
     if proc is not None and proc.poll() is None:
         try:
@@ -1255,8 +1288,11 @@ def _wait_health(timeout):
     return False
 
 
-def ensure_model_loaded(model_id, expect_tasks=None):
-    """(Re)start the server so `model_id` is loaded. Returns a status string."""
+def ensure_model_loaded(model_id, expect_tasks=None, session_options=None):
+    """(Re)start the server so `model_id` is loaded. Returns a status string.
+    session_options：额外写进本次 server config 的 session_options（string→string，
+    如 sortformer 的 session_len_sec）；与上次加载不一致时会重启重载。"""
+    global _loaded_session_options
     if not model_id:
         raise gr.Error("请先选择一个模型")
     entry = catalog_by_id(model_id)
@@ -1270,11 +1306,16 @@ def ensure_model_loaded(model_id, expect_tasks=None):
 
     with _proc_lock:
         managed_alive = _server_proc is not None and _server_proc.poll() is None
-        if managed_alive and _loaded_id == model_id and server_alive():
+        if (managed_alive and _loaded_id == model_id and server_alive()
+                and (session_options or {}) == (_loaded_session_options or {})):
             return f"✅ 已加载：{entry['label']}"
 
         if not managed_alive and server_alive():
             # A server we didn't launch is holding the port.
+            if session_options:
+                raise gr.Error(
+                    f"当前 {HOST}:{PORT} 上是外部启动的 server，无法按需调整其"
+                    f"session 配置（需要 {session_options}）。请先关闭它。")
             if model_id in loaded_ids():
                 return f"✅ 复用外部 server：{entry['label']}"
             raise gr.Error(
@@ -1282,8 +1323,13 @@ def ensure_model_loaded(model_id, expect_tasks=None):
                 f"（例如 run_server.bat）。请先关闭它，或设 AUDIOCPP_SERVER 指向它。")
 
         _stop_server()
+        if session_options:
+            entry = dict(entry)
+            entry["session_options"] = {
+                **(entry.get("session_options") or {}), **session_options}
         t0 = time.time()
         _start_server(entry)
+        _loaded_session_options = dict(session_options) if session_options else None
         if not _wait_health(LOAD_TIMEOUT):
             tail = _log_tail()
             _stop_server()
@@ -1291,6 +1337,24 @@ def ensure_model_loaded(model_id, expect_tasks=None):
             raise gr.Error(f"加载 {entry['label']} 失败/超时（{LOAD_TIMEOUT}s）。\n日志尾部：\n{tail}")
         _ui_log(f"模型 {entry['label']} 加载完成，用时 {time.time() - t0:.1f}s")
         return f"✅ 已加载：{entry['label']}"
+
+
+def unload_model():
+    """停止本 WebUI 启动的 server，释放全部显存（权重+常驻计算图缓冲）。
+    下次生成/转写时 ensure_model_loaded 会自动重启重载（实测 ~5s），转写速度
+    本身不受影响（计算图本来就按每次请求的音频长度分配/复用）。"""
+    with _proc_lock:
+        managed_alive = _server_proc is not None and _server_proc.poll() is None
+        if managed_alive:
+            label = _loaded_id or "(unknown)"
+            _stop_server()
+            _ui_log(f"已卸载模型 {label} 并停止 server，显存已释放")
+            return ("🧹 已卸载模型并释放显存 — 下次点『加载模型』或直接生成/转写"
+                    "会自动重新加载（约 5s）。", server_status())
+        if server_alive():
+            return ("⚠️ 当前 server 不是本 WebUI 启动的（如 run_server.bat），"
+                    "请到启动它的窗口里关闭。", server_status())
+        return "⚪ server 未运行，无需释放。", server_status()
 
 
 def server_status():
@@ -1318,7 +1382,8 @@ curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
   -d '{{"model": "qwen3-tts", "input": "你好，audio.cpp。", "voice_ref": "D:/voices/ref.wav", "reference_text": "参考音频里的原话", "seed": 1234}}'
 ```
 
-- **ASR 请求示例**：`-d '{{"model": "qwen3-asr", "audio": "D:/audio/in.wav"}}'`。
+- **ASR 请求示例**：`-d '{{"model": "qwen3-asr", "audio": "D:/audio/in.wav"}}'`；
+  可选 `"language"`（强制语种，如 `"Chinese"`）和 `"context"`（人名/术语偏置提示），仅 qwen3-asr 生效。
   注意 `voice_ref` / `audio` 填的都是 **server 所在机器上的文件路径**（不是浏览器上传）。
 - **音乐生成（gen 模型）**：走通用路由 `POST {SERVER}/v1/tasks/run`，body 形如
   `{{"model": "ace-step", "request": {{"text": "提示词", "lyrics": "歌词", "duration_seconds": 30,
@@ -1577,39 +1642,193 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         return None, f"❌ 生成失败：{e}"
 
 
-def do_asr(model, audio_path):
+def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR"):
+    """转写一个 WAV 文件（调用方已加载好 ASR 模型）：超过单次上限（见 qwen3_asr
+    profile：8G 卡显存实测取 60s）时在静音处切段逐段转写再拼接；短音频/非 PCM
+    WAV（测不出时长）走单请求。extras 是可选的 language/context 请求字段。
+    返回 (text, dur, 段数)。"""
+    dur = _audio_duration_seconds(wav_path)
+    dur_note = f"{dur:.1f}s" if dur is not None else "未知"
+    max_s = prof.get("max_input_seconds")
+    chunks = [wav_path]
+    if max_s and dur is not None and dur > max_s:
+        chunks = [p for p, _ in
+                  _split_wav_chunks(wav_path, max_s, pad_to_max=False)]
+        if len(chunks) > 1:
+            _ui_log(f"{tag} 长音频分段：{dur_note} → {len(chunks)} 段"
+                    f"（每段 ≤{max_s:.0f}s，静音处切分）")
+    texts = []
+    for i, chunk in enumerate(chunks):
+        t_chunk = time.time()
+        payload = {"model": model, "audio": chunk, **extras}
+        try:
+            r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload, timeout=900)
+        except requests.RequestException as e:
+            _ui_log(f"{tag} 失败：无法连接 server")
+            raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+        if r.status_code != 200:
+            seg_note = f"，第 {i + 1}/{len(chunks)} 段" if len(chunks) > 1 else ""
+            _ui_log(f"{tag} 失败：server {r.status_code}（音频 {dur_note}{seg_note}）")
+            extra = f"⏱ 本次音频时长约 {dur:.1f} 秒" if dur is not None else None
+            raise server_error(entry, r.status_code, r.text, extra=extra)
+        try:
+            data = r.json()
+            texts.append((data.get("text") or str(data)).strip())
+        except Exception:
+            texts.append(r.text)
+        if len(chunks) > 1:
+            _ui_log(f"{tag} 段 {i + 1}/{len(chunks)} 完成"
+                    f"（{time.time() - t_chunk:.1f}s）")
+    text = texts[0] if len(chunks) == 1 else "\n".join(t for t in texts if t)
+    return text, dur, len(chunks)
+
+
+def do_asr(model, audio_path, language="", context="", dialogue=False):
     try:
         if not audio_path:
             raise gr.Error("请上传或录制音频")
         audio_path = _ensure_wav(audio_path)
+        # 可选转写参数：留空不发，请求体和原来完全一致（qwen3_asr 从 text_input
+        # 读 context/language，其它族忽略；server 端 build_openai_transcription_request
+        # 只在字段存在时才设置 text_input）。
+        extras = {}
+        if (language or "").strip():
+            extras["language"] = language.strip()
+        if (context or "").strip():
+            extras["context"] = context.strip()
+        if dialogue:
+            return _asr_dialogue(model, audio_path, extras)
         ensure_model_loaded(model, ASR_TASKS)
         entry = catalog_by_id(model)
-        dur = _audio_duration_seconds(audio_path)
-        dur_note = f"{dur:.1f}s" if dur is not None else "未知"
-        payload = {"model": model, "audio": audio_path}
-        _ui_log(f"ASR 开始：model={model}，音频时长 {dur_note}")
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        extras_note = "".join(f"，{k}={v[:20]}" for k, v in extras.items())
+        _ui_log(f"ASR 开始：model={model}{extras_note}")
         t_start = time.time()
-        try:
-            r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload, timeout=900)
-        except requests.RequestException as e:
-            _ui_log("ASR 失败：无法连接 server")
-            raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
-        if r.status_code != 200:
-            _ui_log(f"ASR 失败：server {r.status_code}（音频 {dur_note}）")
-            extra = f"⏱ 本次音频时长约 {dur:.1f} 秒" if dur is not None else None
-            raise server_error(entry, r.status_code, r.text, extra=extra)
+        text, dur, n = _asr_transcribe_wav(model, entry, prof, audio_path, extras)
         elapsed = time.time() - t_start
-        _ui_log(f"ASR 完成：音频 {dur_note}，用时 {elapsed:.1f}s")
-        done = f"✅ 转写完成（音频 {dur_note}），用时 {elapsed:.1f}s。"
-        try:
-            data = r.json()
-        except Exception:
-            return r.text, done
-        return (data.get("text") or str(data)), done
+        dur_note = f"{dur:.1f}s" if dur is not None else "未知"
+        parts_note = f"，{n} 段" if n > 1 else ""
+        _ui_log(f"ASR 完成：音频 {dur_note}{parts_note}，用时 {elapsed:.1f}s")
+        return text, f"✅ 转写完成（音频 {dur_note}{parts_note}），用时 {elapsed:.1f}s。"
     except gr.Error as e:
         return "", _msg_from_error(e)
     except Exception as e:
         return "", f"❌ 转写失败：{e}"
+
+
+# 对话模式：同一说话人相邻发言段合并的最大间隔 / 每段前后补的余量（防止
+# Sortformer 边界切掉字头字尾）/ 短于该值的发言段丢弃（多为口头禅、气口）。
+DIALOGUE_MERGE_GAP_S = 1.0
+DIALOGUE_PAD_S = 0.25
+DIALOGUE_MIN_SEG_S = 0.3
+
+# Sortformer CUDA 下是固定图容量：session_len_sec 定容量（默认 20s），上限来自
+# tf_encoder.max_source_positions=1500 @ 12.5 编码帧/秒 = 120s。
+SORTFORMER_MAX_SEC = 120
+
+
+def _diar_session_options(dur):
+    """说话人分离的动态 session_len_sec：≤20s 用默认容量（不重载）；更长的按
+    30s 步进向上取整重载（避免每个文件都重启 server）；超过 120s 上限报错。"""
+    if dur is None or dur <= 20:
+        return None
+    if dur > SORTFORMER_MAX_SEC:
+        raise gr.Error(
+            f"说话人分离单次最长约 {SORTFORMER_MAX_SEC} 秒"
+            f"（Sortformer 固定图/位置编码上限），请先把音频剪短。")
+    return {"session_len_sec": str(min(SORTFORMER_MAX_SEC,
+                                       ((int(dur) // 30) + 1) * 30))}
+
+
+def _fmt_mmss(sec):
+    return f"{int(sec) // 60:02d}:{int(sec) % 60:02d}"
+
+
+def _first_installed_model(task):
+    for m in catalog_models():
+        if m.get("task") == task and m.get("installed"):
+            return m
+    return None
+
+
+def _asr_dialogue(model, wav_path, extras):
+    """对话模式：Sortformer 说话人分离 → 按说话人合并/切段 → 逐段 ASR →
+    带说话人标签和时间戳的对话稿。server 一次只驻留一个模型，所以先换载 diar
+    再换回 ASR（每次自动换载 ~5s）。"""
+    diar = _first_installed_model("diar")
+    if diar is None:
+        raise gr.Error("对话模式需要说话人分离模型：请到『🔍 音频分析』页"
+                       "下载安装 Sortformer diar 后重试。")
+    entry = catalog_by_id(model)
+    prof = profile_for(entry) if entry else DEFAULT_PROFILE
+
+    wav16 = _to_16k_mono_wav(wav_path)
+    try:
+        with wave.open(wav16, "rb") as w:
+            sr = w.getframerate()
+            raw = w.readframes(w.getnframes())
+    except Exception as e:
+        raise gr.Error(f"对话模式需要可读的 PCM WAV（切段用），当前文件读不了：{e}")
+    samples = np.frombuffer(raw, dtype=np.int16)
+    total_dur = len(samples) / float(sr)
+
+    t_start = time.time()
+    _ui_log(f"对话模式：先用 {diar['id']} 做说话人分离（音频 {total_dur:.1f}s）")
+    ensure_model_loaded(diar["id"], ("diar",),
+                        session_options=_diar_session_options(total_dur))
+    data = _run_task(diar, diar["id"], {"audio": wav16}, timeout=900,
+                     log_label="说话人分离")
+    turns = data.get("speaker_turns") or []
+    if not turns:
+        raise gr.Error("没有检测到说话人发言段——音频里可能没有语音。")
+
+    # 合并同一说话人的相邻发言段（间隔 ≤1s 且合并后不超过 ASR 单次上限），
+    # 减少请求数并给 ASR 更完整的上下文。
+    max_len = (prof.get("max_input_seconds") or 60) * sr
+    merged = []                                     # [说话人, start, end] (样本数)
+    for t in sorted(turns, key=lambda t: t["start_sample"]):
+        spk, s, e = str(t.get("speaker_id", "?")), t["start_sample"], t["end_sample"]
+        if (merged and merged[-1][0] == spk
+                and s - merged[-1][2] <= DIALOGUE_MERGE_GAP_S * sr
+                and e - merged[-1][1] <= max_len):
+            merged[-1][2] = max(merged[-1][2], e)
+        else:
+            merged.append([spk, s, e])
+    merged = [m for m in merged if m[2] - m[1] >= DIALOGUE_MIN_SEG_S * sr]
+    if not merged:
+        raise gr.Error("说话人发言段都太短，无法转写。")
+    _ui_log(f"说话人分离完成：{len(turns)} 个发言段 → 合并为 {len(merged)} 段；"
+            f"换回 {model} 逐段转写")
+
+    ensure_model_loaded(model, ASR_TASKS)
+    pad = int(DIALOGUE_PAD_S * sr)
+    speakers, lines = [], []
+    for idx, (spk, s, e) in enumerate(merged, 1):
+        a, b = max(0, s - pad), min(len(samples), e + pad)
+        fd, seg_path = tempfile.mkstemp(prefix=f"audiocpp_dlg{idx}_", suffix=".wav")
+        os.close(fd)
+        with wave.open(seg_path, "wb") as ww:
+            ww.setnchannels(1)
+            ww.setsampwidth(2)
+            ww.setframerate(sr)
+            ww.writeframes(samples[a:b].tobytes())
+        text, _, _ = _asr_transcribe_wav(model, entry, prof, seg_path, extras,
+                                         tag=f"对话段 {idx}/{len(merged)}")
+        if spk not in speakers:
+            speakers.append(spk)
+        label = f"说话人{speakers.index(spk) + 1}"
+        if text:
+            lines.append(f"[{_fmt_mmss(s / sr)}-{_fmt_mmss(e / sr)}] {label}: {text}")
+        _ui_log(f"对话段 {idx}/{len(merged)} 完成（{label}，{(e - s) / sr:.1f}s）")
+
+    elapsed = time.time() - t_start
+    _ui_log(f"对话转写完成：{len(merged)} 段发言、{len(speakers)} 个说话人，"
+            f"用时 {elapsed:.1f}s")
+    if not lines:
+        return "", "⚠️ 说话人分离找到了发言段，但都没有转写出文字。"
+    return ("\n".join(lines),
+            f"✅ 对话转写完成（音频 {total_dur:.1f}s，{len(merged)} 段发言、"
+            f"{len(speakers)} 个说话人），用时 {elapsed:.1f}s。")
 
 
 def do_music_gen(model, text, lyrics, source_audio, duration, seed,
@@ -1873,7 +2092,6 @@ def do_analyze(model, audio_path, transcript, language):
     try:
         if not audio_path:
             raise gr.Error("请上传或录制音频")
-        ensure_model_loaded(model, ANALYZE_TASKS)
         entry = catalog_by_id(model)
         task = entry.get("task") if entry else ""
         req = {"audio": _to_16k_mono_wav(_ensure_wav(audio_path))}
@@ -1884,6 +2102,10 @@ def do_analyze(model, audio_path, transcript, language):
             if (language or "").strip():
                 req["language"] = language.strip()
         dur = _audio_duration_seconds(req["audio"])
+        # diar（Sortformer）是固定图容量，>20s 的音频按时长动态重载。
+        ensure_model_loaded(model, ANALYZE_TASKS,
+                            session_options=(_diar_session_options(dur)
+                                             if task == "diar" else None))
         dur_note = f"{dur:.1f}s" if dur is not None else "未知"
         _ui_log(f"音频分析开始：model={model}（task={task}），音频 {dur_note}")
         t_start = time.time()
@@ -2060,11 +2282,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                    size="lg", min_width=100)
                 dl_stat_btn = gr.Button("📊 下载进度", variant="primary",
                                         size="lg", min_width=100)
+                unload_btn = gr.Button("🧹 释放显存", variant="secondary",
+                                       size="lg", min_width=100)
             load_status = gr.Markdown("")
             dl_status = gr.Markdown("")
             timer = gr.Timer(3, active=False)
         return {"model": model, "load_btn": load_btn, "refresh_btn": refresh_btn,
-                "dl_btn": dl_btn, "dl_stat_btn": dl_stat_btn,
+                "dl_btn": dl_btn, "dl_stat_btn": dl_stat_btn, "unload_btn": unload_btn,
                 "load_status": load_status, "dl_status": dl_status, "timer": timer}
 
     def _wire_model_manager(mm, tasks, hint):
@@ -2075,6 +2299,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         mm["timer"].tick(download_status_tick, mm["model"],
                          [mm["dl_status"], mm["timer"]])
         mm["dl_stat_btn"].click(download_status, mm["model"], mm["dl_status"])
+        mm["unload_btn"].click(unload_model, None, [mm["load_status"], status])
         mm["model"].change(model_hint_for, mm["model"], hint)
 
     def _render_param_controls(model_comp, state_comp, skip=(), prefill_comp=None):
@@ -2178,6 +2403,19 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Markdown("#### 🎤 音频输入")
                     asr_audio = gr.Audio(label="上传/录制音频", type="filepath",
                                          elem_classes="audio-default")
+                with gr.Accordion("🎛 转写选项（可选，留空 = 默认行为）", open=False):
+                    asr_language = gr.Dropdown(
+                        label="强制语种（仅 Qwen3-ASR；留空 = 自动检测）",
+                        choices=[("自动检测", "")] +
+                                [(f"{zh} {en}", en) for zh, en in QWEN3_ASR_LANGUAGES],
+                        value="")
+                    asr_context = gr.Textbox(
+                        label="上下文提示（仅 Qwen3-ASR）", lines=2,
+                        placeholder="人名/术语/背景描述等，帮助模型认出专有名词，"
+                                    "例如：会议讨论 ggml 量化，参会人：张伟、李娜")
+                    asr_dialogue = gr.Checkbox(
+                        label="🗣 对话模式(限120s)：先说话人分离（Sortformer，≤4 人），"
+                              "再逐段转写成带说话人和时间戳的对话稿")
                 asr_hint = gr.Markdown(model_hint_for(asr_model.value))
                 asr_btn = gr.Button("📝 开始转写", variant="primary", size="lg")
 
@@ -2191,7 +2429,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
         _wire_model_manager(asr_mm, ASR_TASKS, asr_hint)
         asr_btn.click(lambda: ("", ""), None, [asr_out, asr_msg]).then(
-            do_asr, [asr_model, asr_audio], [asr_out, asr_msg])
+            do_asr, [asr_model, asr_audio, asr_language, asr_context, asr_dialogue],
+            [asr_out, asr_msg])
 
     # ---------------- 音乐 / 音效生成 ----------------
     with gr.Tab("🎵 音乐生成"):
@@ -2248,8 +2487,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gen_msg = gr.Markdown("")
 
         _wire_model_manager(gen_mm, GEN_TASKS, gen_hint)
-        gen_model.change(lambda: ({}, {}), None,
-                         [gen_adv_state, gen_prefill])  # reset knobs on model switch
+        gen_model.change(lambda: ({}, {}, ""), None,
+                         [gen_adv_state, gen_prefill, gen_ana_msg])  # 切换模型清空旋钮+分析信息
         gen_ana_btn.click(lambda: "⏳ 分析中……（首次需先『📥 加载模型』；1 分钟音频约几十秒）",
                           None, gen_ana_msg).then(
             do_music_analyze, [gen_model, gen_audio, gen_seed, gen_adv_state],
