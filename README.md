@@ -31,8 +31,8 @@ The `webui/` directory contains a Windows-friendly local launcher layer for audi
 
 - `run_webui.bat` starts the Gradio WebUI at `http://127.0.0.1:7860`, with on-demand model loading, model switching, model download support, reference voice upload/recording, generated controls for advanced model parameters, and inline run/error status.
 - `run_realtime.bat` starts the realtime voice chat page backed by local ASR, LLM, and audio.cpp TTS services.
-- `run_server.bat` starts an OpenAI-compatible HTTP API server for other applications.
-- `run_cli_tts.bat` and `run_tts_long.bat` cover quick one-shot TTS and long-text batch synthesis workflows.
+- `run_server.bat` starts an OpenAI-compatible HTTP API server for other applications; `run_server_asr.bat` is its preset wrapper serving Qwen3-ASR on port 8081.
+- `run_cli_tts.bat` covers quick one-shot TTS; long-text synthesis is built into the WebUI (automatic text chunking and audio concatenation).
 
 For full setup notes, script arguments, environment variables, API examples, WebUI advanced-parameter behavior, common model ids, and troubleshooting, see [webui/README.md](webui/README.md).
 

@@ -1,22 +1,26 @@
 # audio.cpp WebUI 启动脚本说明
 
-`webui\` 目录下的一组 `.bat` 脚本，覆盖 audio.cpp 的四种本地运行方式：命令行单句合成、
-长文本合成、HTTP API 服务、图形界面。所有脚本都可以**双击运行**，也可以在命令行/PowerShell
+仓库根目录下的一组 `.bat` 脚本，覆盖 audio.cpp 的三种本地运行方式：命令行单句合成、
+HTTP API 服务、图形界面。所有脚本都可以**双击运行**，也可以在命令行/PowerShell
 里带参数调用。
 
 | 脚本 | 作用 | 典型命令 |
 |---|---|---|
 | `run_cli_tts.bat` | 单句/单次命令行 TTS | `run_cli_tts.bat qwen3-tts "你好世界"` |
-| `run_tts_long.bat` | 长文本（整份 .txt）合成为一个 wav | `run_tts_long.bat qwen3-tts "D:\books\ch1.txt"` |
 | `run_server.bat` | OpenAI 兼容 HTTP API 服务 | `run_server.bat qwen3-tts 8080` |
+| `run_server_asr.bat` | Qwen3-ASR 服务（`run_server.bat` 的 ASR 预设） | `run_server_asr.bat`（默认 :8081） |
 | `run_webui.bat` | Gradio 网页界面（按需起服务） | `run_webui.bat` |
-| `_env.bat` | 共享环境探测（**不直接运行**） | 被上面四个 `call` |
+| `_env.bat` | 共享环境探测（**不直接运行**） | 被其它脚本 `call` |
+
+> 长文本合成不再需要单独脚本（原 `run_tts_long.bat` 已移除）：WebUI 的 TTS 标签页会自动
+> 把长文本分段（VibeVoice 600 字/段，其它模型 1000 字/段），逐段合成后拼接成一个 wav。
+> 命令行等价物是 `audiocpp_cli` 的 `--batch-text-file <txt> --batch-merge-audio concat`。
 
 ---
 
 ## 通用约定
 
-- **模型用 catalog id 指定。** 三个合成脚本（cli / long / server）都用 `configs\models_catalog.json`
+- **模型用 catalog id 指定。** 两个合成脚本（cli / server）都用 `configs\models_catalog.json`
   里的 **id** 来指定模型，脚本会自动查出它的 `family` / `task` / 绝对路径，你不用再手写这些。
   当前已安装的 id：`qwen3-tts`、`qwen3-asr`、`vibevoice`、`omnivoice`、`pocket-tts`。
   未安装的 id 会提示 “not installed”，可在 WebUI 里下载，或用
@@ -32,7 +36,7 @@
 
 ## `_env.bat`（内部共享，不要直接运行）
 
-被其它四个脚本 `call`，负责一次性设置好公共变量（故意不用 `setlocal`，这样变量能带回调用方）：
+被其它脚本 `call`，负责一次性设置好公共变量（故意不用 `setlocal`，这样变量能带回调用方）：
 
 - `BUNDLE` — 整合包根目录（含 `cpu\ gpu\ models\`）
 - `HAS_CUDA` — 是否检测到 CUDA（`nvcuda.dll` 或 `nvidia-smi`）
@@ -73,39 +77,7 @@ set AUDIOCPP_BACKEND=cpu & run_cli_tts.bat qwen3-tts "强制用 CPU 跑"
 
 ---
 
-## 2. `run_tts_long.bat` — 长文本合成
-
-把一整份 `.txt` 合成为**一个**连续的 wav：逐行合成，再用 `--batch-merge-audio concat` 拼接。
-文本文件没有大小限制，60 分钟以上也可以。
-
-```
-用法: run_tts_long.bat <model_id> <text_file.txt> [out.wav]
-```
-
-| 位置参数 | 含义 | 默认 |
-|---|---|---|
-| 1 `model_id` | catalog 里的模型 id | （必填） |
-| 2 `text_file.txt` | 文本文件，**可为任意绝对路径** | （必填） |
-| 3 `out.wav` | 输出文件 | `output\<txt文件名>.wav` |
-
-**文本文件规则**
-
-- **一句 / 一小段一行。** 每行必须能塞进 `--max-tokens`（12Hz 模型约 12 token/秒，1200 token ≈ 100 秒/行），
-  过长的行会被截断——把长段落拆成多行。
-- 空行会被忽略（**不会**产生停顿）。
-- 存成 **UTF-8**（中文/非 ASCII 必需）。
-- 声音克隆参数（`VOICE_REF`/`REF_TEXT`）在脚本顶部，可改可留空。
-
-**示例**
-
-```bat
-run_tts_long.bat qwen3-tts "sample_long.txt"
-run_tts_long.bat qwen3-tts "D:\books\chapter1.txt" "output\ch1.wav"
-```
-
----
-
-## 3. `run_server.bat` — HTTP API 服务
+## 2. `run_server.bat` — HTTP API 服务
 
 启动一个 OpenAI 兼容的 HTTP 服务，供**其它应用**调用。后端自动检测：有 CUDA 用 GPU，
 否则用 CPU 版 server（CPU 下自动把 ggml 线程数设为核数-1；速度较慢，部分大模型不实用）。
@@ -126,10 +98,12 @@ run_tts_long.bat qwen3-tts "D:\books\chapter1.txt" "output\ch1.wav"
 
   ```bat
   run_server.bat qwen3-tts 8080     :: 窗口 A：TTS
-  run_server.bat qwen3-asr 8081     :: 窗口 B：ASR
+  run_server_asr.bat                :: 窗口 B：ASR（= run_server.bat qwen3-asr 8081）
   ```
 
   ⚠️ 两个模型要同时装进显存（8GB 下 0.6B + 0.6B 没问题；两个 1.7B 装不下）。
+- **`run_server_asr.bat`**：`run_server.bat` 的 ASR 预设包装，双击即用。
+  参数为 `[port] [device] [model_id]`，默认 `8081` / `0` / `qwen3-asr`。
 - **局域网访问**：设 `AUDIOCPP_HOST=0.0.0.0` 让其它机器能连（**无鉴权**，仅在可信内网使用）。
 
 ### API 端点
@@ -169,7 +143,7 @@ curl http://127.0.0.1:8080/v1/models
 
 ---
 
-## 4. `run_webui.bat` — 图形界面
+## 3. `run_webui.bat` — 图形界面
 
 启动 Gradio 网页界面（`webui.py`），浏览器访问 **http://127.0.0.1:7860**。
 
@@ -246,7 +220,7 @@ TTS 标签页「合成设置 → 高级参数」里的控件由 **`configs/model
 
 | 变量 | 作用 | 适用 |
 |---|---|---|
-| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` 强制后端 | cli / long / webui |
+| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` 强制后端 | cli / server / webui |
 | `AUDIOCPP_HOST` | server 绑定地址（`0.0.0.0` 开放局域网） | server |
 | `AUDIOCPP_BUNDLE` | 手动指定整合包根目录 | 全部 |
 | `AUDIOCPP_SERVER` | 让 WebUI 连一个已在跑的外部 server | webui |

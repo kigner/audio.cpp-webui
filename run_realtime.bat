@@ -18,7 +18,7 @@ REM  audio.cpp C++ servers already running (one TTS, one ASR) so both
 REM  models can be served at the same time. Start them in separate windows:
 REM
 REM    run_server.bat qwen3-tts 8080        (TTS, GPU)
-REM    run_server.bat qwen3-asr 8081        (ASR, GPU or CPU)
+REM    run_server_asr.bat                   (ASR on :8081, GPU or CPU)
 REM
 REM  English demo swaps the TTS model: run_server.bat pocket-tts 8080
 REM  (and set AUDIOCPP_TTS_MODEL below to pocket-tts).
@@ -56,8 +56,8 @@ set AUDIOCPP_REALTIME_PORT=8765
 
 echo [realtime] backend starting on ws://127.0.0.1:8765/v1/realtime
 echo [realtime] UI at           http://127.0.0.1:8765/realtime/
-echo [realtime] expects TTS @ http://127.0.0.1:8080  (run_server.bat qwen3-tts 8080)
-echo [realtime] expects ASR @ http://127.0.0.1:8081  (run_server.bat qwen3-asr 8081)
+echo [realtime] expects TTS @ http://127.0.0.1:8080  (run_webui.bat, then load a TTS model in the WebUI)
+echo [realtime] expects ASR @ http://127.0.0.1:8081  (run_server_asr.bat)
 echo.
 
 cd /d "%~dp0"
