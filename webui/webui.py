@@ -263,6 +263,11 @@ MODEL_PROFILES = {
         # max_tokens=1200 budget (~1.5 frames/CJK char) and the KV capacity tier
         # <= 2048 (~7.1 GB peak on 8 GB GPUs).
         "chunk_chars": 600,
+        # Advanced-parameter widgets are sent only when the user edits them, so an
+        # untouched num_inference_steps control (displayed 10) silently falls back to
+        # the model config's ddpm_num_inference_steps=20 server-side. Send 10 (the
+        # official demo default) explicitly; widgets/JSON still override.
+        "default_options": {"num_inference_steps": 10},
     },
     "voxcpm2": {
         "input_hint": (

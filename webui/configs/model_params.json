@@ -89,9 +89,9 @@
   "vevo2": [
     {"name": "route", "type": "choice", "label": "route（任务路线）", "default": "", "choices": ["", "style_preserved_vc", "style_converted_vc", "style_preserved_svc", "style_converted_svc", "singing_style_conversion", "editing"], "info": "留空=按条目任务默认（vc→style_preserved_vc，svc→style_preserved_svc，s2s→editing）；route 须与所选条目任务匹配，style_converted*/editing 需在 JSON 里补 style_ref/style_ref_text/target_text"},
     {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 32, "minimum": 1, "step": 1, "precision": 0, "info": "流匹配步数"},
-    {"name": "use_pitch_shift", "type": "bool", "label": "use_pitch_shift（自动音高对齐）", "default": false, "info": "按源/目标中位音高差整体移调"},
-    {"name": "temperature", "type": "slider", "label": "temperature（AR 路线用）", "default": 1.0, "minimum": 0.0, "maximum": 2.0, "step": 0.05},
-    {"name": "top_k", "type": "number", "label": "top_k（AR 路线用）", "default": 25, "minimum": 0, "step": 1, "precision": 0},
+    {"name": "use_pitch_shift", "type": "choice", "label": "use_pitch_shift（自动音高对齐）", "default": "", "choices": ["", "true", "false"], "info": "按源/目标中位音高差整体移调。留空=按路线默认：style_preserved_vc/svc 及 singing 路线默认开，style_converted_vc / editing 默认关"},
+    {"name": "temperature", "type": "slider", "label": "temperature（AR 路线用）", "default": 0.7, "minimum": 0.0, "maximum": 2.0, "step": 0.05, "info": "默认取自模型 generation_config.json"},
+    {"name": "top_k", "type": "number", "label": "top_k（AR 路线用）", "default": 20, "minimum": 0, "step": 1, "precision": 0, "info": "默认取自模型 generation_config.json"},
     {"name": "top_p", "type": "slider", "label": "top_p（AR 路线用）", "default": 0.8, "minimum": 0.0, "maximum": 1.0, "step": 0.01}
   ],
 
