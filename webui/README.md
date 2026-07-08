@@ -200,6 +200,75 @@ TTS 标签页「合成设置 → 高级参数」里的控件由 **`configs/model
 
 > 键名取自各模型 `src/models/<family>/session.cpp` 实际读取的选项；同一键在不同模型里的取值范围/含义可能不同。量化相关键（如 `vibevoice.weight_type`、`voxcpm2.*_weight_type`）见项目根 `README.md` 的量化章节，不是通用默认项。
 
+### 音乐生成 / 声音转换参数详解
+
+页面上的提示已精简，完整说明集中在这里。
+
+**ACE-Step（音乐生成/编辑）**
+
+- 提示词写风格/乐器/情绪（英文效果最好），可选填歌词；时长填 `-1` 表示自动。
+- `task_route` 操作类型：`text2music`＝纯文生曲（默认，不需要源音频）；`cover`＝换词翻唱
+  （原版 Remix 主路线，配合下面两个 cover 滑条）；`cover-nofsq`＝cover 变体（不过 FSQ 量化）；
+  `remix`＝flow-edit 精细换词；`complete` / `lego` / `extract` / `repaint` 为其它编辑路线。
+  **除 text2music 外都需要上传源音频。**
+- 上传源音频后建议先点『🔍 分析源音频』：反推源曲描述/歌词/BPM/调性并自动填入高级参数
+  （remix/cover 换词前尤其建议；首次需先『📥 加载模型』，1 分钟音频约需几十秒）。
+- cover 路线两个滑条：
+  - `audio_cover_strength`（Remix 强度）：多少比例的去噪步参考源曲结构，1=贴近原曲、
+    0=自由发挥；原版 Remix 建议 0.5。仅 cover/cover-nofsq 生效。
+  - `cover_noise_strength`（旋律保持）：从源曲部分加噪的起点开始去噪，0=不保旋律、
+    0.1~0.25=推荐区间（保旋律又能换词换风格）、越高越贴原曲。仅 cover 生效。
+- remix（flow-edit）参数：
+  - `source_caption` / `source_lyrics`：源侧文本条件（源歌曲本来的风格描述 / 原歌词，
+    带 `[Verse]` `[Chorus]` 标签）；留空 caption 用主提示词；『🔍 分析』可自动填。
+    **新歌词写在主界面『歌词』框。**
+  - `flow_edit_n_min`（编辑起点）：跳过前面高噪声步的比例，0=从头编辑；调大更保源曲但换词更弱。
+  - `flow_edit_n_max`（编辑终点）：1=全程配对编辑；调低到 0.7~0.9 时收尾只朝新歌词去噪——
+    **歌词唱不出来时优先调这个**。
+  - `flow_edit_n_avg`：每步多次采样取平均，2 更稳但更慢。
+- 曲谱参数 `bpm` / `keyscale`（如 `F major`、`c# minor`）/ `timesignature`（如 `4`）：
+  0/留空=不指定；『🔍 分析』后自动填。
+
+**Stable Audio（音乐/音效）**：提示词**仅支持英文**，不使用歌词；music 版生成音乐、sfx 版生成音效。
+上传源音频可做续写/修补：`audio_input_kind` 选 `init_audio`（配 `init_noise_level` 强度）或
+`inpaint_audio`。
+
+**HeartMuLa（歌词+标签生成歌曲）**：高级参数 `tags` 必填（逗号分隔，如
+`pop,bright,drums,female vocals`），『歌词』填唱词。3B 模型，官方 120 秒长歌实测峰值显存
+~25G（docs/memory_saver.md），8G 显卡跑不动；已默认开 mem_saver，长歌曲可开 `infinite_mode`。
+
+**Seed-VC（语音转换）**：源语音 + 目标音色参考（几秒到几十秒干净人声）。`route` 留空按任务默认
+（vc 条目→`v2_vc`，svc 条目→`v1_svc`）；`v1_whisper_bigvgan_vc` / `v1_xlsr_hift_vc` 为 v1 旧路线；
+`v1_svc` 只能配 svc 条目。`intelligibility_cfg_rate` / `similarity_cfg_rate` 仅 v2 生效，
+`inference_cfg_rate` 仅 v1 生效。
+
+**Vevo2（语音转换）**：默认 `route=style_preserved_vc`（保留源语音的说话风格，只换音色）。
+`route` 留空按条目任务默认（vc→style_preserved_vc，svc→style_preserved_svc，s2s→editing），
+且须与所选条目任务匹配；`style_converted_*` / `editing` 需在「其它参数(JSON)」里补
+`style_ref`（服务器本地 wav 路径）/ `style_ref_text` / `target_text`。
+`use_pitch_shift`（按源/目标中位音高差整体移调）留空按路线默认：style_preserved_* 及
+singing 路线默认开，style_converted_vc / editing 默认关。
+长音频按『目标音色时长 + 每段源时长 ≤ 显存预算』自适应分段后拼接，参考音色超过约 10s
+自动截短（8G 显存限制）。
+
+### 各任务页输入要求详解
+
+- **VibeVoice**：多说话人脚本每行 `Speaker N: 内容`（N 从 0 起），只填普通文字会自动包成
+  `Speaker 0: ...`。多角色不同音色用高级参数 `voice_samples`（逗号分隔服务器本地 wav，≤4 个），
+  此时**不要**再上传参考音色。
+- **VoxCPM2 / Qwen3-TTS**：上传/选一段干净的单人参考音色并在『参考文本』填该音频的原话，
+  否则可能提前截断。长文本自动分段合成后拼接；VoxCPM2 在 8G 显卡默认 q8_0 量化。
+- **Chatterbox**：语言只支持 english / spanish / french / german / italian / portuguese / korean
+  （无中文/日文/俄文，也没有自动检测）；『留空』=英语。
+- **Qwen3-ASR**：长音频自动在静音处按 ≤60 秒分段转写后拼接。『上下文提示』填人名/术语/背景
+  （如：会议讨论 ggml 量化，参会人：张伟、李娜）帮助认出专有名词。对话模式（限 120s）先用
+  Sortformer 说话人分离（≤4 人）再逐段转写成带说话人和时间戳的对话稿，需已安装 Sortformer 模型。
+- **音频分析（VAD/分离/对齐）**：WAV 输入自动转 16 kHz 单声道后送模型，结果时间轴按 16 kHz 换算。
+  Qwen3 强制对齐单次音频上限约 115 秒。
+- **音源分离**：HTDemucs 输出 drums/bass/other/vocals 四轨（长音频耗时较长）；
+  Mel-Band RoFormer 输出人声轨 + 伴奏轨（mixture − vocals）。
+- **模型下载**在后台进行，进度自动刷新，也可点「📊 下载进度」手动查看。
+
 ---
 
 ## 模型 id 速查

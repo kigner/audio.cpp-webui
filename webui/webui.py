@@ -29,6 +29,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import socket
@@ -121,8 +122,33 @@ def _silence_h11_content_length_race():
     logging.getLogger("uvicorn.error").addFilter(_DropContentLengthRace())
 
 
+def _patch_gradio_render_config_race():
+    """Gradio 6.19 上游竞态（gradio-app/gradio#9991 只冻结了 blocks、漏了 fns）：
+    本页有 7 个 @gr.render 动态参数区，页面加载/模型切换时多个渲染事件并发，
+    一个事件在 get_config 里遍历 session 的 blocks/fns 字典的同时，另一个渲染
+    正往里注册组件，偶发 "RuntimeError: dictionary changed size during
+    iteration"（前端表现为该次渲染丢失/报错）。get_config 是纯只读操作，
+    撞上竞态时稍等重读即可收敛。"""
+    try:
+        BlocksConfig = gr.blocks.BlocksConfig
+        orig = BlocksConfig.get_config
+    except AttributeError:
+        return
+
+    def _get_config_retry(self, renderable=None):
+        for _ in range(10):
+            try:
+                return orig(self, renderable)
+            except RuntimeError:
+                time.sleep(0.02)
+        return orig(self, renderable)
+
+    BlocksConfig.get_config = _get_config_retry
+
+
 _silence_proactor_connection_reset()
 _silence_h11_content_length_race()
+_patch_gradio_render_config_race()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
@@ -252,10 +278,8 @@ VDES_TASKS = ("vdes",)                    # 声音设计：文字 + 音色描述
 MODEL_PROFILES = {
     "vibevoice": {
         "input_hint": (
-            "**VibeVoice** 要求多说话人脚本，每行 `Speaker N: 内容`（N 从 0 起）。"
-            "只填普通文字会自动包成 `Speaker 0: ...`。多角色不同音色请在下方“高级参数”里用 "
-            "`voice_samples`（逗号分隔的服务器本地 wav，最多 4 个），此时**不要**再上传参考音色。"
-            "可调 `num_inference_steps` / `guidance_scale` / `max_length_times`。"),
+            "**VibeVoice** 多说话人脚本：每行 `Speaker N: 内容`（纯文字自动包装）；"
+            "多音色用高级参数 `voice_samples`，不要传参考音频。"),
         "wrap_speaker_script": True,
         # VibeVoice has no internal text chunking. VRAM is bounded since the
         # layerwise-prefill/gallocr decode-graph fix, so chunks no longer need to be
@@ -271,8 +295,7 @@ MODEL_PROFILES = {
     },
     "voxcpm2": {
         "input_hint": (
-            "**VoxCPM2** 声音克隆：上传/选一段干净的单人参考音色，并在“参考文本”里填该音频"
-            "对应的原话。长文本会分段合成后拼接；8G 显卡已默认 q8_0 量化权重。"),
+            "**VoxCPM2** 声音克隆：上传干净的单人参考音色并填『参考文本』；长文本自动分段。"),
         # 8G 4060 实测标定（2026-07-05，CLI --log + nvidia-smi 抓峰值）：
         # - 峰值 ≈ 固定基线 + audiovae 解码图。基线（权重+KV+生成图）与文本长度/
         #   max_tokens 无关：max_tokens 128/300/1200 峰值都是 7634MiB（生成会提前
@@ -287,17 +310,15 @@ MODEL_PROFILES = {
     },
     "qwen3_tts": {
         "input_hint": (
-            "**Qwen3-TTS** 是声音克隆：建议上传/选一段干净的单人参考音色，并在“参考文本”里"
-            "填该音频对应的原话，否则可能很快截断。"),
+            "**Qwen3-TTS** 声音克隆：建议上传参考音色并填『参考文本』，否则可能提前截断。"),
     },
     "pocket_tts": {
-        "input_hint": "**PocketTTS** 需要参考音色：必须上传/录制或选一个内置参考音色，否则会报错。",
+        "input_hint": "**PocketTTS**：必须提供参考音色（上传/录制/内置）。",
     },
     "chatterbox": {
         "input_hint": (
-            "**Chatterbox**（声音克隆）：需要一段参考音色（上传/录音），否则会报错。"
-            "语言只支持 english / spanish / french / german / italian / portuguese / korean"
-            "（**无中文/日文/俄文，也没有自动检测**）；选“留空”用默认（英语）。"),
+            "**Chatterbox** 声音克隆：必须提供参考音色；语言仅支持英/西/法/德/意/葡/韩"
+            "（**无中文**），留空=英语。"),
         # Chatterbox validates against 2-letter ISO codes (no zh/ja/ru, no auto),
         # so the shared dropdown's friendly names are translated here; names not
         # listed are genuinely unsupported by the model and rejected up front.
@@ -312,39 +333,30 @@ MODEL_PROFILES = {
         # 但 8G 卡上先撞显存：thinker prefill 图随时长超线性膨胀（4060 8G 实测
         # 65s 可过、70s 要 13.2GB、75s 要 14.6GB），所以客户端按 max_input_seconds
         # =60s 在静音处切段逐段转写再拼接，顺带解决 70~115s 音频原本的 OOM。
-        "input_hint": ("**Qwen3-ASR**：长音频 webui 会自动在静音处按 ≤60 秒分段转写并拼接结果。"
-                       "『转写选项』里可选强制语种、上下文提示（人名/术语偏置），"
-                       "以及对话模式（需要已安装 Sortformer 说话人分离模型）。"),
+        "input_hint": ("**Qwen3-ASR**：长音频自动分段转写；"
+                       "语种/上下文/对话模式见『转写选项』。"),
         "max_input_seconds": 60,
     },
     "ace_step": {
         "input_hint": (
-            "**ACE-Step** 音乐生成/编辑：提示词写风格/乐器/情绪（英文效果最好），可选填歌词。"
-            "“高级参数”里的 task_route 默认 text2music（纯文生曲）；cover/repaint/extract 等"
-            "编辑类 route 需上传源音频。时长填 -1 表示自动。上传源音频后可点"
-            "『🔍 分析源音频』反推源曲描述/歌词/BPM/调性并自动填入高级参数"
-            "（remix/cover 换词前建议先分析）。"),
+            "**ACE-Step** 音乐生成/编辑：提示词写风格/乐器/情绪（英文最佳），可填歌词。"
+            "编辑类 route 需上传源音频并建议先点『🔍 分析源音频』；参数详解见 webui/README.md。"),
     },
     "stable_audio": {
         "input_hint": (
-            "**Stable Audio** 音乐/音效生成：提示词**仅支持英文**。music 版生成音乐、sfx 版生成"
-            "音效；上传源音频可做 init_audio/inpaint（在“高级参数”里选 audio_input_kind）。"
-            "不使用歌词。"),
+            "**Stable Audio**：提示词**仅英文**，不用歌词；"
+            "上传源音频可做 init/inpaint（高级参数选 audio_input_kind）。"),
     },
     "heartmula": {
         "input_hint": (
-            "**HeartMuLa** 歌词+标签生成歌曲：必须在“高级参数”里填 `tags`（逗号分隔，如 "
-            "pop,bright,drums,female vocals），“歌词”填唱词。3B 模型，官方 120 秒长歌实测"
-            "峰值显存 ~25G（docs/memory_saver.md），8G 显卡基本跑不动；已默认开 mem_saver，"
-            "长歌曲可开 infinite_mode。"),
+            "**HeartMuLa**：高级参数 `tags` 必填（逗号分隔），『歌词』填唱词；"
+            "峰值显存 ~25G，8G 卡跑不动。"),
     },
     "vevo2": {
         "input_hint": (
-            "**Vevo2 语音转换**：上传源语音 + 目标音色参考，默认 route=style_preserved_vc"
-            "（保留源语音的说话风格，只换音色）。style_converted_vc 等风格转换 route 需在"
-            "『其它参数(JSON)』里补 `style_ref`（服务器本地 wav 路径）/ `style_ref_text` / `target_text`。"
-            "长音频按『目标音色时长 + 每段源时长 ≤ 显存预算』自适应分段后拼接，"
-            "参考音色超过约 10s 会自动截短（8G 显存限制）。"),
+            "**Vevo2**：源语音 + 目标音色，默认只换音色（保留说话风格）；"
+            "风格转换类 route 需 JSON 补 `style_ref` 等，详见 webui/README.md。"
+            "长音频自动分段，参考音色自动截 ≤10s。"),
         # 8G 4060 实测标定（2026-07-04/07-05）：FM 图一次建图，序列长度 =
         # 目标音色(prompt) + 源(target) 帧数（均 50fps，见 fm.cpp:782 cond_frames =
         # prompt_frames + target_frames）。cond≈25s（源15s+参考10s）就把 8G 吃满、
@@ -361,35 +373,29 @@ MODEL_PROFILES = {
     },
     "seed_vc": {
         "input_hint": (
-            "**Seed-VC 语音转换**：上传源语音 + 目标音色参考（几秒到几十秒干净人声），"
-            "默认 route=v2_vc；v1_whisper_bigvgan_vc / v1_xlsr_hift_vc 旧路线可在高级参数里切换。"),
+            "**Seed-VC**：源语音 + 目标音色参考（几秒干净人声）；"
+            "默认 v2 路线，v1 旧路线在高级参数切换。"),
     },
     "miocodec": {
-        "input_hint": (
-            "**MioCodec 声音转换**：codec 重建式转换——源音频提供内容，参考音色提供说话人特征。"
-            "它同时也是 MioTTS 的依赖组件。"),
+        "input_hint": "**MioCodec**：codec 重建式转换——源提供内容，参考提供音色。",
     },
     "htdemucs": {
-        "input_hint": "**HTDemucs 音源分离**：上传歌曲，输出 drums / bass / other / vocals 四条分轨；长音频耗时较长。",
+        "input_hint": "**HTDemucs**：输出 drums / bass / other / vocals 四轨。",
     },
     "mel_band_roformer": {
-        "input_hint": "**Mel-Band RoFormer 人声分离**：上传歌曲，输出人声轨 + 伴奏轨（mixture − vocals）。",
+        "input_hint": "**Mel-Band RoFormer**：输出人声轨 + 伴奏轨。",
     },
     "silero_vad": {
-        "input_hint": "**Silero VAD**：检测音频中的语音段。WAV 输入会自动转成 16 kHz 单声道后送模型。",
+        "input_hint": "**Silero VAD**：检测音频中的语音段。",
     },
     "marblenet_vad": {
-        "input_hint": "**MarbleNet VAD**：帧级语音活动检测，输出语音段列表。WAV 输入会自动转成 16 kHz 单声道。",
+        "input_hint": "**MarbleNet VAD**：帧级语音活动检测，输出语音段列表。",
     },
     "sortformer_diar": {
-        "input_hint": (
-            "**Sortformer 说话人分离**：区分“谁在什么时间说话”，最多 4 个说话人。"
-            "WAV 输入会自动转成 16 kHz 单声道。"),
+        "input_hint": "**Sortformer**：说话人分离（谁在何时说话，≤4 人）。",
     },
     "qwen3_forced_aligner": {
-        "input_hint": (
-            "**Qwen3 强制对齐**：上传音频并在『对齐文本』里填音频中说的原文，输出逐词时间戳。"
-            "单次音频长度上限与 Qwen3-ASR 相同（约 115 秒）。"),
+        "input_hint": "**Qwen3 强制对齐**：『对齐文本』填音频原文，输出逐词时间戳（≤115 秒）。",
     },
 }
 # Qwen3-ASR 可强制的语种（模型 config.json 的 support_languages，prompt 里用英文名；
@@ -434,7 +440,7 @@ def model_hint_for(model_id):
     short = _vram_shortfall(entry)
     if short:
         warn = (f"⚠️ **显存提示**：该模型按默认设置估算需 **≥{short[0]:g}G** 显存，"
-                f"本机检测到 **{short[1]:g}G**——即使能加载也会溢出到共享显存而大幅变慢"
+                f"本机检测到 **{short[1]:g}G**——能加载但会溢出到共享显存而变慢"
                 + ("，下载前请三思。" if not entry["installed"] else "。"))
         hint = warn + ("\n\n" + hint if hint else "")
     return hint
@@ -1082,6 +1088,19 @@ def _load_voice_texts():
     return texts
 
 
+def refresh_builtin_voices(current):
+    """刷新按钮：重新扫描 voice/ 目录的 wav 列表，并按当前选中项重读
+    prompt_text 里的参考文本；选中项已被删除时回落到 '(none)'。
+    必须在同一个 handler 里连带输出 wav/参考文本——拆成 .then 链会和
+    下拉更新触发的 .change 并发执行，撞 Gradio get_config 的竞态
+    （RuntimeError: dictionary changed size during iteration）。"""
+    choices = ["(none)"] + builtin_voices()
+    if current not in choices:
+        current = "(none)"
+    wav, ref = on_builtin_voice_change(current)
+    return gr.update(choices=choices, value=current), wav, ref
+
+
 def on_builtin_voice_change(name):
     """Selecting a built-in voice mirrors its wav into the upload widget and
     fills the matching reference text; '(none)' clears both."""
@@ -1412,7 +1431,7 @@ def server_status():
     if server_alive():
         ids = ", ".join(loaded_ids()) or "(none)"
         return f"✅ server @ {SERVER} · backend={BACKEND} · model id={ids}"
-    return f"⚪ server 未运行 @ {SERVER} — 选择模型并点『📥 加载模型』会自动启动"
+    return f"⚪ server 未运行 @ {SERVER} — 选择模型并点『📥 加载模型』"
 
 
 def _api_usage_md():
@@ -1614,6 +1633,18 @@ def _run_task(entry, model, req, timeout, log_label):
     return r.json()
 
 
+def _resolve_seed(seed):
+    """seed=-1 → 每次请求随机抽一个。server/C++ 侧 seed 一律按无符号整数解析
+    （多数族 u32，seed_vc/stable_audio u64），负数会直接报错，所以 -1 只能在
+    客户端消化；随机范围取 u32 全集，对所有族安全。返回 (seed, 消息后缀)——
+    后缀把实际用的 seed 回显在结果里，方便复现。"""
+    s = int(seed)
+    if s != -1:
+        return s, ""
+    s = random.randrange(0, 2 ** 32)
+    return s, f"🎲 seed={s}"
+
+
 def do_tts(model, text, language, uploaded_voice, builtin_voice,
            reference_text, seed, max_tokens, adv_values, adv_options,
            progress=gr.Progress()):
@@ -1656,10 +1687,11 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         if has_voice_samples and voice_path:
             voice_path = None
 
+        seed, seed_note = _resolve_seed(seed)
         payload = {
             "model": model,
             "language": resolve_language(prof, language),
-            "seed": int(seed),
+            "seed": seed,
             "max_tokens": int(max_tokens),
         }
         auto_vibevoice_max_tokens = (
@@ -1708,7 +1740,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         elapsed = time.time() - t_start
         _ui_log(f"TTS 完成：{out}，总用时 {elapsed:.1f}s")
         parts_note = f"（{len(blobs)} 段）" if len(blobs) > 1 else ""
-        return out, f"✅ 生成完成{parts_note}，用时 {elapsed:.1f}s。"
+        return out, f"✅ 生成完成{parts_note}，用时 {elapsed:.1f}s。{seed_note}"
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
@@ -1917,7 +1949,8 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
 
-        req = {"text": text, "seed": int(seed)}
+        seed, seed_note = _resolve_seed(seed)
+        req = {"text": text, "seed": seed}
         # task_route is a top-level request field (not a model option); the
         # generated controls funnel everything through `options`, so lift it out.
         route = options.pop("task_route", None)
@@ -1946,7 +1979,7 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
             f.write(base64.b64decode(b64))
         elapsed = time.time() - t_start
         _ui_log(f"音乐生成完成：{out}，用时 {elapsed:.1f}s")
-        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。"
+        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。{seed_note}"
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
@@ -1974,7 +2007,7 @@ def do_music_analyze(model, source_audio, seed, adv_values):
         ensure_model_loaded(model, GEN_TASKS)
 
         req = {"text": "analyze", "task_route": "analyze",
-               "audio": _ensure_wav(source_audio), "seed": int(seed)}
+               "audio": _ensure_wav(source_audio), "seed": _resolve_seed(seed)[0]}
         dur = _audio_duration_seconds(req["audio"])
         dur_note = f"{dur:.1f}s" if dur is not None else "未知"
         _ui_log(f"源音频分析开始：model={model}，音频 {dur_note}")
@@ -2028,7 +2061,9 @@ def do_vc(model, source_audio, target_upload, builtin_voice, seed,
         options = _merged_options(prof, adv_values, adv_options)
 
         source_audio = _ensure_wav(source_audio)
-        req = {"seed": int(seed)}
+        # 同一 seed 用于所有分段，保证各段结果一致可复现。
+        seed, seed_note = _resolve_seed(seed)
+        req = {"seed": seed}
         voice_path = target_upload or (
             os.path.join(PROMPTS_DIR, builtin_voice)
             if builtin_voice and builtin_voice != "(none)" else None)
@@ -2083,7 +2118,7 @@ def do_vc(model, source_audio, target_upload, builtin_voice, seed,
         elapsed = time.time() - t_start
         _ui_log(f"声音转换完成：{out}，用时 {elapsed:.1f}s")
         parts_note = f"（{len(blobs)} 段拼接）" if len(blobs) > 1 else ""
-        return out, f"✅ 转换完成{parts_note}，用时 {elapsed:.1f}s。"
+        return out, f"✅ 转换完成{parts_note}，用时 {elapsed:.1f}s。{seed_note}"
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
@@ -2244,8 +2279,9 @@ def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
 
+        seed, seed_note = _resolve_seed(seed)
         payload = {"model": model, "input": text, "instructions": instruct,
-                   "seed": int(seed), "max_tokens": int(max_tokens)}
+                   "seed": seed, "max_tokens": int(max_tokens)}
         if options:
             payload["options"] = options
         _ui_log(f"声音设计开始：model={model}，{len(text)} 字")
@@ -2263,7 +2299,7 @@ def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
             f.write(r.content)
         elapsed = time.time() - t_start
         _ui_log(f"声音设计完成：{out}，用时 {elapsed:.1f}s")
-        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。"
+        return out, f"✅ 生成完成，用时 {elapsed:.1f}s。{seed_note}"
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
@@ -2319,6 +2355,72 @@ CUSTOM_CSS = """
 .waveform-container, #waveform { height: auto !important; min-height: 58px; }
 
 .hint-small { opacity: 0.7; font-size: 0.85em; margin-top: 2px; }
+
+/* 内置参考音色行：Row 本身透明，会在按钮一列露出 gr.Group 的灰色面板底，
+   和 secondary 按钮的灰底连成一片。把整行铺成和下拉 block 相同的白色卡片，
+   按钮（灰底）落在卡片内自然形成对比；flex-end + margin 让按钮和下拉输入框
+   本体底部对齐（下拉 block 自带 --block-padding 内边距）。 */
+.voice-refresh-row {
+  align-items: flex-end !important;
+  background: var(--block-background-fill, #fff);
+  border-radius: var(--block-radius, 8px);
+}
+.voice-refresh-row button {
+  height: var(--size-10, 40px);
+  /* 字面量，不能用 var(--block-padding)：该主题变量是双值 "10px 12px"，
+     代入 margin 简写会让整条声明非法被丢弃。11px = block 下内边距 10px + 边框，
+     让按钮和下拉输入框本体上下沿精确对齐。 */
+  margin: 0 12px 11px 0;
+  border-radius: var(--radius-lg) !important;
+}
+"""
+
+# Gradio 的 Audio 播放器（WaveSurfer）换音频时复用同一实例，旧的播放进度会
+# 原样带到新音频上（生成完成后进度条停在上一次的位置）。value=None 清空也挡
+# 不住。修法：每个播放器宿主挂一次 loadedmetadata（每次换源触发、用户 seek
+# 不触发），换源后开一个 ~3s 守护窗，暂停状态下把 shadow DOM 里 wavesurfer 的
+# <audio>.currentTime 清回 0；窗口内用户 pointerdown（捕获阶段，躲开内部
+# stopPropagation）立即取消守护，不干扰手动 seek/播放。
+_RESET_AUDIO_SEEK_JS = """
+() => {
+  if (window.__audiocppSeekReset) return;
+  window.__audiocppSeekReset = true;
+  const seen = new WeakSet();
+  const arm = (host) => {
+    if (seen.has(host)) return;
+    seen.add(host);
+    const attach = () => {
+      const a = host.shadowRoot && host.shadowRoot.querySelector('audio');
+      if (!a) { setTimeout(attach, 250); return; }
+      const guard = () => {
+        let tries = 0, cancelled = false;
+        const cancel = () => { cancelled = true; };
+        host.addEventListener('pointerdown', cancel, { once: true, capture: true });
+        const tick = () => {
+          if (cancelled) return;
+          if (a.paused && a.currentTime > 0.05) { try { a.currentTime = 0; } catch (e) {} }
+          if (++tries < 12) setTimeout(tick, 250);
+          else host.removeEventListener('pointerdown', cancel, { capture: true });
+        };
+        setTimeout(tick, 100);
+      };
+      a.addEventListener('loadedmetadata', guard);
+      if (a.readyState >= 1) guard();
+    };
+    attach();
+  };
+  const scan = (root) => root.querySelectorAll('#waveform > div').forEach(arm);
+  new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.matches && n.matches('#waveform > div')) arm(n);
+        else if (n.querySelectorAll) scan(n);
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+  scan(document);
+}
 """
 
 
@@ -2405,15 +2507,19 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
                 with gr.Group():
                     gr.Markdown("#### 🎧 参考音频（声音克隆）")
-                    tts_builtin = gr.Dropdown(
-                        label="内置参考音色",
-                        choices=["(none)"] + builtin_voices(), value="(none)")
+                    with gr.Row(elem_classes="voice-refresh-row"):
+                        tts_builtin = gr.Dropdown(
+                            label="内置参考音色",
+                            choices=["(none)"] + builtin_voices(),
+                            value="(none)", scale=8)
+                        tts_voice_refresh = gr.Button(
+                            "🔄", scale=1, min_width=48)
                     tts_upload = gr.Audio(
                         label="上传/录制参考音色（可选）", type="filepath",
                         elem_classes="audio-default")
                     tts_ref_text = gr.Textbox(
-                        label="参考文本 (克隆时填参考音频里说的内容，越准越好)", lines=2,
-                        value="okay, I'm Cemo and what you just heard wasn't a human voice.")
+                        label="参考文本", lines=2,
+                        placeholder="参考音频里说的原话（克隆时建议填写，越准越好）")
 
                 # 切换模型后的提示，显示在参考音频整块下面
                 tts_hint = gr.Markdown(model_hint_for(tts_model.value))
@@ -2423,13 +2529,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 with gr.Group():
                     gr.Markdown("#### ⚙️ 合成设置")
                     with gr.Row():
-                        tts_seed = gr.Number(label="seed", value=1234, precision=0)
+                        tts_seed = gr.Number(label="seed（-1=随机）", value=1234, precision=0)
                         tts_maxtok = gr.Number(label="max_tokens", value=1200, precision=0)
                     tts_adv_state = gr.State({})
-                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                    with gr.Accordion("高级参数（只发送改动过的项）", open=False):
                         _render_param_controls(tts_model, tts_adv_state)
 
-                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                    with gr.Accordion("其它参数（JSON，覆盖控件）", open=False):
                         tts_adv = gr.Textbox(
                             label="",
                             placeholder='{"num_inference_steps": 10, "voice_samples": "D:/a.wav,D:/b.wav"}',
@@ -2441,7 +2547,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         label="要合成的文字", lines=5,
                         value="Hello, this is audio dot cpp speaking from a web page.")
                     tts_lang = gr.Dropdown(
-                        label="语言 (Auto=自动 / 留空=用模型默认)", choices=LANGS,
+                        label="语言（留空=模型默认）", choices=LANGS,
                         value="chinese")
 
                 tts_btn = gr.Button("🎵 生成语音", variant="primary", size="lg")
@@ -2455,6 +2561,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         tts_model.change(lambda: {}, None, tts_adv_state)  # reset knobs on model switch
         tts_builtin.change(on_builtin_voice_change, tts_builtin,
                            [tts_upload, tts_ref_text])
+        tts_voice_refresh.click(refresh_builtin_voices, tts_builtin,
+                                [tts_builtin, tts_upload, tts_ref_text])
         # Clear the previous run's audio + status message the moment 生成 is
         # clicked, so a prior message doesn't linger next to the new run's
         # progress indicator (outputs otherwise update only when do_tts returns).
@@ -2476,19 +2584,17 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Markdown("#### 🎤 音频输入")
                     asr_audio = gr.Audio(label="上传/录制音频", type="filepath",
                                          elem_classes="audio-default")
-                with gr.Accordion("🎛 转写选项（可选，留空 = 默认行为）", open=False):
+                with gr.Accordion("🎛 转写选项（可选）", open=False):
                     asr_language = gr.Dropdown(
-                        label="强制语种（仅 Qwen3-ASR；留空 = 自动检测）",
+                        label="强制语种（留空=自动检测）",
                         choices=[("自动检测", "")] +
                                 [(f"{zh} {en}", en) for zh, en in QWEN3_ASR_LANGUAGES],
                         value="")
                     asr_context = gr.Textbox(
-                        label="上下文提示（仅 Qwen3-ASR）", lines=2,
-                        placeholder="人名/术语/背景描述等，帮助模型认出专有名词，"
-                                    "例如：会议讨论 ggml 量化，参会人：张伟、李娜")
+                        label="上下文提示", lines=2,
+                        placeholder="人名/术语等，帮助识别专有名词")
                     asr_dialogue = gr.Checkbox(
-                        label="🗣 对话模式(限120s)：先说话人分离（Sortformer，≤4 人），"
-                              "再逐段转写成带说话人和时间戳的对话稿")
+                        label="🗣 对话模式（≤120s，需 Sortformer）：输出带说话人和时间戳的对话稿")
                 asr_hint = gr.Markdown(model_hint_for(asr_model.value))
                 asr_btn = gr.Button("📝 开始转写", variant="primary", size="lg")
 
@@ -2516,10 +2622,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 with gr.Group():
                     gr.Markdown("#### 🎧 源音频（可选，仅编辑类用法）")
                     gen_audio = gr.Audio(
-                        label="上传源音频（ACE-Step cover/repaint 等、Stable Audio init/inpaint 用）",
+                        label="上传源音频（编辑类 route 用）",
                         type="filepath", elem_classes="audio-default")
                     gen_ana_btn = gr.Button(
-                        "🔍 分析源音频（ACE-Step：反推描述/歌词/BPM/调性，自动填高级参数）")
+                        "🔍 分析源音频（自动填入描述/歌词/BPM/调性）")
                     gen_ana_msg = gr.Markdown("")
 
                 gen_hint = gr.Markdown(model_hint_for(gen_model.value))
@@ -2530,15 +2636,15 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Markdown("#### ⚙️ 生成设置")
                     with gr.Row():
                         gen_duration = gr.Number(
-                            label="时长(秒)（ACE-Step 可填 -1 自动）", value=30, precision=1)
-                        gen_seed = gr.Number(label="seed", value=1234, precision=0)
+                            label="时长(秒)，-1=自动", value=30, precision=1)
+                        gen_seed = gr.Number(label="seed（-1=随机）", value=1234, precision=0)
                     gen_adv_state = gr.State({})
                     gen_prefill = gr.State({})   # 『🔍 分析源音频』回填 -> 触发控件重渲染
-                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                    with gr.Accordion("高级参数（只发送改动过的项）", open=False):
                         _render_param_controls(gen_model, gen_adv_state,
                                                prefill_comp=gen_prefill)
 
-                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                    with gr.Accordion("其它参数（JSON，覆盖控件）", open=False):
                         gen_adv = gr.Textbox(
                             label="",
                             placeholder='{"tags": "pop,bright,drums", "num_inference_steps": 8}',
@@ -2547,10 +2653,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 with gr.Group():
                     gr.Markdown("#### ✍️ 提示词与歌词")
                     gen_text = gr.Textbox(
-                        label="提示词（风格/乐器/情绪，英文效果最好）", lines=3,
+                        label="提示词（英文效果最好）", lines=3,
                         value="uplifting pop with bright synths and driving drums")
                     gen_lyrics = gr.Textbox(
-                        label="歌词（可选；ACE-Step / HeartMuLa 用）", lines=4)
+                        label="歌词（可选）", lines=4)
 
                 gen_btn = gr.Button("🎵 生成音乐", variant="primary", size="lg")
                 with gr.Group():
@@ -2562,7 +2668,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         _wire_model_manager(gen_mm, GEN_TASKS, gen_hint)
         gen_model.change(lambda: ({}, {}, ""), None,
                          [gen_adv_state, gen_prefill, gen_ana_msg])  # 切换模型清空旋钮+分析信息
-        gen_ana_btn.click(lambda: "⏳ 分析中……（首次需先『📥 加载模型』；1 分钟音频约几十秒）",
+        gen_ana_btn.click(lambda: "⏳ 分析中……（需先『📥 加载模型』）",
                           None, gen_ana_msg).then(
             do_music_analyze, [gen_model, gen_audio, gen_seed, gen_adv_state],
             [gen_adv_state, gen_prefill, gen_ana_msg])
@@ -2586,9 +2692,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                          elem_classes="audio-default")
                 with gr.Group():
                     gr.Markdown("#### 🎧 目标音色（转换成谁的声音）")
-                    vc_builtin = gr.Dropdown(
-                        label="内置参考音色",
-                        choices=["(none)"] + builtin_voices(), value="(none)")
+                    with gr.Row(elem_classes="voice-refresh-row"):
+                        vc_builtin = gr.Dropdown(
+                            label="内置参考音色",
+                            choices=["(none)"] + builtin_voices(),
+                            value="(none)", scale=8)
+                        vc_voice_refresh = gr.Button(
+                            "🔄", scale=1, min_width=48)
                     vc_target = gr.Audio(label="上传/录制目标音色", type="filepath",
                                          elem_classes="audio-default")
 
@@ -2598,11 +2708,11 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
             with gr.Column(scale=1):
                 with gr.Group():
                     gr.Markdown("#### ⚙️ 转换设置")
-                    vc_seed = gr.Number(label="seed", value=1234, precision=0)
+                    vc_seed = gr.Number(label="seed（-1=随机）", value=1234, precision=0)
                     vc_adv_state = gr.State({})
-                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                    with gr.Accordion("高级参数（只发送改动过的项）", open=False):
                         _render_param_controls(vc_model, vc_adv_state)
-                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                    with gr.Accordion("其它参数（JSON，覆盖控件）", open=False):
                         vc_adv = gr.Textbox(
                             label="",
                             placeholder='{"route": "style_converted_vc", "style_ref": "D:/style.wav", "target_text": "……"}',
@@ -2618,6 +2728,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         _wire_model_manager(vc_mm, VC_TASKS, vc_hint)
         vc_model.change(lambda: {}, None, vc_adv_state)  # reset knobs on model switch
         vc_builtin.change(lambda n: on_builtin_voice_change(n)[0], vc_builtin, vc_target)
+        vc_voice_refresh.click(lambda n: refresh_builtin_voices(n)[:2],
+                               vc_builtin, [vc_builtin, vc_target])
         vc_btn.click(lambda: (None, ""), None, [vc_out, vc_msg]).then(
             do_vc,
             [vc_model, vc_source, vc_target, vc_builtin, vc_seed,
@@ -2670,13 +2782,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     ana_audio = gr.Audio(label="上传/录制音频", type="filepath",
                                          elem_classes="audio-default")
                     gr.Markdown(
-                        "*WAV 输入会自动转成 16 kHz 单声道后送模型，结果时间轴也按 16 kHz 换算。*",
+                        "*输入自动转 16 kHz 单声道。*",
                         elem_classes="hint-small")
                     _ana_is_align = bool(
                         ana_model.value and
                         (catalog_by_id(ana_model.value) or {}).get("task") == "align")
                     ana_text = gr.Textbox(
-                        label="对齐文本（align 模型必填：音频中说的原文）", lines=3,
+                        label="对齐文本（align 必填：音频原文）", lines=3,
                         visible=_ana_is_align)
                     ana_lang = gr.Textbox(
                         label="语言（可选，如 English / Chinese）",
@@ -2711,13 +2823,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 with gr.Group():
                     gr.Markdown("#### ⚙️ 生成设置")
                     with gr.Row():
-                        vdes_seed = gr.Number(label="seed", value=1234, precision=0)
+                        vdes_seed = gr.Number(label="seed（-1=随机）", value=1234, precision=0)
                         vdes_maxtok = gr.Number(label="max_tokens", value=1200, precision=0)
                     vdes_adv_state = gr.State({})
-                    with gr.Accordion("高级参数（按所选模型自动生成，只发送改动过的项）", open=False):
+                    with gr.Accordion("高级参数（只发送改动过的项）", open=False):
                         # instruct 有专用的『音色描述』输入框，这里不重复生成
                         _render_param_controls(vdes_model, vdes_adv_state, skip=("instruct",))
-                    with gr.Accordion("其它参数（可选，JSON；覆盖上面控件）", open=False):
+                    with gr.Accordion("其它参数（JSON，覆盖控件）", open=False):
                         vdes_adv = gr.Textbox(label="", placeholder='{"temperature": 0.9}',
                                               lines=3)
                 vdes_hint = gr.Markdown(model_hint_for(vdes_model.value))
@@ -2768,9 +2880,15 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
     ]
     for _mm in (tts_mm, asr_mm, gen_mm, vc_mm, sep_mm, ana_mm, vdes_mm):
         _mm["refresh_btn"].click(refresh, None, _refresh_outputs)
+    # 顶部状态行在建界面时只求值一次，浏览器刷新会看到那份静态初值（即使模型
+    # 已加载也显示“server 未运行”）。server 本身就是状态的唯一真相源
+    # （/health + /v1/models），每次页面加载重新探测即可，无需额外状态文件。
+    demo.load(server_status, None, status)
+    # 音频播放器换源后把旧播放进度清回 0:00（见 _RESET_AUDIO_SEEK_JS 注释）。
+    demo.load(None, None, None, js=_RESET_AUDIO_SEEK_JS)
     gr.Markdown(
         "---\n<center><small>audio.cpp WebUI · 按需加载，同一时刻只驻留一个模型 · "
-        "模型下载在后台进行，进度会自动刷新，也可随时点击「下载进度」手动刷新</small></center>")
+        "详细说明见 webui/README.md</small></center>")
 
 
 if __name__ == "__main__":
