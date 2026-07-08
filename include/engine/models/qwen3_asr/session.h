@@ -11,7 +11,18 @@
 #include "engine/models/qwen3_asr/tokenizer_text.h"
 
 #include <cstddef>
+#include <filesystem>
 #include <memory>
+#include <optional>
+#include <vector>
+
+namespace engine::models::qwen3_forced_aligner {
+class Qwen3ForcedAlignerSession;
+}
+
+namespace engine::runtime {
+class ILoadedVoiceModel;
+}
 
 namespace engine::models::qwen3_asr {
 
@@ -23,6 +34,7 @@ public:
         runtime::TaskSpec task,
         runtime::SessionOptions options,
         std::shared_ptr<const Qwen3ASRAssets> assets);
+    ~Qwen3ASRSession() override;
 
     std::string family() const override;
     runtime::VoiceTaskKind task_kind() const override;
@@ -31,7 +43,15 @@ public:
     runtime::TaskResult run(const runtime::TaskRequest & request) override;
 
 private:
+    struct AudioChunkPlan {
+        runtime::TimeSpan source_span;
+        runtime::TimeSpan keep_span;
+    };
+
     Qwen3ASRRequest make_request(const runtime::TaskRequest & request) const;
+    std::vector<AudioChunkPlan> audio_chunk_plan(const runtime::TaskRequest & request);
+    runtime::IOfflineVoiceTaskSession & vad_session();
+    runtime::TaskResult run_single(const Qwen3ASRRequest & request);
 
     runtime::TaskSpec task_;
     std::shared_ptr<const Qwen3ASRAssets> assets_;
@@ -47,6 +67,10 @@ private:
     Qwen3ASRThinkerRuntime thinker_;
     Qwen3ASRPromptBuilder prompt_builder_;
     Qwen3ASRPostprocessor postprocessor_;
+    std::unique_ptr<engine::models::qwen3_forced_aligner::Qwen3ForcedAlignerSession> forced_aligner_session_;
+    std::filesystem::path vad_model_path_;
+    std::unique_ptr<runtime::ILoadedVoiceModel> vad_model_;
+    std::unique_ptr<runtime::IOfflineVoiceTaskSession> vad_session_;
 };
 
 }  // namespace engine::models::qwen3_asr

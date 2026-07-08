@@ -209,6 +209,9 @@ engine::runtime::TaskRequest build_request_from_json(
     set_option_from_json_field(request.options, value, "guidance_scale", "guidance_scale");
     set_option_from_json_field(request.options, value, "num_inference_steps", "num_inference_steps");
     set_option_from_json_field(request.options, value, "text_chunk_size", "text_chunk_size");
+    set_option_from_json_field(request.options, value, "audio_chunk_seconds", "audio_chunk_seconds");
+    set_option_from_json_field(request.options, value, "audio_chunk_mode", "audio_chunk_mode");
+    set_option_from_json_field(request.options, value, "return_timestamps", "return_timestamps");
     set_option_from_json_field(request.options, value, "use_prosody_code", "use_prosody_code");
     set_option_from_json_field(request.options, value, "predict_target_prosody", "predict_target_prosody");
     set_option_from_json_field(request.options, value, "use_pitch_shift", "use_pitch_shift");
@@ -319,6 +322,8 @@ engine::runtime::TaskRequest build_request_from_cli(int argc, char ** argv) {
     set_option_from_arg(argc, argv, "--guidance-scale", "guidance_scale", request.options);
     set_option_from_arg(argc, argv, "--num-inference-steps", "num_inference_steps", request.options);
     set_option_from_arg(argc, argv, "--text-chunk-size", "text_chunk_size", request.options);
+    set_option_from_arg(argc, argv, "--audio-chunk-seconds", "audio_chunk_seconds", request.options);
+    set_option_from_arg(argc, argv, "--audio-chunk-mode", "audio_chunk_mode", request.options);
     set_option_from_arg(argc, argv, "--use-prosody-code", "use_prosody_code", request.options);
     set_option_from_arg(argc, argv, "--predict-target-prosody", "predict_target_prosody", request.options);
     set_option_from_arg(argc, argv, "--use-pitch-shift", "use_pitch_shift", request.options);

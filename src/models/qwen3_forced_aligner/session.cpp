@@ -1,5 +1,6 @@
 #include "engine/models/qwen3_forced_aligner/session.h"
 
+#include "engine/framework/audio/chunking.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/runtime/options.h"
 
@@ -151,6 +152,17 @@ void Qwen3ForcedAlignerSession::prepare(const runtime::SessionPreparationRequest
 
 runtime::TaskResult Qwen3ForcedAlignerSession::run(const runtime::TaskRequest & request) {
     require_prepared("Qwen3 forced aligner run()");
+    const auto mode = engine::audio::parse_audio_chunk_mode(request.options);
+    if (mode == engine::audio::AudioChunkMode::Fixed ||
+        mode == engine::audio::AudioChunkMode::Vad) {
+        throw std::runtime_error(
+            "Qwen3 forced aligner does not support standalone audio chunking; "
+            "chunk audio before ASR so each aligner request receives matching audio and transcript");
+    }
+    return run_single(request);
+}
+
+runtime::TaskResult Qwen3ForcedAlignerSession::run_single(const runtime::TaskRequest & request) {
     if (!request.audio_input.has_value()) {
         throw std::runtime_error("Qwen3 forced aligner run() requires audio_input");
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/framework/assets/tensor_source.h"
+#include "engine/framework/runtime/cache_slots.h"
 #include "engine/framework/runtime/session_base.h"
 #include "engine/models/pocket_tts/acoustic_model.h"
 #include "engine/models/pocket_tts/audio_decoder.h"
@@ -9,8 +10,8 @@
 #include "engine/models/pocket_tts/voice_conditioner.h"
 
 #include <cstddef>
-#include <map>
 #include <memory>
+#include <string>
 
 namespace engine::models::pocket_tts {
 
@@ -83,7 +84,7 @@ private:
     VoiceConditioner voice_conditioner_;
     AcousticModel acoustic_model_;
     AudioDecoder audio_decoder_;
-    std::map<std::string, FlowLMState> cached_voice_states_;
+    runtime::CacheSlots<std::string, FlowLMState> cached_voice_states_;
     GenerationRequest prepared_session_request_;
     runtime::GraphCapacityController prompt_capacity_controller_;
     runtime::GraphCapacityController generation_capacity_controller_;

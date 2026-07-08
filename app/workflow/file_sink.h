@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace minitts::app {
 
@@ -19,6 +20,7 @@ struct FileOutputPolicy {
 };
 
 std::string safe_output_name(const std::string & value);
+std::string word_timestamps_to_json(const std::vector<engine::runtime::WordTimestamp> & words);
 void emit_task_result(
     const engine::runtime::TaskResult & result,
     const std::optional<std::filesystem::path> & audio_out,

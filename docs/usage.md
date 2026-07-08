@@ -31,8 +31,11 @@ audiocpp_cli --task <task> --family <family> --model <model-dir> --backend <back
 | `--out` | audio-producing models | Output WAV path. |
 | `--out-dir` | multi-output or batch models | Output directory. |
 | `--segments-out` | VAD | Speech segments JSON. |
+| `--vad-chunks-out` | offline VAD | VAD-based audio chunk windows JSON. |
 | `--turns-out` | diarization | Speaker turns JSON. |
 | `--words-out` | ASR/alignment | Word timestamps JSON. |
+| `--audio-chunk-seconds` | ASR | Split long audio before model inference, where supported. |
+| `--audio-chunk-mode` | ASR/alignment | `auto`, `fixed`, `vad`, or `none`, where supported. |
 
 ## Common Generation Options
 
@@ -50,7 +53,7 @@ Omit these unless you need explicit control. If `--seed` is omitted, models that
 | `--do-sample` | `true`, `false` | Enable sampling instead of greedy decode. |
 | `--guidance-scale` | float | Classifier-free guidance scale. |
 | `--num-inference-steps` | integer | Diffusion/flow denoising steps. |
-| `--text-chunk-size` | integer chars | Split long TTS text into chunks. Non-TTS models do not use text chunking. |
+| `--text-chunk-size` | integer chars | Split long text where supported, including TTS text. |
 
 ## Batch Inputs
 

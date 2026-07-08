@@ -11,6 +11,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -25,6 +26,7 @@ constexpr int64_t kCpuPromptCapacityFloor = 32;
 constexpr int64_t kCpuGenerationCapacityFloor = 160;
 constexpr int64_t kGenerationCapacityQuantum = 16;
 constexpr int64_t kDefaultTextChunkSize = 256;
+constexpr int64_t kDefaultVoiceStateCacheSlots = 4;
 
 int64_t next_power_of_two(int64_t value) {
     if (value <= 0) {
@@ -381,6 +383,20 @@ std::string voice_state_cache_key(const VoiceConditioningPlan & plan) {
     throw std::runtime_error("PocketTTS voice state cache key received unknown voice source");
 }
 
+std::size_t resolve_voice_state_cache_slots(const runtime::SessionOptions & options) {
+    const int64_t slots = runtime::parse_i64_option(
+        options.options,
+        {"pocket_tts.voice_state_cache_slots", "voice_state_cache_slots"})
+        .value_or(kDefaultVoiceStateCacheSlots);
+    if (slots < 0) {
+        throw std::runtime_error("pocket_tts.voice_state_cache_slots must be non-negative");
+    }
+    if (static_cast<std::uint64_t>(slots) > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error("pocket_tts.voice_state_cache_slots is too large");
+    }
+    return static_cast<std::size_t>(slots);
+}
+
 std::vector<float> load_noise_schedule_file(
     const std::filesystem::path & path,
     int64_t latent_size) {
@@ -446,6 +462,7 @@ PocketTTSSession::PocketTTSSession(
       voice_conditioner_(make_flow_config(*manifest_)),
       acoustic_model_(make_flow_config(*manifest_)),
       audio_decoder_(make_decoder_config(*manifest_)),
+      cached_voice_states_(resolve_voice_state_cache_slots(this->options())),
       prompt_capacity_controller_(graph_capacity_.prompt_mode),
       generation_capacity_controller_(graph_capacity_.generation_mode) {
     if (task_.task != runtime::VoiceTaskKind::Tts) {
@@ -494,21 +511,41 @@ FlowLMState PocketTTSSession::resolve_prepared_voice_state(const VoiceConditioni
     }
     const auto & manifest = *manifest_;
     const std::string voice_key = voice_state_cache_key(plan);
-    auto cached = cached_voice_states_.find(voice_key);
-    if (cached == cached_voice_states_.end()) {
-        const auto prepared =
-            voice_conditioner_.prepare(
-                plan,
-                manifest,
-                *weights_,
-                execution_context().backend(),
-                options().backend.threads,
-                graph_capacity_.mimi_encoder_graph_context_bytes,
-                graph_capacity_.flow_weights_view_context_bytes,
-                graph_capacity_.flow_step_graph_context_bytes);
-        cached = cached_voice_states_.emplace(voice_key, prepared.acoustic_state).first;
+    if (const auto * cached = cached_voice_states_.find(voice_key)) {
+        engine::debug::trace_log_scalar("pocket_tts.voice_state.cache_hit", 1);
+        engine::debug::trace_log_scalar(
+            "pocket_tts.voice_state.cache_slots",
+            static_cast<int64_t>(cached_voice_states_.capacity()));
+        engine::debug::trace_log_scalar(
+            "pocket_tts.voice_state.cache_entries",
+            static_cast<int64_t>(cached_voice_states_.size()));
+        engine::debug::trace_log_scalar("pocket_tts.voice_state.cache_evicted", 0);
+        return *cached;
     }
-    return cached->second;
+    const bool will_evict =
+        cached_voice_states_.capacity() > 0 &&
+        cached_voice_states_.size() >= cached_voice_states_.capacity();
+    const auto prepared =
+        voice_conditioner_.prepare(
+            plan,
+            manifest,
+            *weights_,
+            execution_context().backend(),
+            options().backend.threads,
+            graph_capacity_.mimi_encoder_graph_context_bytes,
+            graph_capacity_.flow_weights_view_context_bytes,
+            graph_capacity_.flow_step_graph_context_bytes);
+    FlowLMState acoustic_state = prepared.acoustic_state;
+    cached_voice_states_.put(voice_key, std::move(acoustic_state));
+    engine::debug::trace_log_scalar("pocket_tts.voice_state.cache_hit", 0);
+    engine::debug::trace_log_scalar(
+        "pocket_tts.voice_state.cache_slots",
+        static_cast<int64_t>(cached_voice_states_.capacity()));
+    engine::debug::trace_log_scalar(
+        "pocket_tts.voice_state.cache_entries",
+        static_cast<int64_t>(cached_voice_states_.size()));
+    engine::debug::trace_log_scalar("pocket_tts.voice_state.cache_evicted", will_evict ? 1 : 0);
+    return prepared.acoustic_state;
 }
 
 PocketTTSGraphCapacityConfig PocketTTSSession::resolve_graph_capacity_config() const {

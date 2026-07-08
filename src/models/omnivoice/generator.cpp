@@ -399,7 +399,24 @@ struct PackedInputs {
     std::array<std::vector<int32_t>, 8> unconditional_audio_ids;
 };
 
-class ForwardGraph {
+class GeneratorForwardGraph {
+public:
+    virtual ~GeneratorForwardGraph() = default;
+    virtual bool matches(const WeightsRuntime & runtime, int64_t total_tokens, int64_t target_frames) const = 0;
+    virtual void rebuild(int64_t total_token_capacity, int64_t target_frame_capacity) = 0;
+    virtual void prepare_request(const PackedInputs & inputs) = 0;
+    virtual void set_guidance_scale(float value) noexcept = 0;
+    virtual void update_generated_target_tokens(const PackedInputs & inputs) = 0;
+    virtual const std::vector<float> & compute_logits(double & compute_ms, double & readback_ms) = 0;
+    virtual int64_t total_token_capacity() const noexcept = 0;
+    virtual int64_t target_frame_capacity() const noexcept = 0;
+    virtual double rebuild_clear_ms() const noexcept = 0;
+    virtual double rebuild_build_ms() const noexcept = 0;
+    virtual double rebuild_alloc_ms() const noexcept = 0;
+    virtual double rebuild_init_ms() const noexcept = 0;
+};
+
+class ForwardGraph final : public GeneratorForwardGraph {
 public:
     ForwardGraph(
         std::shared_ptr<WeightsRuntime> runtime,
@@ -413,24 +430,18 @@ public:
 
     ~ForwardGraph() {
         clear_graph();
-        for (auto & buffer : buffers_) {
-            if (buffer != nullptr) {
-                ggml_backend_buffer_free(buffer);
-                buffer = nullptr;
-            }
-        }
     }
 
     bool matches(
         const WeightsRuntime & runtime,
         int64_t total_tokens,
-        int64_t target_frames) const {
+        int64_t target_frames) const override {
         return runtime_.get() == &runtime &&
             total_tokens_capacity_ >= total_tokens &&
             target_frame_capacity_ >= target_frames;
     }
 
-    void rebuild(int64_t total_token_capacity, int64_t target_frame_capacity) {
+    void rebuild(int64_t total_token_capacity, int64_t target_frame_capacity) override {
         if (total_token_capacity <= 0 || target_frame_capacity <= 0) {
             throw std::runtime_error("OmniVoice generator total token capacity is invalid");
         }
@@ -442,6 +453,11 @@ public:
         target_frame_capacity_ = target_frame_capacity;
 
         const auto build_start = Clock::now();
+        ggml_init_params input_params{16ull * 1024ull * 1024ull, nullptr, true};
+        input_ctx_.reset(ggml_init(input_params));
+        if (input_ctx_ == nullptr) {
+            throw std::runtime_error("failed to initialize OmniVoice generator input context");
+        }
         ggml_init_params params{graph_arena_bytes_, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
@@ -451,48 +467,52 @@ public:
         const auto & config = runtime_->assets().config;
         const auto & weights = runtime_->weights();
         core::ModuleBuildContext ctx{ctx_.get(), "omnivoice.generator.forward", runtime_->backend_type()};
+        core::ModuleBuildContext input_ctx{
+            input_ctx_.get(),
+            "omnivoice.generator.forward.inputs",
+            runtime_->backend_type()};
 
         std::array<core::TensorValue, 8> audio_id_values = {};
 
         auto text_ids =
-            core::make_tensor(ctx, GGML_TYPE_I32, core::TensorShape::from_dims({2, total_tokens_capacity_}));
+            core::make_tensor(input_ctx, GGML_TYPE_I32, core::TensorShape::from_dims({2, total_tokens_capacity_}));
         text_ids_ = text_ids.tensor;
         ggml_set_input(text_ids_);
         for (int64_t codebook = 0; codebook < config.num_audio_codebook; ++codebook) {
             auto audio_ids =
-                core::make_tensor(ctx, GGML_TYPE_I32, core::TensorShape::from_dims({2, total_tokens_capacity_}));
+                core::make_tensor(input_ctx, GGML_TYPE_I32, core::TensorShape::from_dims({2, total_tokens_capacity_}));
             audio_ids_[static_cast<size_t>(codebook)] = audio_ids.tensor;
             ggml_set_input(audio_ids_[static_cast<size_t>(codebook)]);
             audio_id_values[static_cast<size_t>(codebook)] = audio_ids;
         }
         audio_mask_value_ =
-            core::make_tensor(ctx, GGML_TYPE_F32, core::TensorShape::from_dims({2, total_tokens_capacity_, 1}));
+            core::make_tensor(input_ctx, GGML_TYPE_F32, core::TensorShape::from_dims({2, total_tokens_capacity_, 1}));
         auto audio_mask = audio_mask_value_;
         text_mask_value_ =
-            core::make_tensor(ctx, GGML_TYPE_F32, core::TensorShape::from_dims({2, total_tokens_capacity_, 1}));
+            core::make_tensor(input_ctx, GGML_TYPE_F32, core::TensorShape::from_dims({2, total_tokens_capacity_, 1}));
         auto text_mask = text_mask_value_;
         audio_mask_ = audio_mask.tensor;
         text_mask_ = text_mask.tensor;
         ggml_set_input(audio_mask_);
         ggml_set_input(text_mask_);
         positions_ =
-            core::make_tensor(ctx, GGML_TYPE_I32, core::TensorShape::from_dims({total_tokens_capacity_})).tensor;
+            core::make_tensor(input_ctx, GGML_TYPE_I32, core::TensorShape::from_dims({total_tokens_capacity_})).tensor;
         ggml_set_input(positions_);
         auto positions =
             core::wrap_tensor(positions_, core::TensorShape::from_dims({total_tokens_capacity_}), GGML_TYPE_I32);
         conditional_target_indices_ =
-            core::make_tensor(ctx, GGML_TYPE_I32, core::TensorShape::from_dims({target_frame_capacity_})).tensor;
+            core::make_tensor(input_ctx, GGML_TYPE_I32, core::TensorShape::from_dims({target_frame_capacity_})).tensor;
         ggml_set_input(conditional_target_indices_);
         unconditional_target_indices_ =
-            core::make_tensor(ctx, GGML_TYPE_I32, core::TensorShape::from_dims({target_frame_capacity_})).tensor;
+            core::make_tensor(input_ctx, GGML_TYPE_I32, core::TensorShape::from_dims({target_frame_capacity_})).tensor;
         ggml_set_input(unconditional_target_indices_);
         auto attention_mask =
             core::make_tensor(
-                ctx,
+                input_ctx,
                 GGML_TYPE_F32,
                 core::TensorShape::from_dims({2, 1, total_tokens_capacity_, total_tokens_capacity_}));
         attention_mask_ = attention_mask.tensor;
-        guidance_scale_ = core::make_tensor(ctx, GGML_TYPE_F32, core::TensorShape::from_dims({1})).tensor;
+        guidance_scale_ = core::make_tensor(input_ctx, GGML_TYPE_F32, core::TensorShape::from_dims({1})).tensor;
         ggml_set_input(attention_mask_);
         ggml_set_input(guidance_scale_);
 
@@ -567,7 +587,16 @@ public:
         rebuild_build_ms_ = engine::debug::elapsed_ms(build_start, build_end);
 
         const auto alloc_start = Clock::now();
-        allocate_graph_tensors();
+        input_buffer_ = ggml_backend_alloc_ctx_tensors(input_ctx_.get(), runtime_->backend());
+        if (input_buffer_ == nullptr) {
+            throw std::runtime_error("failed to allocate OmniVoice generator input buffer");
+        }
+        gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(runtime_->backend()));
+        if (gallocr_ == nullptr ||
+            !ggml_gallocr_reserve(gallocr_, graph_) ||
+            !ggml_gallocr_alloc_graph(gallocr_, graph_)) {
+            throw std::runtime_error("failed to allocate OmniVoice generator graph buffer");
+        }
         const auto alloc_end = Clock::now();
         rebuild_alloc_ms_ = engine::debug::elapsed_ms(alloc_start, alloc_end);
 
@@ -604,7 +633,7 @@ public:
         rebuild_init_ms_ = engine::debug::elapsed_ms(init_start, init_end);
     }
 
-    void prepare_request(const PackedInputs & inputs) {
+    void prepare_request(const PackedInputs & inputs) override {
         const int64_t total_tokens =
             inputs.style_tokens + inputs.text_tokens + inputs.reference_frames + inputs.target_frames;
         if (total_tokens <= 0 ||
@@ -694,11 +723,11 @@ public:
         }
     }
 
-    void set_guidance_scale(float value) noexcept {
+    void set_guidance_scale(float value) noexcept override {
         guidance_scale_host_ = value;
     }
 
-    void update_generated_target_tokens(const PackedInputs & inputs) {
+    void update_generated_target_tokens(const PackedInputs & inputs) override {
         if (current_total_tokens_ <= 0 || current_target_frames_ != inputs.target_frames) {
             throw std::runtime_error("OmniVoice generator target token update requires a prepared request");
         }
@@ -730,7 +759,7 @@ public:
         }
     }
 
-    const std::vector<float> & compute_logits(double & compute_ms, double & readback_ms) {
+    const std::vector<float> & compute_logits(double & compute_ms, double & readback_ms) override {
         if (current_total_tokens_ <= 0 || current_target_frames_ <= 0) {
             throw std::runtime_error("OmniVoice generator compute requires a prepared request");
         }
@@ -758,22 +787,30 @@ public:
         return logits_host_;
     }
 
-    int64_t total_token_capacity() const noexcept {
+    int64_t total_token_capacity() const noexcept override {
         return total_tokens_capacity_;
     }
-    int64_t target_frame_capacity() const noexcept {
+    int64_t target_frame_capacity() const noexcept override {
         return target_frame_capacity_;
     }
-    double rebuild_clear_ms() const noexcept { return rebuild_clear_ms_; }
-    double rebuild_build_ms() const noexcept { return rebuild_build_ms_; }
-    double rebuild_alloc_ms() const noexcept { return rebuild_alloc_ms_; }
-    double rebuild_init_ms() const noexcept { return rebuild_init_ms_; }
+    double rebuild_clear_ms() const noexcept override { return rebuild_clear_ms_; }
+    double rebuild_build_ms() const noexcept override { return rebuild_build_ms_; }
+    double rebuild_alloc_ms() const noexcept override { return rebuild_alloc_ms_; }
+    double rebuild_init_ms() const noexcept override { return rebuild_init_ms_; }
 
 private:
     void clear_graph() {
         if (graph_ != nullptr) {
             engine::core::release_backend_graph_resources(runtime_->backend(), graph_);
             graph_ = nullptr;
+        }
+        if (gallocr_ != nullptr) {
+            ggml_gallocr_free(gallocr_);
+            gallocr_ = nullptr;
+        }
+        if (input_buffer_ != nullptr) {
+            ggml_backend_buffer_free(input_buffer_);
+            input_buffer_ = nullptr;
         }
         logits_ = nullptr;
         guidance_scale_ = nullptr;
@@ -787,6 +824,7 @@ private:
             tensor = nullptr;
         }
         text_ids_ = nullptr;
+        input_ctx_.reset();
         ctx_.reset();
     }
 
@@ -850,91 +888,13 @@ private:
             attention_values_host_.size() * sizeof(float));
     }
 
-    struct TensorRangePlan {
-        ggml_tensor * first = nullptr;
-        ggml_tensor * last = nullptr;
-        size_t bytes = 0;
-    };
-
-    void allocate_graph_tensors() {
-        auto * const buft = ggml_backend_get_default_buffer_type(runtime_->backend());
-        const size_t alignment = ggml_backend_buft_get_alignment(buft);
-        const size_t max_size = ggml_backend_buft_get_max_size(buft);
-        if (alignment == 0 || max_size == 0) {
-            throw std::runtime_error("OmniVoice generator allocator returned invalid backend limits");
-        }
-
-        std::vector<TensorRangePlan> plans;
-        plans.reserve(8);
-
-        size_t current_bytes = 0;
-        ggml_tensor * range_first = ggml_get_first_tensor(ctx_.get());
-        for (ggml_tensor * tensor = range_first; tensor != nullptr; tensor = ggml_get_next_tensor(ctx_.get(), tensor)) {
-            size_t tensor_bytes = 0;
-            if (tensor->data == nullptr && tensor->view_src == nullptr) {
-                tensor_bytes = GGML_PAD(ggml_backend_buft_get_alloc_size(buft, tensor), alignment);
-            }
-
-            if (current_bytes > 0 && (current_bytes + tensor_bytes) > max_size) {
-                plans.push_back({range_first, tensor, current_bytes});
-                range_first = tensor;
-                current_bytes = tensor_bytes;
-            } else {
-                current_bytes += tensor_bytes;
-            }
-        }
-        if (current_bytes > 0) {
-            plans.push_back({range_first, nullptr, current_bytes});
-        }
-        if (plans.empty()) {
-            throw std::runtime_error("OmniVoice generator graph requires non-zero compute buffer");
-        }
-
-        if (buffers_.size() < plans.size()) {
-            buffers_.resize(plans.size(), nullptr);
-        }
-
-        for (size_t i = 0; i < plans.size(); ++i) {
-            auto & buffer = buffers_[i];
-            if (buffer == nullptr || ggml_backend_buffer_get_size(buffer) < plans[i].bytes) {
-                if (buffer != nullptr) {
-                    ggml_backend_buffer_free(buffer);
-                    buffer = nullptr;
-                }
-                buffer = ggml_backend_buft_alloc_buffer(buft, plans[i].bytes);
-                if (buffer == nullptr) {
-                    throw std::runtime_error("failed to allocate OmniVoice generator graph buffer");
-                }
-                ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
-            } else {
-                ggml_backend_buffer_reset(buffer);
-            }
-
-            auto tallocr = ggml_tallocr_new(buffer);
-            for (ggml_tensor * tensor = plans[i].first; tensor != plans[i].last;
-                 tensor = ggml_get_next_tensor(ctx_.get(), tensor)) {
-                enum ggml_status status = GGML_STATUS_SUCCESS;
-                if (tensor->data == nullptr) {
-                    if (tensor->view_src == nullptr) {
-                        status = ggml_tallocr_alloc(&tallocr, tensor);
-                    } else if (tensor->buffer == nullptr) {
-                        status = ggml_backend_view_init(tensor);
-                    }
-                } else if (tensor->view_src != nullptr && tensor->buffer == nullptr) {
-                    status = ggml_backend_view_init(tensor);
-                }
-                if (status != GGML_STATUS_SUCCESS) {
-                    throw std::runtime_error("failed to allocate OmniVoice generator graph tensor");
-                }
-            }
-        }
-    }
-
     std::shared_ptr<WeightsRuntime> runtime_;
     size_t graph_arena_bytes_ = 0;
     int64_t total_tokens_capacity_ = 0;
     int64_t target_frame_capacity_ = 0;
+    std::unique_ptr<ggml_context, GgmlContextDeleter> input_ctx_;
     std::unique_ptr<ggml_context, GgmlContextDeleter> ctx_;
+    ggml_backend_buffer_t input_buffer_ = nullptr;
     ggml_tensor * text_ids_ = nullptr;
     std::array<ggml_tensor *, 8> audio_ids_{};
     core::TensorValue audio_mask_value_;
@@ -948,6 +908,7 @@ private:
     ggml_tensor * guidance_scale_ = nullptr;
     ggml_tensor * logits_ = nullptr;
     ggml_cgraph * graph_ = nullptr;
+    ggml_gallocr_t gallocr_ = nullptr;
     int64_t current_total_tokens_ = 0;
     int64_t current_target_frames_ = 0;
     int64_t current_conditional_target_start_ = 0;
@@ -970,8 +931,9 @@ private:
     double rebuild_build_ms_ = 0.0;
     double rebuild_alloc_ms_ = 0.0;
     double rebuild_init_ms_ = 0.0;
-    std::vector<ggml_backend_buffer_t> buffers_;
 };
+
+#include "generator_layerwise.inc"
 
 std::pair<int32_t, float> argmax_with_value_excluding_mask(const float * values, int64_t count, int64_t mask_id) {
     int32_t best_index = -1;
@@ -1253,7 +1215,8 @@ struct OmniVoiceGeneratorRuntime::Impl {
     std::shared_ptr<const OmniVoiceAssets> assets;
     size_t graph_arena_bytes = 0;
     std::shared_ptr<WeightsRuntime> runtime;
-    std::unique_ptr<ForwardGraph> forward_graph;
+    std::unique_ptr<GeneratorForwardGraph> forward_graph;
+    bool mem_saver = false;
     OmniVoiceGeneratorRuntimeStats last_stats = {};
     std::mt19937 rng{std::random_device{}()};
 };
@@ -1264,7 +1227,8 @@ OmniVoiceGeneratorRuntime::OmniVoiceGeneratorRuntime(
     size_t prefill_graph_arena_bytes,
     size_t decode_graph_arena_bytes,
     size_t weight_context_bytes,
-    assets_ns::TensorStorageType weight_storage_type)
+    assets_ns::TensorStorageType weight_storage_type,
+    bool mem_saver)
     : impl_(std::make_unique<Impl>()) {
     if (assets == nullptr) {
         throw std::runtime_error("OmniVoice generator requires assets");
@@ -1279,6 +1243,7 @@ OmniVoiceGeneratorRuntime::OmniVoiceGeneratorRuntime(
         execution_context,
         weight_context_bytes,
         weight_storage_type);
+    impl_->mem_saver = mem_saver;
 }
 
 OmniVoiceGeneratorRuntime::~OmniVoiceGeneratorRuntime() = default;
@@ -1330,11 +1295,19 @@ OmniVoiceGeneratedAudioTokens OmniVoiceGeneratorRuntime::generate(
     if (needs_rebuild) {
         const auto rebuild_start = Clock::now();
         if (impl_->forward_graph == nullptr) {
-            impl_->forward_graph = std::make_unique<ForwardGraph>(
-                impl_->runtime,
-                impl_->graph_arena_bytes,
-                required_total_tokens,
-                packed.target_frames);
+            if (impl_->mem_saver) {
+                impl_->forward_graph = std::make_unique<LayerwiseForwardGraph>(
+                    impl_->runtime,
+                    impl_->graph_arena_bytes,
+                    required_total_tokens,
+                    packed.target_frames);
+            } else {
+                impl_->forward_graph = std::make_unique<ForwardGraph>(
+                    impl_->runtime,
+                    impl_->graph_arena_bytes,
+                    required_total_tokens,
+                    packed.target_frames);
+            }
         } else {
             impl_->forward_graph->rebuild(required_total_tokens, packed.target_frames);
         }

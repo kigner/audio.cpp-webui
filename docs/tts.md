@@ -207,6 +207,7 @@ audiocpp_cli --task tts --family pocket_tts --model models/pocket-tts --backend 
 | `--voice-id` | packaged voice id | not set | Built-in voice id. |
 | `--voice-ref` | WAV path | not set | Reference speaker audio for cloning. |
 | `--text-chunk-size` | integer chars | `256` | Long-form chunk size. |
+| `--session-option pocket_tts.voice_state_cache_slots=<n>` | integer slots | `4` | Prepared voice-state cache slots; set `0` to disable reuse. |
 
 ## VoxCPM2
 

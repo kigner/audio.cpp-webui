@@ -19,6 +19,7 @@ set(ENGINE_DEFAULT_ENABLE_VULKAN OFF)
 set(ENGINE_DEFAULT_ENABLE_METAL OFF)
 set(ENGINE_DEFAULT_ENABLE_LLAMAFILE ON)
 set(ENGINE_DEFAULT_ENABLE_CUDA_GRAPHS ON)
+set(ENGINE_DEFAULT_ENABLE_NATIVE_CPU ON)
 if (APPLE)
     set(ENGINE_DEFAULT_ENABLE_METAL ON)
 endif()
@@ -43,6 +44,7 @@ option(ENGINE_ENABLE_VULKAN "Build ggml with Vulkan backend support" ${ENGINE_DE
 option(ENGINE_ENABLE_METAL "Build ggml with Metal backend support" ${ENGINE_DEFAULT_ENABLE_METAL})
 option(ENGINE_ENABLE_LLAMAFILE "Build ggml with llamafile SGEMM support" ${ENGINE_DEFAULT_ENABLE_LLAMAFILE})
 option(ENGINE_ENABLE_CUDA_GRAPHS "Enable ggml CUDA graphs support" ${ENGINE_DEFAULT_ENABLE_CUDA_GRAPHS})
+option(ENGINE_ENABLE_NATIVE_CPU "Build ggml CPU kernels with native host ISA flags" ${ENGINE_DEFAULT_ENABLE_NATIVE_CPU})
 option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ON)
 option(ENGINE_BUILD_EXAMPLES "Build example binaries" OFF)
 option(ENGINE_BUILD_TESTS "Build framework unit tests" OFF)
@@ -66,6 +68,7 @@ set(GGML_VULKAN ${ENGINE_ENABLE_VULKAN} CACHE BOOL "Build ggml with Vulkan backe
 set(GGML_METAL ${ENGINE_ENABLE_METAL} CACHE BOOL "Build ggml with Metal backend support" FORCE)
 set(GGML_LLAMAFILE ${ENGINE_ENABLE_LLAMAFILE} CACHE BOOL "Build ggml with llamafile SGEMM support" FORCE)
 set(GGML_CUDA_GRAPHS ${ENGINE_ENABLE_CUDA_GRAPHS} CACHE BOOL "Enable ggml CUDA graphs support" FORCE)
+set(GGML_NATIVE ${ENGINE_ENABLE_NATIVE_CPU} CACHE BOOL "Build ggml CPU kernels with native host ISA flags" FORCE)
 
 set(SPM_ENABLE_SHARED OFF CACHE BOOL "Build sentencepiece shared libs" FORCE)
 set(SPM_BUILD_TEST OFF CACHE BOOL "Do not build sentencepiece tests" FORCE)
@@ -107,6 +110,7 @@ add_library(engine_runtime STATIC
     src/framework/io/json.cpp
     src/framework/io/text.cpp
     src/framework/text/chunking.cpp
+    src/framework/text/subtitle.cpp
     src/framework/io/yaml.cpp
     src/framework/io/binary.cpp
     src/framework/io/safetensors.cpp
@@ -547,6 +551,20 @@ if (ENGINE_BUILD_TESTS)
         COMMAND audio_dsp_test
     )
 
+    add_engine_unittest(audio_chunking_test tests/unittests/test_audio_chunking.cpp)
+
+    add_test(
+        NAME audio_chunking_test
+        COMMAND audio_chunking_test
+    )
+
+    add_engine_unittest(subtitle_formatter_test tests/unittests/test_subtitle_formatter.cpp)
+
+    add_test(
+        NAME subtitle_formatter_test
+        COMMAND subtitle_formatter_test
+    )
+
     add_engine_unittest(rnnoise_utility_test tests/unittests/test_rnnoise_utility.cpp)
     target_compile_definitions(rnnoise_utility_test PRIVATE
         ENGINE_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
@@ -627,6 +645,23 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME server_multipart_test
         COMMAND server_multipart_test
+    )
+
+    add_executable(server_config_test
+        tests/unittests/test_server_config.cpp
+        app/server/config.cpp
+        app/cli/args.cpp
+        app/cli/request.cpp
+    )
+    target_include_directories(server_config_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app/server)
+    target_link_libraries(server_config_test PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(server_config_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+
+    add_test(
+        NAME server_config_test
+        COMMAND server_config_test
     )
 endif()
 

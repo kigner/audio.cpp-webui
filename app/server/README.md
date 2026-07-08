@@ -34,6 +34,14 @@ cat > server.json <<'JSON'
       },
       "session_options": {
         "language": "english"
+      },
+      "default_voice_preset": {
+        "voice_id": "alba"
+      },
+      "voice_presets": {
+        "cosette": {
+          "voice_id": "cosette"
+        }
       }
     },
     {
@@ -56,6 +64,41 @@ Set top-level `"lazy_load": true` to register all configured model ids at startu
 
 > [!WARNING]
 > Lazy loading does not unload models after a request. Once a model is first used, the server keeps that model and session in memory for reuse until the server exits.
+
+For TTS models that need repeated voice-clone context, set a model-level `default_voice_preset` so OpenAI-compatible clients can omit `voice_ref` and `reference_text` on each request:
+
+```json
+{
+  "id": "omnivoice",
+  "family": "omnivoice",
+  "path": "/absolute/path/to/models/OmniVoice",
+  "task": "tts",
+  "mode": "offline",
+  "default_voice_preset": {
+    "voice_ref": "/absolute/path/to/reference.wav",
+    "reference_text": "Reference transcript for the reference audio."
+  }
+}
+```
+
+For multiple server-side presets, use `voice_presets` and optionally point `default_voice_preset` at one of those preset names:
+
+```json
+{
+  "voice_presets": {
+    "assistant": {
+      "voice_ref": "/absolute/path/to/assistant.wav",
+      "reference_text": "Reference transcript for assistant."
+    },
+    "narrator": {
+      "voice_id": "alba"
+    }
+  },
+  "default_voice_preset": "assistant"
+}
+```
+
+When a request sends `"voice": "assistant"`, the server uses that configured preset. When `"voice"` does not match a configured preset, it is passed through as the model-native cached voice id, preserving the previous behavior.
 
 ## Start
 
@@ -90,11 +133,12 @@ curl http://127.0.0.1:8080/v1/audio/speech \
   -d '{
     "model": "pocket-tts",
     "input": "audio.cpp is serving this request through the framework runtime.",
-    "voice_ref": "/path/to/reference.wav",
     "max_tokens": 96,
     "seed": 1234
   }'
 ```
+
+If no request voice is provided and the configured model has `default_voice_preset`, the server injects that preset automatically. Request-level `voice`, `voice_ref`, and `reference_text` override the configured default.
 
 Set `"response_format": "json"` to receive base64 WAV in a JSON response.
 
@@ -124,7 +168,7 @@ curl http://127.0.0.1:8080/v1/audio/transcriptions \
 
 ### `GET /v1/audio/voices?model=<id>`
 
-Lists the cached voice ids available for a TTS model, so a client can populate a voice picker instead of guessing generic names. For families that keep voice presets under `model_root/embeddings/*.safetensors` (`pocket_tts` today), this returns those ids; for other families, or an unknown/missing `model` parameter, it returns an empty list.
+Lists the cached voice ids and configured server voice preset names available for a TTS model, so a client can populate a voice picker instead of guessing generic names. For families that keep voice presets under `model_root/embeddings/*.safetensors` (`pocket_tts` today), this returns those ids too; for other families with no configured presets, or an unknown/missing `model` parameter, it returns an empty list.
 
 ```bash
 curl 'http://127.0.0.1:8080/v1/audio/voices?model=pocket-tts'

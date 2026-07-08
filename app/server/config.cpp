@@ -19,6 +19,29 @@ std::unordered_map<std::string, std::string> options_from_object(const engine::i
     return minitts::cli::json_options_map(value);
 }
 
+ServerModelConfig::VoicePreset parse_voice_preset(
+    const std::filesystem::path & base,
+    const engine::io::json::Value & value,
+    const std::string & context) {
+    if (!value.is_object()) {
+        throw std::runtime_error(context + " must be an object");
+    }
+    ServerModelConfig::VoicePreset preset;
+    if (const auto * voice_id = value.find("voice_id")) {
+        preset.voice_id = voice_id->as_string();
+    }
+    if (const auto * voice_ref = value.find("voice_ref")) {
+        preset.voice_ref = resolve_path(base, voice_ref->as_string());
+    }
+    if (const auto * reference_text = value.find("reference_text")) {
+        preset.reference_text = reference_text->as_string();
+    }
+    if (!preset.voice_id.has_value() && !preset.voice_ref.has_value() && !preset.reference_text.has_value()) {
+        throw std::runtime_error(context + " must set voice_id, voice_ref, or reference_text");
+    }
+    return preset;
+}
+
 }  // namespace
 
 engine::core::BackendType parse_server_backend(const std::string & value) {
@@ -66,6 +89,40 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
         }
         model.load_options = options_from_object(item.find("load_options"));
         model.session_options = options_from_object(item.find("session_options"));
+        if (const auto * voice_presets = item.find("voice_presets")) {
+            if (!voice_presets->is_object()) {
+                throw std::runtime_error("voice_presets for model " + model.id + " must be an object");
+            }
+            for (const auto & [name, preset_value] : voice_presets->as_object()) {
+                if (name.empty()) {
+                    throw std::runtime_error("voice_presets for model " + model.id + " cannot use an empty preset name");
+                }
+                auto [it, inserted] = model.voice_presets.emplace(
+                    name,
+                    parse_voice_preset(base, preset_value, "voice preset " + name + " for model " + model.id));
+                if (!inserted) {
+                    throw std::runtime_error("duplicate voice preset for model " + model.id + ": " + name);
+                }
+                (void) it;
+            }
+        }
+        if (const auto * default_voice_preset = item.find("default_voice_preset")) {
+            if (default_voice_preset->is_string()) {
+                model.default_voice_preset_id = default_voice_preset->as_string();
+                if (model.default_voice_preset_id->empty()) {
+                    throw std::runtime_error("default_voice_preset for model " + model.id + " cannot be empty");
+                }
+                if (model.voice_presets.find(*model.default_voice_preset_id) == model.voice_presets.end()) {
+                    throw std::runtime_error(
+                        "default_voice_preset for model " + model.id +
+                        " does not match a configured voice_presets entry: " +
+                        *model.default_voice_preset_id);
+                }
+            } else {
+                model.default_voice_preset =
+                    parse_voice_preset(base, *default_voice_preset, "default_voice_preset for model " + model.id);
+            }
+        }
         config.models.push_back(std::move(model));
     }
     return config;

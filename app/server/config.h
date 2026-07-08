@@ -11,6 +11,12 @@
 namespace minitts::server {
 
 struct ServerModelConfig {
+    struct VoicePreset {
+        std::optional<std::string> voice_id;
+        std::optional<std::filesystem::path> voice_ref;
+        std::optional<std::string> reference_text;
+    };
+
     std::string id;
     std::filesystem::path path;
     std::string family;
@@ -21,6 +27,9 @@ struct ServerModelConfig {
     std::optional<std::string> weight_id;
     std::unordered_map<std::string, std::string> load_options;
     std::unordered_map<std::string, std::string> session_options;
+    std::unordered_map<std::string, VoicePreset> voice_presets;
+    std::optional<VoicePreset> default_voice_preset;
+    std::optional<std::string> default_voice_preset_id;
 };
 
 struct ServerConfig {

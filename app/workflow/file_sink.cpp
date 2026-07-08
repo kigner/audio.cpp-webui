@@ -59,23 +59,6 @@ std::string speaker_turns_to_json(const std::vector<engine::runtime::SpeakerTurn
     return out.str();
 }
 
-std::string word_timestamps_to_json(const std::vector<engine::runtime::WordTimestamp> & words) {
-    std::ostringstream out;
-    out << "[";
-    for (size_t i = 0; i < words.size(); ++i) {
-        if (i != 0) {
-            out << ",";
-        }
-        out << "{\"start_sample\":" << words[i].span.start_sample
-            << ",\"end_sample\":" << words[i].span.end_sample
-            << ",\"word\":" << quote_json(words[i].word)
-            << ",\"confidence\":" << words[i].confidence
-            << "}";
-    }
-    out << "]";
-    return out.str();
-}
-
 const char * artifact_kind_name(engine::runtime::ArtifactKind kind) {
     switch (kind) {
     case engine::runtime::ArtifactKind::SpeakerEmbedding:
@@ -190,6 +173,23 @@ std::string batch_manifest_to_json(const AppBatchResult & batch) {
 }
 
 }  // namespace
+
+std::string word_timestamps_to_json(const std::vector<engine::runtime::WordTimestamp> & words) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << "{\"start_sample\":" << words[i].span.start_sample
+            << ",\"end_sample\":" << words[i].span.end_sample
+            << ",\"word\":" << quote_json(words[i].word)
+            << ",\"confidence\":" << words[i].confidence
+            << "}";
+    }
+    out << "]";
+    return out.str();
+}
 
 std::string safe_output_name(const std::string & value) {
     std::string out;

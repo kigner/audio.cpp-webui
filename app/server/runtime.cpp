@@ -337,51 +337,6 @@ const engine::runtime::AudioBuffer & select_audio_output(const engine::runtime::
     throw std::runtime_error("model result did not contain exactly one audio output");
 }
 
-engine::runtime::TaskRequest build_openai_speech_request(const Value & body, const std::filesystem::path & base_dir) {
-    engine::runtime::TaskRequest request;
-    request.text_input = engine::runtime::Transcript{
-        engine::io::json::require_string(body, "input"),
-        engine::io::json::optional_string(body, "language", ""),
-    };
-
-    engine::runtime::VoiceCondition voice;
-    bool has_voice = false;
-    if (const auto * value = body.find("voice")) {
-        engine::runtime::VoiceReference reference;
-        reference.cached_voice_id = value->as_string();
-        voice.speaker = std::move(reference);
-        has_voice = true;
-    }
-    if (const auto * value = body.find("voice_ref")) {
-        if (!voice.speaker.has_value()) {
-            voice.speaker = engine::runtime::VoiceReference{};
-        }
-        voice.speaker->audio = minitts::cli::read_audio_buffer(resolve_path(base_dir, value->as_string()));
-        has_voice = true;
-    }
-    if (has_voice) {
-        request.voice = std::move(voice);
-    }
-
-    request.options = options_from_object(body.find("options"));
-    add_option_from_json(request.options, body, "seed", "seed");
-    add_option_from_json(request.options, body, "temperature", "temperature");
-    add_option_from_json(request.options, body, "top_k", "top_k");
-    add_option_from_json(request.options, body, "top_p", "top_p");
-    add_option_from_json(request.options, body, "max_tokens", "max_tokens");
-    add_option_from_json(request.options, body, "max_steps", "max_steps");
-    add_option_from_json(request.options, body, "repetition_penalty", "repetition_penalty");
-    add_option_from_json(request.options, body, "guidance_scale", "guidance_scale");
-    add_option_from_json(request.options, body, "num_inference_steps", "num_inference_steps");
-    if (const auto * value = body.find("instructions")) {
-        request.options["instruct"] = value->as_string();
-    }
-    if (const auto * value = body.find("reference_text")) {
-        request.options["reference_text"] = value->as_string();
-    }
-    return request;
-}
-
 engine::runtime::TaskRequest build_openai_transcription_request(const Value & body, const std::filesystem::path & base_dir) {
     const auto * audio = body.find("audio");
     if (audio == nullptr) {
@@ -469,10 +424,44 @@ void ServerState::load_models() {
         if (!model_index_.emplace(loaded->config.id, models_.size()).second) {
             throw std::runtime_error("duplicate server model id: " + loaded->config.id);
         }
+        load_voice_presets(*loaded);
         if (!loaded->config.lazy) {
             ensure_model_loaded_locked(*loaded);
         }
         models_.push_back(std::move(loaded));
+    }
+}
+
+ServerState::LoadedModel::RuntimeVoicePreset ServerState::load_runtime_voice_preset(
+    const ServerModelConfig::VoicePreset & preset) const {
+    LoadedModel::RuntimeVoicePreset out;
+    out.voice_id = preset.voice_id;
+    out.reference_text = preset.reference_text;
+    if (preset.voice_ref.has_value()) {
+        out.audio = minitts::cli::read_audio_buffer(*preset.voice_ref);
+    }
+    return out;
+}
+
+void ServerState::load_voice_presets(LoadedModel & model) const {
+    for (const auto & [name, preset] : model.config.voice_presets) {
+        auto [it, inserted] = model.voice_presets.emplace(name, load_runtime_voice_preset(preset));
+        if (!inserted) {
+            throw std::runtime_error("duplicate runtime voice preset for model " + model.config.id + ": " + name);
+        }
+        (void) it;
+    }
+    if (model.config.default_voice_preset_id.has_value()) {
+        const auto it = model.voice_presets.find(*model.config.default_voice_preset_id);
+        if (it == model.voice_presets.end()) {
+            throw std::runtime_error(
+                "default_voice_preset for model " + model.config.id +
+                " was not loaded: " +
+                *model.config.default_voice_preset_id);
+        }
+        model.default_voice_preset = it->second;
+    } else if (model.config.default_voice_preset.has_value()) {
+        model.default_voice_preset = load_runtime_voice_preset(*model.config.default_voice_preset);
     }
 }
 
@@ -515,6 +504,91 @@ ServerState::LoadedModel & ServerState::require_model(const Value & body) {
     return *models_.at(it->second);
 }
 
+const ServerState::LoadedModel::RuntimeVoicePreset * ServerState::select_voice_preset(
+    const LoadedModel & model,
+    const Value & body,
+    bool & voice_field_is_preset) const {
+    voice_field_is_preset = false;
+    if (const auto * value = body.find("voice")) {
+        const auto it = model.voice_presets.find(value->as_string());
+        if (it != model.voice_presets.end()) {
+            voice_field_is_preset = true;
+            return &it->second;
+        }
+        return nullptr;
+    }
+    if (body.find("voice_ref") != nullptr) {
+        return nullptr;
+    }
+    return model.default_voice_preset.has_value() ? &*model.default_voice_preset : nullptr;
+}
+
+engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel & model, const Value & body) const {
+    engine::runtime::TaskRequest request;
+    request.text_input = engine::runtime::Transcript{
+        engine::io::json::require_string(body, "input"),
+        engine::io::json::optional_string(body, "language", ""),
+    };
+
+    request.options = options_from_object(body.find("options"));
+    add_option_from_json(request.options, body, "seed", "seed");
+    add_option_from_json(request.options, body, "temperature", "temperature");
+    add_option_from_json(request.options, body, "top_k", "top_k");
+    add_option_from_json(request.options, body, "top_p", "top_p");
+    add_option_from_json(request.options, body, "max_tokens", "max_tokens");
+    add_option_from_json(request.options, body, "max_steps", "max_steps");
+    add_option_from_json(request.options, body, "repetition_penalty", "repetition_penalty");
+    add_option_from_json(request.options, body, "guidance_scale", "guidance_scale");
+    add_option_from_json(request.options, body, "num_inference_steps", "num_inference_steps");
+    if (const auto * value = body.find("instructions")) {
+        request.options["instruct"] = value->as_string();
+    }
+
+    bool voice_field_is_preset = false;
+    const auto * preset = select_voice_preset(model, body, voice_field_is_preset);
+
+    engine::runtime::VoiceCondition voice;
+    bool has_voice = false;
+    if (preset != nullptr) {
+        if (preset->voice_id.has_value()) {
+            voice.speaker = engine::runtime::VoiceReference{};
+            voice.speaker->cached_voice_id = *preset->voice_id;
+            has_voice = true;
+        }
+        if (preset->audio.has_value()) {
+            if (!voice.speaker.has_value()) {
+                voice.speaker = engine::runtime::VoiceReference{};
+            }
+            voice.speaker->audio = *preset->audio;
+            has_voice = true;
+        }
+        if (preset->reference_text.has_value() && request.options.find("reference_text") == request.options.end()) {
+            request.options["reference_text"] = *preset->reference_text;
+        }
+    }
+    if (const auto * value = body.find("voice"); value != nullptr && !voice_field_is_preset) {
+        if (!voice.speaker.has_value()) {
+            voice.speaker = engine::runtime::VoiceReference{};
+        }
+        voice.speaker->cached_voice_id = value->as_string();
+        has_voice = true;
+    }
+    if (const auto * value = body.find("voice_ref")) {
+        if (!voice.speaker.has_value()) {
+            voice.speaker = engine::runtime::VoiceReference{};
+        }
+        voice.speaker->audio = minitts::cli::read_audio_buffer(resolve_path(request_base_, value->as_string()));
+        has_voice = true;
+    }
+    if (const auto * value = body.find("reference_text")) {
+        request.options["reference_text"] = value->as_string();
+    }
+    if (has_voice) {
+        request.voice = std::move(voice);
+    }
+    return request;
+}
+
 struct ServerState::TimedTaskResult {
     engine::runtime::TaskResult result;
     double wall_ms = 0.0;
@@ -534,7 +608,7 @@ ServerState::TimedTaskResult ServerState::run_model(
 HttpResponse ServerState::handle_speech(const std::string & body_text) {
     const auto body = engine::io::json::parse(body_text);
     auto & model = require_model(body);
-    const auto request = build_openai_speech_request(body, request_base_);
+    const auto request = build_speech_request(model, body);
     const auto timed_result = run_model(model, request);
     const auto & audio = select_audio_output(timed_result.result);
     const auto wav = encode_pcm16_wav(audio);
@@ -645,6 +719,10 @@ HttpResponse ServerState::handle_voices(const HttpRequest & request) const {
 
     const auto it = model_index_.find(model_id);
     if (it != model_index_.end()) {
+        for (const auto & [name, preset] : models_.at(it->second)->voice_presets) {
+            (void) preset;
+            voices.push_back(name);
+        }
         const auto embeddings_dir = models_.at(it->second)->config.path / "embeddings";
         std::error_code ec;
         if (std::filesystem::is_directory(embeddings_dir, ec)) {
@@ -656,6 +734,7 @@ HttpResponse ServerState::handle_voices(const HttpRequest & request) const {
         }
     }
     std::sort(voices.begin(), voices.end());
+    voices.erase(std::unique(voices.begin(), voices.end()), voices.end());
 
     std::ostringstream out;
     out << "{\"voices\":[";

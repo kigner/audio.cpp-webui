@@ -92,6 +92,10 @@ Current model status in the framework:
 
 PocketTTS language selection is a model-load option. When the model path points at the PocketTTS root, the loader uses `english` unless you pass `--load-option language=<name>`. Kyutai's normal non-English PocketTTS releases are smaller distilled language models intended for the fast PocketTTS path. The `_24l` variants are larger 24-layer, undistilled preview models that can sound better but are slower. Kyutai currently publishes French only as `french_24l`, not as a normal distilled `french` language directory, so French is not listed as a normal PocketTTS language here.
 
+## Docker
+
+Docker CPU and CUDA images are available for both CLI and server use. See [Docker.md](Docker.md) for build commands and working Docker examples.
+
 ## Build
 
 ### Linux Build
@@ -103,6 +107,8 @@ For single-config generators, the default build type is `RelWithDebInfo`.
 That default configure is a CPU build unless you enable an accelerator backend explicitly.
 
 Use GCC 13 or newer for Linux builds.
+
+Native ggml CPU optimization is enabled by default for local performance. If your compiler or assembler rejects a generated CPU instruction such as `vpdpbusd`, reconfigure with `-DENGINE_ENABLE_NATIVE_CPU=OFF` to build portable CPU kernels.
 
 Common Linux configure examples:
 
@@ -122,6 +128,12 @@ Vulkan:
 
 ```bash
 cmake -S . -B build -DENGINE_ENABLE_VULKAN=ON
+```
+
+Portable CPU-kernel fallback:
+
+```bash
+cmake -S . -B build -DENGINE_ENABLE_NATIVE_CPU=OFF
 ```
 
 Build the CLI and server from the configured tree:
@@ -144,6 +156,7 @@ Examples:
 scripts/build_linux.sh --backend cuda --target audiocpp_cli --target audiocpp_server
 scripts/build_linux.sh --backend vulkan --target audiocpp_cli --target audiocpp_server
 scripts/build_linux.sh --backend cpu --target audiocpp_cli --target audiocpp_server
+scripts/build_linux.sh --backend cuda --native-cpu OFF --target audiocpp_cli --target audiocpp_server
 ```
 
 Use `--build-dir <dir>` only when you intentionally want a custom output directory.
@@ -181,9 +194,12 @@ If GNU Make is available on Windows:
 ```bash
 make -f Makefile.windows cpu JOBS=16
 make -f Makefile.windows cuda JOBS=16
+make -f Makefile.windows cuda NATIVE_CPU=OFF JOBS=16
 ```
 
-The Windows script configures `build/windows-cuda-release` by default and builds `audiocpp_cli`. CUDA presets enable CUDA, CUDA graphs, OpenMP, Ninja, `/utf-8`, `/EHsc`, MSVC OpenMP SIMD support with `/openmp:experimental`, and the same portable CPU optimization baseline used for the Windows CUDA path. The CPU preset uses the same MSVC/Ninja/OpenMP setup without requiring CUDA. CUDA presets auto-detect the local GPU CUDA architecture when `nvidia-smi` is available.
+The Windows script configures `build/windows-cuda-release` by default and builds `audiocpp_cli`. CUDA presets enable CUDA, CUDA graphs, OpenMP, Ninja, `/utf-8`, `/EHsc`, MSVC OpenMP SIMD support with `/openmp:experimental`, and native CPU optimization by default. The CPU preset uses the same MSVC/Ninja/OpenMP setup without requiring CUDA. CUDA presets auto-detect the local GPU CUDA architecture when `nvidia-smi` is available. Pass `-NativeCpu OFF` or `NATIVE_CPU=OFF` to use portable CPU kernels.
+
+For Windows prebuilt release zips and CPU compatibility profiles, see [docs/windows_build.md](docs/windows_build.md).
 
 Useful variants:
 
@@ -191,6 +207,7 @@ Useful variants:
 .\scripts\build_windows.ps1 -Target audiocpp_server -Jobs 16
 .\scripts\build_windows.ps1 -Preset windows-cpu-release -Target audiocpp_cli
 .\scripts\build_windows.ps1 -Preset windows-cuda-debug -Target audiocpp_cli
+.\scripts\build_windows.ps1 -NativeCpu OFF -Target audiocpp_cli
 .\scripts\build_windows.ps1 -ConfigureOnly
 .\scripts\build_windows.ps1 -CudaArchitectures 120a-real
 ```
@@ -225,6 +242,7 @@ scripts/build_metal.sh --target audiocpp_server
 scripts/build_metal.sh --build-type Release --archs arm64 --target audiocpp_cli
 scripts/build_metal.sh --with-tests --target audio_dsp_test
 scripts/build_metal.sh --openmp auto --target audiocpp_cli
+scripts/build_metal.sh --native-cpu OFF --target audiocpp_cli
 ```
 
 The built CLI is written to:
@@ -242,6 +260,7 @@ Build options:
 | `ENGINE_ENABLE_METAL` | Enable the ggml Metal backend. Required for `--backend metal`. | `OFF` on most platforms, `ON` on Apple |
 | `ENGINE_ENABLE_LLAMAFILE` | Enable llamafile SGEMM support in ggml CPU builds. | `ON` |
 | `ENGINE_ENABLE_CUDA_GRAPHS` | Enable ggml CUDA graphs support when CUDA is enabled. | `ON` |
+| `ENGINE_ENABLE_NATIVE_CPU` | Build ggml CPU kernels with native host ISA flags such as `-march=native`. Disable this for portable CPU kernels or toolchains that reject generated CPU instructions. | `ON` |
 | `ENGINE_ENABLE_OPENMP` | Enable OpenMP for host-side parallel work. | `ON` |
 | `ENGINE_BUILD_EXAMPLES` | Build example binaries. | `OFF` |
 | `ENGINE_BUILD_TESTS` | Build framework unit tests. | `OFF` |
@@ -352,6 +371,7 @@ Useful CLI features:
 - `--batch-text-file <txt>` runs one offline request per non-empty line
 - `--batch-text-dir <dir>` runs one offline request per `.txt`, `.md`, or `.json` file, normalizing each file as one paragraph
 - `--batch-audio-dir <dir>` runs one offline request per `.wav`
+- `--audio-chunk-mode auto` lets ASR/alignment models choose their safe long-audio policy; expert users can override with `fixed`, `vad`, or `none` where supported
 - `--request-sequence <json>` runs a multi-request offline session
 - `--batch-merge-audio none|concat` controls batch audio merge behavior
 - `--batch-manifest-out <json>` writes a batch output manifest
@@ -361,6 +381,7 @@ Useful CLI features:
 - `--log` streams framework logs to stdout
 - `--log-file <path>` streams framework logs to a file in real time
 - `--segments-out`, `--turns-out`, and `--words-out` write structured JSON outputs
+- `--vad-chunks-out` writes offline VAD-based chunk windows; tune them with `--vad-chunk-max-seconds`, `--vad-chunk-merge-gap-seconds`, and `--vad-chunk-padding-seconds`
 
 ### Pipelines
 
@@ -580,6 +601,11 @@ The main harness under `tests/` is `tests/warmbench.py`. It is used for long-liv
 The main app-facing test tooling under `tools/` is `tools/audiocpp_cli/run_audiocpp_cli_path_tests.py`. It drives `audiocpp_cli` through cataloged offline and streaming-shaped cases, verifies expected outputs such as audio or JSON artifacts, and is useful for checking real user-facing request paths rather than just lower-level model components. The streaming-shaped coverage here refers to the CLI/request path surface; it should not be read as a claim that streaming inference is broadly supported across the framework today.
 
 The Python-reference side of these tests usually requires more time-consuming setup than the C++ path because different models rely on different Python reference repos and dependency stacks. In practice, the framework-side tooling is fast to iterate on once models are installed, while Python parity runs often need extra environment preparation before they are ready.
+
+## Projects
+
+- [Pocket TTS Browser Engine](https://github.com/jjmlovesgit/pocket-tts-browser-engine) uses audio.cpp to bring fully local PocketTTS voices into Chrome and Edge through the browser TTS API.
+- [GuideAnts](https://github.com/Elumenotion/GuideAnts) uses audio.cpp as the default local AI stack path for basic ASR and TTS, with planned reusable skills for audio.cpp scenarios and model configurations.
 
 ## Performance Metrics
 

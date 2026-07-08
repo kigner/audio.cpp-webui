@@ -17,6 +17,14 @@
       },
       "session_options": {
         "language": "english"
+      },
+      "default_voice_preset": {
+        "voice_id": "alba"
+      },
+      "voice_presets": {
+        "cosette": {
+          "voice_id": "cosette"
+        }
       }
     },
     {

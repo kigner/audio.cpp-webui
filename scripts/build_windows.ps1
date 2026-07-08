@@ -6,6 +6,12 @@ param(
     [switch]$ConfigureOnly,
     [switch]$Clean,
     [string]$CudaArchitectures = "auto",
+    [ValidateSet("", "native", "avx2", "baseline")]
+    [string]$CpuArch = "",
+    [ValidateSet("ON", "OFF")]
+    [string]$NativeCpu = $null,
+    [ValidateSet("ON", "OFF")]
+    [string]$Llamafile = $null,
     [string]$VsInstall = ""
 )
 
@@ -215,6 +221,38 @@ function Add-MsvcEnvironment {
 }
 
 function Resolve-CudaArchitectures {
+    function Get-ReleaseCudaArchitectures {
+        $nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
+        $supported = @()
+        if (Test-Path -LiteralPath $nvcc) {
+            $supported = & $nvcc --list-gpu-arch 2>$null
+        }
+
+        $wanted = @(
+            @{ Compute = "compute_75"; Arch = "75-virtual" },
+            @{ Compute = "compute_80"; Arch = "80-virtual" },
+            @{ Compute = "compute_86"; Arch = "86-real" },
+            @{ Compute = "compute_89"; Arch = "89-real" },
+            @{ Compute = "compute_120"; Arch = "120a-real" },
+            @{ Compute = "compute_121"; Arch = "121a-real" }
+        )
+
+        $archs = @()
+        foreach ($item in $wanted) {
+            if ($supported -contains $item.Compute) {
+                $archs += $item.Arch
+            }
+        }
+        if ($archs.Count -eq 0) {
+            $archs = @("75-virtual", "80-virtual", "86-real")
+        }
+        return ($archs -join ";")
+    }
+
+    if ($CudaArchitectures -eq "default" -or $CudaArchitectures -eq "ggml-default") {
+        return Get-ReleaseCudaArchitectures
+    }
+
     if ($CudaArchitectures -ne "" -and $CudaArchitectures -ne "auto") {
         return $CudaArchitectures
     }
@@ -250,6 +288,57 @@ function Assert-OpenMpConfigured {
     }
 }
 
+function Get-CpuArchSettings {
+    param([AllowEmptyString()][string]$Name)
+
+    switch ($Name) {
+        "" {
+            return @{
+                Label = "preset default"
+                Native = $null
+                CMakeArgs = @()
+            }
+        }
+        "native" {
+            return @{
+                Label = "native"
+                Native = "ON"
+                CMakeArgs = @()
+            }
+        }
+        "avx2" {
+            return @{
+                Label = "AVX2"
+                Native = "OFF"
+                CMakeArgs = @(
+                    "-DGGML_AVX=ON",
+                    "-DGGML_AVX2=ON",
+                    "-DGGML_AVX512=OFF",
+                    "-DGGML_AVX512_VBMI=OFF",
+                    "-DGGML_AVX512_VNNI=OFF",
+                    "-DGGML_AVX512_BF16=OFF",
+                    "-DGGML_AVX_VNNI=OFF"
+                )
+            }
+        }
+        "baseline" {
+            return @{
+                Label = "baseline"
+                Native = "OFF"
+                CMakeArgs = @(
+                    "-DGGML_AVX=OFF",
+                    "-DGGML_AVX2=OFF",
+                    "-DGGML_AVX512=OFF",
+                    "-DGGML_AVX512_VBMI=OFF",
+                    "-DGGML_AVX512_VNNI=OFF",
+                    "-DGGML_AVX512_BF16=OFF",
+                    "-DGGML_AVX_VNNI=OFF"
+                )
+            }
+        }
+    }
+}
+
 function Get-PresetSettings {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -258,7 +347,8 @@ function Get-PresetSettings {
             return @{
                 BuildType = "Release"
                 BuildTests = "OFF"
-                Native = "OFF"
+                Native = "ON"
+                Llamafile = "ON"
                 EnableCuda = "OFF"
                 EnableCudaGraphs = "OFF"
                 CFlagsDebug = ""
@@ -269,7 +359,8 @@ function Get-PresetSettings {
             return @{
                 BuildType = "Debug"
                 BuildTests = "ON"
-                Native = "OFF"
+                Native = "ON"
+                Llamafile = "ON"
                 EnableCuda = "ON"
                 EnableCudaGraphs = "ON"
                 CFlagsDebug = "/O2 /Zi"
@@ -280,7 +371,8 @@ function Get-PresetSettings {
             return @{
                 BuildType = "Release"
                 BuildTests = "OFF"
-                Native = "OFF"
+                Native = "ON"
+                Llamafile = "ON"
                 EnableCuda = "ON"
                 EnableCudaGraphs = "ON"
                 CFlagsDebug = ""
@@ -292,6 +384,7 @@ function Get-PresetSettings {
                 BuildType = "Debug"
                 BuildTests = "ON"
                 Native = "ON"
+                Llamafile = "ON"
                 EnableCuda = "ON"
                 EnableCudaGraphs = "ON"
                 CFlagsDebug = "/O2 /Zi"
@@ -305,6 +398,16 @@ function Get-PresetSettings {
 }
 
 $settings = Get-PresetSettings $Preset
+$cpuArchSettings = Get-CpuArchSettings $CpuArch
+if ($null -ne $cpuArchSettings.Native) {
+    $settings.Native = $cpuArchSettings.Native
+}
+if (-not [string]::IsNullOrEmpty($NativeCpu)) {
+    $settings.Native = $NativeCpu
+}
+if (-not [string]::IsNullOrEmpty($Llamafile)) {
+    $settings.Llamafile = $Llamafile
+}
 $isCudaPreset = $settings.EnableCuda -eq "ON"
 
 if ($isCudaPreset) {
@@ -350,6 +453,9 @@ Write-Host "Windows SDK: $(Split-Path $mt -Parent)"
 if ($arch -ne "") {
     Write-Host "CUDA architectures: $arch"
 }
+Write-Host "CPU architecture profile: $($cpuArchSettings.Label)"
+Write-Host "Native CPU optimization: $($settings.Native)"
+Write-Host "llamafile SGEMM: $($settings.Llamafile)"
 
 if ($Clean) {
     $buildDirForClean = Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) "build") $Preset
@@ -380,9 +486,11 @@ $configureArgs = @(
     "-DENGINE_ENABLE_VULKAN=OFF",
     "-DENGINE_ENABLE_METAL=OFF",
     "-DGGML_OPENMP=ON",
-    "-DGGML_NATIVE=$($settings.Native)",
+    "-DENGINE_ENABLE_NATIVE_CPU=$($settings.Native)",
+    "-DENGINE_ENABLE_LLAMAFILE=$($settings.Llamafile)",
     "-DENGINE_BUILD_TESTS=$($settings.BuildTests)"
 )
+$configureArgs += $cpuArchSettings.CMakeArgs
 if ($settings.CFlagsDebug -ne "") {
     $configureArgs += "-DCMAKE_C_FLAGS_DEBUG=$($settings.CFlagsDebug)"
 }
@@ -397,6 +505,8 @@ if ($isCudaPreset) {
 }
 if ($isCudaPreset -and $arch -ne "") {
     $configureArgs += "-DCMAKE_CUDA_ARCHITECTURES=$arch"
+} elseif ($isCudaPreset) {
+    $configureArgs += @("-U", "CMAKE_CUDA_ARCHITECTURES")
 }
 
 Invoke-Checked $cmake $configureArgs

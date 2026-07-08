@@ -31,7 +31,8 @@ public:
         size_t prefill_graph_arena_bytes,
         size_t decode_graph_arena_bytes,
         size_t weight_context_bytes,
-        engine::assets::TensorStorageType weight_storage_type);
+        engine::assets::TensorStorageType weight_storage_type,
+        bool mem_saver);
     ~OmniVoiceGeneratorRuntime();
 
     OmniVoiceGeneratedAudioTokens generate(

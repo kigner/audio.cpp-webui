@@ -210,7 +210,8 @@ OmniVoiceSession::OmniVoiceSession(
           generator_prefill_graph_arena_bytes_,
           generator_decode_graph_arena_bytes_,
           generator_weight_context_bytes_,
-          generator_weight_storage_type_) {
+          generator_weight_storage_type_,
+          mem_saver_) {
     if (task_.task != runtime::VoiceTaskKind::Tts) {
         throw std::runtime_error("OmniVoice only supports VoiceTaskKind::Tts");
     }

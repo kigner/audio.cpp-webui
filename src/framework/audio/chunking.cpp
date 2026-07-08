@@ -1,9 +1,13 @@
 #include "engine/framework/audio/chunking.h"
 
+#include "engine/framework/runtime/options.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace engine::audio {
 namespace {
@@ -62,6 +66,25 @@ void validate_copy_shape(
     }
 }
 
+void require_valid_time_span(
+    const runtime::TimeSpan & span,
+    int64_t audio_samples,
+    const char * label) {
+    if (span.start_sample < 0 || span.end_sample <= span.start_sample || span.end_sample > audio_samples) {
+        throw std::runtime_error(std::string(label) + " span is outside audio bounds");
+    }
+}
+
+runtime::TimeSpan padded_span(
+    const runtime::TimeSpan & span,
+    int64_t audio_samples,
+    int64_t padding_samples) {
+    runtime::TimeSpan out;
+    out.start_sample = std::max<int64_t>(0, span.start_sample - padding_samples);
+    out.end_sample = std::min<int64_t>(audio_samples, span.end_sample + padding_samples);
+    return out;
+}
+
 }  // namespace
 
 std::vector<AudioChunkSpan> plan_audio_chunks(int64_t input_samples, const AudioChunkSpec & spec) {
@@ -95,6 +118,189 @@ std::vector<AudioChunkSpan> plan_audio_chunks(int64_t input_samples, const Audio
         start += spec.hop_samples;
     }
     return spans;
+}
+
+AudioChunkMode parse_audio_chunk_mode(
+    const std::unordered_map<std::string, std::string> & options) {
+    const auto mode = runtime::find_option(options, {"audio_chunk_mode"});
+    if (!mode.has_value() || *mode == "auto") {
+        return AudioChunkMode::Auto;
+    }
+    if (*mode == "fixed") {
+        return AudioChunkMode::Fixed;
+    }
+    if (*mode == "vad") {
+        return AudioChunkMode::Vad;
+    }
+    if (*mode == "none") {
+        return AudioChunkMode::None;
+    }
+    throw std::runtime_error("audio_chunk_mode must be auto, fixed, vad, or none");
+}
+
+std::optional<float> parse_audio_chunk_seconds_override(
+    const std::unordered_map<std::string, std::string> & options) {
+    return runtime::parse_float_option(
+        options,
+        {"audio_chunk_seconds", "audio_chunk_duration_seconds", "audio_chunk_duration"});
+}
+
+std::vector<runtime::TimeSpan> plan_vad_audio_chunks(
+    const std::vector<runtime::SpeechSegment> & segments,
+    int64_t audio_samples,
+    const VadAudioChunkOptions & options) {
+    require_positive(audio_samples, "audio samples");
+    require_positive(options.max_chunk_samples, "max VAD chunk samples");
+    if (options.merge_gap_samples < 0) {
+        throw std::runtime_error("Audio VAD chunker merge_gap_samples must be non-negative");
+    }
+    if (options.padding_samples < 0) {
+        throw std::runtime_error("Audio VAD chunker padding_samples must be non-negative");
+    }
+    if (segments.empty()) {
+        return {};
+    }
+
+    struct WorkSpan {
+        runtime::TimeSpan padded;
+        runtime::TimeSpan speech;
+    };
+    struct ChunkState {
+        runtime::TimeSpan span;
+        int64_t speech_end_sample = 0;
+    };
+
+    std::vector<WorkSpan> spans;
+    spans.reserve(segments.size());
+    for (const auto & segment : segments) {
+        require_valid_time_span(segment.span, audio_samples, "Audio VAD chunker speech segment");
+        spans.push_back(WorkSpan{
+            padded_span(segment.span, audio_samples, options.padding_samples),
+            segment.span,
+        });
+    }
+    std::sort(spans.begin(), spans.end(), [](const WorkSpan & a, const WorkSpan & b) {
+        if (a.padded.start_sample != b.padded.start_sample) {
+            return a.padded.start_sample < b.padded.start_sample;
+        }
+        return a.padded.end_sample < b.padded.end_sample;
+    });
+
+    std::vector<ChunkState> states;
+    for (const auto & item : spans) {
+        auto span = item.padded;
+        const auto speech = item.speech;
+        while (span.start_sample < span.end_sample) {
+            const auto start_chunk = [&]() {
+                runtime::TimeSpan chunk;
+                chunk.start_sample = span.start_sample;
+                chunk.end_sample = std::min<int64_t>(span.end_sample, span.start_sample + options.max_chunk_samples);
+                const int64_t speech_end = chunk.end_sample > speech.start_sample
+                    ? std::min<int64_t>(speech.end_sample, chunk.end_sample)
+                    : chunk.start_sample;
+                states.push_back(ChunkState{chunk, speech_end});
+                span.start_sample = chunk.end_sample;
+            };
+            if (!states.empty()) {
+                auto & current = states.back();
+                if (span.end_sample <= current.span.end_sample) {
+                    current.speech_end_sample = std::max(current.speech_end_sample, speech.end_sample);
+                    break;
+                }
+                if (span.start_sample <= current.span.end_sample) {
+                    const int64_t capacity_end = current.span.start_sample + options.max_chunk_samples;
+                    if (span.end_sample <= capacity_end) {
+                        current.span.end_sample = span.end_sample;
+                        current.speech_end_sample = std::max(current.speech_end_sample, speech.end_sample);
+                        break;
+                    }
+                    if (speech.start_sample > current.speech_end_sample &&
+                        current.speech_end_sample > current.span.start_sample) {
+                        const int64_t boundary = std::min(current.span.end_sample, speech.start_sample);
+                        if (boundary >= current.speech_end_sample && boundary > current.span.start_sample) {
+                            current.span.end_sample = boundary;
+                            span.start_sample = boundary;
+                            start_chunk();
+                            continue;
+                        }
+                    }
+                    if (current.span.end_sample < capacity_end) {
+                        current.span.end_sample = std::min<int64_t>(span.end_sample, capacity_end);
+                        if (current.span.end_sample > speech.start_sample) {
+                            current.speech_end_sample = std::max(
+                                current.speech_end_sample,
+                                std::min<int64_t>(speech.end_sample, current.span.end_sample));
+                        }
+                        span.start_sample = current.span.end_sample;
+                        continue;
+                    }
+                } else {
+                    const int64_t gap = span.start_sample - current.span.end_sample;
+                    if (gap <= options.merge_gap_samples &&
+                        span.end_sample - current.span.start_sample <= options.max_chunk_samples) {
+                        current.span.end_sample = span.end_sample;
+                        current.speech_end_sample = std::max(current.speech_end_sample, speech.end_sample);
+                        break;
+                    }
+                }
+            }
+            start_chunk();
+        }
+    }
+
+    std::vector<runtime::TimeSpan> chunks;
+    chunks.reserve(states.size());
+    for (const auto & state : states) {
+        chunks.push_back(state.span);
+    }
+    return chunks;
+}
+
+std::vector<runtime::TimeSpan> plan_vad_audio_chunks(
+    const runtime::AudioBuffer & audio,
+    runtime::IOfflineVoiceTaskSession & vad_session,
+    const VadAudioChunkOptions & options) {
+    if (audio.channels <= 0) {
+        throw std::runtime_error("Audio VAD chunker requires positive audio channels");
+    }
+    if (audio.samples.size() % static_cast<size_t>(audio.channels) != 0) {
+        throw std::runtime_error("Audio VAD chunker input size is not divisible by channel count");
+    }
+    runtime::TaskRequest vad_request;
+    vad_request.audio_input = audio;
+    vad_session.prepare(runtime::build_preparation_request(vad_request));
+    const auto vad_result = vad_session.run(vad_request);
+    return plan_vad_audio_chunks(
+        vad_result.speech_segments,
+        static_cast<int64_t>(audio.samples.size() / static_cast<size_t>(audio.channels)),
+        options);
+}
+
+runtime::AudioBuffer slice_audio_buffer(
+    const runtime::AudioBuffer & audio,
+    const runtime::TimeSpan & span) {
+    if (audio.sample_rate <= 0) {
+        throw std::runtime_error("Audio chunker slice requires a positive sample rate");
+    }
+    require_positive(audio.channels, "audio channels");
+    if (audio.samples.empty()) {
+        throw std::runtime_error("Audio chunker slice requires non-empty audio");
+    }
+    if (audio.samples.size() % static_cast<size_t>(audio.channels) != 0) {
+        throw std::runtime_error("Audio chunker slice input size is not divisible by channel count");
+    }
+    const int64_t frames = static_cast<int64_t>(audio.samples.size() / static_cast<size_t>(audio.channels));
+    require_valid_time_span(span, frames, "Audio chunker slice");
+
+    runtime::AudioBuffer out;
+    out.sample_rate = audio.sample_rate;
+    out.channels = audio.channels;
+    const size_t begin = static_cast<size_t>(span.start_sample * audio.channels);
+    const size_t end = static_cast<size_t>(span.end_sample * audio.channels);
+    out.samples.assign(
+        audio.samples.begin() + static_cast<std::ptrdiff_t>(begin),
+        audio.samples.begin() + static_cast<std::ptrdiff_t>(end));
+    return out;
 }
 
 std::vector<float> make_triangular_overlap_window(int64_t chunk_samples) {
@@ -265,6 +471,50 @@ void normalize_overlap_added_planar(
                 : 1.0F;
             output_planar[planar_index(lane, frame, output_frames)] /= denom;
         }
+    }
+}
+
+void append_chunk_word_timestamps(
+    std::vector<runtime::WordTimestamp> & output,
+    const std::vector<runtime::WordTimestamp> & chunk_words,
+    const runtime::TimeSpan & chunk_span) {
+    append_chunk_word_timestamps(output, chunk_words, chunk_span, chunk_span);
+}
+
+void append_chunk_word_timestamps(
+    std::vector<runtime::WordTimestamp> & output,
+    const std::vector<runtime::WordTimestamp> & chunk_words,
+    const runtime::TimeSpan & source_span,
+    const runtime::TimeSpan & keep_span) {
+    const auto valid_span = [](const runtime::TimeSpan & span) {
+        return span.start_sample >= 0 && span.end_sample >= span.start_sample;
+    };
+    if (!valid_span(source_span)) {
+        throw std::runtime_error("Audio chunker word merge requires a valid source span");
+    }
+    if (!valid_span(keep_span) ||
+        keep_span.start_sample < source_span.start_sample ||
+        keep_span.end_sample > source_span.end_sample) {
+        throw std::runtime_error("Audio chunker word merge requires keep span inside source span");
+    }
+    const int64_t source_samples = source_span.end_sample - source_span.start_sample;
+    for (const auto & word : chunk_words) {
+        if (word.span.end_sample < word.span.start_sample) {
+            throw std::runtime_error("Audio chunker word merge requires ordered word timestamps");
+        }
+        const int64_t local_start = std::max<int64_t>(word.span.start_sample, 0);
+        const int64_t local_end = std::min<int64_t>(word.span.end_sample, source_samples);
+        if (local_start >= local_end) {
+            throw std::runtime_error("Audio chunker word merge received a timestamp outside the chunk span");
+        }
+        const int64_t global_start = source_span.start_sample + local_start;
+        if (global_start < keep_span.start_sample || global_start >= keep_span.end_sample) {
+            continue;
+        }
+        auto merged = word;
+        merged.span.start_sample = global_start;
+        merged.span.end_sample = source_span.start_sample + local_end;
+        output.push_back(std::move(merged));
     }
 }
 

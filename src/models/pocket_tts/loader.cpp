@@ -149,6 +149,13 @@ public:
         inspection.capabilities.languages = discover_languages(root);
         inspection.capabilities.supports_speaker_reference = true;
         inspection.capabilities.supports_style_condition = false;
+        inspection.cli.session_options = {
+            {
+                "pocket_tts.voice_state_cache_slots",
+                "n",
+                "Prepared voice-state cache slots; default 4, set 0 to disable.",
+            },
+        };
         inspection.model_root = root;
         inspection.discovered_configs = discover_config_assets(request);
         inspection.discovered_weights = discover_weight_assets(request);

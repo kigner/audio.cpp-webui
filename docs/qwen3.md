@@ -99,7 +99,15 @@ These sampling controls are shared by the Qwen3 TTS Base, VoiceDesign, and Custo
 
 ## Qwen3 ASR
 
-Qwen3 ASR transcribes speech audio and can write word/timestamp JSON.
+Qwen3 ASR transcribes speech audio. Word timestamps are produced by running the
+recognized transcript through Qwen3 Forced Aligner, so `--words-out` requires
+the forced aligner model path. Long audio is split inside the model session
+before ASR inference; word timestamps are shifted back onto the original audio
+timeline.
+
+`audio_chunk_mode=auto` is the default. For transcript-only ASR, Qwen3 ASR uses
+fixed chunks. When word timestamps are requested, it uses bundled Silero VAD
+internally to choose speech-aware chunks before running ASR and alignment.
 
 | Field | Value |
 |---|---|
@@ -108,10 +116,16 @@ Qwen3 ASR transcribes speech audio and can write word/timestamp JSON.
 | Task | `asr` |
 | Modes | `offline` |
 | Input | Speech WAV through `--audio` |
-| Output | Text plus optional word JSON through `--words-out` |
+| Output | Text to stdout or `--text-out`; optional word JSON through `--words-out` with a forced aligner |
 
 ```bash
-audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-0.6B --backend cuda --audio speech_16k.wav --text "" --words-out words.json
+audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-0.6B --backend cuda --audio speech_16k.wav --text "" --text-out transcript.txt
+```
+
+With word timestamps:
+
+```bash
+audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-0.6B --backend cuda --audio speech_16k.wav --text "" --text-out transcript.txt --words-out words.json --session-option qwen3_asr.forced_aligner_model_path=models/Qwen3-ForcedAligner-0.6B
 ```
 
 | Option | Values | Default | Meaning |
@@ -120,11 +134,21 @@ audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-0.6B --backe
 | `--text` | text | empty string | Context prompt. |
 | `--language` | language code | empty string | Recognition language hint. |
 | `--max-tokens` | integer | `512` | Maximum decode tokens. |
-| `--words-out` | JSON path | not set | Word timestamp output. |
+| `--audio-chunk-seconds` | float seconds | `30`, or `15` with `--words-out` | Target/max chunk length used before ASR inference. |
+| `--audio-chunk-mode` | `auto`, `fixed`, `vad`, `none` | `auto` | Let the model choose, force fixed chunks, force internal VAD chunks, or disable model-side chunking. |
+| `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
+| `--words-out` | JSON path | not set | Word timestamp output. Requires `qwen3_asr.forced_aligner_model_path`. |
+| `--session-option qwen3_asr.forced_aligner_model_path=<path>` | model directory | not set | Qwen3 Forced Aligner model used to generate word timestamps after ASR. |
+| `--session-option qwen3_asr.vad_model_path=<path>` | model directory | `assets/framework/models/silero_vad` | Optional internal VAD model override for timestamp-safe chunking. |
 
 ## Qwen3 Forced Aligner
 
 The forced aligner maps an exact transcript onto speech audio. It is not an ASR route: the transcript is required input.
+Standalone forced alignment does not chunk audio because exact transcript/audio
+chunk pairing cannot be inferred safely from a raw transcript. For long-audio
+timestamping, use Qwen3 ASR with `--words-out` and
+`qwen3_asr.forced_aligner_model_path`; ASR chunks the audio first, then aligns
+each recognized transcript to its matching audio chunk.
 
 | Field | Value |
 |---|---|
@@ -144,6 +168,7 @@ audiocpp_cli --task align --family qwen3_forced_aligner --model models/Qwen3-For
 | `--audio` | WAV path | required | Speech audio; use 16 kHz WAV for the examples. |
 | `--text` | exact transcript | required | Transcript to align. |
 | `--language` | language code | required | Transcript language. |
+| `--audio-chunk-mode` | `auto`, `none` | `auto` | Standalone forced alignment runs one audio/transcript pair. `fixed` and `vad` are rejected because transcript chunk boundaries would be ambiguous. |
 | `--words-out` | JSON path | not set | Word timestamp output. |
 
 ## Weight Options

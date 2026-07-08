@@ -78,13 +78,29 @@ Silero VAD is bundled as a small framework asset and detects speech segments. It
 | Model directory | `assets/framework/models/silero_vad` |
 | Task | `vad` |
 | Modes | `offline`, `streaming` |
-| Output | Speech segment JSON through `--segments-out` |
+| Output | Speech segment JSON through `--segments-out`; offline VAD chunk windows through `--vad-chunks-out` |
 | Sample rates | 16 kHz path is used by the examples; 512-sample streaming chunks are required by the model path |
 
 Offline:
 
 ```bash
 audiocpp_cli --task vad --family silero_vad --model assets/framework/models/silero_vad --backend cuda --audio speech_16k.wav --segments-out segments.json
+```
+
+Offline VAD chunk planning:
+
+```bash
+audiocpp_cli \
+  --task vad \
+  --family silero_vad \
+  --model assets/framework/models/silero_vad \
+  --backend cuda \
+  --audio speech_16k.wav \
+  --segments-out segments.json \
+  --vad-chunks-out vad_chunks.json \
+  --vad-chunk-max-seconds 45 \
+  --vad-chunk-merge-gap-seconds 0.5 \
+  --vad-chunk-padding-seconds 0.25
 ```
 
 Streaming:
@@ -98,6 +114,10 @@ audiocpp_cli --task vad --family silero_vad --model assets/framework/models/sile
 | `--audio` | WAV path | required | Input audio. |
 | `--mode` | `offline`, `streaming` | `offline` | Full-file or streaming VAD. |
 | `--segments-out` | JSON path | not set | Write speech segments. |
+| `--vad-chunks-out` | JSON path | not set | Write offline VAD-based chunk windows. |
+| `--vad-chunk-max-seconds` | seconds | `45` | Maximum VAD chunk length. |
+| `--vad-chunk-merge-gap-seconds` | seconds | `0.5` | Merge padded speech spans separated by this gap or less. |
+| `--vad-chunk-padding-seconds` | seconds | `0.25` | Pad each speech segment before chunk planning. |
 | `--chunk-size` | samples | `512` | Streaming chunk size; Silero streaming requires 512 samples. |
 | `--request-option threshold=<float>` | float | `0.5` | Speech probability threshold. |
 | `--request-option neg_threshold=<float>` | float | `threshold - 0.15`, clamped to at least `0.01` | Negative threshold used by the state machine when not set directly. |

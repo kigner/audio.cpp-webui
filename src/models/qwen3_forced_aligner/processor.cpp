@@ -305,6 +305,9 @@ std::vector<engine::runtime::WordTimestamp> Qwen3ForcedAlignProcessor::parse_tim
     if (assets_.config.timestamp_segment_time_ms <= 0) {
         throw std::runtime_error("Qwen3 forced aligner model is missing timestamp_segment_time");
     }
+    if (sample_rate <= 0) {
+        throw std::runtime_error("Qwen3 forced aligner sample_rate must be positive");
+    }
     std::vector<int64_t> timestamp_ms;
     timestamp_ms.reserve(timestamp_ids.size());
     for (const int32_t id : timestamp_ids) {
@@ -327,6 +330,27 @@ std::vector<engine::runtime::WordTimestamp> Qwen3ForcedAlignProcessor::parse_tim
         timestamp.word = words[i];
         timestamp.confidence = 0.0F;
         out.push_back(std::move(timestamp));
+    }
+    // The official Qwen3 forced aligner can emit equal start/end timestamps for
+    // some transcript tokenizations. Keep the predicted ordering, but repair
+    // zero-length spans before exposing framework WordTimestamp output.
+    const int64_t min_span_samples = std::max<int64_t>(
+        1,
+        static_cast<int64_t>(std::llround(
+            static_cast<double>(assets_.config.timestamp_segment_time_ms) * sample_rate / 1000.0)));
+    int64_t previous_end = 0;
+    for (size_t i = 0; i < out.size(); ++i) {
+        auto & timestamp = out[i];
+        timestamp.span.start_sample = std::max(timestamp.span.start_sample, previous_end);
+        if (timestamp.span.end_sample <= timestamp.span.start_sample) {
+            const int64_t min_end = timestamp.span.start_sample + min_span_samples;
+            if (i + 1 < out.size() && out[i + 1].span.start_sample > timestamp.span.start_sample) {
+                timestamp.span.end_sample = std::min(min_end, out[i + 1].span.start_sample);
+            } else {
+                timestamp.span.end_sample = min_end;
+            }
+        }
+        previous_end = timestamp.span.end_sample;
     }
     return out;
 }
