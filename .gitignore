@@ -29,6 +29,7 @@ __pycache__/
 /venv/
 /.codegraph/
 /.cursor/
+/.playwright-mcp/
 
 # --- portable bundle: distributed manually, never committed ---
 /audiocpp-portable/
