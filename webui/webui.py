@@ -341,6 +341,9 @@ MODEL_PROFILES = {
         "input_hint": (
             "**ACE-Step** 音乐生成/编辑：提示词写风格/乐器/情绪（英文最佳），可填歌词。"
             "编辑类 route 需上传源音频并建议先点『🔍 分析源音频』；参数详解见 webui/README.md。"),
+        # 原版 turbo UI 默认 shift=3.0（C++ 端默认 1.0，仅 remix/extract 路由自带 3.0）。
+        # 控件只发用户改过的项，所以这里显式发送，保证 UI 显示值=实际值。
+        "default_options": {"shift": 3.0},
     },
     "stable_audio": {
         "input_hint": (
@@ -2006,8 +2009,11 @@ def do_music_analyze(model, source_audio, seed, adv_values):
             raise gr.Error("只有 ACE-Step 支持源音频分析，请先在模型列表选 ACE-Step")
         ensure_model_loaded(model, GEN_TASKS)
 
+        # 分析要可复现：seed=-1（随机）时固定为 1234，不跟生成共享随机性；
+        # 用户显式填的固定 seed 仍然生效（可换 seed 重抽歌词转写）。
+        analyze_seed = 1234 if int(seed if seed is not None else -1) == -1 else int(seed)
         req = {"text": "analyze", "task_route": "analyze",
-               "audio": _ensure_wav(source_audio), "seed": _resolve_seed(seed)[0]}
+               "audio": _ensure_wav(source_audio), "seed": analyze_seed}
         dur = _audio_duration_seconds(req["audio"])
         dur_note = f"{dur:.1f}s" if dur is not None else "未知"
         _ui_log(f"源音频分析开始：model={model}，音频 {dur_note}")

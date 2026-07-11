@@ -56,7 +56,8 @@
 
   "ace_step": [
     {"name": "task_route", "type": "choice", "label": "task_route（操作类型）", "default": "text2music", "choices": ["text2music", "complete", "lego", "extract", "cover", "cover-nofsq", "repaint", "remix"], "info": "cover/remix=换词翻唱，非 text2music 需上传源音频；详见 webui/README.md"},
-    {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 8, "minimum": 1, "step": 1, "precision": 0, "info": "扩散步数"},
+    {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 8, "minimum": 1, "maximum": 20, "step": 1, "precision": 0, "info": "扩散步数（turbo 上限 20）；remix 路由不填时默认 16，其他路由默认 8"},
+    {"name": "shift", "type": "slider", "label": "shift（时间步弯曲）", "default": 3.0, "minimum": 1.0, "maximum": 5.0, "step": 0.5, "info": "原版 turbo 默认 3.0；1.0 会明显劣化 remix 换词咬字"},
     {"name": "guidance_scale", "type": "slider", "label": "guidance_scale", "default": 1.0, "minimum": 0.0, "maximum": 5.0, "step": 0.1},
     {"name": "audio_cover_strength", "type": "slider", "label": "【cover】audio_cover_strength", "default": 1.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "1=贴近原曲，0=自由发挥；建议 0.5"},
     {"name": "cover_noise_strength", "type": "slider", "label": "【cover】cover_noise_strength", "default": 0.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "保旋律强度；推荐 0.1~0.25"},
@@ -64,7 +65,7 @@
     {"name": "source_lyrics", "type": "text", "lines": 4, "label": "【remix】source_lyrics", "default": "", "placeholder": "源歌曲原歌词；『🔍 分析』自动填"},
     {"name": "flow_edit_n_min", "type": "slider", "label": "【remix】flow_edit_n_min", "default": 0.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "调大更保源曲、换词更弱"},
     {"name": "flow_edit_n_max", "type": "slider", "label": "【remix】flow_edit_n_max", "default": 1.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "info": "唱不出新歌词时降到 0.7~0.9"},
-    {"name": "flow_edit_n_avg", "type": "number", "label": "【remix】flow_edit_n_avg", "default": 1, "minimum": 1, "maximum": 4, "step": 1, "precision": 0, "info": "2 更稳但更慢"},
+    {"name": "flow_edit_n_avg", "type": "number", "label": "【remix】flow_edit_n_avg", "default": 2, "minimum": 1, "maximum": 4, "step": 1, "precision": 0, "info": "每步多次采样取平均（remix 默认 2）；1=最快"},
     {"name": "bpm", "type": "number", "label": "【曲谱】BPM", "default": 0, "minimum": 0, "step": 1, "precision": 0, "info": "0=不指定"},
     {"name": "keyscale", "type": "text", "label": "【曲谱】keyscale", "default": "", "placeholder": "如 F major"},
     {"name": "timesignature", "type": "text", "label": "【曲谱】timesignature", "default": "", "placeholder": "如 4"}

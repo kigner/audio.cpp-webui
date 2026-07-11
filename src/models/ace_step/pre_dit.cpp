@@ -680,7 +680,11 @@ std::vector<int32_t> AceStepPreDitRuntime::encode_source_audio_codes(
         throw std::runtime_error("ACE-Step analyze source audio appears to be silent");
     }
     ensure_vae_encoder();
-    AceStepLatents latents = vae_encoder_->encode(normalized, seed, std::string());
+    // Analyze is an understanding task: use the posterior mean instead of a
+    // sampled latent so the FSQ codes (and thus caption/metas) are stable
+    // across runs regardless of seed.
+    AceStepLatents latents = vae_encoder_->encode(
+        normalized, seed, std::string(), /*posterior_mean=*/true);
     if (execution_->backend_type() == core::BackendType::Metal) {
         release_vae_encoder();
     }

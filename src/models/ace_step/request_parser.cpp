@@ -161,6 +161,15 @@ AceStepRequest ace_step_parse_request(const runtime::TaskRequest &request) {
         out.generation.guidance_scale = 7.0F;
         out.generation.shift = 3.0F;
     }
+    if (out.task == AceStepTaskType::Remix) {
+        // Reference turbo UI runs flow-edit with shift=3.0; shift=1.0 spends
+        // edit steps at low noise and audibly degrades new-lyric articulation.
+        // 16 steps + n_avg=2 trade ~4x edit time for articulation stability
+        // (remix only — other routes keep the turbo default of 8 steps).
+        out.generation.shift = 3.0F;
+        out.generation.num_inference_steps = 16;
+        out.generation.flow_edit_n_avg = 2;
+    }
     if (const auto bpm = runtime::find_option(request.options, {"bpm"}); bpm.has_value()) {
         out.bpm = runtime::parse_i64_option(request.options, {"bpm"}).value();
     }

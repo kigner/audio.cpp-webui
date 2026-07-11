@@ -93,8 +93,8 @@ AceStepGenerationOptions normalize_generation_options_for_model(
     const AceStepGenerationOptions & options,
     const AceStepAssets & assets) {
     AceStepGenerationOptions normalized = options;
-    if (assets.config.diffusion.is_turbo && normalized.num_inference_steps > 8) {
-        normalized.num_inference_steps = 8;
+    if (assets.config.diffusion.is_turbo && normalized.num_inference_steps > 20) {
+        normalized.num_inference_steps = 20;
     }
     return normalized;
 }
