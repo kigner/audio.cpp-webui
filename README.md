@@ -39,6 +39,8 @@ The `webui/` directory contains a Windows-friendly local launcher layer for audi
 
 For full setup notes, script arguments, environment variables, API examples, WebUI advanced-parameter behavior, common model ids, and troubleshooting, see [webui/README.md](webui/README.md).
 
+📺 **Video tutorial:** for a hands-on walkthrough of setting up and using this repo, watch the [video tutorial on YouTube](https://youtu.be/bDznyUOAzuc).
+
 ## News
 
 > [!IMPORTANT]
