@@ -25,6 +25,14 @@
 
     { "id": "qwen3-asr",              "display_name": "Qwen3-ASR 0.6B (asr)",                  "family": "qwen3_asr",            "path": "models/Qwen3-ASR-0.6B",                  "task": "asr",   "mode": "offline", "download_id": "qwen3_asr_0_6b",          "min_vram_gb": 3 },
     { "id": "citrinet-asr",           "display_name": "Citrinet ASR (asr)",                    "family": "citrinet_asr",         "path": "models/citrinet",                        "task": "asr",   "mode": "offline", "download_id": "citrinet_asr",            "min_vram_gb": 2 },
+    { "id": "nemotron-asr",           "display_name": "Nemotron 3.5 ASR 0.6B (asr, 100+语种)",  "family": "nemotron_asr",         "path": "models/nemotron-3.5-asr-streaming-0.6b", "task": "asr",   "mode": "offline", "download_id": "nemotron_asr",            "min_vram_gb": 4,
+      "input_hint": "**Nemotron ASR**：100+ 语种，语种码为 BCP-47（如 en-US / zh-CN），留空=auto；模型自带长音频处理。" },
+    { "id": "higgs-audio-stt",        "display_name": "Higgs Audio v3 STT (asr, 英语)",         "family": "higgs_audio_stt",      "path": "models/higgs-audio-v3-stt",              "task": "asr",   "mode": "offline", "download_id": "higgs_audio_stt",         "min_vram_gb": 8,
+      "input_hint": "**Higgs Audio STT**：英语转写；可在文本框填指令（默认相当于 Transcribe the speech.）；离线模式自动切分长音频。" },
+    { "id": "hviske-asr",             "display_name": "Hviske v5.3 (asr, 丹麦语)",              "family": "hviske_asr",           "path": "models/hviske-v5.3",                     "task": "asr",   "mode": "offline", "download_id": "hviske_asr",              "min_vram_gb": 6,
+      "input_hint": "**Hviske ASR**：丹麦语专用；模型侧自动分段。" },
+    { "id": "vibevoice-asr",          "display_name": "VibeVoice ASR (asr, 多语种+说话人分段)",   "family": "vibevoice_asr",        "path": "models/VibeVoice-ASR",                   "task": "asr",   "mode": "offline", "download_id": "vibevoice_asr",           "min_vram_gb": 20,
+      "input_hint": "**VibeVoice ASR**：自动语种，可输出分段/说话人轮次；文本框可填上下文提示（如 The recording is a meeting conversation.）。权重 17.3G，8G 卡跑不动。" },
 
     { "id": "vevo2",                  "display_name": "Vevo2 (vc 语音转换)",                    "family": "vevo2",                "path": "models/Vevo2",                           "task": "vc",    "mode": "offline", "download_id": "vevo2",                   "min_vram_gb": 6 },
     { "id": "vevo2-svc",              "display_name": "Vevo2 (svc 歌声转换)",                   "family": "vevo2",                "path": "models/Vevo2",                           "task": "svc",   "mode": "offline", "download_id": "vevo2",                   "min_vram_gb": 6,
