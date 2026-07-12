@@ -1,5 +1,8 @@
 # audio.cpp
 
+> [!NOTE]
+> This repository is a downstream distribution of [**0xShug0/audio.cpp**](https://github.com/0xShug0/audio.cpp) (Apache-2.0, Copyright ShugoAI LLC), extended with a full-task WebUI and Windows-friendly local launcher scripts, and periodically merged with upstream. All credit for the core inference framework goes to the upstream project — please star and contribute there.
+
 `audio.cpp` is a high-performance C++ audio inference framework built on top of `ggml`, designed to make modern local audio models practical, portable, and fast.
 
 Tired of juggling a dozen Conda environments, hundreds of Python packages, and dependency conflicts just to try a few audio models? audio.cpp gives those paths a shared native runtime instead.
