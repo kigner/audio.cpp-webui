@@ -36,6 +36,8 @@ __pycache__/
 
 # --- portable bundle: distributed manually, never committed ---
 /audiocpp-portable/
+/AGENTS.md
+/CLAUDE.md
 
 # --- WebUI runtime artifacts: keep the source + empty dirs, drop generated files ---
 /webui/output/*
