@@ -295,7 +295,14 @@ MODEL_PROFILES = {
     },
     "voxcpm2": {
         "input_hint": (
-            "**VoxCPM2** 声音克隆：上传干净的单人参考音色并填『参考文本』；长文本自动分段。"),
+            "**VoxCPM2** 声音克隆：上传干净的单人参考音色并填『参考文本』；长文本自动分段；"
+            "支持⚡流式生成（生成模式选『流式』，边生成边播放）。"),
+        # 服务端流式（server mode=streaming + /v1/audio/speech stream_format=sse）：
+        # delta 事件是 base64 的裸 PCM16，不带采样率——只能客户端自带。取值来自模型
+        # config.json 的 audio_vae.out_sample_rate（48000）。流式生成要求显式
+        # retry_badcase=false（generator.cpp:1259，重试逻辑与已推流的音频冲突）。
+        "supports_streaming": True,
+        "stream_sample_rate": 48000,
         # 8G 4060 实测标定（2026-07-05，CLI --log + nvidia-smi 抓峰值）：
         # - 峰值 ≈ 固定基线 + audiovae 解码图。基线（权重+KV+生成图）与文本长度/
         #   max_tokens 无关：max_tokens 128/300/1200 峰值都是 7634MiB（生成会提前
@@ -388,6 +395,19 @@ MODEL_PROFILES = {
     "mel_band_roformer": {
         "input_hint": "**Mel-Band RoFormer**：输出人声轨 + 伴奏轨。",
     },
+    "nemotron_asr": {
+        "input_hint": ("**Nemotron ASR**：100+ 语种；支持⚡流式转写"
+                       "（勾选后边转边出字，长音频不用干等）。"),
+        "supports_streaming": True,
+    },
+    "higgs_audio_stt": {
+        "input_hint": "**Higgs Audio STT**：支持⚡流式转写（勾选后边转边出字）。",
+        "supports_streaming": True,
+    },
+    "vibevoice_asr": {
+        "input_hint": "**VibeVoice-ASR**：支持⚡流式转写（勾选后边转边出字）。",
+        "supports_streaming": True,
+    },
     "silero_vad": {
         "input_hint": "**Silero VAD**：检测音频中的语音段。",
     },
@@ -417,6 +437,9 @@ QWEN3_ASR_LANGUAGES = [
 ]
 
 DEFAULT_PROFILE = {"input_hint": "", "wrap_speaker_script": False, "default_options": {},
+                   # C++ 会话实现了 IStreamingVoiceTaskSession 的家族（server 需以
+                   # mode=streaming 加载才走流式路由）；见 registry 各家族 loader。
+                   "supports_streaming": False,
                    # Families with internal chunking handle long text fine; the client
                    # split only exists to bound each HTTP request (no 900 s timeout)
                    # and surface progress, so the budget can stay coarse.
@@ -433,6 +456,11 @@ def profile_for(entry):
     if entry.get("default_options"):
         prof["default_options"] = {**prof.get("default_options", {}), **entry["default_options"]}
     return prof
+
+
+def supports_streaming(model_id):
+    entry = catalog_by_id(model_id) if model_id else None
+    return bool(entry) and bool(profile_for(entry).get("supports_streaming"))
 
 
 def model_hint_for(model_id):
@@ -1030,6 +1058,7 @@ _proc_lock = threading.Lock()
 _server_proc = None      # subprocess.Popen we launched, or None
 _loaded_id = None        # model id our managed server is serving
 _loaded_session_options = None   # 随本次加载写进 server config 的 session_options
+_loaded_mode = None              # 本次加载的运行模式（offline/streaming），None=未加载
 
 
 def catalog_models():
@@ -1209,8 +1238,9 @@ def _write_temp_config(entry):
 
 
 def _stop_server():
-    global _server_proc, _loaded_id, _loaded_session_options
+    global _server_proc, _loaded_id, _loaded_session_options, _loaded_mode
     _loaded_session_options = None
+    _loaded_mode = None
     proc, _server_proc, _loaded_id = _server_proc, None, None
     if proc is not None and proc.poll() is None:
         try:
@@ -1361,11 +1391,13 @@ def _wait_health(timeout):
     return False
 
 
-def ensure_model_loaded(model_id, expect_tasks=None, session_options=None):
+def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=None):
     """(Re)start the server so `model_id` is loaded. Returns a status string.
     session_options：额外写进本次 server config 的 session_options（string→string，
-    如 sortformer 的 session_len_sec）；与上次加载不一致时会重启重载。"""
-    global _loaded_session_options
+    如 sortformer 的 session_len_sec）；与上次加载不一致时会重启重载。
+    mode：覆盖 catalog 条目的运行模式（"streaming"/"offline"），流式转写/生成用；
+    与上次加载不一致时同样重启重载。"""
+    global _loaded_session_options, _loaded_mode
     if not model_id:
         raise gr.Error("请先选择一个模型")
     entry = catalog_by_id(model_id)
@@ -1376,12 +1408,15 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None):
     if expect_tasks and entry.get("task") not in expect_tasks:
         raise gr.Error(
             f"模型 {model_id} 的 task 是 {entry.get('task')}，此处需要 {'/'.join(expect_tasks)}")
+    want_mode = mode or entry.get("mode", "offline")
+    mode_note = "（流式模式）" if want_mode == "streaming" else ""
 
     with _proc_lock:
         managed_alive = _server_proc is not None and _server_proc.poll() is None
         if (managed_alive and _loaded_id == model_id and server_alive()
-                and (session_options or {}) == (_loaded_session_options or {})):
-            return f"✅ 已加载：{entry['label']}"
+                and (session_options or {}) == (_loaded_session_options or {})
+                and want_mode == (_loaded_mode or entry.get("mode", "offline"))):
+            return f"✅ 已加载：{entry['label']}{mode_note}"
 
         if not managed_alive and server_alive():
             # A server we didn't launch is holding the port.
@@ -1389,6 +1424,10 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None):
                 raise gr.Error(
                     f"当前 {HOST}:{PORT} 上是外部启动的 server，无法按需调整其"
                     f"session 配置（需要 {session_options}）。请先关闭它。")
+            if mode and mode != entry.get("mode", "offline"):
+                raise gr.Error(
+                    f"当前 {HOST}:{PORT} 上是外部启动的 server，无法切换其运行模式"
+                    f"（需要 mode={mode}）。请先关闭它，或改用本 WebUI 加载模型。")
             if model_id in loaded_ids():
                 return f"✅ 复用外部 server：{entry['label']}"
             raise gr.Error(
@@ -1396,20 +1435,23 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None):
                 f"（例如 run_server.bat）。请先关闭它，或设 AUDIOCPP_SERVER 指向它。")
 
         _stop_server()
-        if session_options:
+        if session_options or want_mode != entry.get("mode", "offline"):
             entry = dict(entry)
-            entry["session_options"] = {
-                **(entry.get("session_options") or {}), **session_options}
+            entry["mode"] = want_mode
+            if session_options:
+                entry["session_options"] = {
+                    **(entry.get("session_options") or {}), **session_options}
         t0 = time.time()
         _start_server(entry)
         _loaded_session_options = dict(session_options) if session_options else None
+        _loaded_mode = want_mode
         if not _wait_health(LOAD_TIMEOUT):
             tail = _log_tail()
             _stop_server()
             _ui_log(f"模型 {entry['label']} 加载失败/超时（{LOAD_TIMEOUT}s）")
             raise gr.Error(f"加载 {entry['label']} 失败/超时（{LOAD_TIMEOUT}s）。\n日志尾部：\n{tail}")
-        _ui_log(f"模型 {entry['label']} 加载完成，用时 {time.time() - t0:.1f}s")
-        return f"✅ 已加载：{entry['label']}"
+        _ui_log(f"模型 {entry['label']} 加载完成{mode_note}，用时 {time.time() - t0:.1f}s")
+        return f"✅ 已加载：{entry['label']}{mode_note}"
 
 
 def unload_model():
@@ -1671,7 +1713,12 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
                 "请把正文加长到 ≥40 个汉字（英文约 ≥35 词），"
                 "或改用 qwen3-tts / voxcpm2 / pocket-tts 等对短句稳定的模型。")
 
+        # 加载/模式切换（可能几十秒）单独计时：状态栏的"用时"只含合成本身，
+        # 不报加载会让它看起来远小于实际等待时间。
+        t_load = time.time()
         ensure_model_loaded(model, TTS_TASKS)
+        load_s = time.time() - t_load
+        load_note = f"，含模型加载 {load_s:.1f}s" if load_s >= 1.0 else ""
 
         # Model-specific knobs travel in a nested "options" object; the server merges
         # every key into the request options and each model reads what it understands.
@@ -1743,11 +1790,205 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         elapsed = time.time() - t_start
         _ui_log(f"TTS 完成：{out}，总用时 {elapsed:.1f}s")
         parts_note = f"（{len(blobs)} 段）" if len(blobs) > 1 else ""
-        return out, f"✅ 生成完成{parts_note}，用时 {elapsed:.1f}s。{seed_note}"
+        return out, f"✅ 生成完成{parts_note}，合成用时 {elapsed:.1f}s{load_note}。{seed_note}"
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
         return None, f"❌ 生成失败：{e}"
+
+
+def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
+                  reference_text, seed, max_tokens, adv_values, adv_options):
+    """流式 TTS 生成器（目前 voxcpm2）：产出 (音频增量, 最终文件, 状态)。
+    音频增量是 (sr, np.int16 数组)，喂给 streaming=True 的 gr.Audio 逐段追加
+    播放；结束时把完整音频写成 wav 一并给普通输出组件（可下载/回放）。
+    server 端 /v1/audio/speech stream_format=sse 的 delta 是 base64 裸 PCM16。"""
+    if not (text or "").strip():
+        raise gr.Error("请输入要合成的文字")
+    entry = catalog_by_id(model)
+    prof = profile_for(entry) if entry else DEFAULT_PROFILE
+    if not prof.get("supports_streaming"):
+        raise gr.Error(f"模型 {model} 不支持流式生成。支持流式的 TTS：voxcpm2。")
+    sr = int(prof.get("stream_sample_rate") or 0)
+    if sr <= 0:
+        raise gr.Error(f"模型 {model} 的 profile 缺 stream_sample_rate，无法流式播放。")
+
+    t_load = time.time()
+    ensure_model_loaded(model, TTS_TASKS, mode="streaming")
+    load_s = time.time() - t_load
+    load_note = f"，含模型加载 {load_s:.1f}s" if load_s >= 1.0 else ""
+    options = _merged_options(prof, adv_values, adv_options)
+    # 流式生成的硬性要求（generator.cpp:1259）：badcase 重试要重新生成整段，
+    # 与已经推给播放器的音频冲突，所以流式下强制关闭（覆盖用户设置）。
+    options["retry_badcase"] = False
+    options.pop("voxcpm2.retry_badcase", None)
+
+    voice_path = None
+    if uploaded_voice:
+        voice_path = uploaded_voice
+    elif builtin_voice and builtin_voice != "(none)":
+        voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
+
+    seed, seed_note = _resolve_seed(seed)
+    payload = {
+        "model": model,
+        "language": resolve_language(prof, language),
+        "seed": seed,
+        "max_tokens": int(max_tokens),
+        "stream": True,
+        "stream_format": "sse",
+        "response_format": "pcm",
+        "options": options,
+    }
+    if voice_path:
+        payload["voice_ref"] = _ensure_wav(voice_path)
+    if (reference_text or "").strip():
+        payload["reference_text"] = reference_text
+
+    chunks = _split_tts_chunks(text, prof.get("chunk_chars", 1000))
+    _ui_log(f"TTS 开始（流式）：model={model}，{len(chunks)} 段 / "
+            f"共 {sum(len(c) for c in chunks)} 字")
+    t_start = time.time()
+    all_parts = []          # 全部 PCM（拼最终 wav）
+    pending = []            # 未推给播放器的 PCM 增量（凑批再推，免得刷屏）
+    pending_samples = 0
+    min_push = int(sr * 0.4)   # 每 ~0.4s 音频推一次播放器
+    ttft_note = ""
+
+    def _flush():
+        nonlocal pending, pending_samples
+        if not pending:
+            return None
+        arr = pending[0] if len(pending) == 1 else np.concatenate(pending)
+        pending, pending_samples = [], 0
+        return arr
+
+    for i, chunk in enumerate(chunks):
+        seg_note = f"（{i + 1}/{len(chunks)} 段）" if len(chunks) > 1 else ""
+        payload["input"] = chunk
+        t_chunk = time.time()
+        try:
+            r = requests.post(f"{SERVER}/v1/audio/speech", json=payload,
+                              stream=True, timeout=900)
+        except requests.RequestException as e:
+            _ui_log(f"TTS 失败（流式）：段 {i + 1}/{len(chunks)} 无法连接 server")
+            raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+        with r:
+            if r.status_code != 200:
+                _ui_log(f"TTS 失败（流式）：段 {i + 1}/{len(chunks)}，server {r.status_code}")
+                raise server_error(entry, r.status_code, r.text)
+            for event in _iter_sse_events(r):
+                etype = event.get("type")
+                if etype == "speech.audio.delta":
+                    pcm = base64.b64decode(event.get("audio") or "")
+                    if not pcm:
+                        continue
+                    arr = np.frombuffer(pcm, dtype=np.int16)
+                    all_parts.append(arr)
+                    pending.append(arr)
+                    pending_samples += arr.size
+                    if pending_samples >= min_push:
+                        out_arr = _flush()
+                        done_s = sum(a.size for a in all_parts) / sr
+                        yield ((sr, out_arr), None,
+                               f"⏳ 流式生成中{seg_note}…已出 {done_s:.1f}s 音频")
+                elif etype == "speech.audio.done":
+                    if i == 0 and not ttft_note:
+                        ttft = (event.get("timing") or {}).get("ttft_ms")
+                        if ttft:
+                            ttft_note = f"，首包 {ttft / 1000:.1f}s"
+        _ui_log(f"TTS 段 {i + 1}/{len(chunks)} 完成（流式，{len(chunk)} 字，"
+                f"{time.time() - t_chunk:.1f}s）")
+
+    tail = _flush()
+    if tail is not None:
+        yield (sr, tail), None, "⏳ 流式生成收尾…"
+    if not all_parts:
+        raise gr.Error("流式生成没有产出任何音频增量。")
+    out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_stream_{int(time.time() * 1000)}.wav")
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(np.concatenate(all_parts).tobytes())
+    elapsed = time.time() - t_start
+    audio_s = sum(a.size for a in all_parts) / sr
+    parts_note = f"（{len(chunks)} 段）" if len(chunks) > 1 else ""
+    _ui_log(f"TTS 完成（流式）：{out}，音频 {audio_s:.1f}s，总用时 {elapsed:.1f}s")
+    yield (None, out,
+           f"✅ 流式生成完成{parts_note}，音频 {audio_s:.1f}s，"
+           f"合成用时 {elapsed:.1f}s{ttft_note}{load_note}。{seed_note}")
+
+
+def do_tts_or_stream(model, gen_mode, text, language, uploaded_voice, builtin_voice,
+                     reference_text, seed, max_tokens, adv_values, adv_options,
+                     progress=gr.Progress()):
+    """TTS 按钮统一入口：离线模式原样走 do_tts（行为不变），流式模式走
+    do_tts_stream。输出：(流式播放增量, 输出文件, 状态)。
+    先 yield 一条即时提示——模型未加载/需切换模式时后续要静默等几十秒。"""
+    yield None, None, "⏳ 生成中…（模型未加载或需切换离线/流式模式时，会先重载几十秒）"
+    if gen_mode == "流式":
+        try:
+            yield from do_tts_stream(model, text, language, uploaded_voice,
+                                     builtin_voice, reference_text, seed,
+                                     max_tokens, adv_values, adv_options)
+        except gr.Error as e:
+            yield None, None, _msg_from_error(e)
+        except Exception as e:
+            yield None, None, f"❌ 流式生成失败：{e}"
+        return
+    out, msg = do_tts(model, text, language, uploaded_voice, builtin_voice,
+                      reference_text, seed, max_tokens, adv_values, adv_options,
+                      progress=progress)
+    yield None, out, msg
+
+
+def _iter_sse_events(response):
+    """逐个产出 SSE 事件（dict）。server 每个事件一行 `data: {json}`，事件间空行
+    分隔（write_sse）；`data: [DONE]` 表示流结束。type=error 的事件直接抛错。"""
+    for line in response.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[len("data:"):].strip()
+        if data == "[DONE]":
+            return
+        try:
+            event = json.loads(data)
+        except ValueError:
+            continue
+        if event.get("type") == "error":
+            err = event.get("error") or {}
+            raise gr.Error(f"server 流式错误：{err.get('message') or event}")
+        yield event
+
+
+def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR"):
+    """流式转写一个 WAV（server 需已按 mode=streaming 加载）：产出
+    (累计文本, 是否最终, ttft_ms)。整个文件一个请求——增量出字本身就解决了
+    离线路径靠分段缓解的"长音频干等"问题。"""
+    payload = {"model": model, "audio": wav_path, "stream": True, **extras}
+    try:
+        r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload,
+                          stream=True, timeout=900)
+    except requests.RequestException as e:
+        _ui_log(f"{tag} 失败：无法连接 server")
+        raise gr.Error(f"无法连接 server @ {SERVER}：{e}\n💡 server 可能已退出，重新点『📥 加载模型』。")
+    with r:
+        if r.status_code != 200:
+            _ui_log(f"{tag} 失败：server {r.status_code}")
+            raise server_error(entry, r.status_code, r.text)
+        text = ""
+        for event in _iter_sse_events(r):
+            etype = event.get("type")
+            if etype == "transcript.text.delta":
+                text += event.get("delta") or ""
+                yield text, False, None
+            elif etype == "transcript.text.done":
+                final = (event.get("text") or text).strip()
+                ttft = (event.get("timing") or {}).get("ttft_ms")
+                yield final, True, ttft
+                return
+    raise gr.Error("流式转写未收到最终结果（transcript.text.done）")
 
 
 def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR"):
@@ -1791,7 +2032,9 @@ def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR"):
     return text, dur, len(chunks)
 
 
-def do_asr(model, audio_path, language="", context="", dialogue=False):
+def do_asr(model, audio_path, language="", context="", dialogue=False, stream=False):
+    """生成器：非流式路径只 yield 一次最终结果（行为与旧版 return 完全一致——
+    Gradio 对生成器处理器逐次刷新输出）；流式路径边收 SSE 增量边 yield。"""
     try:
         if not audio_path:
             raise gr.Error("请上传或录制音频")
@@ -1805,10 +2048,49 @@ def do_asr(model, audio_path, language="", context="", dialogue=False):
         if (context or "").strip():
             extras["context"] = context.strip()
         if dialogue:
-            return _asr_dialogue(model, audio_path, extras)
-        ensure_model_loaded(model, ASR_TASKS)
+            # 对话模式走 Sortformer 切段 + 逐段离线转写，与流式互斥（勾了也忽略）。
+            yield _asr_dialogue(model, audio_path, extras)
+            return
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
+
+        if stream and prof.get("supports_streaming"):
+            yield "", "⏳ 转写中…（模型未加载或需切换模式时，会先重载几十秒）"
+            t_load = time.time()
+            ensure_model_loaded(model, ASR_TASKS, mode="streaming")
+            load_s = time.time() - t_load
+            load_note = f"，含模型加载 {load_s:.1f}s" if load_s >= 1.0 else ""
+            extras_note = "".join(f"，{k}={v[:20]}" for k, v in extras.items())
+            _ui_log(f"ASR 开始（流式）：model={model}{extras_note}")
+            t_start = time.time()
+            dur = _audio_duration_seconds(audio_path)
+            dur_note = f"{dur:.1f}s" if dur is not None else "未知"
+            last_yield = 0.0
+            for text, is_final, ttft in _asr_transcribe_stream(
+                    model, entry, audio_path, extras):
+                if is_final:
+                    elapsed = time.time() - t_start
+                    ttft_note = f"，首字 {ttft / 1000:.1f}s" if ttft else ""
+                    _ui_log(f"ASR 完成（流式）：音频 {dur_note}，用时 {elapsed:.1f}s")
+                    yield text, (f"✅ 流式转写完成（音频 {dur_note}），"
+                                 f"转写用时 {elapsed:.1f}s{ttft_note}{load_note}。")
+                    return
+                # 增量刷新节流：delta 可能非常密，0.15s 一次足够"边转边出字"的观感
+                now = time.time()
+                if now - last_yield >= 0.15:
+                    last_yield = now
+                    yield text, f"⏳ 流式转写中…（音频 {dur_note}）"
+            return
+        if stream and entry is not None:
+            raise gr.Error(
+                f"模型 {model} 不支持流式转写（该家族的 C++ 会话未实现流式接口）。"
+                "支持流式的 ASR：nemotron-asr / higgs-audio-stt / vibevoice-asr。")
+
+        yield "", "⏳ 转写中…（模型未加载或需切换模式时，会先重载几十秒）"
+        t_load = time.time()
+        ensure_model_loaded(model, ASR_TASKS)
+        load_s = time.time() - t_load
+        load_note = f"，含模型加载 {load_s:.1f}s" if load_s >= 1.0 else ""
         extras_note = "".join(f"，{k}={v[:20]}" for k, v in extras.items())
         _ui_log(f"ASR 开始：model={model}{extras_note}")
         t_start = time.time()
@@ -1817,11 +2099,11 @@ def do_asr(model, audio_path, language="", context="", dialogue=False):
         dur_note = f"{dur:.1f}s" if dur is not None else "未知"
         parts_note = f"，{n} 段" if n > 1 else ""
         _ui_log(f"ASR 完成：音频 {dur_note}{parts_note}，用时 {elapsed:.1f}s")
-        return text, f"✅ 转写完成（音频 {dur_note}{parts_note}），用时 {elapsed:.1f}s。"
+        yield text, f"✅ 转写完成（音频 {dur_note}{parts_note}），转写用时 {elapsed:.1f}s{load_note}。"
     except gr.Error as e:
-        return "", _msg_from_error(e)
+        yield "", _msg_from_error(e)
     except Exception as e:
-        return "", f"❌ 转写失败：{e}"
+        yield "", f"❌ 转写失败：{e}"
 
 
 # 对话模式：同一说话人相邻发言段合并的最大间隔 / 每段前后补的余量（防止
@@ -2555,16 +2837,31 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     tts_lang = gr.Dropdown(
                         label="语言（留空=模型默认）", choices=LANGS,
                         value="chinese")
+                    tts_gen_mode = gr.Radio(
+                        label="生成模式（流式=边生成边播放）",
+                        choices=["离线", "流式"], value="离线",
+                        visible=supports_streaming(tts_model.value))
 
                 tts_btn = gr.Button("🎵 生成语音", variant="primary", size="lg")
                 with gr.Group():
                     gr.Markdown("#### 🔊 输出音频")
+                    tts_out_stream = gr.Audio(
+                        label="⚡ 流式播放（边生成边播）", streaming=True,
+                        autoplay=True, visible=False,
+                        elem_classes="audio-default")
                     tts_out = gr.Audio(label="输出音频", type="filepath",
                                        elem_classes="audio-default")
                     tts_msg = gr.Markdown("")
 
         _wire_model_manager(tts_mm, TTS_TASKS, tts_hint)
         tts_model.change(lambda: {}, None, tts_adv_state)  # reset knobs on model switch
+        # 模型切换：只有支持流式的家族（voxcpm2）显示生成模式选择，并重置回离线。
+        tts_model.change(
+            lambda m: gr.update(visible=supports_streaming(m), value="离线"),
+            tts_model, tts_gen_mode)
+        # 流式播放组件只在选了流式模式时出现（离线路径的输出组件保持原样）。
+        tts_gen_mode.change(lambda v: gr.update(visible=(v == "流式")),
+                            tts_gen_mode, tts_out_stream)
         tts_builtin.change(on_builtin_voice_change, tts_builtin,
                            [tts_upload, tts_ref_text])
         tts_voice_refresh.click(refresh_builtin_voices, tts_builtin,
@@ -2572,11 +2869,14 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         # Clear the previous run's audio + status message the moment 生成 is
         # clicked, so a prior message doesn't linger next to the new run's
         # progress indicator (outputs otherwise update only when do_tts returns).
-        tts_btn.click(lambda: (None, ""), None, [tts_out, tts_msg]).then(
-            do_tts,
-            [tts_model, tts_text, tts_lang, tts_upload, tts_builtin,
+        # 流式播放器同样要清：streaming 组件在新一轮事件开始时不会自动复位，
+        # 上一轮的音频会留在播放器里直到新首包到达（模型重载时能有几十秒）。
+        tts_btn.click(lambda: (None, None, ""), None,
+                      [tts_out_stream, tts_out, tts_msg]).then(
+            do_tts_or_stream,
+            [tts_model, tts_gen_mode, tts_text, tts_lang, tts_upload, tts_builtin,
              tts_ref_text, tts_seed, tts_maxtok, tts_adv_state, tts_adv],
-            [tts_out, tts_msg])
+            [tts_out_stream, tts_out, tts_msg])
 
     # ---------------- ASR / 音频转写 ----------------
     with gr.Tab("📝 ASR / 音频转写"):
@@ -2601,6 +2901,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         placeholder="人名/术语等，帮助识别专有名词")
                     asr_dialogue = gr.Checkbox(
                         label="🗣 对话模式（≤120s，需 Sortformer）：输出带说话人和时间戳的对话稿")
+                asr_stream = gr.Checkbox(
+                    label="⚡ 流式转写（边转边出字，长音频不用干等；与对话模式互斥）",
+                    value=False, visible=supports_streaming(asr_model.value))
                 asr_hint = gr.Markdown(model_hint_for(asr_model.value))
                 asr_btn = gr.Button("📝 开始转写", variant="primary", size="lg")
 
@@ -2613,8 +2916,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     asr_msg = gr.Markdown("")
 
         _wire_model_manager(asr_mm, ASR_TASKS, asr_hint)
+        # 模型切换：只有流式家族（nemotron/higgs/vibevoice-asr）显示流式勾选框。
+        asr_model.change(
+            lambda m: gr.update(visible=supports_streaming(m), value=False),
+            asr_model, asr_stream)
         asr_btn.click(lambda: ("", ""), None, [asr_out, asr_msg]).then(
-            do_asr, [asr_model, asr_audio, asr_language, asr_context, asr_dialogue],
+            do_asr, [asr_model, asr_audio, asr_language, asr_context, asr_dialogue,
+                     asr_stream],
             [asr_out, asr_msg])
 
     # ---------------- 音乐 / 音效生成 ----------------
