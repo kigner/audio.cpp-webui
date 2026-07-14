@@ -164,6 +164,7 @@ for _d in (CONFIG_DIR, OUTPUT_DIR, VOICE_DIR, LOG_DIR):
 PROMPTS_DIR = VOICE_DIR                                    # built-in / reference voices
 CATALOG_PATH = os.path.join(CONFIG_DIR, "models_catalog.json")
 MODEL_PARAMS_PATH = os.path.join(CONFIG_DIR, "model_params.json")
+REQUIRED_FILES_PATH = os.path.join(CONFIG_DIR, "required_files.json")
 
 
 def _find_bundle_root():
@@ -1032,8 +1033,25 @@ def _load_model_params():
     return {}
 
 
+def _load_required_files():
+    """download_id -> 安装完成后模型目录里必须存在的文件清单（configs/required_files.json，
+    由 model_manager.py CATALOG 的 required_files 预生成，含 .pt->.safetensors 等转换后
+    的最终布局）。用于把“手动拷贝/下载中断的不完整目录”和“已安装”区分开——不完整目录
+    server 端只会报 no registered model loader，用户看不出缺了什么。
+    文件缺失/损坏 -> {}（完整性检查停用，退回“目录存在即已安装”的旧行为）。"""
+    if os.path.isfile(REQUIRED_FILES_PATH):
+        try:
+            with open(REQUIRED_FILES_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {k: v for k, v in data.items() if isinstance(v, list)}
+        except Exception as e:
+            print(f"[webui] failed to read {REQUIRED_FILES_PATH}: {e}; 跳过模型完整性检查")
+    return {}
+
+
 CATALOG = _load_catalog()
 MODEL_PARAMS = _load_model_params()
+REQUIRED_FILES = _load_required_files()
 HOST = CATALOG.get("host", "127.0.0.1")
 PORT = int(CATALOG.get("port", 8080))
 DEVICE = int(CATALOG.get("device", 0))
@@ -1061,15 +1079,27 @@ _loaded_session_options = None   # 随本次加载写进 server config 的 sessi
 _loaded_mode = None              # 本次加载的运行模式（offline/streaming），None=未加载
 
 
+def _missing_required_files(entry):
+    """目录已存在但缺失的必须文件（相对模型目录）；目录不存在或无清单时返回 []。"""
+    req = REQUIRED_FILES.get(entry.get("download_id") or "")
+    if not req or not os.path.isdir(entry["abs_path"]):
+        return []
+    return [f for f in req if not os.path.isfile(os.path.join(entry["abs_path"], f))]
+
+
 def catalog_models():
-    """Catalog entries annotated with abs_path / installed / label."""
+    """Catalog entries annotated with abs_path / installed / incomplete / label.
+    installed 要求目录存在且 required_files 清单齐全；目录在但缺文件记为
+    incomplete（missing_files 列出缺什么），加载入口据此给出明确报错。"""
     out = []
     for m in CATALOG.get("models", []):
         rel = m.get("path", "")
         ap = rel if os.path.isabs(rel) else os.path.join(BUNDLE_ROOT, rel)
         entry = dict(m)
         entry["abs_path"] = os.path.normpath(ap).replace("\\", "/")
-        entry["installed"] = os.path.exists(entry["abs_path"])
+        entry["missing_files"] = _missing_required_files(entry)
+        entry["incomplete"] = bool(entry["missing_files"])
+        entry["installed"] = os.path.exists(entry["abs_path"]) and not entry["incomplete"]
         entry["label"] = m.get("display_name") or m.get("id", "?")
         out.append(entry)
     return out
@@ -1090,7 +1120,9 @@ def choices_for_tasks(tasks):
         if m.get("task") not in tasks:
             continue
         label = m["label"]
-        if not m["installed"]:
+        if m["incomplete"]:
+            label += " · 目录不完整"
+        elif not m["installed"]:
             label += " · 未安装"
             short = _vram_shortfall(m)
             if short:
@@ -1404,6 +1436,13 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
     if entry is None:
         raise gr.Error(f"catalog 里没有模型 id: {model_id}")
     if not entry["installed"]:
+        if entry["incomplete"]:
+            missing = entry["missing_files"]
+            shown = "、".join(missing[:8]) + (f" 等 {len(missing)} 个" if len(missing) > 8 else "")
+            raise gr.Error(
+                f"模型目录不完整: {entry['abs_path']}\n缺少文件：{shown}\n"
+                "多半是手动拷贝的原始权重（缺转换步骤）或下载中断。"
+                "请点『⬇️ 下载模型』重新安装（会自动补齐格式转换；中断过的官方下载可续传）。")
         raise gr.Error(f"模型未安装（目录不存在）: {entry['abs_path']}")
     if expect_tasks and entry.get("task") not in expect_tasks:
         raise gr.Error(
@@ -1595,6 +1634,9 @@ def download_model(model_id, hf_token="", proxy=""):
     if short:
         warn = (f"⚠️ **显存不足警告**：该模型估算需 **≥{short[0]:g}G** 显存，本机只有 "
                 f"**{short[1]:g}G**——下载后大概率溢出到共享显存、速度很慢甚至跑不动。\n\n") + warn
+    if entry["incomplete"]:
+        warn = (f"⚠️ 检测到 {entry['abs_path']} 已存在但不完整"
+                f"（缺 {len(entry['missing_files'])} 个文件），将覆盖重装。\n\n") + warn
 
     with _dl_lock:
         rec = _downloads.get(model_id)
@@ -1620,6 +1662,9 @@ def download_status(model_id):
         return f"✅ {entry['label']} 已安装"
     rec = _downloads.get(model_id)
     if rec is None:
+        if entry["incomplete"]:
+            return (f"⚠️ {entry['label']} 目录不完整（缺 {len(entry['missing_files'])} 个文件），"
+                    "点『⬇️ 下载模型』覆盖重装")
         return f"⚪ {entry['label']} 未安装，未开始下载"
     code = rec["proc"].poll()
     tail = _read_tail(rec["log"], n=12)
@@ -2614,9 +2659,10 @@ TAB_SPECS = [TTS_TASKS, ASR_TASKS, GEN_TASKS, VC_TASKS,
 def refresh():
     """重读 catalog / 参数配置，刷新每个标签页的模型下拉和提示。
     返回顺序：各页下拉更新（按 TAB_SPECS 顺序）、状态行、各页提示。"""
-    global CATALOG, MODEL_PARAMS
+    global CATALOG, MODEL_PARAMS, REQUIRED_FILES
     CATALOG = _load_catalog()
     MODEL_PARAMS = _load_model_params()
+    REQUIRED_FILES = _load_required_files()
     dropdowns, hints = [], []
     for tasks in TAB_SPECS:
         choices = choices_for_tasks(tasks)
