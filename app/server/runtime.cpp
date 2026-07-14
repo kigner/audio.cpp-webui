@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -224,6 +225,14 @@ HttpResponse chunked_audio_response(std::function<void(HttpStreamWriter &)> stre
     response.content_type = "application/octet-stream";
     response.stream_body = std::move(stream);
     return response;
+}
+
+bool is_wav_upload_filename(const std::string & filename) {
+    std::string ext = std::filesystem::path(filename).extension().string();
+    for (char & ch : ext) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return ext.empty() || ext == ".wav";
 }
 
 // Multipart file uploads arrive as in-memory bytes, but the WAV decoder only reads from disk,
@@ -968,6 +977,12 @@ HttpResponse ServerState::handle_transcription_multipart(const std::string & bod
     }
     if (model_id.empty()) {
         throw std::runtime_error("multipart transcription request requires a 'model' field");
+    }
+    if (!is_wav_upload_filename(file_part->filename)) {
+        return error_response(
+            400,
+            "only WAV audio uploads are currently supported for transcription; MP3 support is planned",
+            "invalid_request_error");
     }
 
     const TempFileGuard guard{write_temp_upload(file_part->filename, file_part->data)};
