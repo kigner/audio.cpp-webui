@@ -24,6 +24,8 @@
     { "id": "heartmula",              "display_name": "HeartMuLa 3B (music gen)",              "family": "heartmula",            "path": "models/HeartMuLa",                       "task": "gen",   "mode": "offline", "download_id": "heartmula",               "session_options": { "heartmula.mem_saver": "true" }, "min_vram_gb": 24 },
 
     { "id": "qwen3-asr",              "display_name": "Qwen3-ASR 0.6B (asr)",                  "family": "qwen3_asr",            "path": "models/Qwen3-ASR-0.6B",                  "task": "asr",   "mode": "offline", "download_id": "qwen3_asr_0_6b",          "min_vram_gb": 3 },
+    { "id": "qwen3-asr-1.7b",         "display_name": "Qwen3-ASR 1.7B HF (asr)",               "family": "qwen3_asr",            "path": "models/Qwen3-ASR-1.7B-hf",               "task": "asr",   "mode": "offline", "download_id": "qwen3_asr_1_7b_hf",       "min_vram_gb": 6,
+      "input_hint": "**Qwen3-ASR 1.7B**（HF 原生权重，免转换）：精度高于 0.6B；长音频自动分段转写；8G 卡显存偏紧，长音频建议先短段试跑。" },
     { "id": "citrinet-asr",           "display_name": "Citrinet ASR (asr)",                    "family": "citrinet_asr",         "path": "models/citrinet",                        "task": "asr",   "mode": "offline", "download_id": "citrinet_asr",            "min_vram_gb": 2 },
     { "id": "nemotron-asr",           "display_name": "Nemotron 3.5 ASR 0.6B (asr, 100+语种)",  "family": "nemotron_asr",         "path": "models/nemotron-3.5-asr-streaming-0.6b", "task": "asr",   "mode": "offline", "download_id": "nemotron_asr",            "min_vram_gb": 4,
       "input_hint": "**Nemotron ASR**：100+ 语种，语种码为 BCP-47（如 en-US / zh-CN），留空=auto；模型自带长音频处理。" },
