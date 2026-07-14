@@ -31,6 +31,7 @@ __pycache__/
 /venv/
 /.codegraph/
 /.cursor/
+/.claude/
 /.playwright-mcp/
 
 # --- portable bundle: distributed manually, never committed ---
@@ -43,5 +44,6 @@ __pycache__/
 !/webui/logs/.gitkeep
 /webui/third_party/
 /webui/llm_api_key.txt
+/webui/configs/ui_language.json
 # personal voice recording — stays local, repo is public
 /webui/voice/my-record.wav
