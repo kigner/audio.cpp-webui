@@ -30,6 +30,8 @@ REM  <model_id> is an entry in %WEBUI_DIR%\configs\models_catalog.json.
 REM  Run it TWICE in two windows with different ids + ports to serve two models
 REM  at once (e.g. one TTS + one ASR). Both models must fit in GPU memory.
 REM  Set AUDIOCPP_HOST=0.0.0.0 to expose on the LAN (no auth — trusted nets only).
+REM  Set AUDIOCPP_MODE=streaming to load the model in streaming mode (SSE
+REM  endpoints; see run_server_asr_stream.bat). Default: offline.
 REM ============================================================
 
 set "MODEL_ID=%~1"
@@ -50,6 +52,11 @@ if defined AUDIOCPP_VOICE_REF if not exist "%AUDIOCPP_VOICE_REF%" (
 )
 set "HOST=%AUDIOCPP_HOST%"
 if not defined HOST set "HOST=127.0.0.1"
+if not defined AUDIOCPP_MODE set "AUDIOCPP_MODE=offline"
+if /I not "%AUDIOCPP_MODE%"=="offline" if /I not "%AUDIOCPP_MODE%"=="streaming" (
+  echo [ERROR] AUDIOCPP_MODE must be "offline" or "streaming", got: %AUDIOCPP_MODE%
+  goto :end
+)
 
 if not exist "%SERVER_EXE%" ( echo [ERROR] server exe not found: %SERVER_EXE% & goto :end )
 if /I "%BACKEND%"=="cpu" echo [run_server] no CUDA detected - CPU backend (slower; model coverage may be lower)
@@ -70,10 +77,10 @@ REM --- write a single-model temp config with an ABSOLUTE path, named per-port s
 REM     two instances never clash. UTF-8, no BOM. Avoids the config-dir-relative
 REM     path resolution in app/server/config.cpp. ---
 set "RUNCONFIG=%TEMP%\audiocpp_server_%PORT%.json"
-powershell -NoProfile -Command "$m=[ordered]@{id='%MODEL_ID%';family='%FAMILY%';path='%MODEL%';task='%TASK%';mode='offline'}; $vr=$env:AUDIOCPP_VOICE_REF; if ($vr -and '%TASK%' -eq 'tts') { $p=[ordered]@{voice_ref=$vr}; if ($env:AUDIOCPP_REF_TEXT) { $p.reference_text=$env:AUDIOCPP_REF_TEXT } else { $pt=Join-Path $env:WEBUI_DIR 'voice\prompt_text'; if (Test-Path $pt) { $bn=[IO.Path]::GetFileNameWithoutExtension($vr); $ln=Get-Content $pt -Encoding utf8 | Where-Object { $_.Split('|')[0] -eq $bn } | Select-Object -First 1; if ($ln) { $p.reference_text=$ln.Substring($ln.IndexOf('|')+1) } } }; $vp=[ordered]@{}; foreach($n in @('default','alloy','ash','ballad','coral','echo','fable','onyx','nova','sage','shimmer','verse')) { $vp[$n]=$p }; $m.voice_presets=$vp; $m.default_voice_preset='default' }; $c=[ordered]@{host='%HOST%';port=[int]'%PORT%';backend='%BACKEND%';device=[int]'%DEVICE%';threads=[int]'%SRV_THREADS%';models=@($m)}; [IO.File]::WriteAllText('%RUNCONFIG%', ($c | ConvertTo-Json -Depth 20))"
+powershell -NoProfile -Command "$m=[ordered]@{id='%MODEL_ID%';family='%FAMILY%';path='%MODEL%';task='%TASK%';mode='%AUDIOCPP_MODE%'}; $vr=$env:AUDIOCPP_VOICE_REF; if ($vr -and '%TASK%' -eq 'tts') { $p=[ordered]@{voice_ref=$vr}; if ($env:AUDIOCPP_REF_TEXT) { $p.reference_text=$env:AUDIOCPP_REF_TEXT } else { $pt=Join-Path $env:WEBUI_DIR 'voice\prompt_text'; if (Test-Path $pt) { $bn=[IO.Path]::GetFileNameWithoutExtension($vr); $ln=Get-Content $pt -Encoding utf8 | Where-Object { $_.Split('|')[0] -eq $bn } | Select-Object -First 1; if ($ln) { $p.reference_text=$ln.Substring($ln.IndexOf('|')+1) } } }; $vp=[ordered]@{}; foreach($n in @('default','alloy','ash','ballad','coral','echo','fable','onyx','nova','sage','shimmer','verse')) { $vp[$n]=$p }; $m.voice_presets=$vp; $m.default_voice_preset='default' }; $c=[ordered]@{host='%HOST%';port=[int]'%PORT%';backend='%BACKEND%';device=[int]'%DEVICE%';threads=[int]'%SRV_THREADS%';models=@($m)}; [IO.File]::WriteAllText('%RUNCONFIG%', ($c | ConvertTo-Json -Depth 20))"
 if not exist "%RUNCONFIG%" ( echo [ERROR] failed to write runtime config %RUNCONFIG% & goto :end )
 
-echo [run_server] %MODEL_ID% (%FAMILY%, %TASK%)  backend %BACKEND%  device %DEVICE%
+echo [run_server] %MODEL_ID% (%FAMILY%, %TASK%, mode %AUDIOCPP_MODE%)  backend %BACKEND%  device %DEVICE%
 if defined AUDIOCPP_VOICE_REF if /I "%TASK%"=="tts" (
   echo   voice  : baked-in default ref %AUDIOCPP_VOICE_REF%  ^(preset "default" + OpenAI voice-name aliases^)
   if defined AUDIOCPP_REF_TEXT ( echo   reftext: %AUDIOCPP_REF_TEXT% ) else ( echo   reftext: auto-lookup by basename in %WEBUI_DIR%\voice\prompt_text )
