@@ -1,20 +1,35 @@
-"""Small bilingual helpers for the local Gradio WebUI."""
+"""Small multilingual helpers for the local Gradio WebUI."""
 
 import json
 import os
 
+from opencc import OpenCC
+
 LANG_ZH = "zh"
+LANG_ZH_HANT = "zh-Hant"
 LANG_EN = "en"
 DEFAULT_LANGUAGE = LANG_ZH
-LANGUAGE_CHOICES = [("中文", LANG_ZH), ("English", LANG_EN)]
+LANGUAGE_CHOICES = [
+    ("中文", LANG_ZH),
+    ("中文繁體", LANG_ZH_HANT),
+    ("English", LANG_EN),
+]
 LANGUAGE_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "configs", "ui_language.json")
 
 _language = DEFAULT_LANGUAGE
+_s2t_converter = OpenCC("s2t")
 
 
 def normalize_language(language):
-    return LANG_EN if language == LANG_EN else LANG_ZH
+    if language in (LANG_ZH, LANG_ZH_HANT, LANG_EN):
+        return language
+    return DEFAULT_LANGUAGE
+
+
+def to_traditional(value):
+    """Convert visible Simplified Chinese copy while preserving non-strings."""
+    return _s2t_converter.convert(value) if isinstance(value, str) else value
 
 
 def set_language(language):
@@ -55,9 +70,14 @@ def save_language(language, path=LANGUAGE_CONFIG_PATH):
 
 
 def text(zh, en, language=None, **values):
-    """Choose and format a bilingual string."""
+    """Choose and format localized UI copy."""
     language = normalize_language(language or _language)
-    template = en if language == LANG_EN else zh
+    if language == LANG_EN:
+        template = en
+    elif language == LANG_ZH_HANT:
+        template = to_traditional(zh)
+    else:
+        template = zh
     return template.format(**values) if values else template
 
 
@@ -71,6 +91,13 @@ def param_spec(spec, language=None):
     language = normalize_language(language or _language)
     if language == LANG_ZH:
         return dict(spec)
+
+    if language == LANG_ZH_HANT:
+        out = dict(spec)
+        for key in ("label", "info", "placeholder"):
+            if key in out:
+                out[key] = to_traditional(out[key])
+        return out
 
     out = dict(spec)
     out["label"] = spec.get("label_en") or spec.get("name", "")

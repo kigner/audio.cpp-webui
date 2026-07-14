@@ -529,15 +529,15 @@ def model_hint_for(model_id, language=None):
         return ""
     language = language or get_language()
     prof = profile_for(entry)
-    hint = prof["input_hint_en"] if language == "en" else prof["input_hint"]
+    hint = _t(prof["input_hint"], prof["input_hint_en"], language)
     short = _vram_shortfall(entry)
     if short:
         warn = _t(
             "⚠️ **显存提示**：该模型估算需 **≥{need:g}G** 显存，本机为 **{local:g}G**，运行可能很慢{tail}",
             "⚠️ **VRAM**: estimated **≥{need:g} GB**, detected **{local:g} GB**. Performance may be poor{tail}",
             language, need=short[0], local=short[1],
-            tail=("，请谨慎下载。" if language != "en" and not entry["installed"] else
-                  "." if language == "en" else "。"))
+            tail=(_t("，请谨慎下载。", ".", language) if not entry["installed"] else
+                  _t("。", ".", language)))
         hint = warn + ("\n\n" + hint if hint else "")
     return hint
 
@@ -1061,8 +1061,11 @@ def _extract_server_message(text):
 def server_error(entry, status, text, extra=None):
     """Build a friendly gr.Error from a non-200 server response."""
     msg = _extract_server_message(text)
-    hints = ERROR_HINTS_EN if get_language() == "en" else ERROR_HINTS
+    language = get_language()
+    hints = ERROR_HINTS_EN if language == "en" else ERROR_HINTS
     hint = next((h for pat, h in hints if pat.search(msg)), None)
+    if hint:
+        hint = _t(hint, hint, language)
     parts = [f"❌ server {status}"]
     if hint:
         parts.append("💡 " + hint)
@@ -1071,9 +1074,10 @@ def server_error(entry, status, text, extra=None):
     if extra:
         parts.append(extra)
     if entry and not hint:
-        ih = profile_for(entry).get("input_hint")
+        prof = profile_for(entry)
+        ih = prof.get("input_hint_en" if language == "en" else "input_hint")
         if ih:
-            parts.append("ℹ️ " + ih)
+            parts.append("ℹ️ " + _t(ih, ih, language))
     return gr.Error("\n\n".join(parts))
 
 
@@ -1218,6 +1222,8 @@ def choices_for_tasks(tasks, language=None):
         label = m["label"]
         if language == "en":
             label = m.get("display_name_en") or (label if label.isascii() else m["id"])
+        else:
+            label = _t(label, label, language)
         if m["incomplete"]:
             label += _t(" · 目录不完整", " · incomplete", language)
         elif not m["installed"]:
@@ -1804,7 +1810,8 @@ def server_status():
 def _api_usage_md(language=None):
     """状态行下方折叠区的第三方调用说明。端点/字段以 app/server/README.md 为准；
     URL 取运行时的 SERVER，避免和 AUDIOCPP_SERVER / catalog 配置不一致。"""
-    if (language or get_language()) == "en":
+    language = language or get_language()
+    if language == "en":
         return f"""
 Other applications can call the local `audiocpp_server` started by this WebUI.
 
@@ -1822,7 +1829,7 @@ curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
 
 The server stays running while the WebUI command window is open.
 """
-    return f"""
+    content = f"""
 第三方应用可以直接调用本 WebUI 启动的 `audiocpp_server`（OpenAI 风格 HTTP API），不经过本页面。
 
 - **URL 怎么填**：API 地址是 `{SERVER}`；OpenAI 兼容客户端的 Base URL 填 `{SERVER}/v1`。
@@ -1850,6 +1857,7 @@ curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
   关掉命令窗口（webui.py 退出）才会连带关闭它。也可单独启动 server（如 run_server.bat）
   供第三方应用调用。
 """
+    return _t(content, content, language)
 
 
 # --- background model downloads (via tools/model_manager.py) ----------------
@@ -2873,10 +2881,13 @@ def do_sep(model, audio_path):
         for i in range(MAX_SEP_STEMS):
             if i < len(paths):
                 sid, p = paths[i]
-                labels = STEM_LABELS_EN if get_language() == "en" else STEM_LABELS
-                zh = labels.get(sid)
+                language = get_language()
+                labels = STEM_LABELS_EN if language == "en" else STEM_LABELS
+                label = labels.get(sid)
+                if label:
+                    label = _t(label, label, language)
                 updates.append(gr.update(
-                    value=p, visible=True, label=f"{zh}（{sid}）" if zh else sid))
+                    value=p, visible=True, label=f"{label}（{sid}）" if label else sid))
             else:
                 updates.append(gr.update(value=None, visible=False))
         elapsed = time.time() - t_start
@@ -3071,14 +3082,30 @@ _I18N_COMPONENTS = []
 
 def _localized(component, **props):
     """Register translatable Gradio properties as ``prop=(zh, en)``."""
+    for prop, pair in props.items():
+        setattr(component, prop, _localized_prop_value(prop, pair, INITIAL_LANGUAGE))
     _I18N_COMPONENTS.append((component, props))
     return component
+
+
+def _localized_prop_value(prop, pair, language):
+    """Localize one component property without changing choice protocol values."""
+    if prop == "choices" and language == "zh-Hant":
+        localized = []
+        for choice in pair[0]:
+            if isinstance(choice, (tuple, list)) and len(choice) == 2:
+                label, value = choice
+            else:
+                label = value = choice
+            localized.append((_t(label, label, language), value))
+        return localized
+    return _t(pair[0], pair[1], language)
 
 
 def _localized_updates(language):
     return [
         gr.update(**{
-            prop: _t(pair[0], pair[1], language)
+            prop: _localized_prop_value(prop, pair, language)
             for prop, pair in props.items()
         })
         for _component, props in _I18N_COMPONENTS
@@ -3194,13 +3221,14 @@ _RESET_AUDIO_SEEK_JS = """
 
 
 VDES_TEXT_DEFAULT_ZH = "你好，这是 audio.cpp 用文字描述设计出来的声音。"
+VDES_TEXT_DEFAULT_ZH_HANT = _t(VDES_TEXT_DEFAULT_ZH, VDES_TEXT_DEFAULT_ZH, "zh-Hant")
 VDES_TEXT_DEFAULT_EN = "Hello, this audio.cpp voice was created from a text description."
 
 
 def _vdes_text_language_update(language, current):
     label = _t("要合成的文字", "Text to synthesize", language)
-    if current in (VDES_TEXT_DEFAULT_ZH, VDES_TEXT_DEFAULT_EN):
-        value = (VDES_TEXT_DEFAULT_EN if language == "en" else VDES_TEXT_DEFAULT_ZH)
+    if current in (VDES_TEXT_DEFAULT_ZH, VDES_TEXT_DEFAULT_ZH_HANT, VDES_TEXT_DEFAULT_EN):
+        value = _t(VDES_TEXT_DEFAULT_ZH, VDES_TEXT_DEFAULT_EN, language)
         return gr.update(label=label, value=value)
     return gr.update(label=label)
 
@@ -3389,9 +3417,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         value="Hello, this is audio dot cpp speaking from a web page."),
                         label=("要合成的文字", "Text to synthesize"))
                     tts_lang = _localized(gr.Dropdown(
-                        label="语言（留空=模型默认）", choices=LANGS,
-                        value="chinese"),
-                        label=("语言（留空=模型默认）", "Language (blank=model default)"))
+                        label="语言（Auto=模型默认）",
+                        choices=[("Auto", "")] + [(lang, lang) for lang in LANGS if lang],
+                        value=""),
+                        label=("语言（Auto=模型默认）", "Language (Auto=model default)"))
                     tts_gen_mode = _localized(gr.Radio(
                         label="生成模式（流式=边生成边播放）",
                         choices=["离线", "流式"], value="离线",
@@ -3833,8 +3862,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         placeholder=("例：低沉磁性的中年男声，语速偏慢",
                                      "Example: a calm, deep middle-aged male voice"))
                     vdes_text = gr.Textbox(
-                        label="要合成的文字", lines=5,
-                        value=VDES_TEXT_DEFAULT_ZH)
+                        label=_t("要合成的文字", "Text to synthesize", INITIAL_LANGUAGE),
+                        lines=5,
+                        value=_t(VDES_TEXT_DEFAULT_ZH, VDES_TEXT_DEFAULT_EN,
+                                 INITIAL_LANGUAGE))
 
                 vdes_btn = _localized(
                     gr.Button("🎨 生成语音", variant="primary", size="lg"),
@@ -3910,6 +3941,12 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         language = save_language(language)
         return _language_updates(language, *values)
 
+    def _page_load_updates(language, *model_ids):
+        """Refresh live status without re-rendering the already localized UI."""
+        set_language(language)
+        hints = [model_hint_for(model_id, language) for model_id in model_ids]
+        return server_status(), _api_usage_md(language), *hints
+
     language_inputs = [
         ui_language, tts_model, asr_model, gen_model, vc_model,
         sep_model, ana_model, vdes_model, vdes_text,
@@ -3926,9 +3963,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         language_outputs,
         show_progress="hidden")
     demo.load(
-        _language_updates,
-        language_inputs,
-        language_outputs,
+        _page_load_updates,
+        language_inputs[:8],
+        [status, api_usage,
+         tts_hint, asr_hint, gen_hint, vc_hint, sep_hint, ana_hint, vdes_hint],
         show_progress="hidden")
 
 
