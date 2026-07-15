@@ -64,6 +64,7 @@ struct ModelInspection {
 
 struct ModelLoadRequest {
     std::filesystem::path model_path;
+    std::optional<std::filesystem::path> model_spec_override = std::nullopt;
     std::optional<std::string> family_hint = std::nullopt;
     std::optional<std::string> config_id = std::nullopt;
     std::optional<std::string> weight_id = std::nullopt;

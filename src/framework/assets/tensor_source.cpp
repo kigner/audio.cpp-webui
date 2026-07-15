@@ -1411,37 +1411,81 @@ bool gguf_has_embedded_sidecars(const std::filesystem::path & path) {
     return !read_gguf_embedded_sidecars(path).empty();
 }
 
+std::optional<GgufEmbeddedModelSpec> read_gguf_embedded_model_spec(const std::filesystem::path & path) {
+    ggml_context * tensor_context = nullptr;
+    gguf_context * gguf = gguf_init_from_file(path.string().c_str(), gguf_init_params{true, &tensor_context});
+    if (gguf == nullptr) {
+        if (tensor_context != nullptr)
+            ggml_free(tensor_context);
+        throw std::runtime_error("failed to read GGUF metadata: " + path.string());
+    }
+    std::optional<GgufEmbeddedModelSpec> result;
+    try {
+        const int64_t version_key = gguf_find_key(gguf, "audiocpp.model_spec.version");
+        const int64_t family_key = gguf_find_key(gguf, "audiocpp.model_spec.family");
+        const int64_t json_key = gguf_find_key(gguf, "audiocpp.model_spec.json");
+        if (version_key >= 0 || family_key >= 0 || json_key >= 0) {
+            if (version_key < 0 || family_key < 0 || json_key < 0 ||
+                gguf_get_kv_type(gguf, version_key) != GGUF_TYPE_UINT32 ||
+                gguf_get_kv_type(gguf, family_key) != GGUF_TYPE_STRING ||
+                gguf_get_kv_type(gguf, json_key) != GGUF_TYPE_STRING) {
+                throw std::runtime_error("GGUF embedded model package spec metadata is invalid");
+            }
+            const uint32_t version = gguf_get_val_u32(gguf, version_key);
+            if (version != 1) {
+                throw std::runtime_error("unsupported GGUF embedded model package spec version: " +
+                                         std::to_string(version));
+            }
+            GgufEmbeddedModelSpec spec;
+            spec.family = gguf_get_val_str(gguf, family_key);
+            spec.json = gguf_get_val_str(gguf, json_key);
+            if (spec.family.empty() || spec.json.empty()) {
+                throw std::runtime_error("GGUF embedded model package spec is empty");
+            }
+            result = std::move(spec);
+        }
+    } catch (...) {
+        gguf_free(gguf);
+        if (tensor_context != nullptr)
+            ggml_free(tensor_context);
+        throw;
+    }
+    gguf_free(gguf);
+    if (tensor_context != nullptr)
+        ggml_free(tensor_context);
+    return result;
+}
+
 std::filesystem::path materialize_gguf_sidecars(const std::filesystem::path & path) {
     const auto canonical = std::filesystem::weakly_canonical(path);
     const auto sidecars = read_gguf_embedded_sidecars(canonical);
     if (sidecars.empty()) {
         throw std::runtime_error("GGUF does not contain embedded model sidecars: " + canonical.string());
     }
-    const auto fingerprint_source = canonical.string() + ":" +
-        std::to_string(std::filesystem::file_size(canonical)) + ":" +
-        std::to_string(static_cast<long long>(
-            std::filesystem::last_write_time(canonical).time_since_epoch().count()));
+    const auto fingerprint_source =
+        canonical.string() + ":" + std::to_string(std::filesystem::file_size(canonical)) + ":" +
+        std::to_string(static_cast<long long>(std::filesystem::last_write_time(canonical).time_since_epoch().count()));
     std::ostringstream fingerprint;
     fingerprint << std::hex << std::hash<std::string>{}(fingerprint_source);
     const auto root = std::filesystem::temp_directory_path() / "audiocpp-gguf" / fingerprint.str();
     std::filesystem::create_directories(root);
     for (const auto & [name, content] : sidecars) {
         const auto output_path = root / name;
-        if (engine::io::is_existing_file(output_path) &&
-            engine::io::read_text_file(output_path) == content) {
+        if (engine::io::is_existing_file(output_path) && engine::io::read_text_file(output_path) == content) {
             continue;
         }
         std::filesystem::create_directories(output_path.parent_path());
         std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
-        if (!output) throw std::runtime_error("failed to materialize GGUF sidecar: " + output_path.string());
+        if (!output)
+            throw std::runtime_error("failed to materialize GGUF sidecar: " + output_path.string());
         output.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!output) throw std::runtime_error("failed to write GGUF sidecar: " + output_path.string());
+        if (!output)
+            throw std::runtime_error("failed to write GGUF sidecar: " + output_path.string());
     }
     return root;
 }
 
-PreparedModelDirectory prepare_model_directory(
-    const std::filesystem::path & model_path,
+PreparedModelDirectory prepare_model_directory(const std::filesystem::path & model_path,
     const std::filesystem::path & gguf_relative_path) {
     std::filesystem::path gguf_path;
     if (engine::io::is_existing_directory(model_path)) {
@@ -1451,28 +1495,25 @@ PreparedModelDirectory prepare_model_directory(
     } else {
         throw std::runtime_error("model path does not exist: " + model_path.string());
     }
-    if (engine::io::is_existing_file(gguf_path) &&
-        lower_ascii(gguf_path.extension().string()) == ".gguf" &&
-        gguf_has_embedded_sidecars(gguf_path)) {
-        return {
-            materialize_gguf_sidecars(gguf_path),
-            std::filesystem::weakly_canonical(gguf_path),
-        };
+    if (engine::io::is_existing_file(gguf_path) && lower_ascii(gguf_path.extension().string()) == ".gguf") {
+        const auto canonical_gguf = std::filesystem::weakly_canonical(gguf_path);
+        if (gguf_has_embedded_sidecars(gguf_path)) {
+            return {materialize_gguf_sidecars(gguf_path), canonical_gguf};
+        }
+        const auto external_root =
+            engine::io::is_existing_directory(model_path) ? model_path : model_path.parent_path();
+        return {std::filesystem::weakly_canonical(external_root), canonical_gguf};
     }
-    const auto root = engine::io::is_existing_directory(model_path)
-        ? model_path
-        : model_path.parent_path();
+    const auto root = engine::io::is_existing_directory(model_path) ? model_path : model_path.parent_path();
     return {std::filesystem::weakly_canonical(root), std::nullopt};
 }
 
-void convert_tensor_sources_to_gguf(
-    const std::vector<TensorSourceInput> & inputs,
-    const std::filesystem::path & output_path,
-    TensorStorageType weight_type,
-    bool overwrite,
-    bool embed_sidecars,
+void convert_tensor_sources_to_gguf(const std::vector<TensorSourceInput> & inputs,
+                                    const std::filesystem::path & output_path, TensorStorageType weight_type,
+                                    bool overwrite, bool embed_sidecars,
     const std::filesystem::path & requested_sidecar_root,
-    const std::vector<GgufEmbeddedFile> & extra_sidecars) {
+                                    const std::vector<GgufEmbeddedFile> & extra_sidecars,
+                                    const std::optional<GgufEmbeddedModelSpec> & model_spec) {
     if (inputs.empty()) {
         throw std::runtime_error("GGUF conversion requires at least one tensor source");
     }
@@ -1537,13 +1578,16 @@ void convert_tensor_sources_to_gguf(
         gguf_set_val_str(gguf, "general.architecture", "audiocpp");
         gguf_set_val_str(gguf, "general.name", sidecar_root.filename().string().c_str());
         gguf_set_val_str(gguf, "audiocpp.tensor_name_format", "native");
-        gguf_set_val_str(gguf, "audiocpp.source_format", inputs.size() == 1
-            ? lower_ascii(inputs.front().path.extension().string()).c_str()
-            : "packed");
-        const std::string output_weight_type = preserve_source_dtype
-            ? "orig"
-            : lower_ascii(ggml_type_name(requested_type));
+        gguf_set_val_str(gguf, "audiocpp.source_format",
+                         inputs.size() == 1 ? lower_ascii(inputs.front().path.extension().string()).c_str() : "packed");
+        const std::string output_weight_type =
+            preserve_source_dtype ? "orig" : lower_ascii(ggml_type_name(requested_type));
         gguf_set_val_str(gguf, "audiocpp.weight_type", output_weight_type.c_str());
+        if (model_spec.has_value()) {
+            gguf_set_val_u32(gguf, "audiocpp.model_spec.version", 1);
+            gguf_set_val_str(gguf, "audiocpp.model_spec.family", model_spec->family.c_str());
+            gguf_set_val_str(gguf, "audiocpp.model_spec.json", model_spec->json.c_str());
+        }
 
         std::vector<std::string> source_names;
         std::vector<std::string> source_paths;
@@ -1622,14 +1666,22 @@ void convert_tensor_sources_to_gguf(
                 embedded_data.insert(embedded_data.end(), content.begin(), content.end());
                 embedded_offsets.push_back(static_cast<uint64_t>(embedded_data.size()));
             }
+            if (embedded_names.empty()) {
+                throw std::runtime_error("no GGUF sidecars were found; provide "
+                                         "--root/--sidecar for a standalone GGUF "
+                                         "or pass --no-sidecars to explicitly create a "
+                                         "tensor-only container");
+            }
             embedded_name_ptrs.reserve(embedded_names.size());
-            for (const auto & value : embedded_names) embedded_name_ptrs.push_back(value.c_str());
+            for (const auto & value : embedded_names)
+                embedded_name_ptrs.push_back(value.c_str());
             if (!embedded_names.empty()) {
-                gguf_set_arr_str(gguf, "audiocpp.embedded_files.names", embedded_name_ptrs.data(), embedded_name_ptrs.size());
-                gguf_set_arr_data(gguf, "audiocpp.embedded_files.offsets", GGUF_TYPE_UINT64,
-                    embedded_offsets.data(), embedded_offsets.size());
-                gguf_set_arr_data(gguf, "audiocpp.embedded_files.data", GGUF_TYPE_UINT8,
-                    embedded_data.data(), embedded_data.size());
+                gguf_set_arr_str(gguf, "audiocpp.embedded_files.names", embedded_name_ptrs.data(),
+                                 embedded_name_ptrs.size());
+                gguf_set_arr_data(gguf, "audiocpp.embedded_files.offsets", GGUF_TYPE_UINT64, embedded_offsets.data(),
+                                  embedded_offsets.size());
+                gguf_set_arr_data(gguf, "audiocpp.embedded_files.data", GGUF_TYPE_UINT8, embedded_data.data(),
+                                  embedded_data.size());
             }
         }
 

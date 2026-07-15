@@ -1,6 +1,7 @@
+#include "engine/framework/assets/model_package.h"
 #include "engine/framework/assets/tensor_source.h"
-#include "engine/framework/io/safetensors.h"
 #include "engine/framework/io/filesystem.h"
+#include "engine/framework/io/safetensors.h"
 #include "test_assert.h"
 
 #include <cstring>
@@ -182,16 +183,124 @@ void test_all_rank0_gguf() {
     const auto safetensors = root / "scalar.safetensors";
     const auto gguf = root / "scalar.gguf";
     write_rank0_safetensors_with_null_metadata(safetensors, "num_batches_tracked", 23);
-    engine::assets::convert_tensor_source_to_gguf(
-        safetensors,
-        gguf,
-        engine::assets::TensorStorageType::F16);
+    engine::assets::convert_tensor_source_to_gguf(safetensors, gguf, engine::assets::TensorStorageType::F16, false,
+                                                  false);
     const auto source = engine::assets::open_tensor_source(gguf);
     engine::test::require(source->tensors().front().shape.empty(), "rank-0-only GGUF lost scalar rank");
-    engine::test::require_eq(
-        source->require_i64_scalar("num_batches_tracked"),
-        int64_t{23},
+    engine::test::require_eq(source->require_i64_scalar("num_batches_tracked"), int64_t{23},
         "rank-0-only GGUF scalar value");
+    std::filesystem::remove_all(root);
+}
+
+void test_embedded_model_spec_roundtrip_and_precedence() {
+    const auto root = std::filesystem::temp_directory_path() / "audiocpp_embedded_model_spec_test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto safetensors = root / "model.safetensors";
+    const auto gguf = root / "model.gguf";
+    const auto override_spec = root / "override.json";
+    engine::io::write_safetensors_file(safetensors, {
+                                                        {"weight", "F32", {1}, bytes_for(std::vector<float>{1.0F})},
+                                                    });
+    const std::string spec_json = R"json({
+        "family":"embedded_test",
+        "sources":[{
+            "format":"gguf",
+            "roots":{"weights":"$gguf"},
+            "tensors":{"weights":"weights:"}
+        }]
+    })json";
+    engine::assets::convert_tensor_sources_to_gguf({{safetensors, ""}}, gguf, engine::assets::TensorStorageType::F16,
+                                                   false, false, {}, {},
+                                                   engine::assets::GgufEmbeddedModelSpec{"embedded_test", spec_json});
+
+    const auto embedded = engine::assets::read_gguf_embedded_model_spec(gguf);
+    engine::test::require(embedded.has_value(), "GGUF lost its embedded model package spec");
+    engine::test::require_eq(embedded->family, std::string("embedded_test"), "embedded spec family");
+    engine::test::require_eq(embedded->json, spec_json, "embedded spec JSON");
+
+    {
+        engine::assets::ScopedModelPackageSpecOverride scope(std::nullopt, gguf);
+        engine::test::require_eq(engine::assets::default_model_package_spec_path("embedded_test"),
+                                 std::filesystem::path("@gguf") / "embedded_test.json",
+                                 "embedded GGUF spec precedence");
+        bool family_mismatch_rejected = false;
+        try {
+            (void)engine::assets::default_model_package_spec_path("another_family");
+        } catch (const std::runtime_error &) {
+            family_mismatch_rejected = true;
+        }
+        engine::test::require(family_mismatch_rejected, "embedded GGUF spec accepted a different family");
+    }
+
+    const auto uppercase_gguf = root / "RENAMED.GGUF";
+    std::filesystem::copy_file(gguf, uppercase_gguf);
+    {
+        engine::assets::ScopedModelPackageSpecOverride scope(std::nullopt, uppercase_gguf);
+        const auto spec_path = engine::assets::default_model_package_spec_path("embedded_test");
+        const auto resources = engine::assets::load_resource_bundle_from_package_spec(uppercase_gguf, spec_path);
+        engine::test::require(resources.open_tensor_source("weights")->has_tensor("weight"),
+                              "uppercase standalone GGUF did not use its embedded package spec");
+    }
+
+    {
+        std::ofstream output(override_spec, std::ios::binary);
+        output << spec_json;
+    }
+    {
+        engine::assets::ScopedModelPackageSpecOverride scope(override_spec, gguf);
+        engine::test::require_eq(engine::assets::default_model_package_spec_path("embedded_test"),
+                                 std::filesystem::weakly_canonical(override_spec),
+                                 "explicit package spec override precedence");
+    }
+    std::filesystem::remove_all(root);
+}
+
+void test_package_spec_errors_name_selected_spec() {
+    const auto root = std::filesystem::temp_directory_path() / "audiocpp_package_spec_error_test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "model");
+    const auto malformed_spec = root / "malformed.json";
+    const auto missing_file_spec = root / "missing_file.json";
+
+    {
+        std::ofstream output(malformed_spec, std::ios::binary);
+        output << R"json({"family":"broken","sources":[)json";
+    }
+    {
+        std::ofstream output(missing_file_spec, std::ios::binary);
+        output << R"json({
+            "family":"missing_file_test",
+            "sources":[{
+                "format":"safetensors",
+                "roots":{"model":"."},
+                "files":{"config":"model:config.json"}
+            }]
+        })json";
+    }
+
+    bool malformed_named = false;
+    try {
+        (void)engine::assets::load_resource_bundle_from_package_spec(root / "model", malformed_spec);
+    } catch (const std::runtime_error & error) {
+        const std::string message = error.what();
+        malformed_named = message.find("failed to parse model package spec") != std::string::npos &&
+            message.find(malformed_spec.string()) != std::string::npos;
+    }
+    engine::test::require(malformed_named, "malformed package spec error did not name the selected spec");
+
+    bool selected_source_named = false;
+    try {
+        (void)engine::assets::load_resource_bundle_from_package_spec(root / "model", missing_file_spec);
+    } catch (const std::runtime_error & error) {
+        const std::string message = error.what();
+        selected_source_named = message.find("using model package spec") != std::string::npos &&
+            message.find(missing_file_spec.string()) != std::string::npos &&
+            message.find("source 'safetensors'") != std::string::npos &&
+            message.find("missing model package file 'config'") != std::string::npos;
+    }
+    engine::test::require(selected_source_named, "resource error did not name the selected spec and source");
+
     std::filesystem::remove_all(root);
 }
 
@@ -202,6 +311,8 @@ int main() {
         test_safetensors_to_gguf_roundtrip();
         test_packed_multi_source_gguf();
         test_all_rank0_gguf();
+        test_embedded_model_spec_roundtrip_and_precedence();
+        test_package_spec_errors_name_selected_spec();
     } catch (const std::exception & error) {
         std::cerr << error.what() << '\n';
         return 1;

@@ -40,4 +40,4 @@ jobs:
         run: |
           cmake --build "$BUILD_DIR" \
             --parallel "$(sysctl -n hw.logicalcpu)" \
-            --target audiocpp_cli audiocpp_server
+            --target audiocpp_cli audiocpp_server audiocpp_gguf

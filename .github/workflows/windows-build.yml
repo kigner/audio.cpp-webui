@@ -36,3 +36,10 @@ jobs:
           .\scripts\build_windows.ps1 `
             -Preset windows-cpu-release `
             -Target audiocpp_server
+
+      - name: Build audiocpp_gguf
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 `
+            -Preset windows-cpu-release `
+            -Target audiocpp_gguf

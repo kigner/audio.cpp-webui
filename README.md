@@ -63,7 +63,7 @@ For full setup notes, script arguments, environment variables, API examples, Web
 | Family | Task | Supported language(s) | Supported variant(s) in this repo |
 |---|---|---|---|
 | **ace_step** | music generation, music editing | 50+ langs | ACE-Step 1.5 Turbo and Base with acestep-5Hz-lm-1.7B |
-| **chatterbox** | TTS, voice cloning | ar, da, de, el, en, es, fi, fr, hi, it, ko, ms, nl, no, pl, pt, sv, sw, tr | Chatterbox with 0.5B backbone |
+| **chatterbox** | TTS, voice cloning, voice conversion | ar, da, de, el, en, es, fi, fr, hi, it, ko, ms, nl, no, pl, pt, sv, sw, tr | Chatterbox with 0.5B backbone |
 | **citrinet_asr** | ASR | en | Citrinet-256 |
 | **heartmula** | music generation | zh, en, ja, ko, es | HeartMuLa-oss-3B with HeartCodec-oss |
 | **higgs_audio_stt** | ASR | en | Higgs Audio v3 STT |
@@ -127,6 +127,12 @@ For portable CPU kernels on machines where native ISA flags are not suitable:
 scripts/build_linux.sh --backend cuda --native-cpu OFF --target audiocpp_cli --target audiocpp_server
 ```
 
+For deployment builds with compiled package specs:
+
+```bash
+scripts/build_linux.sh --backend cuda --deployment-build --target audiocpp_cli --target audiocpp_server
+```
+
 For direct CMake commands, see [docs/build/linux.md](docs/build/linux.md).
 
 ### Windows Build
@@ -151,6 +157,12 @@ From `cmd.exe`, use the wrapper:
 scripts\build_windows.cmd
 ```
 
+For deployment builds with compiled package specs:
+
+```powershell
+.\scripts\build_windows.ps1 -DeploymentBuild -Target audiocpp_cli
+```
+
 For requirements, CPU profiles, CUDA packaging, and release zips, see [docs/build/windows.md](docs/build/windows.md).
 
 ### Metal Build
@@ -170,6 +182,8 @@ scripts/build_metal.sh --target audiocpp_server
 scripts/build_metal.sh --build-type Release --archs arm64 --target audiocpp_cli
 scripts/build_metal.sh --with-tests --target audio_dsp_test
 scripts/build_metal.sh --openmp auto --target audiocpp_cli
+scripts/build_metal.sh --native-cpu OFF --target audiocpp_cli
+scripts/build_metal.sh --deployment-build --target audiocpp_cli
 ```
 
 The built CLI is written to:
@@ -192,6 +206,7 @@ build/macos-metal-release/bin/audiocpp_cli
 | `ENGINE_BUILD_EXAMPLES` | Build example binaries. | `OFF` |
 | `ENGINE_BUILD_TESTS` | Build framework unit tests. | `OFF` |
 | `ENGINE_BUILD_WARMBENCH` | Build warmbench helper binaries. | `OFF` |
+| `AUDIOCPP_DEPLOYMENT_BUILD` | Compile package specs into CLI/server binaries for standalone GGUF and package-spec fallback loading. Script builds expose this as `--deployment-build` on Linux/macOS and `-DeploymentBuild` on Windows. | `OFF` |
 
 ## Usage
 
@@ -635,21 +650,48 @@ remain architecture-specific. Qwen3 ASR, Qwen3 Forced Aligner, Qwen3 TTS, Nemotr
 3.5 ASR, VibeVoice-ASR, Higgs Audio STT, Hviske ASR, and Citrinet ASR currently accept
 `model.gguf` (including `speech_tokenizer/model.gguf` for TTS). The converter recursively embeds sidecar files
 up to 64 MiB by default using binary-safe metadata, including nested tokenizer models,
-and Qwen3 ASR, Nemotron ASR, VibeVoice-ASR, Higgs Audio STT, Hviske ASR, and Citrinet
-ASR can load the resulting `model.gguf` as a standalone file. Pass `--no-sidecars` when a
-tensor-only container is desired. A
+and Qwen3 ASR, Nemotron ASR, VibeVoice-ASR, Higgs Audio STT, Hviske ASR, and Citrinet ASR
+can load the resulting `model.gguf` as a standalone file. The converter embeds the selected
+package spec in new GGUF files. Standalone conversion with embedded sidecars is the default
+and fails if required package resources are missing. Pass `--no-sidecars` only to explicitly
+create a tensor-only container; its package spec is still embedded and validated. A
 `model.safetensors.index.json` is also a first-class tensor source and is merged from
 its routed shards while converting. Exact original tensor ranks are stored separately
 because GGML normally collapses trailing singleton dimensions. Rank-0 safetensors
 scalars are stored physically as one-element GGML tensors while their scalar rank is
 preserved in the exact-shape metadata.
 
+| Format | Package spec source | External model files |
+|---|---|---:|
+| Safetensors | Override, deployment binary, or discovered `model_specs` | Yes |
+| New standalone GGUF | Embedded in GGUF | No |
+| New tensor-only GGUF created with `--no-sidecars` | Embedded in GGUF | Yes, required sidecars |
+| Legacy GGUF without embedded spec | Deployment binary or discovered `model_specs` | Depends on sidecars |
+
+At runtime the order is explicit override, GGUF metadata, compiled deployment spec, then
+external discovery. Configure with `-DAUDIOCPP_DEPLOYMENT_BUILD=ON` to compile the source
+catalog into CLI/server binaries; the option is off by default. For package-layout
+development or testing, the CLI and server can explicitly replace every fallback with
+`--model-spec-override <json-or-directory>`. When a directory is supplied, the runtime
+selects `<directory>/<family>.json`. The server configuration also accepts
+`model_spec_override` globally or per model. An override is trusted runtime input and
+should only point to a spec you control.
+
 ```bash
 build/bin/audiocpp_gguf \
   --input models/Qwen3-ASR-1.7B-hf/model.safetensors \
+  --family qwen3_asr \
   --output models/Qwen3-ASR-1.7B-hf/model.gguf \
   --type q8_0
 ```
+
+The converter discovers the spec from `--model-spec`, model `config.json`, the model
+root, a discovered external catalog, or its bundled conversion catalog. The converter
+catalog is always embedded in `audiocpp_gguf` even when `AUDIOCPP_DEPLOYMENT_BUILD` is
+off; that option controls the CLI/server fallback catalog. The converter validates the
+requested tensor namespaces and every required GGUF sidecar before writing. Use
+`--allow-missing-model-spec` only for a generic tensor archive that is not intended to be
+loaded by audio.cpp.
 
 Multi-component checkpoints can be packed into one GGUF with repeated namespaced
 inputs. Existing component loaders can open a namespace through
