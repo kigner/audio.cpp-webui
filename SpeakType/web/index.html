@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SpeakType</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <main id="overlay" class="overlay state-idle">
+      <div class="ambient ambient-a"></div>
+      <div class="ambient ambient-b"></div>
+      <section class="status-rail">
+        <div class="status-row">
+          <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+          <span id="state-label" class="state-label">IDLE</span>
+        </div>
+        <div id="mode-badge" class="mode-badge">VAD + SSE</div>
+        <div id="notice" class="notice">READY</div>
+      </section>
+
+      <section class="speech-panel">
+        <canvas id="waveform" width="360" height="44" aria-label="麦克风音量"></canvas>
+        <div id="transcript" class="transcript placeholder">按 Ctrl + Shift + Space 开始听写</div>
+        <div class="meta-row">
+          <span id="model-name">nemotron-asr</span>
+          <span class="privacy"><span class="lock">◆</span> LOCAL ONLY</span>
+        </div>
+      </section>
+
+      <section class="latency-panel">
+        <span class="latency-label">FIRST TEXT</span>
+        <div><span id="latency-value" class="latency-value">—</span><span id="latency-unit" class="latency-unit">ms</span></div>
+        <span id="connection" class="connection">UI CONNECTING</span>
+      </section>
+
+      <div class="top-line"></div>
+    </main>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

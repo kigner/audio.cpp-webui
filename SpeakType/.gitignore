@@ -1,0 +1,11 @@
+Python311/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+logs/*.log
+logs/*.log.*
+.codegraph/codegraph.db-shm
+.codegraph/codegraph.db-wal
+

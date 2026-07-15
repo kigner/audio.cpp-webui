@@ -1,0 +1,46 @@
+{
+  "asr": {
+    "base_url": "http://127.0.0.1:8081",
+    "model": "nemotron-asr",
+    "language": "auto",
+    "transport": "streaming",
+    "stream_url": "http://127.0.0.1:8081/v1/audio/transcriptions",
+    "transcription_path": "/v1/audio/transcriptions",
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_format": "pcm_s16le",
+    "frame_ms": 20,
+    "trailing_silence_ms": 400,
+    "connect_timeout_s": 3.0,
+    "final_timeout_s": 30.0
+  },
+  "vad": {
+    "threshold": 0.5,
+    "min_speech_duration_ms": 250,
+    "min_silence_duration_ms": 500,
+    "speech_pad_ms": 160,
+    "max_speech_duration_s": 20.0
+  },
+  "ui": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "width": 900,
+    "height": 170,
+    "bottom_margin": 70,
+    "always_on_top": true,
+    "click_through": false
+  },
+  "hotkeys": {
+    "toggle_recording": "ctrl+shift+space",
+    "cancel_current": "esc"
+  },
+  "injection": {
+    "method": "clipboard_paste",
+    "restore_clipboard": true,
+    "restore_delay_ms": 250
+  },
+  "demo": {
+    "mock": false,
+    "mock_text": "这个模型支持本地流式语音识别，所有推理都在您的电脑上完成。"
+  }
+}
