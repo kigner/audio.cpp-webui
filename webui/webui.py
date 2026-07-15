@@ -449,6 +449,48 @@ MODEL_PROFILES = {
     "qwen3_forced_aligner": {
         "input_hint": "**Qwen3 强制对齐**：『对齐文本』填音频原文，输出逐词时间戳（≤115 秒）。",
     },
+    "index_tts2": {
+        "input_hint": (
+            "**IndexTTS2** 中/英声音克隆：**必须**提供参考音色（上传/录制/内置）；"
+            "情感控制在『高级参数』：emotion_text 填情感描述文本（如“你吓死我了！”）+ "
+            "emotion_alpha 调强度，或 use_emotion_text 从朗读文本自动推断。"),
+        # 模型只认 zh/en 语种标签（docs/tts.md），共享下拉的其它语言直接拒绝。
+        "lang_map": {"chinese": "zh", "english": "en"},
+        "require_voice": True,
+    },
+    "irodori_tts": {
+        "input_hint": (
+            "**Irodori-TTS**（日语）：默认无参考直接生成；上传参考音色即自动切换克隆模式。"
+            "VoiceDesign 版走『声音设计』标签页，用日语 caption 描述音色。"),
+        "lang_map": {"japanese": "ja"},
+        # 会话默认 no_ref=true（忽略参考音频），带参考时必须显式关掉才走克隆路径。
+        "no_ref_toggle": True,
+        # 声音设计标签页的『音色描述』对本家族要发 options.caption（qwen3_tts 走
+        # 服务器的 instructions→instruct 映射，irodori session 只读 caption）。
+        "vdes_option_key": "caption",
+    },
+    "moss_tts_local": {
+        "input_hint": (
+            "**MOSS-TTS-Local**：纯文本直接生成；克隆时上传参考音色并尽量填『参考文本』。"
+            "输出 48kHz 立体声；语言下拉可留空（自动）或选择语言作为提示。"),
+    },
+    "moss_tts_nano": {
+        "input_hint": (
+            "**MOSS-TTS-Nano** 100M 轻量：无参考=文本续写式生成（音色随机）；"
+            "上传参考音色即声音克隆。"),
+    },
+    "supertonic": {
+        "input_hint": (
+            "**Supertonic 3** 预置音色多语种 TTS：在『高级参数』选 voice（M1-M5 男声 / "
+            "F1-F5 女声）和语速 speaking_rate；**不支持**参考音频克隆（**无中文**）。"),
+        # 模型收 ISO 语种码（en/ko/ja/...），共享下拉的友好名在此转换；chinese 不在
+        # 支持列表所以不映射（选中会被 resolve_language 拒绝并提示）。
+        "lang_map": {
+            "english": "en", "french": "fr", "german": "de", "italian": "it",
+            "japanese": "ja", "korean": "ko", "portuguese": "pt",
+            "russian": "ru", "spanish": "es",
+        },
+    },
 }
 
 # Concise English hints.  The Chinese catalog/profile copy remains the detailed
@@ -476,6 +518,11 @@ MODEL_HINTS_EN = {
     "marblenet_vad": "**MarbleNet VAD** detects frame-level speech activity.",
     "sortformer_diar": "**Sortformer** identifies who spoke when (up to four speakers).",
     "qwen3_forced_aligner": "**Qwen3 Forced Aligner** requires the source transcript and returns word timestamps.",
+    "index_tts2": "**IndexTTS2** (zh/en) requires a voice reference; emotion controls live in advanced parameters.",
+    "irodori_tts": "**Irodori-TTS** (Japanese) works without a reference; uploading one enables voice cloning.",
+    "moss_tts_local": "**MOSS-TTS-Local**: plain text works; add a voice reference and its transcript to clone. 48 kHz stereo output.",
+    "moss_tts_nano": "**MOSS-TTS-Nano** 100M: continuation mode without a reference, voice clone with one.",
+    "supertonic": "**Supertonic 3**: preset voices only (choose `voice` in advanced parameters); no voice cloning, no Chinese.",
 }
 # Qwen3-ASR 可强制的语种（模型 config.json 的 support_languages，prompt 里用英文名；
 # 留空/Auto = 自动检测）。citrinet 等其它 ASR 族忽略该字段。
@@ -2085,6 +2132,14 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
                 "VibeVoice 是长文模型。请使用 ≥40 个汉字（英文约 ≥35 词），或改用短句模型。",
                 "VibeVoice is for long-form text. Use at least ~35 English words, or choose a short-text model."))
 
+        # 必须参考音色的家族（如 IndexTTS2）在加载模型前就拦下来，
+        # 免得等几十秒加载后才收到 server 报错。
+        if (prof.get("require_voice") and not uploaded_voice
+                and (not builtin_voice or builtin_voice == "(none)")):
+            raise gr.Error(_t(
+                "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
+                "This model requires a voice reference: upload/record one or pick a built-in voice."))
+
         # 加载/模式切换（可能几十秒）单独计时：状态栏的"用时"只含合成本身，
         # 不报加载会让它看起来远小于实际等待时间。
         t_load = time.time()
@@ -2110,6 +2165,17 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         if has_voice_samples and voice_path:
             voice_path = None
 
+        # 预置音色家族（Supertonic 的 M1-M5/F1-F5）：控件里的 voice 是请求顶层的
+        # cached-voice id，不是 options 项，从 options 里挪出去；有参考音频时以参考为准。
+        voice_preset = options.pop("voice", None)
+        # Irodori 会话默认 no_ref=true（无参考直接生成），带参考时须显式关掉才走克隆。
+        if prof.get("no_ref_toggle") and voice_path:
+            options.setdefault("no_ref", False)
+        # IndexTTS2：emotion_text 只在 use_emotion_text=true 时生效（request.cpp），
+        # 填了描述却没勾选是最常见的坑，替用户补上。
+        if options.get("emotion_text") and "use_emotion_text" not in options:
+            options["use_emotion_text"] = True
+
         seed, seed_note = _resolve_seed(seed)
         payload = {
             "model": model,
@@ -2122,6 +2188,8 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         )
         if voice_path:
             payload["voice_ref"] = _ensure_wav(voice_path)
+        elif voice_preset:
+            payload["voice"] = voice_preset
         if (reference_text or "").strip():
             payload["reference_text"] = reference_text
         if options:
@@ -3014,8 +3082,15 @@ def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
         options = _merged_options(prof, adv_values, adv_options)
 
         seed, seed_note = _resolve_seed(seed)
-        payload = {"model": model, "input": text, "instructions": instruct,
+        payload = {"model": model, "input": text,
                    "seed": seed, "max_tokens": int(max_tokens)}
+        # 音色描述的落点按家族区分：qwen3_tts 走服务器的 instructions→instruct 映射；
+        # irodori 等只读自家 options 键（profile 里的 vdes_option_key，如 caption）。
+        vdes_key = prof.get("vdes_option_key")
+        if vdes_key:
+            options.setdefault(vdes_key, instruct)
+        else:
+            payload["instructions"] = instruct
         if options:
             payload["options"] = options
         _ui_log(f"声音设计开始：model={model}，{len(text)} 字")

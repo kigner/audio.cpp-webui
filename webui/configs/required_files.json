@@ -14,7 +14,7 @@
     "kokoro-v1_0.safetensors",
     "voices/af_heart.safetensors"
   ],
-  "moss_tts": [
+  "moss_tts_nano_100m": [
     "config.json",
     "model.safetensors",
     "tokenizer.model",
@@ -23,9 +23,9 @@
     "audio_tokenizer/model-00001-of-00001.safetensors",
     "audio_tokenizer/model.safetensors.index.json"
   ],
-  "moss_tts_nano_100m": [
+  "moss_tts_nano_100m_model": [
     "config.json",
-    "model.safetensors",
+    "pytorch_model.bin",
     "tokenizer.model",
     "tokenizer_config.json"
   ],
@@ -33,6 +33,29 @@
     "config.json",
     "model-00001-of-00001.safetensors",
     "model.safetensors.index.json"
+  ],
+  "moss_audio_tokenizer_v2": [
+    "config.json",
+    "model.safetensors.index.json",
+    "model-00001-of-00003.safetensors",
+    "model-00002-of-00003.safetensors",
+    "model-00003-of-00003.safetensors"
+  ],
+  "moss_tts_local_v1_5": [
+    "config.json",
+    "model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "chat_template.jinja",
+    "audio_tokenizer/config.json",
+    "audio_tokenizer/model.safetensors.index.json",
+    "audio_tokenizer/model-00001-of-00003.safetensors",
+    "audio_tokenizer/model-00002-of-00003.safetensors",
+    "audio_tokenizer/model-00003-of-00003.safetensors"
   ],
   "omnivoice": [
     "config.json",
@@ -247,11 +270,13 @@
   ],
   "irodori_tts_500m_v3": [
     "model.safetensors",
+    "model_config.json",
     "../llm-jp-3-150m/tokenizer.json",
     "../Semantic-DACVAE-Japanese-32dim/weights.safetensors"
   ],
   "irodori_tts_600m_v3_voice_design": [
     "model.safetensors",
+    "model_config.json",
     "../llm-jp-3-150m/tokenizer.json",
     "../Semantic-DACVAE-Japanese-32dim/weights.safetensors"
   ],
@@ -284,6 +309,29 @@
     "config/unicode_indexer.json",
     "ggml/supertonic.safetensors",
     "voice_styles/M1.json"
+  ],
+  "index_tts2": [
+    "config.yaml",
+    "bpe.model",
+    "gpt.safetensors",
+    "s2mel.safetensors",
+    "feat1.safetensors",
+    "feat2.safetensors",
+    "wav2vec2bert_stats.safetensors",
+    "semantic_codec_model.safetensors",
+    "campplus.safetensors",
+    "w2v-bert-2.0/config.json",
+    "w2v-bert-2.0/preprocessor_config.json",
+    "w2v-bert-2.0/model.safetensors",
+    "bigvgan/config.json",
+    "bigvgan/model.safetensors",
+    "qwen0.6bemo4-merge/config.json",
+    "qwen0.6bemo4-merge/generation_config.json",
+    "qwen0.6bemo4-merge/tokenizer.json",
+    "qwen0.6bemo4-merge/tokenizer_config.json",
+    "qwen0.6bemo4-merge/vocab.json",
+    "qwen0.6bemo4-merge/merges.txt",
+    "qwen0.6bemo4-merge/model.safetensors"
   ],
   "mel_band_roformer": [
     "config.json",

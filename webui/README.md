@@ -272,6 +272,16 @@ singing 路线默认开，style_converted_vc / editing 默认关。
   Qwen3 强制对齐单次音频上限约 115 秒。
 - **音源分离**：HTDemucs 输出 drums/bass/other/vocals 四轨（长音频耗时较长）；
   Mel-Band RoFormer 输出人声轨 + 伴奏轨（mixture − vocals）。
+- **IndexTTS2**（0.3 新增）：中/英声音克隆，**必须**提供参考音色。情感控制在高级参数：
+  `emotion_text` 填情感描述（填了会自动开启 `use_emotion_text`）+ `emotion_alpha` 调强度；
+  或勾 `use_emotion_text` 从朗读文本自动推断；`emotion_vector`（8 个浮点）走 JSON 兜底框。
+- **Irodori-TTS**（0.3 新增，日语）：500M 默认无参考直接生成，上传参考音色自动切克隆
+  （界面替你发 `no_ref=false`）；600M VoiceDesign 在『声音设计』页用日语 caption 描述音色。
+  语言下拉只认 japanese/留空。
+- **MOSS-TTS**（0.3 新增）：Local v1.5 纯文本可生成，克隆时建议配『参考文本』，输出 48kHz
+  立体声；Nano 100M 轻量，无参考=续写式生成（音色随机），有参考=克隆。
+- **Supertonic 3**（0.3 新增）：预置音色多语种 TTS（英/日/韩/欧洲语种，**无中文**），
+  高级参数选 `voice`（M1-M5 男 / F1-F5 女）和 `speaking_rate`；不支持参考音频克隆。
 - **模型下载**在后台进行，进度自动刷新，也可点「📊 下载进度」手动查看。
 
 ---
@@ -288,6 +298,12 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 | `vibevoice` | vibevoice | tts | VibeVoice 1.5B（长文/多说话人，`Speaker N:` 脚本） |
 | `omnivoice` | omnivoice | tts | OmniVoice |
 | `pocket-tts` | pocket_tts | tts | Pocket TTS（需参考音色） |
+| `index-tts2` | index_tts2 | tts | IndexTTS2（中英克隆+情感，需参考音色） |
+| `irodori-tts` | irodori_tts | tts | Irodori-TTS 500M（日语） |
+| `irodori-tts-vdesign` | irodori_tts | vdes | Irodori-TTS 600M VoiceDesign（日语 caption） |
+| `moss-tts-local` | moss_tts_local | tts | MOSS-TTS-Local v1.5（48kHz 立体声） |
+| `moss-tts-nano` | moss_tts_nano | tts | MOSS-TTS-Nano 100M（轻量） |
+| `supertonic` | supertonic | tts | Supertonic 3（预置音色，无中文） |
 
 未安装的 id 运行时会提示，可在 WebUI 里点“下载”，或
 `python tools\model_manager.py install <download_id> --models-root <bundle>\models`。
