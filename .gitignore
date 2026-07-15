@@ -1,4 +1,5 @@
 /build*/
+/dist/
 /cmake-build*/
 ._*
 .vs/
@@ -37,6 +38,7 @@ __pycache__/
 
 # --- portable bundle: distributed manually, never committed ---
 /audiocpp-portable/
+/_update/
 /AGENTS.md
 /CLAUDE.md
 

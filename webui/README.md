@@ -242,6 +242,10 @@ TTS 标签页「合成设置 → 高级参数」里的控件由 **`configs/model
 `pop,bright,drums,female vocals`），『歌词』填唱词。3B 模型，官方 120 秒长歌实测峰值显存
 ~25G（docs/memory_saver.md），8G 显卡跑不动；已默认开 mem_saver，长歌曲可开 `infinite_mode`。
 
+**Chatterbox VC（语音转换）**：源语音提供内容，目标音色参考提供说话人身份，输出 24kHz
+单声道语音。`s3gen_cfg_rate` 控制音色引导强度，`num_inference_steps` 控制生成步数；默认分别为
+0.7 和 10。该入口与 TTS 页的 Chatterbox 声音克隆共用同一套模型文件。
+
 **Seed-VC（语音转换）**：源语音 + 目标音色参考（几秒到几十秒干净人声）。`route` 留空按任务默认
 （vc 条目→`v2_vc`，svc 条目→`v1_svc`）；`v1_whisper_bigvgan_vc` / `v1_xlsr_hift_vc` 为 v1 旧路线；
 `v1_svc` 只能配 svc 条目。`intelligibility_cfg_rate` / `similarity_cfg_rate` 仅 v2 生效，

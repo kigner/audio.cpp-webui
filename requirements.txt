@@ -1,5 +1,5 @@
 # audio.cpp -- unified Python requirements (webui + SpeakType + tools)
-# Frozen from the project venv (D:\AItools\audio.cpp\venv) on 2026-07-15.
+# Frozen from the project venv on 2026-07-15.
 # One env covers every Python layer of the project:
 #   webui/     gradio UI + realtime pipeline (gradio, numpy, requests; torch for silero VAD)
 #   SpeakType/ voice dictation demo (sounddevice, pywebview, pywin32, pyperclip; torch for silero VAD)

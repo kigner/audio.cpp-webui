@@ -1,0 +1,14 @@
+{
+  "product": "audiocpp-portable",
+  "version": "0.2.0",
+  "channel": "stable",
+  "platform": "windows-x64",
+  "python": "3.11",
+  "components": {
+    "app": "0.2.0",
+    "core_cpu": "0.2.0",
+    "core_cuda": "0.2.0",
+    "python_env": "0.2.0",
+    "updater": "1.1.0"
+  }
+}

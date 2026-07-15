@@ -455,7 +455,7 @@ MODEL_PROFILES = {
     "index_tts2": {
         "input_hint": (
             "**IndexTTS2** 中/英声音克隆：**必须**提供参考音色（上传/录制/内置）；"
-            "情感控制在『高级参数』：emotion_text 填情感描述文本（如“你吓死我了！”）+ "
+            "情感控制在『高级参数』：emotion_text 填情绪参考文本（如“你吓死我了！”）+ "
             "emotion_alpha 调强度，或 use_emotion_text 从朗读文本自动推断。"),
         # 模型只认 zh/en 语种标签（docs/tts.md），共享下拉的其它语言直接拒绝。
         "lang_map": {"chinese": "zh", "english": "en"},
@@ -485,7 +485,12 @@ MODEL_PROFILES = {
     "supertonic": {
         "input_hint": (
             "**Supertonic 3** 预置音色多语种 TTS：在『高级参数』选 voice（M1-M5 男声 / "
-            "F1-F5 女声）和语速 speaking_rate；**不支持**参考音频克隆（**无中文**）。"),
+            "F1-F5 女声）和语速 speaking_rate；支持⚡流式生成；"
+            "**不支持**参考音频克隆（**无中文**）。"),
+        # Supertonic 的 C++ 会话支持 mode=streaming，并通过 pull events 按文本段
+        # 输出音频。SSE delta 是不带采样率的裸 PCM16，客户端需使用模型的 44.1kHz。
+        "supports_streaming": True,
+        "stream_sample_rate": 44100,
         # 模型收 ISO 语种码（en/ko/ja/...），共享下拉的友好名在此转换；chinese 不在
         # 支持列表所以不映射（选中会被 resolve_language 拒绝并提示）。
         "lang_map": {
@@ -525,7 +530,7 @@ MODEL_HINTS_EN = {
     "irodori_tts": "**Irodori-TTS** (Japanese) works without a reference; uploading one enables voice cloning.",
     "moss_tts_local": "**MOSS-TTS-Local**: plain text works; add a voice reference and its transcript to clone. 48 kHz stereo output.",
     "moss_tts_nano": "**MOSS-TTS-Nano** 100M: continuation mode without a reference, voice clone with one.",
-    "supertonic": "**Supertonic 3**: preset voices only (choose `voice` in advanced parameters); no voice cloning, no Chinese.",
+    "supertonic": "**Supertonic 3**: preset voices and streaming are supported; no voice cloning, no Chinese.",
 }
 # Qwen3-ASR 可强制的语种（模型 config.json 的 support_languages，prompt 里用英文名；
 # 留空/Auto = 自动检测）。citrinet 等其它 ASR 族忽略该字段。
@@ -1171,8 +1176,8 @@ def _load_catalog():
 
 
 def _load_model_params():
-    """Per-family advanced-parameter specs for the TTS tab (configs/model_params.json).
-    Returns {family: [param_spec, ...]}; a missing/broken file -> {} (no knobs shown)."""
+    """Per-model/family advanced-parameter specs (configs/model_params.json).
+    Catalog id entries override family entries; a missing/broken file -> {}."""
     if os.path.isfile(MODEL_PARAMS_PATH):
         try:
             with open(MODEL_PARAMS_PATH, "r", encoding="utf-8") as f:
@@ -1496,11 +1501,13 @@ def delete_builtin_voice(current):
 
 # --- config-driven advanced-parameter controls (TTS tab) -------------------
 def params_for(model_id):
-    """Advanced-parameter specs for a model, looked up by its catalog family."""
+    """Advanced-parameter specs: catalog id override, then family fallback."""
     entry = catalog_by_id(model_id) if model_id else None
     if not entry:
         return []
-    specs = MODEL_PARAMS.get(entry.get("family", ""), [])
+    specs = MODEL_PARAMS.get(entry.get("id", ""))
+    if specs is None:
+        specs = MODEL_PARAMS.get(entry.get("family", ""), [])
     return specs if isinstance(specs, list) else []
 
 
@@ -2175,7 +2182,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         if prof.get("no_ref_toggle") and voice_path:
             options.setdefault("no_ref", False)
         # IndexTTS2：emotion_text 只在 use_emotion_text=true 时生效（request.cpp），
-        # 填了描述却没勾选是最常见的坑，替用户补上。
+        # 填了情绪参考文本却没勾选是最常见的坑，替用户补上。
         if options.get("emotion_text") and "use_emotion_text" not in options:
             options["use_emotion_text"] = True
 
@@ -2248,7 +2255,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
 
 def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
                   reference_text, seed, max_tokens, adv_values, adv_options):
-    """流式 TTS 生成器（目前 voxcpm2）：产出 (音频增量, 最终文件, 状态)。
+    """流式 TTS 生成器：产出 (音频增量, 最终文件, 状态)。
     音频增量是 (sr, np.int16 数组)，喂给 streaming=True 的 gr.Audio 逐段追加
     播放；结束时把完整音频写成 wav 一并给普通输出组件（可下载/回放）。
     server 端 /v1/audio/speech stream_format=sse 的 delta 是 base64 裸 PCM16。"""
@@ -2270,16 +2277,20 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                     seconds=load_s) if load_s >= 1.0 else "")
     options = _merged_options(prof, adv_values, adv_options)
-    # 流式生成的硬性要求（generator.cpp:1259）：badcase 重试要重新生成整段，
-    # 与已经推给播放器的音频冲突，所以流式下强制关闭（覆盖用户设置）。
-    options["retry_badcase"] = False
-    options.pop("voxcpm2.retry_badcase", None)
+    family = entry.get("family") if entry else ""
+    if family == "voxcpm2":
+        # VoxCPM2 流式生成的硬性要求（generator.cpp:1259）：badcase 重试要
+        # 重新生成整段，与已经推给播放器的音频冲突，所以流式下强制关闭。
+        options["retry_badcase"] = False
+        options.pop("voxcpm2.retry_badcase", None)
 
     voice_path = None
     if uploaded_voice:
         voice_path = uploaded_voice
     elif builtin_voice and builtin_voice != "(none)":
         voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
+    # Supertonic 等预置音色家族要求 voice 位于请求顶层，而不是 options。
+    voice_preset = options.pop("voice", None)
 
     seed, seed_note = _resolve_seed(seed)
     payload = {
@@ -2294,6 +2305,8 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     }
     if voice_path:
         payload["voice_ref"] = _ensure_wav(voice_path)
+    elif voice_preset:
+        payload["voice"] = voice_preset
     if (reference_text or "").strip():
         payload["reference_text"] = reference_text
 
