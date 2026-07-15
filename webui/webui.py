@@ -285,8 +285,11 @@ def _vram_shortfall(entry):
         return float(need), LOCAL_VRAM_GB
     return None
 
+# TTS 语言下拉的语种集合。下拉首位会合成一个 ("Auto", "") 选项（空串=模型默认/
+# 自动检测），所以这里不要再放字面量 "Auto"——带 lang_map 的家族会拒绝它，
+# 且界面上会出现两个分不清的 Auto。
 LANGS = ["", "english", "chinese", "french", "german", "italian",
-         "japanese", "korean", "portuguese", "russian", "spanish", "Auto"]
+         "japanese", "korean", "portuguese", "russian", "spanish"]
 
 # Which catalog task tokens each tab can drive. do_tts sends text + optional
 # reference voice, which fits both plain TTS ("tts") and voice cloning ("clon").
@@ -607,8 +610,8 @@ def resolve_language(prof, language):
     if code is not None:
         return code
     raise gr.Error(_t(
-        "所选模型不支持语言「{selected}」。请改选：{supported}，或留空使用模型默认。",
-        "This model does not support {selected}. Choose {supported}, or leave it blank.",
+        "所选模型不支持语言「{selected}」。请改选：{supported}，或选 Auto 使用模型默认。",
+        "This model does not support {selected}. Choose {supported}, or choose Auto for the model default.",
         selected=language, supported=" / ".join(lang_map)))
 
 
@@ -1060,7 +1063,7 @@ ERROR_HINTS = [
      "手动填路径的参数（如 voice_samples）请先转成 .wav。"),
     (re.compile(r"unsupported Chatterbox language", re.I),
      "🌐 Chatterbox 只支持 en/es/fr/de/it/pt/ko（无中文/日文/俄文，也没有自动检测）。"
-     "请在“语言”里改选受支持的语言，或“留空”用默认（英语）。"),
+     "请在“语言”里改选受支持的语言，或选 Auto 用默认（英语）。"),
     (re.compile(r"Stable Audio.{0,80}(English|prompt)|prompt.{0,80}(English|Stable Audio)", re.I),
      "🎵 Stable Audio 的提示词只支持英文。请把“提示词”改成英文后重试。"),
     (re.compile(r"max_source_positions", re.I),
