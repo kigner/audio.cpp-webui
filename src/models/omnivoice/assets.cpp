@@ -1,7 +1,6 @@
 #include "engine/models/omnivoice/assets.h"
 
-#include "engine/framework/assets/resource_bundle.h"
-#include "engine/framework/io/filesystem.h"
+#include "engine/framework/assets/model_package.h"
 #include "engine/framework/io/json.h"
 
 #include <cmath>
@@ -11,31 +10,6 @@
 namespace engine::models::omnivoice {
 namespace json = engine::io::json;
 namespace {
-
-std::filesystem::path resolve_model_root(const std::filesystem::path & model_path) {
-    if (engine::io::is_existing_directory(model_path)) {
-        return std::filesystem::weakly_canonical(model_path);
-    }
-    if (engine::io::is_existing_file(model_path)) {
-        return std::filesystem::weakly_canonical(model_path.parent_path());
-    }
-    throw std::runtime_error("OmniVoice model path does not exist: " + model_path.string());
-}
-
-assets::ResourceBundle make_resource_bundle(const std::filesystem::path & model_path) {
-    assets::ResourceBundle resources(resolve_model_root(model_path));
-    resources.add_model_files({
-        {"config", "config.json", true},
-        {"weights", "model.safetensors", true},
-        {"tokenizer_json", "tokenizer.json", true},
-        {"tokenizer_config", "tokenizer_config.json", true},
-        {"chat_template", "chat_template.jinja", false},
-        {"audio_tokenizer_config", "audio_tokenizer/config.json", true},
-        {"audio_tokenizer_weights", "audio_tokenizer/model.safetensors", true},
-        {"audio_tokenizer_preprocessor", "audio_tokenizer/preprocessor_config.json", true},
-    });
-    return resources;
-}
 
 OmniVoiceConfig parse_config(const assets::ResourceBundle & resources) {
     const auto root = resources.parse_json("config");
@@ -137,38 +111,14 @@ OmniVoiceConfig parse_config(const assets::ResourceBundle & resources) {
 
 }  // namespace
 
-OmniVoiceAssetPaths resolve_omnivoice_assets(const std::filesystem::path & model_path) {
-    auto resources = make_resource_bundle(model_path);
-    const auto * chat_template = resources.find_file("chat_template");
-    OmniVoiceAssetPaths paths;
-    paths.model_root = resources.model_root();
-    paths.config_path = resources.require_file("config");
-    paths.model_weights_path = resources.require_file("weights");
-    paths.tokenizer_json_path = resources.require_file("tokenizer_json");
-    paths.tokenizer_config_path = resources.require_file("tokenizer_config");
-    paths.chat_template_path = chat_template != nullptr ? *chat_template : std::filesystem::path{};
-    paths.audio_tokenizer_config_path = resources.require_file("audio_tokenizer_config");
-    paths.audio_tokenizer_weights_path = resources.require_file("audio_tokenizer_weights");
-    paths.audio_tokenizer_preprocessor_config_path = resources.require_file("audio_tokenizer_preprocessor");
-    return paths;
-}
-
 std::shared_ptr<const OmniVoiceAssets> load_omnivoice_assets(const std::filesystem::path & model_path) {
-    auto resources = make_resource_bundle(model_path);
     OmniVoiceAssets assets;
-    const auto * chat_template = resources.find_file("chat_template");
-    assets.paths.model_root = resources.model_root();
-    assets.paths.config_path = resources.require_file("config");
-    assets.paths.model_weights_path = resources.require_file("weights");
-    assets.paths.tokenizer_json_path = resources.require_file("tokenizer_json");
-    assets.paths.tokenizer_config_path = resources.require_file("tokenizer_config");
-    assets.paths.chat_template_path = chat_template != nullptr ? *chat_template : std::filesystem::path{};
-    assets.paths.audio_tokenizer_config_path = resources.require_file("audio_tokenizer_config");
-    assets.paths.audio_tokenizer_weights_path = resources.require_file("audio_tokenizer_weights");
-    assets.paths.audio_tokenizer_preprocessor_config_path = resources.require_file("audio_tokenizer_preprocessor");
-    assets.config = parse_config(resources);
-    assets.model_weights = resources.open_tensor_source("weights");
-    assets.audio_tokenizer_weights = resources.open_tensor_source("audio_tokenizer_weights");
+    assets.resources = assets::load_resource_bundle_from_package_spec(
+        model_path,
+        assets::default_model_package_spec_path("omnivoice"));
+    assets.config = parse_config(assets.resources);
+    assets.model_weights = assets.resources.open_tensor_source("weights");
+    assets.audio_tokenizer_weights = assets.resources.open_tensor_source("audio_tokenizer_weights");
     return std::make_shared<OmniVoiceAssets>(std::move(assets));
 }
 

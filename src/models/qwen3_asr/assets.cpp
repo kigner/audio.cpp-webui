@@ -1,7 +1,6 @@
 #include "engine/models/qwen3_asr/assets.h"
 
-#include "engine/framework/assets/resource_bundle.h"
-#include "engine/framework/io/filesystem.h"
+#include "engine/framework/assets/model_package.h"
 #include "engine/framework/io/json.h"
 
 #include <stdexcept>
@@ -11,16 +10,6 @@
 namespace engine::models::qwen3_asr {
 namespace json = engine::io::json;
 namespace {
-
-std::filesystem::path resolve_model_root(const std::filesystem::path & model_path) {
-    if (engine::io::is_existing_directory(model_path)) {
-        return std::filesystem::weakly_canonical(model_path);
-    }
-    if (engine::io::is_existing_file(model_path)) {
-        return std::filesystem::weakly_canonical(model_path.parent_path());
-    }
-    throw std::runtime_error("Qwen3 ASR model path does not exist: " + model_path.string());
-}
 
 Qwen3ASRAudioEncoderConfig parse_audio_encoder_config(const engine::io::json::Value & value) {
     Qwen3ASRAudioEncoderConfig config;
@@ -160,22 +149,12 @@ Qwen3ASRConfig parse_config(const assets::ResourceBundle & resources) {
     return config;
 }
 
-assets::ResourceBundle make_resource_bundle(const std::filesystem::path & model_path) {
-    assets::ResourceBundle resources(resolve_model_root(model_path));
-    resources.add_model_files({
-        {"config", "config.json", true},
-        {"generation_config", "generation_config.json", true},
-        {"preprocessor_config", "preprocessor_config.json", false},
-        {"processor_config", "processor_config.json", false},
-        {"weights", "model.safetensors", true},
-        {"tokenizer_config", "tokenizer_config.json", true},
-        {"vocab", "vocab.json", false},
-        {"merges", "merges.txt", false},
-        {"tokenizer_json", "tokenizer.json", false},
-    });
-    if (!resources.add_optional_model_file("chat_template", "chat_template.json")) {
-        (void) resources.add_optional_model_file("chat_template", "chat_template.jinja");
-    }
+assets::ResourceBundle make_resource_bundle(
+    const std::filesystem::path & model_path,
+    std::string_view package_family) {
+    auto resources = assets::load_resource_bundle_from_package_spec(
+        model_path,
+        assets::default_model_package_spec_path(package_family));
     if (!resources.has_file("preprocessor_config") && !resources.has_file("processor_config")) {
         throw std::runtime_error("Qwen3 ASR requires preprocessor_config.json or processor_config.json");
     }
@@ -186,34 +165,20 @@ assets::ResourceBundle make_resource_bundle(const std::filesystem::path & model_
     return resources;
 }
 
-Qwen3ASRAssetPaths paths_from_resources(const assets::ResourceBundle & resources) {
-    Qwen3ASRAssetPaths paths;
-    paths.model_root = resources.model_root();
-    paths.config_path = resources.require_file("config");
-    paths.generation_config_path = resources.require_file("generation_config");
-    if (const auto * value = resources.find_file("preprocessor_config")) paths.preprocessor_config_path = *value;
-    if (const auto * value = resources.find_file("processor_config")) paths.processor_config_path = *value;
-    if (const auto * value = resources.find_file("chat_template")) paths.chat_template_path = *value;
-    paths.model_weights_path = resources.require_file("weights");
-    paths.tokenizer_config_path = resources.require_file("tokenizer_config");
-    if (const auto * value = resources.find_file("vocab")) paths.tokenizer_vocab_path = *value;
-    if (const auto * value = resources.find_file("merges")) paths.tokenizer_merges_path = *value;
-    if (const auto * value = resources.find_file("tokenizer_json")) paths.tokenizer_json_path = *value;
-    return paths;
-}
-
 }  // namespace
 
-Qwen3ASRAssetPaths resolve_qwen3_asr_assets(const std::filesystem::path & model_path) {
-    return paths_from_resources(make_resource_bundle(model_path));
+std::shared_ptr<const Qwen3ASRAssets> load_qwen3_asr_assets(const std::filesystem::path & model_path) {
+    return load_qwen3_asr_assets(model_path, "qwen3_asr");
 }
 
-std::shared_ptr<const Qwen3ASRAssets> load_qwen3_asr_assets(const std::filesystem::path & model_path) {
-    auto resources = make_resource_bundle(model_path);
+std::shared_ptr<const Qwen3ASRAssets> load_qwen3_asr_assets(
+    const std::filesystem::path & model_path,
+    std::string_view package_family) {
+    auto resources = make_resource_bundle(model_path, package_family);
     Qwen3ASRAssets assets;
-    assets.paths = paths_from_resources(resources);
-    assets.config = parse_config(resources);
-    assets.model_weights = resources.open_tensor_source("weights");
+    assets.resources = std::move(resources);
+    assets.config = parse_config(assets.resources);
+    assets.model_weights = assets.resources.open_tensor_source("weights");
     return std::make_shared<Qwen3ASRAssets>(std::move(assets));
 }
 

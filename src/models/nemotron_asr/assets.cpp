@@ -1,7 +1,6 @@
 #include "engine/models/nemotron_asr/assets.h"
 
-#include "engine/framework/assets/resource_bundle.h"
-#include "engine/framework/io/filesystem.h"
+#include "engine/framework/assets/model_package.h"
 #include "engine/framework/io/json.h"
 
 #include <algorithm>
@@ -10,23 +9,6 @@
 
 namespace engine::models::nemotron_asr {
 namespace {
-
-std::filesystem::path require_file(const std::filesystem::path & path, const char * role) {
-    if (!engine::io::is_existing_file(path)) {
-        throw std::runtime_error(std::string("Nemotron ASR missing ") + role + ": " + path.string());
-    }
-    return std::filesystem::weakly_canonical(path);
-}
-
-std::filesystem::path resolve_root(const std::filesystem::path & model_path) {
-    if (engine::io::is_existing_directory(model_path)) {
-        return std::filesystem::weakly_canonical(model_path);
-    }
-    if (engine::io::is_existing_file(model_path)) {
-        return std::filesystem::weakly_canonical(model_path.parent_path());
-    }
-    throw std::runtime_error("Nemotron ASR model path does not exist: " + model_path.string());
-}
 
 std::vector<int64_t> parse_i64_array(const engine::io::json::Value & value) {
     std::vector<int64_t> out;
@@ -155,31 +137,22 @@ NemotronConfig parse_config(
 
 }  // namespace
 
-NemotronAssetPaths resolve_nemotron_asr_assets(const std::filesystem::path & model_path) {
-    const auto root = resolve_root(model_path);
-    NemotronAssetPaths paths;
-    paths.model_root = root;
-    paths.config_path = require_file(root / "config.json", "config.json");
-    paths.processor_config_path = require_file(root / "processor_config.json", "processor_config.json");
-    paths.tokenizer_json_path = require_file(root / "tokenizer.json", "tokenizer.json");
-    paths.weight_path = require_file(root / "model.safetensors", "model.safetensors");
-    return paths;
-}
-
 std::shared_ptr<const NemotronAssets> load_nemotron_asr_assets(const std::filesystem::path & model_path) {
+    auto resources = engine::assets::load_resource_bundle_from_package_spec(
+        model_path,
+        engine::assets::default_model_package_spec_path("nemotron_asr"));
     auto assets = std::make_shared<NemotronAssets>();
-    assets->paths = resolve_nemotron_asr_assets(model_path);
-    engine::assets::ResourceBundle resources(assets->paths.model_root);
-    resources.add_file("weights", assets->paths.weight_path);
-    assets->source = resources.open_tensor_source("weights");
+    assets->resources = std::move(resources);
+    assets->source = assets->resources.open_tensor_source("weights");
     assets->config = parse_config(
-        engine::io::json::parse_file(assets->paths.config_path),
-        engine::io::json::parse_file(assets->paths.processor_config_path));
-    assets->tokenizer = engine::tokenizers::load_huggingface_tokenizer_json(assets->paths.tokenizer_json_path);
+        assets->resources.parse_json("config"),
+        assets->resources.parse_json("processor_config"));
+    const auto & tokenizer_json = assets->resources.require_file("tokenizer_json");
+    assets->tokenizer = engine::tokenizers::load_huggingface_tokenizer_json(tokenizer_json);
     assets->special_token_ids =
-        parse_special_token_ids(assets->paths.tokenizer_json_path, assets->config.vocab_size);
+        parse_special_token_ids(tokenizer_json, assets->config.vocab_size);
     parse_decoder_metadata(
-        assets->paths.tokenizer_json_path,
+        tokenizer_json,
         assets->metaspace_replacement,
         assets->trim_leading_space);
     return assets;

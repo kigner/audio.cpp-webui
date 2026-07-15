@@ -528,19 +528,23 @@ engine::runtime::TaskRequest build_openai_transcription_request(const Value & bo
     engine::runtime::TaskRequest request;
     request.audio_input = minitts::cli::read_audio_buffer(resolve_path(base_dir, audio->as_string()));
     request.options = options_from_object(body.find("options"));
-    if (const auto * value = body.find("language")) {
-        request.options["language"] = value->as_string();
-    }
     // Optional guidance fields. qwen3_asr reads the biasing/context prompt and
     // the forced language from text_input (Qwen3ASRSession::make_request), not
     // from options; leave text_input unset when neither field is present.
-    const auto * language = body.find("language");
-    const auto * context = body.find("context");
-    if (language != nullptr || context != nullptr) {
-        request.text_input = engine::runtime::Transcript{
-            context != nullptr ? context->as_string() : std::string{},
-            language != nullptr ? language->as_string() : std::string{},
-        };
+    // "context" is this repo's webui field name; "text" is the upstream name.
+    std::string language;
+    if (const auto * value = body.find("language")) {
+        language = value->as_string();
+        request.options["language"] = language;
+    }
+    std::string context;
+    if (const auto * value = body.find("context")) {
+        context = value->as_string();
+    } else if (const auto * value = body.find("text")) {
+        context = value->as_string();
+    }
+    if (!language.empty() || !context.empty()) {
+        request.text_input = engine::runtime::Transcript{std::move(context), std::move(language)};
     }
     return request;
 }

@@ -1,6 +1,6 @@
 #include "engine/models/omnivoice/loader.h"
 
-#include "engine/framework/io/filesystem.h"
+#include "engine/framework/assets/model_package.h"
 #include "engine/models/omnivoice/session.h"
 
 #include <stdexcept>
@@ -9,43 +9,8 @@
 namespace engine::models::omnivoice {
 namespace {
 
-std::filesystem::path resolve_model_root(const std::filesystem::path & model_path) {
-    if (engine::io::is_existing_directory(model_path)) {
-        return std::filesystem::weakly_canonical(model_path);
-    }
-    if (engine::io::is_existing_file(model_path)) {
-        return std::filesystem::weakly_canonical(model_path.parent_path());
-    }
-    throw std::runtime_error("OmniVoice model path does not exist: " + model_path.string());
-}
-
-bool has_omnivoice_assets(const std::filesystem::path & root) {
-    return engine::io::is_existing_file(root / "config.json") &&
-        engine::io::is_existing_file(root / "model.safetensors") &&
-        engine::io::is_existing_file(root / "tokenizer.json") &&
-        engine::io::is_existing_file(root / "tokenizer_config.json") &&
-        engine::io::is_existing_file(root / "audio_tokenizer" / "config.json") &&
-        engine::io::is_existing_file(root / "audio_tokenizer" / "model.safetensors") &&
-        engine::io::is_existing_file(root / "audio_tokenizer" / "preprocessor_config.json");
-}
-
-std::vector<runtime::NamedAsset> discover_config_assets(const runtime::ModelLoadRequest & request) {
-    const auto root = resolve_model_root(request.model_path);
-    return runtime::discover_named_assets(
-        root,
-        {
-            "config.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "chat_template.jinja",
-            "audio_tokenizer/config.json",
-            "audio_tokenizer/preprocessor_config.json",
-        });
-}
-
-std::vector<runtime::NamedAsset> discover_weight_assets(const runtime::ModelLoadRequest & request) {
-    const auto root = resolve_model_root(request.model_path);
-    return runtime::discover_named_assets(root, {"model.safetensors", "audio_tokenizer/model.safetensors"});
+std::filesystem::path spec_path() {
+    return engine::assets::default_model_package_spec_path("omnivoice");
 }
 
 class OmniVoiceLoader final : public runtime::IVoiceModelLoader {
@@ -56,30 +21,23 @@ public:
 
     bool can_load(const runtime::ModelLoadRequest & request) const override {
         try {
-            const auto root = resolve_model_root(request.model_path);
-            return has_omnivoice_assets(root) &&
-                (!request.family_hint.has_value() || *request.family_hint == family());
+            (void) engine::assets::load_resource_bundle_from_package_spec(request.model_path, spec_path());
+            return !request.family_hint.has_value() || *request.family_hint == family();
         } catch (...) {
             return false;
         }
     }
 
     runtime::ModelInspection inspect(const runtime::ModelLoadRequest & request) const override {
-        const auto assets = load_omnivoice_assets(resolve_model_root(request.model_path));
+        const auto assets = load_omnivoice_assets(request.model_path);
         runtime::ModelInspection inspection;
-        inspection.model_root = assets->paths.model_root;
+        inspection.model_root = assets->resources.model_root();
         inspection.metadata.family = family();
         inspection.metadata.variant = assets->config.model_type;
         inspection.metadata.description = "OmniVoice multilingual TTS with voice clone and voice design pipelines.";
-        inspection.metadata.config_candidates = {
-            "config.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "chat_template.jinja",
-            "audio_tokenizer/config.json",
-            "audio_tokenizer/preprocessor_config.json",
+        inspection.cli.request_options = {
+            {"text_chunk_mode", "default|tag_aware|japanese|endline", "Text chunking mode; default tag_aware."},
         };
-        inspection.metadata.weight_candidates = {"model.safetensors", "audio_tokenizer/model.safetensors"};
         inspection.cli.session_options = {
             {"omnivoice.mem_saver", "true|false", "Release staged runtime graphs after request phases; default false."},
         };
@@ -89,13 +47,19 @@ public:
         inspection.capabilities.supports_speaker_reference = true;
         inspection.capabilities.supports_style_condition = true;
         inspection.capabilities.languages = assets->config.supported_languages;
-        inspection.discovered_configs = discover_config_assets(request);
-        inspection.discovered_weights = discover_weight_assets(request);
+        inspection.discovered_configs = runtime::discover_named_assets_from_package_spec(
+            request.model_path,
+            spec_path(),
+            engine::assets::ModelPackageResourceKind::Files);
+        inspection.discovered_weights = runtime::discover_named_assets_from_package_spec(
+            request.model_path,
+            spec_path(),
+            engine::assets::ModelPackageResourceKind::Tensors);
         return inspection;
     }
 
     std::unique_ptr<runtime::ILoadedVoiceModel> load(const runtime::ModelLoadRequest & request) const override {
-        return load_omnivoice_model(resolve_model_root(request.model_path));
+        return load_omnivoice_model(request.model_path);
     }
 };
 
@@ -130,15 +94,6 @@ std::unique_ptr<OmniVoiceLoadedModel> load_omnivoice_model(const std::filesystem
     metadata.family = "omnivoice";
     metadata.variant = assets->config.model_type;
     metadata.description = "OmniVoice multilingual TTS with voice clone and voice design pipelines.";
-    metadata.config_candidates = {
-        "config.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "chat_template.jinja",
-        "audio_tokenizer/config.json",
-        "audio_tokenizer/preprocessor_config.json",
-    };
-    metadata.weight_candidates = {"model.safetensors", "audio_tokenizer/model.safetensors"};
     runtime::CapabilitySet capabilities;
     capabilities.supported_tasks = {
         {runtime::VoiceTaskKind::Tts, {runtime::RunMode::Offline}},

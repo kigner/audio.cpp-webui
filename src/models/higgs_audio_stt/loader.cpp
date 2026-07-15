@@ -1,43 +1,16 @@
 #include "engine/models/higgs_audio_stt/loader.h"
 
-#include "engine/framework/io/filesystem.h"
+#include "engine/framework/assets/model_package.h"
 #include "engine/models/higgs_audio_stt/session.h"
 
-#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
 namespace engine::models::higgs_audio_stt {
 namespace {
 
-std::filesystem::path resolve_model_root(const std::filesystem::path & model_path) {
-    if (engine::io::is_existing_directory(model_path)) {
-        return std::filesystem::weakly_canonical(model_path);
-    }
-    if (engine::io::is_existing_file(model_path)) {
-        return std::filesystem::weakly_canonical(model_path.parent_path());
-    }
-    throw std::runtime_error("Higgs Audio STT model path does not exist: " + model_path.string());
-}
-
-bool has_higgs_audio_stt_assets(const std::filesystem::path & root) {
-    return engine::io::is_existing_file(root / "config.json")
-        && engine::io::is_existing_file(root / "model.safetensors.index.json")
-        && engine::io::is_existing_file(root / "tokenizer_config.json")
-        && engine::io::is_existing_file(root / "vocab.json")
-        && engine::io::is_existing_file(root / "merges.txt");
-}
-
-std::vector<runtime::NamedAsset> discover_config_assets(const runtime::ModelLoadRequest & request) {
-    const auto root = resolve_model_root(request.model_path);
-    return runtime::discover_named_assets(
-        root,
-        {"config.json", "generation_config.json", "tokenizer_config.json"});
-}
-
-std::vector<runtime::NamedAsset> discover_weight_assets(const runtime::ModelLoadRequest & request) {
-    const auto root = resolve_model_root(request.model_path);
-    return runtime::discover_named_assets(root, {"model.safetensors.index.json"});
+std::filesystem::path spec_path() {
+    return engine::assets::default_model_package_spec_path("higgs_audio_stt");
 }
 
 class HiggsAudioSTTLoader final : public runtime::IVoiceModelLoader {
@@ -48,30 +21,33 @@ public:
 
     bool can_load(const runtime::ModelLoadRequest & request) const override {
         try {
-            const auto root = resolve_model_root(request.model_path);
-            return has_higgs_audio_stt_assets(root)
-                && (!request.family_hint.has_value() || *request.family_hint == family());
+            (void) engine::assets::load_resource_bundle_from_package_spec(request.model_path, spec_path());
+            return !request.family_hint.has_value() || *request.family_hint == family();
         } catch (...) {
             return false;
         }
     }
 
     runtime::ModelInspection inspect(const runtime::ModelLoadRequest & request) const override {
-        const auto assets = load_higgs_audio_stt_assets(resolve_model_root(request.model_path));
+        const auto assets = load_higgs_audio_stt_assets(request.model_path);
         runtime::ModelInspection inspection;
-        inspection.model_root = assets->paths.model_root;
+        inspection.model_root = assets->resources.model_root();
         inspection.metadata.family = family();
         inspection.metadata.variant = assets->config.model_size.empty() ? assets->config.model_type : assets->config.model_size;
         inspection.metadata.description = "Higgs Audio STT loaded from local extracted assets.";
-        inspection.metadata.config_candidates = {"config.json", "generation_config.json", "tokenizer_config.json"};
-        inspection.metadata.weight_candidates = {"model.safetensors.index.json"};
         inspection.capabilities.supported_tasks = {
             {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         inspection.capabilities.supports_timestamps = false;
         inspection.capabilities.languages = assets->config.supported_languages;
-        inspection.discovered_configs = discover_config_assets(request);
-        inspection.discovered_weights = discover_weight_assets(request);
+        inspection.discovered_configs = runtime::discover_named_assets_from_package_spec(
+            request.model_path,
+            spec_path(),
+            engine::assets::ModelPackageResourceKind::Files);
+        inspection.discovered_weights = runtime::discover_named_assets_from_package_spec(
+            request.model_path,
+            spec_path(),
+            engine::assets::ModelPackageResourceKind::Tensors);
         inspection.cli.request_options = {
             {"language", "code", "ASR language code."},
             {"max_tokens", "n", "Maximum generated transcript tokens."},
@@ -92,7 +68,7 @@ public:
     }
 
     std::unique_ptr<runtime::ILoadedVoiceModel> load(const runtime::ModelLoadRequest & request) const override {
-        return load_higgs_audio_stt_model(resolve_model_root(request.model_path));
+        return load_higgs_audio_stt_model(request.model_path);
     }
 };
 
@@ -133,8 +109,6 @@ std::unique_ptr<HiggsAudioSTTLoadedModel> load_higgs_audio_stt_model(const std::
     metadata.family = "higgs_audio_stt";
     metadata.variant = assets->config.model_size.empty() ? assets->config.model_type : assets->config.model_size;
     metadata.description = "Higgs Audio STT loaded from local extracted assets.";
-    metadata.config_candidates = {"config.json", "generation_config.json", "tokenizer_config.json"};
-    metadata.weight_candidates = {"model.safetensors.index.json"};
 
     runtime::CapabilitySet capabilities;
     capabilities.supported_tasks = {

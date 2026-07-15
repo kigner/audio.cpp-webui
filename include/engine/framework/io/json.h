@@ -99,6 +99,14 @@ inline int64_t optional_i64(const Value & object, const std::string & key, int64
     return value != nullptr && value->is_number() ? value->as_i64() : default_value;
 }
 
+inline int64_t optional_nullable_i64(const Value & object, const std::string & key, int64_t default_value) {
+    const auto * value = object.find(key);
+    if (value == nullptr || value->is_null()) {
+        return default_value;
+    }
+    return value->as_i64();
+}
+
 inline int optional_i32(const Value & object, const std::string & key, int default_value) {
     return static_cast<int>(optional_i64(object, key, default_value));
 }
@@ -108,14 +116,38 @@ inline float optional_f32(const Value & object, const std::string & key, float d
     return value != nullptr && value->is_number() ? value->as_f32() : default_value;
 }
 
+inline float optional_nullable_f32(const Value & object, const std::string & key, float default_value) {
+    const auto * value = object.find(key);
+    if (value == nullptr || value->is_null()) {
+        return default_value;
+    }
+    return value->as_f32();
+}
+
 inline bool optional_bool(const Value & object, const std::string & key, bool default_value) {
     const auto * value = object.find(key);
     return value != nullptr && value->is_bool() ? value->as_bool() : default_value;
 }
 
+inline bool optional_nullable_bool(const Value & object, const std::string & key, bool default_value) {
+    const auto * value = object.find(key);
+    if (value == nullptr || value->is_null()) {
+        return default_value;
+    }
+    return value->as_bool();
+}
+
 inline std::string optional_string(const Value & object, const std::string & key, std::string default_value) {
     const auto * value = object.find(key);
     return value != nullptr && value->is_string() ? value->as_string() : std::move(default_value);
+}
+
+inline std::string optional_nullable_string(const Value & object, const std::string & key, std::string default_value) {
+    const auto * value = object.find(key);
+    if (value == nullptr || value->is_null()) {
+        return default_value;
+    }
+    return value->as_string();
 }
 
 template <typename T>

@@ -1,6 +1,7 @@
 #include "engine/models/voxcpm2/assets.h"
 
 #include "engine/framework/assets/resource_bundle.h"
+#include "engine/framework/io/config.h"
 #include "engine/framework/io/filesystem.h"
 #include "engine/framework/io/json.h"
 
@@ -34,18 +35,6 @@ assets::ResourceBundle make_resource_bundle(const std::filesystem::path & model_
     return resources;
 }
 
-void require_positive(int64_t value, const char * label) {
-    if (value <= 0) {
-        throw std::runtime_error(std::string("VoxCPM2 config contains non-positive ") + label);
-    }
-}
-
-void require_divisible(int64_t value, int64_t divisor, const char * label) {
-    if (divisor <= 0 || value % divisor != 0) {
-        throw std::runtime_error(std::string("VoxCPM2 config invalid divisibility for ") + label);
-    }
-}
-
 VoxCPM2RopeScalingConfig parse_rope_scaling(const engine::io::json::Value & value) {
     VoxCPM2RopeScalingConfig config;
     config.type = json::optional_string(value, "type", "");
@@ -77,16 +66,16 @@ VoxCPM2MiniCPMConfig parse_lm_config(const engine::io::json::Value & value) {
     if (const auto * rope_scaling = value.find("rope_scaling"); rope_scaling != nullptr) {
         config.rope_scaling = parse_rope_scaling(*rope_scaling);
     }
-    require_positive(config.hidden_size, "lm hidden_size");
-    require_positive(config.intermediate_size, "lm intermediate_size");
-    require_positive(config.max_position_embeddings, "lm max_position_embeddings");
-    require_positive(config.num_attention_heads, "lm num_attention_heads");
-    require_positive(config.num_hidden_layers, "lm num_hidden_layers");
-    require_positive(config.num_key_value_heads, "lm num_key_value_heads");
-    require_positive(config.kv_channels, "lm kv_channels");
-    require_positive(config.vocab_size, "lm vocab_size");
-    require_divisible(config.hidden_size, config.num_attention_heads, "lm hidden_size / num_attention_heads");
-    require_divisible(config.num_attention_heads, config.num_key_value_heads, "lm attention heads");
+    engine::io::require_positive(config.hidden_size, "lm hidden_size");
+    engine::io::require_positive(config.intermediate_size, "lm intermediate_size");
+    engine::io::require_positive(config.max_position_embeddings, "lm max_position_embeddings");
+    engine::io::require_positive(config.num_attention_heads, "lm num_attention_heads");
+    engine::io::require_positive(config.num_hidden_layers, "lm num_hidden_layers");
+    engine::io::require_positive(config.num_key_value_heads, "lm num_key_value_heads");
+    engine::io::require_positive(config.kv_channels, "lm kv_channels");
+    engine::io::require_positive(config.vocab_size, "lm vocab_size");
+    engine::io::require_divisible(config.hidden_size, config.num_attention_heads, "lm hidden_size / num_attention_heads");
+    engine::io::require_divisible(config.num_attention_heads, config.num_key_value_heads, "lm attention heads");
     if (!config.rope_scaling.type.empty()) {
         if (config.rope_scaling.type != "longrope") {
             throw std::runtime_error("VoxCPM2 currently expects longrope rope_scaling");
@@ -109,12 +98,12 @@ VoxCPM2LocalTransformerConfig parse_local_transformer_config(
     config.num_heads = json::require_i64(value, "num_heads");
     config.num_layers = json::require_i64(value, "num_layers");
     config.kv_channels = json::optional_i64(value, "kv_channels", config.hidden_dim / config.num_heads);
-    require_positive(config.hidden_dim, label);
-    require_positive(config.ffn_dim, label);
-    require_positive(config.num_heads, label);
-    require_positive(config.num_layers, label);
-    require_positive(config.kv_channels, label);
-    require_divisible(config.hidden_dim, config.num_heads, label);
+    engine::io::require_positive(config.hidden_dim, label);
+    engine::io::require_positive(config.ffn_dim, label);
+    engine::io::require_positive(config.num_heads, label);
+    engine::io::require_positive(config.num_layers, label);
+    engine::io::require_positive(config.kv_channels, label);
+    engine::io::require_divisible(config.hidden_dim, config.num_heads, label);
     return config;
 }
 
@@ -151,19 +140,19 @@ VoxCPM2AudioVAEConfig parse_audio_vae_config(const engine::io::json::Value & val
     config.sample_rate_bin_boundaries = json::optional_i64_array(value, "sr_bin_boundaries");
     config.sample_rate = static_cast<int>(json::require_i64(value, "sample_rate"));
     config.output_sample_rate = static_cast<int>(json::require_i64(value, "out_sample_rate"));
-    require_positive(config.encoder_dim, "AudioVAE encoder_dim");
-    require_positive(config.latent_dim, "AudioVAE latent_dim");
-    require_positive(config.decoder_dim, "AudioVAE decoder_dim");
-    require_positive(config.sample_rate, "AudioVAE sample_rate");
-    require_positive(config.output_sample_rate, "AudioVAE out_sample_rate");
+    engine::io::require_positive(config.encoder_dim, "AudioVAE encoder_dim");
+    engine::io::require_positive(config.latent_dim, "AudioVAE latent_dim");
+    engine::io::require_positive(config.decoder_dim, "AudioVAE decoder_dim");
+    engine::io::require_positive(config.sample_rate, "AudioVAE sample_rate");
+    engine::io::require_positive(config.output_sample_rate, "AudioVAE out_sample_rate");
     if (config.encoder_rates.empty() || config.decoder_rates.empty()) {
         throw std::runtime_error("VoxCPM2 AudioVAE rates must be non-empty");
     }
     for (const auto rate : config.encoder_rates) {
-        require_positive(rate, "AudioVAE encoder rate");
+        engine::io::require_positive(rate, "AudioVAE encoder rate");
     }
     for (const auto rate : config.decoder_rates) {
-        require_positive(rate, "AudioVAE decoder rate");
+        engine::io::require_positive(rate, "AudioVAE decoder rate");
     }
     return config;
 }
@@ -191,12 +180,12 @@ VoxCPM2Config parse_config(const assets::ResourceBundle & resources) {
     config.max_length = json::optional_i64(root, "max_length", config.max_length);
     config.device = json::optional_string(root, "device", config.device);
     config.dtype = json::optional_string(root, "dtype", config.dtype);
-    require_positive(config.patch_size, "patch_size");
-    require_positive(config.feat_dim, "feat_dim");
-    require_positive(config.residual_lm_num_layers, "residual_lm_num_layers");
-    require_positive(config.scalar_quantization_latent_dim, "scalar_quantization_latent_dim");
-    require_positive(config.scalar_quantization_scale, "scalar_quantization_scale");
-    require_positive(config.max_length, "max_length");
+    engine::io::require_positive(config.patch_size, "patch_size");
+    engine::io::require_positive(config.feat_dim, "feat_dim");
+    engine::io::require_positive(config.residual_lm_num_layers, "residual_lm_num_layers");
+    engine::io::require_positive(config.scalar_quantization_latent_dim, "scalar_quantization_latent_dim");
+    engine::io::require_positive(config.scalar_quantization_scale, "scalar_quantization_scale");
+    engine::io::require_positive(config.max_length, "max_length");
     if (config.feat_dim != config.audio_vae.latent_dim) {
         throw std::runtime_error("VoxCPM2 feat_dim must match AudioVAE latent_dim");
     }
@@ -216,44 +205,37 @@ void fill_paths(VoxCPM2AssetPaths & paths, assets::ResourceBundle & resources) {
     paths.special_tokens_map_path = resources.require_file("special_tokens_map");
 }
 
-void require_tensor(
-    const assets::TensorSource & source,
-    const std::string & name,
-    std::initializer_list<int64_t> expected_shape) {
-    (void) source.require_tensor(name, assets::TensorStorageType::Native, expected_shape);
-}
-
 void validate_model_weight_anchors(const VoxCPM2Assets & assets) {
     const auto & config = assets.config;
     const auto & weights = *assets.model_weights;
-    require_tensor(weights, "base_lm.embed_tokens.weight", {config.lm.vocab_size, config.lm.hidden_size});
-    require_tensor(weights, "base_lm.norm.weight", {config.lm.hidden_size});
-    require_tensor(weights, "base_lm.layers.0.self_attn.q_proj.weight", {config.lm.hidden_size, config.lm.hidden_size});
-    require_tensor(weights, "base_lm.layers.0.self_attn.k_proj.weight",
+    assets::require_tensor_shape(weights, "base_lm.embed_tokens.weight", {config.lm.vocab_size, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "base_lm.norm.weight", {config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "base_lm.layers.0.self_attn.q_proj.weight", {config.lm.hidden_size, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "base_lm.layers.0.self_attn.k_proj.weight",
         {config.lm.num_key_value_heads * config.lm.kv_channels, config.lm.hidden_size});
-    require_tensor(weights, "base_lm.layers.0.mlp.gate_proj.weight", {config.lm.intermediate_size, config.lm.hidden_size});
-    require_tensor(weights, "residual_lm.norm.weight", {config.lm.hidden_size});
-    require_tensor(weights, "feat_encoder.special_token", {1, 1, 1, config.encoder.hidden_dim});
-    require_tensor(weights, "feat_encoder.in_proj.weight", {config.encoder.hidden_dim, config.feat_dim});
-    require_tensor(weights, "feat_encoder.encoder.norm.weight", {config.encoder.hidden_dim});
-    require_tensor(weights, "feat_decoder.estimator.in_proj.weight", {config.dit.hidden_dim, config.feat_dim});
-    require_tensor(weights, "feat_decoder.estimator.cond_proj.weight", {config.dit.hidden_dim, config.feat_dim});
-    require_tensor(weights, "feat_decoder.estimator.out_proj.weight", {config.feat_dim, config.dit.hidden_dim});
-    require_tensor(weights, "feat_decoder.estimator.decoder.norm.weight", {config.dit.hidden_dim});
-    require_tensor(weights, "fsq_layer.in_proj.weight", {config.scalar_quantization_latent_dim, config.lm.hidden_size});
-    require_tensor(weights, "fsq_layer.out_proj.weight", {config.lm.hidden_size, config.scalar_quantization_latent_dim});
-    require_tensor(weights, "enc_to_lm_proj.weight", {config.lm.hidden_size, config.encoder.hidden_dim});
-    require_tensor(weights, "lm_to_dit_proj.weight", {config.dit.hidden_dim, config.lm.hidden_size});
-    require_tensor(weights, "res_to_dit_proj.weight", {config.dit.hidden_dim, config.lm.hidden_size});
-    require_tensor(weights, "fusion_concat_proj.weight", {config.lm.hidden_size, config.lm.hidden_size * 2});
-    require_tensor(weights, "stop_proj.weight", {config.lm.hidden_size, config.lm.hidden_size});
-    require_tensor(weights, "stop_head.weight", {2, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "base_lm.layers.0.mlp.gate_proj.weight", {config.lm.intermediate_size, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "residual_lm.norm.weight", {config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "feat_encoder.special_token", {1, 1, 1, config.encoder.hidden_dim});
+    assets::require_tensor_shape(weights, "feat_encoder.in_proj.weight", {config.encoder.hidden_dim, config.feat_dim});
+    assets::require_tensor_shape(weights, "feat_encoder.encoder.norm.weight", {config.encoder.hidden_dim});
+    assets::require_tensor_shape(weights, "feat_decoder.estimator.in_proj.weight", {config.dit.hidden_dim, config.feat_dim});
+    assets::require_tensor_shape(weights, "feat_decoder.estimator.cond_proj.weight", {config.dit.hidden_dim, config.feat_dim});
+    assets::require_tensor_shape(weights, "feat_decoder.estimator.out_proj.weight", {config.feat_dim, config.dit.hidden_dim});
+    assets::require_tensor_shape(weights, "feat_decoder.estimator.decoder.norm.weight", {config.dit.hidden_dim});
+    assets::require_tensor_shape(weights, "fsq_layer.in_proj.weight", {config.scalar_quantization_latent_dim, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "fsq_layer.out_proj.weight", {config.lm.hidden_size, config.scalar_quantization_latent_dim});
+    assets::require_tensor_shape(weights, "enc_to_lm_proj.weight", {config.lm.hidden_size, config.encoder.hidden_dim});
+    assets::require_tensor_shape(weights, "lm_to_dit_proj.weight", {config.dit.hidden_dim, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "res_to_dit_proj.weight", {config.dit.hidden_dim, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "fusion_concat_proj.weight", {config.lm.hidden_size, config.lm.hidden_size * 2});
+    assets::require_tensor_shape(weights, "stop_proj.weight", {config.lm.hidden_size, config.lm.hidden_size});
+    assets::require_tensor_shape(weights, "stop_head.weight", {2, config.lm.hidden_size});
 
     const auto & vae = *assets.audiovae_weights;
-    require_tensor(vae, "encoder.fc_mu.weight_v", {config.audio_vae.latent_dim, config.audio_vae.decoder_dim, 3});
-    require_tensor(vae, "encoder.fc_mu.bias", {config.audio_vae.latent_dim});
-    require_tensor(vae, "decoder.model.0.weight_v", {config.audio_vae.latent_dim, 1, 7});
-    require_tensor(vae, "decoder.model.1.weight_v", {config.audio_vae.decoder_dim, config.audio_vae.latent_dim, 1});
+    assets::require_tensor_shape(vae, "encoder.fc_mu.weight_v", {config.audio_vae.latent_dim, config.audio_vae.decoder_dim, 3});
+    assets::require_tensor_shape(vae, "encoder.fc_mu.bias", {config.audio_vae.latent_dim});
+    assets::require_tensor_shape(vae, "decoder.model.0.weight_v", {config.audio_vae.latent_dim, 1, 7});
+    assets::require_tensor_shape(vae, "decoder.model.1.weight_v", {config.audio_vae.decoder_dim, config.audio_vae.latent_dim, 1});
 }
 
 }  // namespace

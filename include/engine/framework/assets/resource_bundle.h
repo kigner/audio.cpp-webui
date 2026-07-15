@@ -24,6 +24,11 @@ struct ResourceSpec {
     bool required = true;
 };
 
+struct TensorResource {
+    std::filesystem::path path;
+    std::string prefix;
+};
+
 [[nodiscard]] inline std::filesystem::path checkpoint_sidecar_config_path(const std::filesystem::path & checkpoint_path) {
     return checkpoint_path.parent_path() / (checkpoint_path.stem().string() + "_config.json");
 }
@@ -33,6 +38,7 @@ public:
     explicit ResourceBundle(std::filesystem::path model_root = {});
 
     void add_file(std::string id, const std::filesystem::path & path);
+    void add_tensor_source(std::string id, const std::filesystem::path & path, std::string tensor_prefix = {});
     void add_model_file(std::string id, const std::filesystem::path & relative_path);
     bool add_optional_model_file(std::string id, const std::filesystem::path & relative_path);
     void add_model_files(std::initializer_list<ResourceSpec> specs);
@@ -51,6 +57,7 @@ public:
 private:
     std::filesystem::path model_root_;
     std::unordered_map<std::string, std::filesystem::path> files_;
+    std::unordered_map<std::string, TensorResource> tensor_resources_;
     mutable std::unordered_map<std::string, std::shared_ptr<const TensorSource>> tensor_sources_;
 };
 

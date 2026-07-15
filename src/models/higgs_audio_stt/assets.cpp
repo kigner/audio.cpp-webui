@@ -1,7 +1,6 @@
 #include "engine/models/higgs_audio_stt/assets.h"
 
-#include "engine/framework/assets/resource_bundle.h"
-#include "engine/framework/io/filesystem.h"
+#include "engine/framework/assets/model_package.h"
 #include "engine/framework/io/json.h"
 
 #include <algorithm>
@@ -11,16 +10,6 @@
 namespace engine::models::higgs_audio_stt {
 namespace json = engine::io::json;
 namespace {
-
-std::filesystem::path resolve_model_root(const std::filesystem::path & model_path) {
-    if (engine::io::is_existing_directory(model_path)) {
-        return std::filesystem::weakly_canonical(model_path);
-    }
-    if (engine::io::is_existing_file(model_path)) {
-        return std::filesystem::weakly_canonical(model_path.parent_path());
-    }
-    throw std::runtime_error("Higgs Audio STT model path does not exist: " + model_path.string());
-}
 
 HiggsAudioSTTAudioEncoderConfig parse_audio_encoder_config(const engine::io::json::Value & value) {
     HiggsAudioSTTAudioEncoderConfig config;
@@ -105,52 +94,19 @@ HiggsAudioSTTConfig parse_config(const assets::ResourceBundle & resources) {
 }
 
 assets::ResourceBundle make_resource_bundle(const std::filesystem::path & model_path) {
-    assets::ResourceBundle resources(resolve_model_root(model_path));
-    resources.add_model_files({
-        {"config", "config.json", true},
-        {"generation_config", "generation_config.json", true},
-        {"preprocessor_config", "../whisper-large-v3/preprocessor_config.json", true},
-        {"weights_index", "model.safetensors.index.json", true},
-        {"tokenizer_config", "tokenizer_config.json", true},
-        {"vocab", "vocab.json", true},
-        {"merges", "merges.txt", true},
-    });
-    return resources;
-}
-
-void fill_paths(
-    HiggsAudioSTTAssetPaths & paths,
-    const assets::ResourceBundle & resources) {
-    paths.model_root = resources.model_root();
-    paths.config_path = resources.require_file("config");
-    paths.generation_config_path = resources.require_file("generation_config");
-    paths.preprocessor_config_path = resources.require_file("preprocessor_config");
-    paths.model_index_path = resources.require_file("weights_index");
-    paths.model_shard_paths = engine::assets::indexed_tensor_source_shard_paths(
-        paths.model_index_path,
-        paths.model_index_path.parent_path());
-    paths.tokenizer_config_path = resources.require_file("tokenizer_config");
-    paths.tokenizer_vocab_path = resources.require_file("vocab");
-    paths.tokenizer_merges_path = resources.require_file("merges");
+    return assets::load_resource_bundle_from_package_spec(
+        model_path,
+        assets::default_model_package_spec_path("higgs_audio_stt"));
 }
 
 }  // namespace
 
-HiggsAudioSTTAssetPaths resolve_higgs_audio_stt_assets(const std::filesystem::path & model_path) {
-    auto resources = make_resource_bundle(model_path);
-    HiggsAudioSTTAssetPaths paths;
-    fill_paths(paths, resources);
-    return paths;
-}
-
 std::shared_ptr<const HiggsAudioSTTAssets> load_higgs_audio_stt_assets(const std::filesystem::path & model_path) {
     auto resources = make_resource_bundle(model_path);
     auto assets = std::make_shared<HiggsAudioSTTAssets>();
-    fill_paths(assets->paths, resources);
     assets->config = parse_config(resources);
-    assets->model_weights = engine::assets::open_indexed_tensor_source(
-        assets->paths.model_index_path,
-        assets->paths.model_index_path.parent_path());
+    assets->model_weights = resources.open_tensor_source("weights");
+    assets->resources = std::move(resources);
     return assets;
 }
 

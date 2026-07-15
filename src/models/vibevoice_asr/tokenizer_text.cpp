@@ -20,15 +20,6 @@ std::shared_ptr<const VibeVoiceAssets> require_assets(std::shared_ptr<const Vibe
     return assets;
 }
 
-const std::filesystem::path & require_path(
-    const std::optional<std::filesystem::path> & path,
-    const char * label) {
-    if (!path.has_value()) {
-        throw std::runtime_error(std::string("VibeVoice-ASR missing tokenizer ") + label);
-    }
-    return *path;
-}
-
 int32_t require_token_id(const engine::tokenizers::LlamaBpeTokenizer & tokenizer, const char * token) {
     const auto id = tokenizer.find_token_id(token);
     if (!id.has_value()) {
@@ -56,10 +47,10 @@ std::string chat_message(const std::string & role, const std::string & content, 
 struct VibeVoiceASRTextTokenizer::Impl {
     explicit Impl(const VibeVoiceAssets & assets)
         : tokenizer(engine::tokenizers::LlamaBpeTokenizerSpec{
-              require_path(assets.paths.tokenizer_vocab_path, "vocab.json"),
-              require_path(assets.paths.tokenizer_merges_path, "merges.txt"),
-              require_path(assets.paths.tokenizer_config_path, "tokenizer_config.json"),
-              assets.paths.tokenizer_json_path,
+              assets.resources.require_file("tokenizer_vocab"),
+              assets.resources.require_file("tokenizer_merges"),
+              assets.resources.require_file("tokenizer_config"),
+              assets.resources.require_file("tokenizer_json"),
               engine::tokenizers::LlamaBpePreTokenizer::Qwen2,
           }),
           speech_start(require_token_id(tokenizer, "<|object_ref_start|>")),

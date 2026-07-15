@@ -93,6 +93,10 @@ public:
     inspection.model_root = assets->paths.model_root;
     inspection.metadata = voxcpm2_metadata(*assets);
     inspection.capabilities = voxcpm2_capabilities();
+    inspection.cli.request_options = {
+        {"text_chunk_mode", "default|tag_aware|japanese|endline",
+         "Text chunking mode; default tag_aware."},
+    };
     inspection.cli.session_options = {
         {"voxcpm2.mem_saver", "true|false",
          "Use tighter graph workspaces and release request runtime graphs; default false."},
