@@ -505,8 +505,7 @@ MODEL_PROFILES = {
         "supports_streaming": True,
     },
     "vibevoice_asr": {
-        "input_hint": "**VibeVoice-ASR**：支持⚡流式转写（勾选后边转边出字）。",
-        "supports_streaming": True,
+        "input_hint": "**VibeVoice-ASR**：离线转写，支持自动语种和说话人分段。",
     },
     "silero_vad": {
         "input_hint": "**Silero VAD**：检测音频中的语音段。",
@@ -589,7 +588,7 @@ MODEL_HINTS_EN = {
     "mel_band_roformer": "**Mel-Band RoFormer** outputs vocals and accompaniment.",
     "nemotron_asr": "**Nemotron ASR** supports 100+ languages and streaming transcription.",
     "higgs_audio_stt": "**Higgs Audio STT** supports streaming transcription.",
-    "vibevoice_asr": "**VibeVoice-ASR** supports streaming transcription.",
+    "vibevoice_asr": "**VibeVoice-ASR** uses offline transcription with automatic language and speaker segmentation.",
     "silero_vad": "**Silero VAD** detects speech segments.",
     "marblenet_vad": "**MarbleNet VAD** detects frame-level speech activity.",
     "sortformer_diar": "**Sortformer** identifies who spoke when (up to four speakers).",
@@ -644,6 +643,11 @@ def profile_for(entry):
 def supports_streaming(model_id):
     entry = catalog_by_id(model_id) if model_id else None
     return bool(entry) and bool(profile_for(entry).get("supports_streaming"))
+
+
+def asr_stream_update(model_id):
+    """Reset and show the ASR streaming toggle for the selected model."""
+    return gr.update(visible=supports_streaming(model_id), value=False)
 
 
 def model_hint_for(model_id, language=None):
@@ -3451,7 +3455,8 @@ TAB_SPECS = [TTS_TASKS, ASR_TASKS, GEN_TASKS, VC_TASKS,
 
 def refresh():
     """重读 catalog / 参数配置，刷新每个标签页的模型下拉和提示。
-    返回顺序：各页下拉更新（按 TAB_SPECS 顺序）、状态行、各页提示。"""
+    返回顺序：各页下拉更新（按 TAB_SPECS 顺序）、状态行、各页提示、
+    ASR 流式选项。"""
     global CATALOG, MODEL_PARAMS, REQUIRED_FILES
     CATALOG = _load_catalog()
     MODEL_PARAMS = _load_model_params()
@@ -3462,7 +3467,8 @@ def refresh():
         value = choices[0][1] if choices else None
         dropdowns.append(gr.update(choices=choices, value=value))
         hints.append(model_hint_for(value))
-    return (*dropdowns, server_status(), *hints)
+    asr_model_id = dropdowns[1]["value"] if len(dropdowns) > 1 else None
+    return (*dropdowns, server_status(), *hints, asr_stream_update(asr_model_id))
 
 
 atexit.register(_stop_server)
@@ -3956,10 +3962,11 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     asr_msg = gr.Markdown("")
 
         _wire_model_manager(asr_mm, ASR_TASKS, asr_hint)
-        # 模型切换：只有流式家族（nemotron/higgs/vibevoice-asr）显示流式勾选框。
-        asr_model.change(
-            lambda m: gr.update(visible=supports_streaming(m), value=False),
-            asr_model, asr_stream)
+        # 用户选模型时立即同步流式能力，不走默认队列；用 change 会同时接收
+        # 后端刷新下拉框的更新，和未安装模型的其它状态回调交错后可能留下旧的
+        # visible=False。程序化刷新由 refresh() 显式更新该控件。
+        asr_model.input(asr_stream_update, asr_model, asr_stream,
+                        queue=False, show_progress="hidden")
         asr_btn.click(lambda: ("", ""), None, [asr_out, asr_msg]).then(
             do_asr, [asr_model, asr_audio, asr_language, asr_context, asr_dialogue,
                      asr_stream],
@@ -4324,11 +4331,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         # clear: 明确把后端值置空，避免长音频 preview fetch 被中断后控件状态残留。
         _in_audio.clear(lambda: None, None, _in_audio)
 
-    # 顺序与 refresh()/TAB_SPECS 一致：各页下拉、状态行、各页提示。
+    # 顺序与 refresh()/TAB_SPECS 一致：各页下拉、状态行、各页提示、
+    # ASR 流式选项。
     _refresh_outputs = [
         tts_model, asr_model, gen_model, vc_model, sep_model, ana_model, vdes_model,
         status,
         tts_hint, asr_hint, gen_hint, vc_hint, sep_hint, ana_hint, vdes_hint,
+        asr_stream,
     ]
     for _mm in (tts_mm, asr_mm, gen_mm, vc_mm, sep_mm, ana_mm, vdes_mm):
         _mm["refresh_btn"].click(refresh, None, _refresh_outputs)
