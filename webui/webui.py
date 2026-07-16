@@ -245,6 +245,39 @@ LOG_PATH = os.path.join(LOG_DIR, "audiocpp_server_webui.log")
 LOAD_TIMEOUT = int(os.environ.get("AUDIOCPP_LOAD_TIMEOUT", "300"))
 GGUF_TYPES = ("orig", "f16", "bf16", "q8_0", "q2_k", "q3_k", "q4_k", "q5_k", "q6_k")
 
+# Only families with a model package spec can load the runtime GGUF produced by
+# audiocpp_gguf.  Keep this aligned with model_specs/*.json; a safetensors file
+# by itself is not evidence that the corresponding C++ loader supports GGUF.
+GGUF_NATIVE_FAMILIES = frozenset({
+    "citrinet_asr",
+    "higgs_audio_stt",
+    "hviske_asr",
+    "index_tts2",
+    "irodori_tts",
+    "moss_tts_local",
+    "moss_tts_nano",
+    "nemotron_asr",
+    "omnivoice",
+    "qwen3_asr",
+    "qwen3_forced_aligner",
+    "qwen3_tts",
+    "supertonic",
+    "vibevoice_asr",
+})
+
+# These families have input layouts the WebUI can assemble without guessing.
+# Other native-GGUF composite packages remain available through the converter
+# CLI until their explicit multi-input layout is added here.
+GGUF_SIMPLE_MODEL_FAMILIES = frozenset({
+    "higgs_audio_stt",
+    "hviske_asr",
+    "nemotron_asr",
+    "qwen3_asr",
+    "qwen3_forced_aligner",
+    "vibevoice_asr",
+})
+GGUF_WEBUI_CONVERTIBLE_FAMILIES = GGUF_SIMPLE_MODEL_FAMILIES | {"qwen3_tts"}
+
 
 def _find_gguf_exe():
     """Find the converter in a development build or an integrated bundle.
@@ -2115,17 +2148,15 @@ def download_status_tick(model_id):
     return download_status(model_id), gr.Timer(active=_download_running(model_id))
 
 
-def _gguf_entry(model_id):
+def _gguf_entry(model_id, require_installed=True):
     if not model_id:
         return None, _t("请先选择一个模型", "Select a model first.")
     entry = catalog_by_id(model_id)
     if entry is None:
         return None, _t("catalog 里没有模型 id：{model}",
                          "Model id not found in catalog: {model}", model=model_id)
-    if not entry["installed"]:
-        return None, _t("模型未完整安装，不能转换 GGUF：{path}",
-                         "Model is not fully installed; cannot convert GGUF: {path}",
-                         path=entry["abs_path"])
+    if require_installed and not entry["installed"]:
+        return None, _t("模型未完整安装。", "The model is not fully installed.")
     return entry, ""
 
 
@@ -2148,6 +2179,9 @@ def _gguf_tensor_entrypoint(model_dir):
 
 def _gguf_conversion_inputs(entry):
     """Build the converter's ordered (namespace, weights) input list."""
+    if entry["family"] not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
+        return []
+
     model_path = entry["abs_path"]
     if os.path.isfile(model_path):
         lower = model_path.lower()
@@ -2171,10 +2205,27 @@ def _gguf_conversion_inputs(entry):
     return [("", source)] if source else []
 
 
+def _gguf_conversion_unavailable(entry):
+    family = entry["family"]
+    if family not in GGUF_NATIVE_FAMILIES:
+        return _t("当前模型后端暂不支持原生 GGUF。",
+                  "This model backend does not currently support native GGUF.")
+    if family not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
+        return _t("当前复合模型暂不能在 WebUI 自动转换。",
+                  "This composite model cannot yet be converted automatically in the WebUI.")
+    return ""
+
+
 def gguf_status(model_id):
-    entry, error = _gguf_entry(model_id)
+    entry, error = _gguf_entry(model_id, require_installed=False)
     if entry is None:
         return f"⚪ {error}"
+    unavailable = _gguf_conversion_unavailable(entry)
+    if unavailable:
+        return f"⚠️ {unavailable}"
+    if not entry["installed"]:
+        return _t("🧊 可转换，但模型未完整安装。",
+                  "🧊 Convertible, but the model is not fully installed.")
     output = _gguf_output_path(entry)
     converter = _find_gguf_exe()
     if os.path.isfile(output):
@@ -2246,6 +2297,9 @@ def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
     entry, error = _gguf_entry(model_id)
     if entry is None:
         return f"❌ {error}"
+    unavailable = _gguf_conversion_unavailable(entry)
+    if unavailable:
+        return f"❌ {unavailable}"
     output = _gguf_output_path(entry)
     if os.path.isfile(output):
         return _t("⚠️ GGUF 已存在；请先检查或删除。", "⚠️ GGUF already exists; inspect or delete it first.")

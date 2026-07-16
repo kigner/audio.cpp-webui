@@ -292,13 +292,17 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 
 每个任务页的「模型管理」卡片都提供同一组 GGUF 操作：选择类型（默认 `q8_0`）后点「🧊 转换 GGUF」，
 会把结果写为所选模型目录下的 `model.gguf`；已有文件不会被覆盖。点「🔎 检查 GGUF」会在页面上执行
-`audiocpp_gguf.exe --inspect` 并显示包的元数据。目录存在 `model.gguf` 时，普通「📥 加载模型」已会自动优先
-使用 GGUF；点「🗑️ 删除 GGUF」会删除该文件（以及同名残留 `.tmp`），下次普通加载即恢复原始权重。
+`audiocpp_gguf.exe --inspect` 并显示包的元数据。对已接入原生 GGUF 的模型，目录存在 `model.gguf` 时，普通
+「📥 加载模型」会自动优先使用 GGUF；点「🗑️ 删除 GGUF」会删除该文件（以及同名残留 `.tmp`），下次普通加载
+即恢复原始权重。
 
 - 转换器按顺序查找开发构建的 `build\windows-cuda-release\bin` / `build\windows-cpu-release\bin`，以及整合包的
   `audiocpp-portable\gpu` / `audiocpp-portable\cpu`；也可用 `AUDIOCPP_GGUF` 指向自定义 `audiocpp_gguf.exe`。
-- 页面自动处理单个 `model.safetensors` 或其分片索引。需要多个命名 `--input namespace=...` 的复合模型仍应使用命令行，
-  避免 UI 猜错权重命名空间。
+- 页面只会把已接入原生 GGUF 模型规格、且能明确整理转换输入的模型标为「可转换」；存在 `.safetensors` 不代表对应
+  C++ 后端已支持 GGUF。支持转换但尚未完整安装的模型会提前显示「可转换，但模型未完整安装」，便于下载前判断；
+  Stable Audio 当前仍使用原始权重，不会标为可转换。
+- 页面自动处理受支持的单个 `model.safetensors`、分片索引和 Qwen3-TTS 复合权重。其他需要多个命名
+  `--input namespace=...` 的复合模型仍应使用命令行，避免 UI 猜错权重命名空间。
 - 仅 audio.cpp-native GGUF 可加载；量化兼容性因模型和推理路线而异。转换成功也应先用短样本检查输出质量。
 
 ---
