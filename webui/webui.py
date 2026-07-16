@@ -243,6 +243,41 @@ SERVER_BACKEND = "cuda" if BACKEND == "gpu" else BACKEND
 SERVER_EXE = os.path.join(BUNDLE_ROOT, BACKEND, "audiocpp_server.exe")
 LOG_PATH = os.path.join(LOG_DIR, "audiocpp_server_webui.log")
 LOAD_TIMEOUT = int(os.environ.get("AUDIOCPP_LOAD_TIMEOUT", "300"))
+GGUF_TYPES = ("orig", "f16", "bf16", "q8_0", "q2_k", "q3_k", "q4_k", "q5_k", "q6_k")
+
+
+def _find_gguf_exe():
+    """Find the converter in a development build or an integrated bundle.
+
+    Keep this separate from SERVER_EXE: developers normally run the executable
+    directly from build/windows-*-release/bin, whereas portable users have it
+    beside audiocpp_server.exe under gpu/ or cpu/.
+    """
+    dev_backend = "cuda" if BACKEND == "gpu" else "cpu"
+    candidates = [
+        os.environ.get("AUDIOCPP_GGUF"),
+        os.path.join(PROJECT_ROOT, "build", f"windows-{dev_backend}-release", "bin",
+                     "audiocpp_gguf.exe"),
+        os.path.join(PROJECT_ROOT, "build", "windows-cuda-release", "bin", "audiocpp_gguf.exe"),
+        os.path.join(PROJECT_ROOT, "build", "windows-cpu-release", "bin", "audiocpp_gguf.exe"),
+        os.path.join(BUNDLE_ROOT, BACKEND, "audiocpp_gguf.exe"),
+        os.path.join(BUNDLE_ROOT, "gpu", "audiocpp_gguf.exe"),
+        os.path.join(BUNDLE_ROOT, "cpu", "audiocpp_gguf.exe"),
+        os.path.join(PROJECT_ROOT, "audiocpp-portable", "gpu", "audiocpp_gguf.exe"),
+        os.path.join(PROJECT_ROOT, "audiocpp-portable", "cpu", "audiocpp_gguf.exe"),
+    ]
+    seen = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate = os.path.normpath(candidate)
+        key = os.path.normcase(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
 
 # model_manager.py is used to download not-yet-installed models in the background.
 MODELS_ROOT = os.path.join(BUNDLE_ROOT, "models")
@@ -2080,6 +2115,217 @@ def download_status_tick(model_id):
     return download_status(model_id), gr.Timer(active=_download_running(model_id))
 
 
+def _gguf_entry(model_id):
+    if not model_id:
+        return None, _t("请先选择一个模型", "Select a model first.")
+    entry = catalog_by_id(model_id)
+    if entry is None:
+        return None, _t("catalog 里没有模型 id：{model}",
+                         "Model id not found in catalog: {model}", model=model_id)
+    if not entry["installed"]:
+        return None, _t("模型未完整安装，不能转换 GGUF：{path}",
+                         "Model is not fully installed; cannot convert GGUF: {path}",
+                         path=entry["abs_path"])
+    return entry, ""
+
+
+def _gguf_output_path(entry):
+    model_path = entry["abs_path"]
+    if os.path.isfile(model_path) and model_path.lower().endswith(".gguf"):
+        return model_path
+    root = model_path if os.path.isdir(model_path) else os.path.dirname(model_path)
+    return os.path.join(root, "model.gguf")
+
+
+def _gguf_tensor_entrypoint(model_dir):
+    """Return a single-file or sharded safetensors entry point in model_dir."""
+    for name in ("model.safetensors.index.json", "model.safetensors"):
+        candidate = os.path.join(model_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _gguf_conversion_inputs(entry):
+    """Build the converter's ordered (namespace, weights) input list."""
+    model_path = entry["abs_path"]
+    if os.path.isfile(model_path):
+        lower = model_path.lower()
+        if lower.endswith(".safetensors") or lower.endswith(".safetensors.index.json"):
+            return [("", model_path)]
+        return []
+
+    # Qwen3-TTS is a composite package. Its GGUF package spec requires both
+    # tensor sources under the exact namespaces below.
+    if entry["family"] == "qwen3_tts":
+        model_weights = _gguf_tensor_entrypoint(model_path)
+        speech_weights = _gguf_tensor_entrypoint(os.path.join(model_path, "speech_tokenizer"))
+        if model_weights and speech_weights:
+            return [
+                ("model_weights", model_weights),
+                ("speech_tokenizer_weights", speech_weights),
+            ]
+        return []
+
+    source = _gguf_tensor_entrypoint(model_path)
+    return [("", source)] if source else []
+
+
+def gguf_status(model_id):
+    entry, error = _gguf_entry(model_id)
+    if entry is None:
+        return f"⚪ {error}"
+    output = _gguf_output_path(entry)
+    converter = _find_gguf_exe()
+    if os.path.isfile(output):
+        return _t("🧊 已有GGUF，将优先加载该模型。", "🧊 GGUF is available and will be loaded first.")
+    if converter is None:
+        return _t("⚠️ 找不到转换器。", "⚠️ Converter not found.")
+    inputs = _gguf_conversion_inputs(entry)
+    if not inputs:
+        return _t("⚠️ 未找到可转换的模型权重。", "⚠️ No convertible model weights found.")
+    return _t("🧊 可转换。", "🧊 Ready to convert.")
+
+
+def _gguf_inspection_summary(output, text):
+    info, namespaces = {}, []
+    for line in (text or "").splitlines():
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        if key == "namespace":
+            namespaces.append(value)
+        else:
+            info[key] = value
+
+    yes_no = lambda value: _t("是" if value == "true" else "否",
+                              "Yes" if value == "true" else "No")
+    rows = [
+        _t("✅ 检查完成", "✅ Inspection complete"),
+        _t("文件：`{name}`", "File: `{name}`", name=os.path.basename(output)),
+        _t("路径：`{path}`", "Path: `{path}`", path=output),
+        _t("张量：{count}", "Tensors: {count}", count=info.get("tensors", "-")),
+        _t("内嵌资源：{value}", "Embedded sidecars: {value}",
+           value=yes_no(info.get("embedded_sidecars"))),
+        _t("内嵌模型配置：{value}", "Embedded model spec: {value}",
+           value=yes_no(info.get("embedded_model_spec"))),
+    ]
+    if info.get("model_spec_family"):
+        rows.append(_t("模型家族：{family}", "Model family: {family}",
+                       family=info["model_spec_family"]))
+    if namespaces:
+        rows.append(_t("权重命名空间：{items}", "Weight namespaces: {items}",
+                       items=", ".join(namespaces)))
+    return "  \n".join(rows)
+
+
+def inspect_gguf(model_id):
+    entry, error = _gguf_entry(model_id)
+    if entry is None:
+        return f"❌ {error}"
+    output = _gguf_output_path(entry)
+    if not os.path.isfile(output):
+        return _t("⚠️ 暂无 GGUF。", "⚠️ No GGUF yet.")
+    converter = _find_gguf_exe()
+    if converter is None:
+        return _t("❌ 找不到 `audiocpp_gguf.exe`；已检查开发构建和 portable 的 gpu/cpu 目录。",
+                  "❌ audiocpp_gguf.exe was not found in development or portable gpu/cpu paths.")
+    try:
+        result = subprocess.run([converter, "--inspect", output], cwd=PROJECT_ROOT,
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=120)
+    except Exception as exc:
+        return _t("❌ GGUF 检查无法启动：{error}", "❌ Could not start GGUF inspection: {error}", error=exc)
+    if result.returncode != 0:
+        return _t("❌ 检查失败（exit {code}）。", "❌ Inspection failed (exit {code}).", code=result.returncode)
+    _ui_log(f"检查 GGUF：{output}")
+    return _gguf_inspection_summary(output, result.stdout)
+
+
+def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
+    entry, error = _gguf_entry(model_id)
+    if entry is None:
+        return f"❌ {error}"
+    output = _gguf_output_path(entry)
+    if os.path.isfile(output):
+        return _t("⚠️ GGUF 已存在；请先检查或删除。", "⚠️ GGUF already exists; inspect or delete it first.")
+    converter = _find_gguf_exe()
+    if converter is None:
+        return _t("❌ 找不到 `audiocpp_gguf.exe`；已检查开发构建和 portable 的 gpu/cpu 目录。",
+                  "❌ audiocpp_gguf.exe was not found in development or portable gpu/cpu paths.")
+    inputs = _gguf_conversion_inputs(entry)
+    if not inputs:
+        return _t("❌ 未找到可自动转换的模型权重。", "❌ No convertible model weights found.")
+    if weight_type not in GGUF_TYPES:
+        return _t("❌ 不支持的 GGUF 类型：{type}", "❌ Unsupported GGUF type: {type}", type=weight_type)
+
+    root = entry["abs_path"] if os.path.isdir(entry["abs_path"]) else os.path.dirname(inputs[0][1])
+    cmd = [converter]
+    for namespace, source in inputs:
+        cmd.extend(["--input", f"{namespace}={source}" if namespace else source])
+    cmd.extend(["--root", root, "--output", output,
+                "--type", weight_type, "--family", entry["family"]])
+    progress(0, desc=_t("正在转换 GGUF…", "Converting GGUF…"))
+    _ui_log(f"开始转换 GGUF：{entry['label']} ({weight_type})")
+    try:
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=7200)
+    except subprocess.TimeoutExpired:
+        return _t("❌ GGUF 转换超过 2 小时，已停止。", "❌ GGUF conversion exceeded two hours and was stopped.")
+    except Exception as exc:
+        return _t("❌ 无法启动 GGUF 转换：{error}", "❌ Could not start GGUF conversion: {error}", error=exc)
+
+    if result.returncode != 0 or not os.path.isfile(output):
+        _ui_log(f"GGUF 转换失败：{entry['label']} (exit {result.returncode})")
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        details = []
+        if stdout:
+            details.append(f"stdout:\n{stdout}")
+        if stderr:
+            details.append(f"stderr:\n{stderr}")
+        process_output = "\n\n".join(details) or _t("（转换器没有输出）", "(The converter produced no output.)")
+        return _t(
+            "❌ 转换失败（exit {code}）。\n\n命令：\n```text\n{command}\n```\n\n详细信息：\n```text\n{output}\n```",
+            "❌ Conversion failed (exit {code}).\n\nCommand:\n```text\n{command}\n```\n\nDetails:\n```text\n{output}\n```",
+            code=result.returncode, command=subprocess.list2cmdline(cmd), output=process_output)
+
+    stopped = False
+    with _proc_lock:
+        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
+            _stop_server()
+            stopped = True
+    _ui_log(f"GGUF 转换完成：{entry['label']} → {output}")
+    stop_note = (_t("请点『加载模型』。", "Click Load.")
+                 if stopped else
+                 _t("点『加载模型』即可。", "Click Load to use it."))
+    return _t("✅ 转换成功。{note}", "✅ Conversion complete. {note}", note=stop_note)
+
+
+def delete_gguf(model_id):
+    entry, error = _gguf_entry(model_id)
+    if entry is None:
+        return f"❌ {error}", server_status()
+    output = _gguf_output_path(entry)
+    if not os.path.isfile(output):
+        return _t("⚠️ 暂无 GGUF。", "⚠️ No GGUF to delete."), server_status()
+    with _proc_lock:
+        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
+            _stop_server()
+        elif server_alive() and model_id in loaded_ids():
+            return _t("⚠️ 外部 server 正在使用该 GGUF；请先关闭它再删除。",
+                      "⚠️ An external server is using this GGUF. Stop it before deleting."), server_status()
+    temporary = output + ".tmp"
+    try:
+        os.remove(output)
+        if os.path.isfile(temporary):
+            os.remove(temporary)
+    except OSError as exc:
+        return _t("❌ 删除 GGUF 失败：{error}", "❌ Could not delete GGUF: {error}", error=exc), server_status()
+    _ui_log(f"删除 GGUF：{output}")
+    return _t("✅ 已删除：`{path}`", "✅ Deleted: `{path}`", path=output), server_status()
+
+
 # --- task handlers ---------------------------------------------------------
 # Task handlers return (output, message): the reminder/status message is shown
 # inline under the output widget instead of as a Gradio popup card.
@@ -3234,6 +3480,8 @@ CUSTOM_CSS = """
   white-space: nowrap !important;
 }
 .mm-btn-row button span { white-space: nowrap !important; }
+.gguf-btn-row { align-items: center !important; }
+.gguf-btn-row > * { align-self: center !important; }
 
 /* 长音频的波形出现横向滚动条时，WaveSurfer 的滚动层（58px 内容 + 滚动条）会
    溢出 Gradio 固定 58px 的 .waveform-container / #waveform，盖住下方的
@@ -3358,7 +3606,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
     # ---- 每个标签页共用的“模型管理”卡片、接线与高级参数渲染 ----
     def _model_manager_block(task_label, tasks):
-        """标准“模型管理”卡片：模型下拉 + 加载/刷新/下载/进度按钮 + 状态区。
+        """标准“模型管理”卡片：模型下拉、加载/下载与 GGUF 操作 + 状态区。
         返回组件 dict；接线见 _wire_model_manager（刷新按钮统一接在文件末尾）。"""
         choices = choices_for_tasks(tasks)
         with gr.Group():
@@ -3387,10 +3635,30 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     value=("🧹 释放显存", "🧹 Unload"))
             load_status = gr.Markdown("")
             dl_status = gr.Markdown("")
+            with _localized(gr.Accordion("🧊 GGUF 工具（转换 / 检查 / 删除）", open=False),
+                            label=("🧊 GGUF 工具（转换 / 检查 / 删除）",
+                                   "🧊 GGUF tools (convert / inspect / delete)")):
+                with gr.Row(elem_classes="mm-btn-row gguf-btn-row"):
+                    gguf_type = _localized(gr.Dropdown(
+                        label="类型", show_label=False, choices=list(GGUF_TYPES), value="q8_0", scale=1, min_width=80),
+                        label=("类型", "Type"))
+                    gguf_convert_btn = _localized(
+                        gr.Button("🧊 转换", variant="secondary", scale=1, min_width=90),
+                        value=("🧊 转换", "🧊 Convert"))
+                    gguf_inspect_btn = _localized(
+                        gr.Button("🔎 检查", variant="secondary", scale=1, min_width=90),
+                        value=("🔎 检查", "🔎 Inspect"))
+                    gguf_delete_btn = _localized(
+                        gr.Button("🗑️ 删除", variant="stop", scale=1, min_width=90),
+                        value=("🗑️ 删除", "🗑️ Delete"))
+                gguf_message = gr.Markdown(gguf_status(model.value))
             timer = gr.Timer(3, active=False)
         return {"model": model, "load_btn": load_btn, "refresh_btn": refresh_btn,
                 "dl_btn": dl_btn, "dl_stat_btn": dl_stat_btn, "unload_btn": unload_btn,
-                "load_status": load_status, "dl_status": dl_status, "timer": timer}
+                "load_status": load_status, "dl_status": dl_status, "timer": timer,
+                "gguf_type": gguf_type, "gguf_convert_btn": gguf_convert_btn,
+                "gguf_inspect_btn": gguf_inspect_btn, "gguf_delete_btn": gguf_delete_btn,
+                "gguf_status": gguf_message}
 
     def _wire_model_manager(mm, tasks, hint):
         mm["load_btn"].click(_make_load_handler(tasks), mm["model"],
@@ -3401,7 +3669,12 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                          [mm["dl_status"], mm["timer"]])
         mm["dl_stat_btn"].click(download_status, mm["model"], mm["dl_status"])
         mm["unload_btn"].click(unload_model, None, [mm["load_status"], status])
+        mm["gguf_convert_btn"].click(convert_model_to_gguf,
+                                      [mm["model"], mm["gguf_type"]], mm["gguf_status"])
+        mm["gguf_inspect_btn"].click(inspect_gguf, mm["model"], mm["gguf_status"])
+        mm["gguf_delete_btn"].click(delete_gguf, mm["model"], [mm["gguf_status"], status])
         mm["model"].change(model_hint_for, mm["model"], hint)
+        mm["model"].change(gguf_status, mm["model"], mm["gguf_status"])
 
     def _render_param_controls(model_comp, state_comp, skip=(), prefill_comp=None):
         """“高级参数”折叠区内容：按所选模型的 family 动态生成控件（gr.render），

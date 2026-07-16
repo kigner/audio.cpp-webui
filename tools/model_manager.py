@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import types
 import warnings
 from pathlib import Path
@@ -1605,6 +1606,29 @@ def prune_staging_root(staging_root: Path) -> None:
         pass
 
 
+def promote_staging_directory(source: Path, destination: Path) -> None:
+    """Rename a completed staging directory, tolerating transient Windows locks.
+
+    Defender/indexers and the WebUI progress scan can briefly retain a directory
+    enumeration handle just after the final shard is written. Windows then reports
+    access denied/sharing violation even though the ACL and destination are valid.
+    """
+    retry_delays = (0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0)
+    for attempt, delay in enumerate(retry_delays, start=1):
+        try:
+            source.rename(destination)
+            return
+        except OSError as error:
+            if os.name != "nt" or getattr(error, "winerror", None) not in {5, 32}:
+                raise
+            print(
+                f"retry model directory finalization ({attempt}/{len(retry_delays)}): "
+                f"{source} -> {destination} ({error})"
+            )
+            time.sleep(delay)
+    source.rename(destination)
+
+
 def install_snapshot(package: ModelPackage, source: SnapshotSource, models_root: Path, overwrite: bool) -> Path:
     target_dir = models_root / package.target_directory
     staging_root = models_root / ".engine_model_staging"
@@ -1624,7 +1648,7 @@ def install_snapshot(package: ModelPackage, source: SnapshotSource, models_root:
                 raise RuntimeError(f"model directory already exists: {target_dir}")
             shutil.rmtree(target_dir)
         target_dir.parent.mkdir(parents=True, exist_ok=True)
-        staging_dir.rename(target_dir)
+        promote_staging_directory(staging_dir, target_dir)
         return target_dir
     finally:
         # On success the staging dir was renamed away; on failure it is kept so
@@ -1708,7 +1732,7 @@ def install_composite_snapshot(
         for final_root in sorted(top_level_roots, key=lambda path: len(path.parts)):
             destination_root = staged_roots[final_root]
             final_root.parent.mkdir(parents=True, exist_ok=True)
-            destination_root.rename(final_root)
+            promote_staging_directory(destination_root, final_root)
         shutil.rmtree(staging_bundle, ignore_errors=True)
         return package_root
     finally:
