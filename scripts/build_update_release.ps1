@@ -147,7 +147,12 @@ function Get-AppInputs {
         $inputs += [pscustomobject]@{ Source = Join-Path $repoRoot $relative; Path = $relative }
     }
 
-    $tracked = @(& git -C $repoRoot ls-files -- webui SpeakType)
+    $tracked = @(& git -C $repoRoot ls-files -- `
+        webui `
+        SpeakType `
+        tools/model_manager.py `
+        assets/model_manager `
+        model_specs)
     if ($LASTEXITCODE -ne 0) { throw "git ls-files failed." }
     foreach ($relative in $tracked) {
         $normalized = ([string]$relative).Replace('\', '/')
@@ -159,6 +164,10 @@ function Get-AppInputs {
         } elseif ($normalized.StartsWith("SpeakType/")) {
             $include = $normalized -match '^SpeakType/(app/|web/|third_party/|run\.py$|run_speaktype\.pyw$|run_mock\.pyw$|README\.md$)' -and
                 $normalized -notin @("SpeakType/config.json", "SpeakType/logs/.gitkeep")
+        } elseif ($normalized -eq "tools/model_manager.py" -or
+                  $normalized.StartsWith("assets/model_manager/") -or
+                  $normalized.StartsWith("model_specs/")) {
+            $include = $true
         }
         if ($include) {
             $inputs += [pscustomobject]@{ Source = Join-Path $repoRoot $normalized.Replace('/', '\'); Path = $normalized }
