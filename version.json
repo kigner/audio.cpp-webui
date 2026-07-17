@@ -9,6 +9,6 @@
     "core_cpu": "0.2.0",
     "core_cuda": "0.2.0",
     "python_env": "0.2.0",
-    "updater": "1.1.0"
+    "updater": "1.1.1"
   }
 }

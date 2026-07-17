@@ -7,6 +7,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $testRoot = Join-Path $PSScriptRoot ".tmp-$PID"
+$testUpdaterVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "updater\updater.version") -Raw).Trim()
 $requiredPreserve = @(
     "models/**",
     "webui/voice/**",
@@ -33,6 +34,7 @@ function New-TestBundle {
     param([string]$Name)
     $root = Join-Path $testRoot $Name
     New-Item -ItemType Directory -Path (Join-Path $root "updater") -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repoRoot "update.bat") -Destination (Join-Path $root "update.bat")
     Copy-Item -LiteralPath (Join-Path $repoRoot "updater\updater.ps1") -Destination (Join-Path $root "updater\updater.ps1")
     Copy-Item -LiteralPath (Join-Path $repoRoot "updater\apply-update.ps1") -Destination (Join-Path $root "updater\apply-update.ps1")
     Copy-Item -LiteralPath (Join-Path $repoRoot "updater\updater.version") -Destination (Join-Path $root "updater\updater.version")
@@ -50,7 +52,7 @@ function New-TestBundle {
         channel = "stable"
         platform = "windows-x64"
         python = "3.11"
-        components = [ordered]@{ app = "0.2.0"; core_cpu = "0.2.0"; core_cuda = "0.2.0"; python_env = "0.2.0"; updater = "1.1.0" }
+        components = [ordered]@{ app = "0.2.0"; core_cpu = "0.2.0"; core_cuda = "0.2.0"; python_env = "0.2.0"; updater = $testUpdaterVersion }
     }
     Write-Json $version (Join-Path $root "version.json")
     return $root
@@ -132,7 +134,7 @@ function New-CustomManifest {
     param(
         [string]$Directory,
         [object[]]$Components,
-        [string]$MinimumUpdater = "1.1.0",
+        [string]$MinimumUpdater = $testUpdaterVersion,
         [string[]]$HealthChecks = @()
     )
     $value = [ordered]@{
@@ -271,6 +273,17 @@ function Invoke-TestUpdater {
     return [pscustomobject]@{ ExitCode = $exitCode; Output = ($output -join "`n") }
 }
 
+function Invoke-TestBatchUpdater {
+    param(
+        [string]$Root,
+        [string[]]$Arguments
+    )
+    $batchPath = Join-Path $Root "update.bat"
+    $output = @(& $batchPath @Arguments 2>&1)
+    $exitCode = $LASTEXITCODE
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = ($output -join "`n") }
+}
+
 function Test-CheckMode {
     $root = New-TestBundle "check"
     $assets = Join-Path $root "assets"
@@ -280,6 +293,30 @@ function Test-CheckMode {
     $result = Invoke-TestUpdater $root "--check" $manifest
     Assert-True ($result.ExitCode -eq 0) "check mode failed: $($result.Output)"
     Assert-True ((Read-JsonFile (Join-Path $root "version.json")).version -eq "0.2.0") "check mode changed version.json"
+}
+
+function Test-BatchStableChannelCheck {
+    $root = New-TestBundle "batch entry with spaces"
+    $assets = Join-Path $root "release assets"
+    New-Item -ItemType Directory -Path $assets -Force | Out-Null
+    $archive = New-TestArchive $assets "app.zip" "webui/managed.txt"
+    $manifest = New-TestManifest $assets $archive
+    $stable = Join-Path $assets "stable.json"
+    Write-Json ([ordered]@{
+        schema = 1
+        channel = "stable"
+        version = "0.2.1"
+        manifest_url = $manifest
+        signature_url = "$manifest.minisig"
+        notes_url = "https://example.invalid/audio.cpp/v0.2.1"
+    }) $stable
+    $result = Invoke-TestBatchUpdater $root @(
+        "--check", "-StableUrl", $stable,
+        "-MinisignPath", (Join-Path $root "updater\test-minisign.cmd"),
+        "-PublicKeyPath", (Join-Path $root "updater\test-public-key.txt")
+    )
+    Assert-True ($result.ExitCode -eq 0) "update.bat stable-channel check failed: $($result.Output)"
+    Assert-True ($result.Output -match "Target version\s+: 0\.2\.1") "update.bat did not report the stable target version"
 }
 
 function Read-JsonFile {
@@ -344,10 +381,20 @@ function Test-ProtectedPathAndLock {
     Assert-True ($result.ExitCode -ne 0) "updater accepted a protected payload path"
 
     New-Item -ItemType Directory -Path (Join-Path $root "_update") -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $root "_update\update.lock") -Value "owned by another process" -Encoding ASCII
+    $lockPath = Join-Path $root "_update\update.lock"
+    $lockStream = [IO.File]::Open($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $result = Invoke-TestUpdater $root "--check" $manifest
+        Assert-True ($result.ExitCode -ne 0) "updater ignored an active lock"
+        Assert-True (Test-Path -LiteralPath $lockPath) "updater removed another process's active lock"
+    } finally {
+        $lockStream.Dispose()
+    }
+
+    Set-Content -LiteralPath $lockPath -Value "stale interrupted update" -Encoding ASCII
     $result = Invoke-TestUpdater $root "--check" $manifest
-    Assert-True ($result.ExitCode -ne 0) "updater ignored an existing lock"
-    Assert-True (Test-Path -LiteralPath (Join-Path $root "_update\update.lock")) "updater removed another process's lock"
+    Assert-True ($result.ExitCode -eq 0) "updater did not recover from a stale lock: $($result.Output)"
+    Assert-True (-not (Test-Path -LiteralPath $lockPath)) "updater left the recovered stale lock behind"
 }
 
 function Test-PythonDependencyUpdateAndRollback {
@@ -466,7 +513,7 @@ function Test-ReleaseBuilder {
         "audiocpp-core-cpu-win-x64-v0.2.1.zip",
         "audiocpp-core-cuda-win-x64-v0.2.1.zip",
         "audiocpp-python-deps-py311-win-x64-v0.2.1.zip",
-        "audiocpp-updater-v1.1.0.zip",
+        "audiocpp-updater-v$testUpdaterVersion.zip",
         "manifest-v0.2.1.json",
         "manifest-v0.2.1.json.minisig",
         "stable.json",
@@ -479,6 +526,7 @@ function Test-ReleaseBuilder {
     $manifest = Read-JsonFile (Join-Path $output "manifest-v0.2.1.json")
     Assert-True (@($manifest.components).Count -eq 5) "release manifest does not contain all five component types"
     Assert-True (@($manifest.preserve) -contains "webui/voice/**") "release manifest omitted voice preservation"
+    Assert-True ([string]$manifest.supported_from -eq ">=0.2.0") "release manifest does not keep bootstrap installs eligible for later versions"
     $stable = Read-JsonFile (Join-Path $output "stable.json")
     Assert-True ([string]$stable.manifest_url -match '/v0\.2\.1-windows-prebuilt/manifest-v0\.2\.1\.json$') "stable.json points at the wrong manifest"
 
@@ -494,6 +542,8 @@ function Test-ReleaseBuilder {
     foreach ($relative in @("update.bat", "version.json", "updater\updater.ps1", "updater\apply-update.ps1", "updater\updater.version", "updater\public-key.txt", "updater\minisign.exe")) {
         Assert-True (Test-Path -LiteralPath (Join-Path $bootstrapExpanded $relative) -PathType Leaf) "bootstrap ZIP omitted $relative"
     }
+    $bootstrapVersion = Read-JsonFile (Join-Path $bootstrapExpanded "version.json")
+    Assert-True ([string]$bootstrapVersion.components.updater -eq $testUpdaterVersion) "bootstrap version.json does not match updater.version"
 }
 
 try {
@@ -501,6 +551,7 @@ try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
     $tests = @(
         "Test-CheckMode",
+        "Test-BatchStableChannelCheck",
         "Test-DryRunAndHashValidation",
         "Test-ApplySuccessAndPreserve",
         "Test-RollbackOnHealthFailure",

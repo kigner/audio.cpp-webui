@@ -240,14 +240,31 @@ function Initialize-Workspace {
 }
 
 function Enter-UpdateLock {
-    try {
-        $script:LockStream = [IO.File]::Open($script:LockPath, [IO.FileMode]::CreateNew,
-            [IO.FileAccess]::Write, [IO.FileShare]::None)
-        $bytes = [Text.Encoding]::UTF8.GetBytes("pid=$PID`r`nstarted=$(Get-Date -Format o)`r`n")
-        $script:LockStream.Write($bytes, 0, $bytes.Length)
-        $script:LockStream.Flush()
-    } catch {
-        throw "Another update is running, or stale lock exists: $script:LockPath"
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        try {
+            $script:LockStream = [IO.File]::Open($script:LockPath, [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $bytes = [Text.Encoding]::UTF8.GetBytes("pid=$PID`r`nstarted=$(Get-Date -Format o)`r`n")
+            $script:LockStream.Write($bytes, 0, $bytes.Length)
+            $script:LockStream.Flush()
+            return
+        } catch {
+            if ($attempt -gt 0 -or -not (Test-Path -LiteralPath $script:LockPath -PathType Leaf)) {
+                throw "Another update is running: $script:LockPath"
+            }
+
+            $probe = $null
+            try {
+                $probe = [IO.File]::Open($script:LockPath, [IO.FileMode]::Open,
+                    [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            } catch {
+                throw "Another update is running: $script:LockPath"
+            } finally {
+                if ($null -ne $probe) { $probe.Dispose() }
+            }
+            Remove-Item -LiteralPath $script:LockPath -Force
+            Write-Log "Removed a stale update lock left by an interrupted run." "WARN"
+        }
     }
 }
 
@@ -286,13 +303,13 @@ function Copy-OrDownloadFile {
             $resolvedSource = $sourceUri.LocalPath
         } else {
             Write-Log "Downloading $Source"
-            Invoke-WebRequest -UseBasicParsing -Uri $sourceUri.AbsoluteUri -OutFile $Destination
+            Invoke-DownloadFile -Uri $sourceUri.AbsoluteUri -Destination $Destination
             return
         }
     } elseif ($null -ne $BaseUri) {
         $remote = [uri]::new($BaseUri, $Source)
         Write-Log "Downloading $($remote.AbsoluteUri)"
-        Invoke-WebRequest -UseBasicParsing -Uri $remote.AbsoluteUri -OutFile $Destination
+        Invoke-DownloadFile -Uri $remote.AbsoluteUri -Destination $Destination
         return
     } elseif (-not [IO.Path]::IsPathRooted($resolvedSource)) {
         $resolvedSource = Join-Path $BaseDirectory $resolvedSource
@@ -302,6 +319,76 @@ function Copy-OrDownloadFile {
         throw "Local update asset not found: $resolvedSource"
     }
     Copy-Item -LiteralPath $resolvedSource -Destination $Destination -Force
+}
+
+function Invoke-DownloadFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [int]$Attempts = 3,
+        [int]$TimeoutSeconds = 45
+    )
+
+    $temporary = "$Destination.download-$PID"
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $temporary -TimeoutSec $TimeoutSeconds `
+                -Headers @{ "User-Agent" = "audio.cpp-portable-updater" }
+            Move-Item -LiteralPath $temporary -Destination $Destination -Force
+            return
+        } catch {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+            if ($attempt -ge $Attempts) {
+                throw "Download failed after $Attempts attempts: $Uri ($($_.Exception.Message))"
+            }
+            Start-Sleep -Seconds $attempt
+        }
+    }
+}
+
+function Resolve-PointerAssetSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$PointerSource
+    )
+
+    $pointerUri = $null
+    $pointerIsRemote = [uri]::TryCreate($PointerSource, [UriKind]::Absolute, [ref]$pointerUri) -and
+        $pointerUri.Scheme -in @("http", "https")
+    $sourceUri = $null
+    if ([uri]::TryCreate($Source, [UriKind]::Absolute, [ref]$sourceUri)) {
+        if ($sourceUri.Scheme -eq "https" -or
+            ($sourceUri.Scheme -eq "http" -and $sourceUri.Host -in @("localhost", "127.0.0.1", "::1"))) {
+            return $sourceUri.AbsoluteUri
+        }
+        if ($sourceUri.Scheme -eq "file" -or [IO.Path]::IsPathRooted($Source)) {
+            if ($pointerIsRemote) { throw "A remote stable pointer cannot reference a local asset: $Source" }
+            return $(if ($sourceUri.Scheme -eq "file") { $sourceUri.LocalPath } else { Get-FullPath $Source })
+        }
+        throw "Unsupported stable pointer asset URL: $Source"
+    }
+
+    if ($pointerIsRemote) {
+        $resolved = [uri]::new($pointerUri, $Source)
+        if ($resolved.Scheme -ne "https" -and
+            -not ($resolved.Scheme -eq "http" -and $resolved.Host -in @("localhost", "127.0.0.1", "::1"))) {
+            throw "The stable manifest and signature must use HTTPS."
+        }
+        return $resolved.AbsoluteUri
+    }
+
+    $pointerPath = Get-FullPath $PointerSource
+    return Get-FullPath (Join-Path (Split-Path $pointerPath -Parent) $Source)
+}
+
+function Get-SourceBase {
+    param([Parameter(Mandatory = $true)][string]$Source)
+    $uri = $null
+    if ([uri]::TryCreate($Source, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -in @("http", "https")) {
+        return $uri
+    }
+    return Split-Path (Get-FullPath $Source) -Parent
 }
 
 function Get-RemoteJson {
@@ -348,13 +435,11 @@ function Resolve-ManifestFiles {
             [string]::IsNullOrWhiteSpace([string]$stable.signature_url)) {
             throw "stable.json is missing manifest_url or signature_url."
         }
-        $manifestUri = [uri][string]$stable.manifest_url
-        if ($manifestUri.Scheme -ne "https") {
-            throw "The stable manifest must use HTTPS."
-        }
-        $script:ManifestBase = $manifestUri
-        Copy-OrDownloadFile -Source ([string]$stable.manifest_url) -Destination $manifestPath
-        Copy-OrDownloadFile -Source ([string]$stable.signature_url) -Destination $signaturePath
+        $manifestSource = Resolve-PointerAssetSource ([string]$stable.manifest_url) $StableUrl
+        $signatureSource = Resolve-PointerAssetSource ([string]$stable.signature_url) $StableUrl
+        $script:ManifestBase = Get-SourceBase $manifestSource
+        Copy-OrDownloadFile -Source $manifestSource -Destination $manifestPath
+        Copy-OrDownloadFile -Source $signatureSource -Destination $signaturePath
         if ($null -ne $stable.PSObject.Properties["notes_url"]) {
             $notesUrl = [string]$stable.notes_url
         }
@@ -426,6 +511,7 @@ function Assert-Manifest {
     }
 
     $seen = @{}
+    if (@($Value.components).Count -lt 1) { throw "Manifest contains no components." }
     foreach ($component in @($Value.components)) {
         $id = [string]$component.id
         if (-not $script:ComponentVersionKeys.ContainsKey($id)) {

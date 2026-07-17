@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.2.0",
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.2.0",
     [Parameter(Mandatory = $true)][string]$MinisignBinary,
     [Parameter(Mandatory = $true)][string]$PublicKeyPath,
     [string]$OutputPath = ""
@@ -47,6 +47,12 @@ try {
     $versionValue.components.app = $Version
     $versionValue.components.core_cpu = $Version
     $versionValue.components.core_cuda = $Version
+    $updaterVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "updater\updater.version") -Raw).Trim()
+    if ($null -eq $versionValue.components.PSObject.Properties["updater"]) {
+        $versionValue.components | Add-Member -NotePropertyName "updater" -NotePropertyValue $updaterVersion
+    } else {
+        $versionValue.components.updater = $updaterVersion
+    }
     $versionValue | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stage "version.json") -Encoding UTF8
 
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null

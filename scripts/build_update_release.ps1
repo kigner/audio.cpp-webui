@@ -11,7 +11,8 @@ param(
     [string]$PythonDepsSource = "",
     [switch]$IncludeUpdater,
     [string]$UpdaterMinisignBinary = "",
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$MinimumUpdater = "1.1.0",
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$MinimumUpdater = "1.1.1",
+    [string]$SupportedFrom = ">=0.2.0",
     [switch]$Stable,
     [switch]$AllowDirty
 )
@@ -254,6 +255,18 @@ if (-not (Test-Path -LiteralPath $MinisignPublicKey -PathType Leaf)) {
 if ((Get-Content -LiteralPath $MinisignPublicKey -Raw -Encoding UTF8) -match 'REPLACE_WITH_') {
     throw "Refusing to use a placeholder minisign public key."
 }
+$packagedUpdaterVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "updater\updater.version") -Raw).Trim()
+if ([version]$packagedUpdaterVersion -lt [version]$MinimumUpdater) {
+    throw "Repository updater $packagedUpdaterVersion is older than -MinimumUpdater $MinimumUpdater."
+}
+if ([string]::IsNullOrWhiteSpace($SupportedFrom)) {
+    throw "-SupportedFrom cannot be empty."
+}
+foreach ($clause in ($SupportedFrom -split '\s+' | Where-Object { $_ -ne "" })) {
+    if ($clause -notmatch '^(>=|<=|>|<|=)?\d+(?:\.\d+){1,3}$') {
+        throw "Unsupported -SupportedFrom clause '$clause'."
+    }
+}
 if ($null -eq (Get-Command $MinisignPath -ErrorAction SilentlyContinue)) {
     throw "Minisign executable not found: $MinisignPath"
 }
@@ -285,7 +298,7 @@ $manifest = [ordered]@{
     product = "audiocpp-portable"
     platform = "windows-x64"
     version = $Version
-    supported_from = ">=0.2.0 <0.3.0"
+    supported_from = $SupportedFrom
     minimum_updater = $MinimumUpdater
     components = @($components | ForEach-Object { ConvertTo-ManifestComponent $_ })
     preserve = $preserveRules
