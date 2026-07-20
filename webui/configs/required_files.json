@@ -81,6 +81,14 @@
     "tokenizer_config.json",
     "tokenizer.json"
   ],
+  "voxtral_realtime": [
+    "config.json",
+    "generation_config.json",
+    "model.safetensors",
+    "params.json",
+    "processor_config.json",
+    "tekken.json"
+  ],
   "higgs_audio_stt": [
     "config.json",
     "generation_config.json",

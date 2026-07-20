@@ -40,6 +40,7 @@
       "input_hint": "**Hviske ASR**：丹麦语专用；模型侧自动分段。" },
     { "id": "vibevoice-asr",          "display_name": "VibeVoice ASR (asr, 多语种+说话人分段)",   "family": "vibevoice_asr",        "path": "models/VibeVoice-ASR",                   "task": "asr",   "mode": "offline", "download_id": "vibevoice_asr",           "min_vram_gb": 20,
       "input_hint": "**VibeVoice ASR**：自动语种，可输出分段/说话人轮次；文本框可填上下文提示（如 The recording is a meeting conversation.）。权重 17.3G，8G 卡跑不动。" },
+    { "id": "voxtral-realtime",       "display_name": "Voxtral Mini 4B Realtime (asr, 自动语种+流式)", "display_name_en": "Voxtral Mini 4B Realtime (asr, auto + streaming)", "family": "voxtral_realtime", "path": "models/Voxtral-Mini-4B-Realtime-2602", "task": "asr", "mode": "offline", "download_id": "voxtral_realtime", "session_options": { "voxtral_realtime.weight_type": "q8_0" }, "min_vram_gb": 8 },
 
     { "id": "chatterbox-vc",           "display_name": "Chatterbox (vc 声音转换)",                "display_name_en": "Chatterbox (voice conversion)", "family": "chatterbox", "path": "models/chatterbox", "task": "vc", "mode": "offline", "download_id": "chatterbox", "min_vram_gb": 12,
       "input_hint": "**Chatterbox VC**：上传源语音和目标音色参考；模型保留源语音内容，将说话人音色转换为目标音色，输出 24kHz 单声道。",

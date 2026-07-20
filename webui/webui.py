@@ -444,6 +444,12 @@ MODEL_PROFILES = {
                        "语种/上下文/对话模式见『转写选项』。"),
         "max_input_seconds": 60,
     },
+    "voxtral_realtime": {
+        "input_hint": (
+            "**Voxtral Mini 4B Realtime**：自动语种转写；支持⚡流式转写，"
+            "勾选后按模型原生音频分块边转边出字；不输出时间戳。"),
+        "supports_streaming": True,
+    },
     "ace_step": {
         "input_hint": (
             "**ACE-Step** 音乐生成/编辑：提示词写风格/乐器/情绪（英文最佳），可填歌词。"
@@ -578,6 +584,7 @@ MODEL_HINTS_EN = {
     "pocket_tts": "**PocketTTS** requires a voice reference.",
     "chatterbox": "**Chatterbox** requires a voice reference and supports en/es/fr/de/it/pt/ko.",
     "qwen3_asr": "**Qwen3-ASR** automatically splits long audio. Language and context are optional.",
+    "voxtral_realtime": "**Voxtral Mini 4B Realtime** auto-detects language and supports streaming transcription. Timestamps are not exposed.",
     "ace_step": "**ACE-Step**: describe style, instruments and mood. Editing routes require source audio.",
     "stable_audio": "**Stable Audio** accepts English prompts only. Source audio enables init/inpaint.",
     "heartmula": "**HeartMuLa** requires `tags` and lyrics. Estimated peak VRAM is about 25 GB.",
@@ -2760,7 +2767,16 @@ def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR"):
         for event in _iter_sse_events(r):
             etype = event.get("type")
             if etype == "transcript.text.delta":
-                text += event.get("delta") or ""
+                delta = event.get("delta") or ""
+                if entry.get("family") == "voxtral_realtime":
+                    # Voxtral currently emits the cumulative transcript (and may
+                    # dispatch the same event twice), despite the server exposing
+                    # it as a delta. Replace instead of appending for this family.
+                    if delta == text:
+                        continue
+                    text = delta
+                else:
+                    text += delta
                 yield text, False, None
             elif etype == "transcript.text.done":
                 final = (event.get("text") or text).strip()
