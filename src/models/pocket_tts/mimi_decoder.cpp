@@ -75,10 +75,15 @@ class MimiTransformerRuntime;
 
 void release_partial_graph_runtime(
     ggml_gallocr_t & gallocr,
+    ggml_backend_buffer_t & params_buffer,
     ggml_context *& context) {
     if (gallocr != nullptr) {
         ggml_gallocr_free(gallocr);
         gallocr = nullptr;
+    }
+    if (params_buffer != nullptr) {
+        ggml_backend_buffer_free(params_buffer);
+        params_buffer = nullptr;
     }
     if (context != nullptr) {
         ggml_free(context);
@@ -220,6 +225,13 @@ public:
             false,
         }).build(ctx, input_, {weight, std::nullopt});
 
+        if (core::is_host_backend(backend_)) {
+            params_buffer_ = ggml_backend_alloc_ctx_tensors(ggml_ctx_, backend_);
+            if (params_buffer_ == nullptr) {
+                release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
+                throw std::runtime_error("Mimi depthwise conv transpose context tensor allocation failed");
+            }
+        }
         core::set_backend_threads(backend_, threads_);
         graph_ = ggml_new_graph_custom(ggml_ctx_, 32768, false);
         ggml_build_forward_expand(graph_, output_.tensor);
@@ -227,7 +239,7 @@ public:
         if (galloc_ == nullptr ||
             !ggml_gallocr_reserve(galloc_, graph_) ||
             !ggml_gallocr_alloc_graph(galloc_, graph_)) {
-            release_partial_graph_runtime(galloc_, ggml_ctx_);
+            release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
             throw std::runtime_error("Mimi depthwise conv transpose graph allocation failed");
         }
         core::write_tensor_f32(input_, std::vector<float>(static_cast<size_t>(channels_ * frames_), 0.0F));
@@ -236,6 +248,9 @@ public:
     ~DepthwiseConvTranspose1dRuntime() {
         if (galloc_ != nullptr) {
             ggml_gallocr_free(galloc_);
+        }
+        if (params_buffer_ != nullptr) {
+            ggml_backend_buffer_free(params_buffer_);
         }
         if (ggml_ctx_ != nullptr) {
             ggml_free(ggml_ctx_);
@@ -259,6 +274,7 @@ private:
     int64_t kernel_size_ = 0;
     int stride_ = 1;
     ggml_context * ggml_ctx_ = nullptr;
+    ggml_backend_buffer_t params_buffer_ = nullptr;
     ggml_cgraph * graph_ = nullptr;
     ggml_gallocr_t galloc_ = nullptr;
     core::TensorValue input_;
@@ -308,6 +324,13 @@ public:
             bias.has_value(),
         }).build(ctx, input_, modules::Conv1dWeights{weight, bias});
 
+        if (core::is_host_backend(backend_)) {
+            params_buffer_ = ggml_backend_alloc_ctx_tensors(ggml_ctx_, backend_);
+            if (params_buffer_ == nullptr) {
+                release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
+                throw std::runtime_error("Mimi conv1d context tensor allocation failed");
+            }
+        }
         core::set_backend_threads(backend_, threads_);
         graph_ = ggml_new_graph_custom(ggml_ctx_, 32768, false);
         ggml_build_forward_expand(graph_, output_.tensor);
@@ -315,7 +338,7 @@ public:
         if (galloc_ == nullptr ||
             !ggml_gallocr_reserve(galloc_, graph_) ||
             !ggml_gallocr_alloc_graph(galloc_, graph_)) {
-            release_partial_graph_runtime(galloc_, ggml_ctx_);
+            release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
             throw std::runtime_error("Mimi conv1d graph allocation failed");
         }
         core::write_tensor_f32(input_, std::vector<float>(static_cast<size_t>(in_channels_ * frames_), 0.0F));
@@ -324,6 +347,9 @@ public:
     ~Conv1dRuntime() {
         if (galloc_ != nullptr) {
             ggml_gallocr_free(galloc_);
+        }
+        if (params_buffer_ != nullptr) {
+            ggml_backend_buffer_free(params_buffer_);
         }
         if (ggml_ctx_ != nullptr) {
             ggml_free(ggml_ctx_);
@@ -349,6 +375,7 @@ private:
     int stride_ = 1;
     int dilation_ = 1;
     ggml_context * ggml_ctx_ = nullptr;
+    ggml_backend_buffer_t params_buffer_ = nullptr;
     ggml_cgraph * graph_ = nullptr;
     ggml_gallocr_t galloc_ = nullptr;
     core::TensorValue input_;
@@ -396,6 +423,13 @@ public:
             bias.has_value(),
         }).build(ctx, input_, modules::ConvTranspose1dWeights{weight, bias});
 
+        if (core::is_host_backend(backend_)) {
+            params_buffer_ = ggml_backend_alloc_ctx_tensors(ggml_ctx_, backend_);
+            if (params_buffer_ == nullptr) {
+                release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
+                throw std::runtime_error("Mimi conv transpose context tensor allocation failed");
+            }
+        }
         core::set_backend_threads(backend_, threads_);
         graph_ = ggml_new_graph_custom(ggml_ctx_, 32768, false);
         ggml_build_forward_expand(graph_, output_.tensor);
@@ -403,7 +437,7 @@ public:
         if (galloc_ == nullptr ||
             !ggml_gallocr_reserve(galloc_, graph_) ||
             !ggml_gallocr_alloc_graph(galloc_, graph_)) {
-            release_partial_graph_runtime(galloc_, ggml_ctx_);
+            release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
             throw std::runtime_error("Mimi conv transpose graph allocation failed");
         }
         core::write_tensor_f32(input_, std::vector<float>(static_cast<size_t>(in_channels_ * frames_), 0.0F));
@@ -412,6 +446,9 @@ public:
     ~ConvTranspose1dRuntime() {
         if (galloc_ != nullptr) {
             ggml_gallocr_free(galloc_);
+        }
+        if (params_buffer_ != nullptr) {
+            ggml_backend_buffer_free(params_buffer_);
         }
         if (ggml_ctx_ != nullptr) {
             ggml_free(ggml_ctx_);
@@ -436,6 +473,7 @@ private:
     int64_t kernel_size_ = 0;
     int stride_ = 1;
     ggml_context * ggml_ctx_ = nullptr;
+    ggml_backend_buffer_t params_buffer_ = nullptr;
     ggml_cgraph * graph_ = nullptr;
     ggml_gallocr_t galloc_ = nullptr;
     core::TensorValue input_;
@@ -636,6 +674,13 @@ public:
         }
         output_ = modules::SliceModule({2, 0, output_full.shape.dims[2] - trim_frames}).build(ctx, output_full);
 
+        if (core::is_host_backend(backend_)) {
+            params_buffer_ = ggml_backend_alloc_ctx_tensors(ggml_ctx_, backend_);
+            if (params_buffer_ == nullptr) {
+                release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
+                throw std::runtime_error("Mimi full decoder context tensor allocation failed");
+            }
+        }
         core::set_backend_threads(backend_, threads_);
         graph_ = ggml_new_graph_custom(ggml_ctx_, 32768, false);
         ggml_build_forward_expand(graph_, output_.tensor);
@@ -643,7 +688,7 @@ public:
         if (galloc_ == nullptr ||
             !ggml_gallocr_reserve(galloc_, graph_) ||
             !ggml_gallocr_alloc_graph(galloc_, graph_)) {
-            release_partial_graph_runtime(galloc_, ggml_ctx_);
+            release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
             throw std::runtime_error("Mimi full decoder graph allocation failed");
         }
         core::write_tensor_f32(latents_bct_, std::vector<float>(static_cast<size_t>(config_.latent_size * steps_), 0.0F));
@@ -679,6 +724,9 @@ public:
         if (galloc_ != nullptr) {
             ggml_gallocr_free(galloc_);
         }
+        if (params_buffer_ != nullptr) {
+            ggml_backend_buffer_free(params_buffer_);
+        }
         if (ggml_ctx_ != nullptr) {
             ggml_free(ggml_ctx_);
         }
@@ -703,6 +751,7 @@ private:
     int64_t cache_steps_ = 0;
     int64_t head_dim_ = 0;
     ggml_context * ggml_ctx_ = nullptr;
+    ggml_backend_buffer_t params_buffer_ = nullptr;
     ggml_cgraph * graph_ = nullptr;
     ggml_gallocr_t galloc_ = nullptr;
     ggml_backend_graph_plan_t plan_ = nullptr;
@@ -822,6 +871,13 @@ public:
         output_bct_ = modules::TransposeModule({{0, 2, 1, 3}, 3}).build(ctx, x);
         build_transfer_views();
 
+        if (core::is_host_backend(backend_)) {
+            params_buffer_ = ggml_backend_alloc_ctx_tensors(ggml_ctx_, backend_);
+            if (params_buffer_ == nullptr) {
+                release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
+                throw std::runtime_error("Mimi transformer context tensor allocation failed");
+            }
+        }
         core::set_backend_threads(backend_, threads_);
         graph_ = ggml_new_graph_custom(ggml_ctx_, 32768, false);
         ggml_build_forward_expand(graph_, output_bct_.tensor);
@@ -829,7 +885,7 @@ public:
         if (galloc_ == nullptr ||
             !ggml_gallocr_reserve(galloc_, graph_) ||
             !ggml_gallocr_alloc_graph(galloc_, graph_)) {
-            release_partial_graph_runtime(galloc_, ggml_ctx_);
+            release_partial_graph_runtime(galloc_, params_buffer_, ggml_ctx_);
             throw std::runtime_error("Mimi transformer graph allocation failed");
         }
         core::write_tensor_f32(input_bct_, std::vector<float>(static_cast<size_t>(config_.hidden_size * frames_), 0.0F));
@@ -854,6 +910,9 @@ public:
     ~MimiTransformerRuntime() {
         if (galloc_ != nullptr) {
             ggml_gallocr_free(galloc_);
+        }
+        if (params_buffer_ != nullptr) {
+            ggml_backend_buffer_free(params_buffer_);
         }
         if (ggml_ctx_ != nullptr) {
             ggml_free(ggml_ctx_);
@@ -996,6 +1055,7 @@ private:
     int64_t cache_steps_ = 0;
     int64_t head_dim_ = 0;
     ggml_context * ggml_ctx_ = nullptr;
+    ggml_backend_buffer_t params_buffer_ = nullptr;
     ggml_cgraph * graph_ = nullptr;
     ggml_gallocr_t galloc_ = nullptr;
     core::TensorValue input_bct_;

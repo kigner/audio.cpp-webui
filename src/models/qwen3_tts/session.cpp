@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -112,6 +113,19 @@ bool mem_saver_from_options(const runtime::SessionOptions & options) {
     return false;
 }
 
+std::size_t voice_prompt_cache_slots_from_options(const runtime::SessionOptions & options) {
+    constexpr int64_t kDefaultCacheSlots = 1;
+    const int64_t slots = runtime::parse_i64_option(options.options, {"qwen3_tts.voice_prompt_cache_slots"})
+        .value_or(kDefaultCacheSlots);
+    if (slots < 0) {
+        throw std::runtime_error("qwen3_tts.voice_prompt_cache_slots must be non-negative");
+    }
+    if (static_cast<std::uint64_t>(slots) > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error("qwen3_tts.voice_prompt_cache_slots is too large");
+    }
+    return static_cast<std::size_t>(slots);
+}
+
 void validate_talker_weight_storage(engine::assets::TensorStorageType storage_type) {
     if (storage_type == engine::assets::TensorStorageType::Native ||
         storage_type == engine::assets::TensorStorageType::F32 ||
@@ -145,6 +159,17 @@ void validate_conv_weight_storage(engine::assets::TensorStorageType storage_type
 
 }  // namespace
 
+bool Qwen3TTSSession::VoicePromptCacheKeyEqual::operator()(
+    const VoicePromptCacheKey & lhs,
+    const VoicePromptCacheKey & rhs) const noexcept {
+    return lhs.reference_text == rhs.reference_text &&
+        lhs.mode == rhs.mode &&
+        lhs.sample_rate == rhs.sample_rate &&
+        lhs.channels == rhs.channels &&
+        lhs.sample_count == rhs.sample_count &&
+        lhs.sample_hash == rhs.sample_hash;
+}
+
 Qwen3TTSSession::Qwen3TTSSession(
     runtime::TaskSpec task,
     runtime::SessionOptions options,
@@ -155,7 +180,8 @@ Qwen3TTSSession::Qwen3TTSSession(
       mem_saver_(mem_saver_from_options(options)),
       text_tokenizer_(assets_),
       talker_(assets_->config.talker),
-      voice_prompt_context_(voice_prompt_backend_config(options)) {
+      voice_prompt_context_(voice_prompt_backend_config(options)),
+      voice_prompt_cache_(voice_prompt_cache_slots_from_options(options)) {
     talker_graph_arena_bytes_ = runtime::parse_size_mb_option(
         options.options, {"qwen3_tts.talker_graph_arena_mb"}, talker_graph_arena_bytes_);
     speech_encoder_graph_arena_bytes_ = runtime::parse_size_mb_option(
@@ -175,8 +201,6 @@ Qwen3TTSSession::Qwen3TTSSession(
         validate_matmul_weight_storage(storage_type, "qwen3_tts.weight_type");
         validate_talker_weight_storage(storage_type);
         talker_weight_storage_type_ = storage_type;
-        speech_encoder_weight_storage_type_ = storage_type;
-        speech_decoder_weight_storage_type_ = storage_type;
     }
     if (const auto it = options.options.find("qwen3_tts.conv_weight_type"); it != options.options.end()) {
         conv_weight_storage_type_ = engine::assets::parse_tensor_storage_type(it->second);
@@ -208,6 +232,7 @@ Qwen3TTSSession::Qwen3TTSSession(
             key != "qwen3_tts.talker_weight_type" &&
             key != "qwen3_tts.speech_encoder_weight_type" &&
             key != "qwen3_tts.speech_decoder_weight_type" &&
+            key != "qwen3_tts.voice_prompt_cache_slots" &&
             key != "qwen3_tts.mem_saver") {
             throw std::runtime_error("unknown Qwen3 TTS session option: " + key);
         }
@@ -420,25 +445,49 @@ const Qwen3VoiceClonePrompt & Qwen3TTSSession::resolve_voice_prompt(
     const Qwen3TTSVoiceClonePromptBuilder & prompt_builder) {
     const uint64_t sample_count = static_cast<uint64_t>(input.reference_audio.samples.size());
     const uint64_t sample_hash = hash_audio_samples(input.reference_audio);
-    const bool cache_hit = voice_prompt_cache_.has_value()
-        && voice_prompt_cache_->reference_text == input.reference_text
-        && voice_prompt_cache_->mode == input.mode
-        && voice_prompt_cache_->sample_rate == input.reference_audio.sample_rate
-        && voice_prompt_cache_->channels == input.reference_audio.channels
-        && voice_prompt_cache_->sample_count == sample_count
-        && voice_prompt_cache_->sample_hash == sample_hash;
-    if (!cache_hit) {
-        VoicePromptCacheEntry entry;
-        entry.reference_text = input.reference_text;
-        entry.mode = input.mode;
-        entry.sample_rate = input.reference_audio.sample_rate;
-        entry.channels = input.reference_audio.channels;
-        entry.sample_count = sample_count;
-        entry.sample_hash = sample_hash;
-        entry.prompt = prompt_builder.build_voice_prompt(input);
-        voice_prompt_cache_ = std::move(entry);
+    VoicePromptCacheKey key;
+    key.reference_text = input.reference_text;
+    key.mode = input.mode;
+    key.sample_rate = input.reference_audio.sample_rate;
+    key.channels = input.reference_audio.channels;
+    key.sample_count = sample_count;
+    key.sample_hash = sample_hash;
+    if (auto * cached = voice_prompt_cache_.find(key)) {
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.hit", 1);
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.slots", static_cast<int64_t>(voice_prompt_cache_.capacity()));
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.entries", static_cast<int64_t>(voice_prompt_cache_.size()));
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.evicted", 0);
+        return cached->prompt;
     }
-    return voice_prompt_cache_->prompt;
+
+    VoicePromptCacheEntry entry;
+    entry.prompt = prompt_builder.build_voice_prompt(input);
+    if (voice_prompt_cache_.capacity() == 0) {
+        uncached_voice_prompt_ = std::move(entry);
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.hit", 0);
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.slots", 0);
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.entries", 0);
+        debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.evicted", 0);
+        return uncached_voice_prompt_->prompt;
+    }
+    const bool will_evict = voice_prompt_cache_.size() >= voice_prompt_cache_.capacity();
+    voice_prompt_cache_.put(std::move(key), std::move(entry));
+    auto * cached = voice_prompt_cache_.find(VoicePromptCacheKey{
+        input.reference_text,
+        input.mode,
+        input.reference_audio.sample_rate,
+        input.reference_audio.channels,
+        sample_count,
+        sample_hash,
+    });
+    if (cached == nullptr) {
+        throw std::runtime_error("Qwen3 TTS voice prompt cache insert failed");
+    }
+    debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.hit", 0);
+    debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.slots", static_cast<int64_t>(voice_prompt_cache_.capacity()));
+    debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.entries", static_cast<int64_t>(voice_prompt_cache_.size()));
+    debug::trace_log_scalar("qwen3_tts.voice_prompt_cache.evicted", will_evict ? 1 : 0);
+    return cached->prompt;
 }
 
 Qwen3TTSRequest Qwen3TTSSession::make_request(const runtime::TaskRequest & request) const {

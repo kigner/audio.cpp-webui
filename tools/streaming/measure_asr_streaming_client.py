@@ -384,6 +384,8 @@ def stream_asr_request(
 
     transcript_path.write_text(final_text, encoding="utf-8")
     elapsed_ms = (time.perf_counter() - start) * 1000.0
+    audio_duration_ms = float(info["duration_s"]) * 1000.0
+    streaming_rtf = done_ms / audio_duration_ms if done_ms is not None and audio_duration_ms > 0.0 else None
     return {
         "label": request_label,
         "audio": info,
@@ -393,6 +395,7 @@ def stream_asr_request(
         "first_delta_ms": first_delta_ms,
         "done_ms": done_ms,
         "server_ttft_ms": server_ttft_ms,
+        "streaming_rtf": streaming_rtf,
         "client_observed_ttft_ms": first_delta_ms if first_delta_ms is not None else done_ms,
         "client_observed_ttft_after_upload_ms": (
             (first_delta_ms if first_delta_ms is not None else done_ms) - upload_complete_ms
@@ -575,6 +578,7 @@ def main() -> int:
             "upload_complete_ms": measured["upload_complete_ms"],
             "server_ttft_ms": measured["server_ttft_ms"],
             "client_observed_ttft_ms": measured["client_observed_ttft_ms"],
+            "streaming_rtf": measured["streaming_rtf"],
             "client_observed_ttft_after_upload_ms": measured["client_observed_ttft_after_upload_ms"],
             "first_event_before_upload_complete": measured["first_event_before_upload_complete"],
             "first_delta_before_upload_complete": measured["first_delta_before_upload_complete"],

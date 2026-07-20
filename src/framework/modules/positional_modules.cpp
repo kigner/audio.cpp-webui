@@ -21,7 +21,8 @@ RoPEModule::RoPEModule(RoPEConfig config) : config_(config) {
 core::TensorValue RoPEModule::build(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input,
-    const core::TensorValue & positions) const {
+    const core::TensorValue & positions,
+    const core::TensorValue * frequency_factors) const {
     if (ctx.ggml == nullptr) {
         throw std::runtime_error("ModuleBuildContext.ggml is null");
     }
@@ -33,12 +34,18 @@ core::TensorValue RoPEModule::build(
     if (config_.dimensions > input.shape.last_dim()) {
         throw std::runtime_error("RoPE dimensions exceed input last dimension");
     }
+    if (frequency_factors != nullptr) {
+        core::validate_shape(
+            *frequency_factors,
+            core::TensorShape::from_dims({config_.dimensions / 2}),
+            "RoPE frequency factors");
+    }
     return core::wrap_tensor(
         ggml_rope_ext(
             ctx.ggml,
             input.tensor,
             positions.tensor,
-            nullptr,
+            frequency_factors != nullptr ? frequency_factors->tensor : nullptr,
             static_cast<int>(config_.dimensions),
             config_.mode,
             0,

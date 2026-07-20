@@ -24,6 +24,30 @@ enum class QwenDecoderStaticCacheUpdateMode {
     DirectSetRows,
 };
 
+enum class QwenDecoderQKVLayout {
+    Separate,
+    PackedQKV,
+};
+
+struct QwenDecoderActivationCastPolicy {
+    bool enabled = false;
+    ggml_type type = GGML_TYPE_BF16;
+    bool after_input_norm = false;
+    bool after_qkv_projection = false;
+    bool after_qk_norm = false;
+    bool after_rope = false;
+    bool after_static_cache_update = false;
+    bool after_attention = false;
+    bool after_context_transpose = false;
+    bool after_attention_output = false;
+    bool after_residual = false;
+    bool after_ffn_norm = false;
+    bool after_mlp_projection = false;
+    bool after_mlp_silu = false;
+    bool after_mlp_mul = false;
+    bool after_output = false;
+};
+
 struct QwenDecoderAttentionPolicy {
     QwenDecoderAttentionMode prefill_mode = QwenDecoderAttentionMode::ManualRepeat;
     QwenDecoderAttentionMode static_mode = QwenDecoderAttentionMode::FlashGrouped;
@@ -48,9 +72,12 @@ struct QwenDecoderLayerConfig {
     int64_t intermediate_size = 0;
     float rms_norm_eps = 1e-5f;
     float rope_theta = 10000.0f;
+    int rope_type = GGML_ROPE_TYPE_NEOX;
     ggml_prec attention_precision = GGML_PREC_F32;
     ggml_prec projection_precision = GGML_PREC_DEFAULT;
+    QwenDecoderQKVLayout qkv_layout = QwenDecoderQKVLayout::Separate;
     bool use_qk_norm = true;
+    QwenDecoderActivationCastPolicy activation_cast;
     QwenDecoderRuntimePolicy runtime;
 };
 
@@ -67,6 +94,9 @@ struct QwenDecoderLayerWeights {
     NormWeights k_norm;
     NormWeights post_norm;
     QwenMLPWeights mlp;
+    // Optional per-frequency RoPE divisors (head_dim / 2), used by Llama-3
+    // scaling and compatible checkpoints.
+    std::optional<core::TensorValue> rope_frequency_factors;
 };
 
 struct QwenDecoderLayerOutputs {
@@ -117,9 +147,12 @@ struct QwenDecoderStackConfig {
     int64_t layers = 0;
     float rms_norm_eps = 1e-5f;
     float rope_theta = 10000.0f;
+    int rope_type = GGML_ROPE_TYPE_NEOX;
     ggml_prec attention_precision = GGML_PREC_F32;
     ggml_prec projection_precision = GGML_PREC_DEFAULT;
+    QwenDecoderQKVLayout qkv_layout = QwenDecoderQKVLayout::Separate;
     bool use_qk_norm = true;
+    QwenDecoderActivationCastPolicy activation_cast;
     QwenDecoderRuntimePolicy runtime;
 };
 

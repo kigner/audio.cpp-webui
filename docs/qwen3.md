@@ -237,6 +237,7 @@ audiocpp_cli --task align --family qwen3_forced_aligner --model models/Qwen3-For
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--session-option qwen3_tts.mem_saver=true|false` | bool | `false` | Release the TTS talker cached-step graph after each request to reduce post-request resident VRAM. Later requests rebuild that graph; voice prompt, prefill, code predictor, and speech decoder caches stay reusable. |
+| `--session-option qwen3_tts.voice_prompt_cache_slots=<n>` | integer | `1` | Voice-clone prompt cache slots. Set to `0` to disable prompt caching. |
 | `--session-option qwen3_tts.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | TTS graph weight type. |
 | `--session-option qwen3_asr.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | ASR thinker weight type. |
 | `--session-option qwen3_forced_aligner.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Aligner thinker weight type. |

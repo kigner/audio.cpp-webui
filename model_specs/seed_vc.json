@@ -1,0 +1,127 @@
+{
+  "family": "seed_vc",
+  "sources": [
+    {
+      "format": "gguf",
+      "roots": {
+        "model": ".",
+        "weights": "$gguf"
+      },
+      "files": {
+        "manifest": "model:seed_vc_manifest.json",
+        "v2_wrapper_config": "model:v2/vc_wrapper.json",
+        "astral_bsq32_config": "model:astral/bsq32.json",
+        "astral_bsq2048_config": "model:astral/bsq2048.json",
+        "v1_svc_config": "model:v1/svc.json",
+        "v1_whisper_bigvgan_config": "model:v1/whisper_bigvgan.json",
+        "v1_xlsr_hift_config": "model:v1/xlsr_hift.json",
+        "hift_config": "model:hift/config.json",
+        "bigvgan_22k_config": "model:bigvgan/v2_22khz_80band_256x/config.json",
+        "bigvgan_44k_config": "model:bigvgan/v2_44khz_128band_512x/config.json",
+        "whisper_small_config": "model:whisper-small/config.json",
+        "hubert_large_config": "model:hubert-large-ll60k/config.json",
+        "wav2vec2_xlsr_config": "model:wav2vec2-xls-r-300m/config.json"
+      },
+      "tensors": {
+        "v2_ar_weights": {
+          "source": "weights:",
+          "prefix": "v2_ar_weights"
+        },
+        "v2_cfm_weights": {
+          "source": "weights:",
+          "prefix": "v2_cfm_weights"
+        },
+        "v1_svc_weights": {
+          "source": "weights:",
+          "prefix": "v1_svc_weights"
+        },
+        "v1_whisper_bigvgan_weights": {
+          "source": "weights:",
+          "prefix": "v1_whisper_bigvgan_weights"
+        },
+        "v1_xlsr_hift_weights": {
+          "source": "weights:",
+          "prefix": "v1_xlsr_hift_weights"
+        },
+        "astral_bsq32_weights": {
+          "source": "weights:",
+          "prefix": "astral_bsq32_weights"
+        },
+        "astral_bsq2048_weights": {
+          "source": "weights:",
+          "prefix": "astral_bsq2048_weights"
+        },
+        "campplus_weights": {
+          "source": "weights:",
+          "prefix": "campplus_weights"
+        },
+        "rmvpe_weights": {
+          "source": "weights:",
+          "prefix": "rmvpe_weights"
+        },
+        "hift_weights": {
+          "source": "weights:",
+          "prefix": "hift_weights"
+        },
+        "bigvgan_22k_weights": {
+          "source": "weights:",
+          "prefix": "bigvgan_22k_weights"
+        },
+        "bigvgan_44k_weights": {
+          "source": "weights:",
+          "prefix": "bigvgan_44k_weights"
+        },
+        "whisper_small_weights": {
+          "source": "weights:",
+          "prefix": "whisper_small_weights"
+        },
+        "hubert_large_weights": {
+          "source": "weights:",
+          "prefix": "hubert_large_weights"
+        },
+        "wav2vec2_xlsr_weights": {
+          "source": "weights:",
+          "prefix": "wav2vec2_xlsr_weights"
+        }
+      }
+    },
+    {
+      "format": "safetensors",
+      "roots": {
+        "model": "."
+      },
+      "files": {
+        "manifest": "model:seed_vc_manifest.json",
+        "v2_wrapper_config": "model:v2/vc_wrapper.json",
+        "astral_bsq32_config": "model:astral/bsq32.json",
+        "astral_bsq2048_config": "model:astral/bsq2048.json",
+        "v1_svc_config": "model:v1/svc.json",
+        "v1_whisper_bigvgan_config": "model:v1/whisper_bigvgan.json",
+        "v1_xlsr_hift_config": "model:v1/xlsr_hift.json",
+        "hift_config": "model:hift/config.json",
+        "bigvgan_22k_config": "model:bigvgan/v2_22khz_80band_256x/config.json",
+        "bigvgan_44k_config": "model:bigvgan/v2_44khz_128band_512x/config.json",
+        "whisper_small_config": "model:whisper-small/config.json",
+        "hubert_large_config": "model:hubert-large-ll60k/config.json",
+        "wav2vec2_xlsr_config": "model:wav2vec2-xls-r-300m/config.json"
+      },
+      "tensors": {
+        "v2_ar_weights": "model:v2/ar.safetensors",
+        "v2_cfm_weights": "model:v2/cfm.safetensors",
+        "v1_svc_weights": "model:v1/svc.safetensors",
+        "v1_whisper_bigvgan_weights": "model:v1/whisper_bigvgan.safetensors",
+        "v1_xlsr_hift_weights": "model:v1/xlsr_hift.safetensors",
+        "astral_bsq32_weights": "model:astral/bsq32.safetensors",
+        "astral_bsq2048_weights": "model:astral/bsq2048.safetensors",
+        "campplus_weights": "model:campplus/model.safetensors",
+        "rmvpe_weights": "model:rmvpe/model.safetensors",
+        "hift_weights": "model:hift/model.safetensors",
+        "bigvgan_22k_weights": "model:bigvgan/v2_22khz_80band_256x/model.safetensors",
+        "bigvgan_44k_weights": "model:bigvgan/v2_44khz_128band_512x/model.safetensors",
+        "whisper_small_weights": "model:whisper-small/model.safetensors",
+        "hubert_large_weights": "model:hubert-large-ll60k/model.safetensors",
+        "wav2vec2_xlsr_weights": "model:wav2vec2-xls-r-300m/model.safetensors"
+      }
+    }
+  ]
+}

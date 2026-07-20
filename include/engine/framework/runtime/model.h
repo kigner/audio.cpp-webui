@@ -105,6 +105,16 @@ public:
         const SessionOptions & options) const = 0;
 };
 
+struct LoaderAdvertisement {
+    std::string family;
+    CapabilitySet capabilities;
+    std::string instructions_policy;
+    std::vector<std::string> api_endpoints;
+};
+
+/** Map advertised capabilities to the HTTP surfaces they normally use. */
+std::vector<std::string> default_api_endpoints_for_capabilities(const CapabilitySet & capabilities);
+
 class IVoiceModelLoader {
 public:
     virtual ~IVoiceModelLoader() = default;
@@ -113,6 +123,15 @@ public:
     virtual bool can_load(const ModelLoadRequest & request) const = 0;
     virtual ModelInspection inspect(const ModelLoadRequest & request) const = 0;
     virtual std::unique_ptr<ILoadedVoiceModel> load(const ModelLoadRequest & request) const = 0;
+
+    /**
+     * Path-free loader catalog for ``--list-loaders --json``.
+     * Override ``advertised_capabilities`` (and policy when non-default) on each loader.
+     */
+    virtual CapabilitySet advertised_capabilities() const;
+    virtual std::string advertised_instructions_policy() const;
+    virtual std::vector<std::string> advertised_api_endpoints() const;
+    LoaderAdvertisement advertise() const;
 };
 
 }  // namespace engine::runtime

@@ -12,6 +12,7 @@
 #include "engine/framework/modules/structural_modules.h"
 #include "engine/framework/modules/weight_binding.h"
 #include "engine/framework/runtime/kv_cache.h"
+#include "engine/framework/sampling/torch_random.h"
 
 #include "../common/constant_tensor_cache.h"
 
@@ -788,6 +789,14 @@ public:
             throw std::runtime_error("Qwen3 talker weights runtime requires positive thread count");
         }
         backend_type_ = backend_type;
+        sampling_policy_ = backend_type_ == core::BackendType::Cuda
+            ? engine::sampling::resolve_torch_cuda_sampling_policy(
+                  backend_type_,
+                  device,
+                  "qwen3_tts.talker.cuda_sampling_policy",
+                  "Qwen3 TTS",
+                  engine::sampling::TorchCudaSamplingPolicyFailureMode::StrictCuda)
+            : engine::sampling::TorchCudaSamplingPolicy{};
         backend_ = core::init_backend({backend_type_, device, threads_});
         weights_ = std::make_shared<Qwen3TalkerWeights>(
             load_talker_weights(*assets_, backend_, backend_type_, kTalkerWeightContextBytes, weight_storage_type));
@@ -840,6 +849,10 @@ public:
         return graph_arena_bytes_;
     }
 
+    const engine::sampling::TorchCudaSamplingPolicy & sampling_policy() const noexcept {
+        return sampling_policy_;
+    }
+
 private:
     std::shared_ptr<const Qwen3TTSAssets> assets_;
     std::shared_ptr<const Qwen3TalkerWeights> weights_;
@@ -847,6 +860,7 @@ private:
     size_t graph_arena_bytes_ = 0;
     ggml_backend_t backend_ = nullptr;
     core::BackendType backend_type_ = core::BackendType::Cpu;
+    engine::sampling::TorchCudaSamplingPolicy sampling_policy_;
     std::unique_ptr<common::ConstantTensorCache> talker_constants_;
     std::unique_ptr<common::ConstantTensorCache> code_predictor_constants_;
 };
@@ -1137,7 +1151,10 @@ int32_t sample_index(
     int top_k,
     float top_p,
     float temperature,
-    std::mt19937 & rng) {
+    std::mt19937 & rng,
+    const engine::sampling::TorchCudaSamplingPolicy & sampling_policy,
+    uint64_t seed,
+    uint64_t call_index) {
     if (temperature <= 0.0F) {
         throw std::runtime_error("Qwen3 sampler temperature must be positive");
     }
@@ -1179,6 +1196,28 @@ int32_t sample_index(
         }
         indices.resize(keep);
         weights.resize(keep);
+    }
+    if (sampling_policy.cuda_fast_path) {
+        double best_rank = -std::numeric_limits<double>::infinity();
+        int32_t best_token = -1;
+        for (size_t i = 0; i < indices.size(); ++i) {
+            const float exponential = engine::sampling::torch_cuda_tensor_iterator_exponential_element(
+                seed,
+                static_cast<uint64_t>(logits.size()),
+                static_cast<uint64_t>(indices[i]),
+                call_index,
+                sampling_policy.multiprocessor_count,
+                sampling_policy.max_threads_per_multiprocessor);
+            const double rank = weights[i] / static_cast<double>(exponential);
+            if (rank > best_rank) {
+                best_rank = rank;
+                best_token = indices[i];
+            }
+        }
+        if (best_token < 0) {
+            throw std::runtime_error("Qwen3 CUDA sampler failed to select a token");
+        }
+        return best_token;
     }
     std::discrete_distribution<size_t> distribution(weights.begin(), weights.end());
     return indices[distribution(rng)];
@@ -1305,7 +1344,8 @@ public:
     Qwen3TalkerFrameCodes generate(
         const Qwen3TalkerCodePredictorInput & input,
         const Qwen3TTSGenerationOptions & options,
-        std::mt19937 & rng) {
+        std::mt19937 & rng,
+        uint64_t & sample_call_index) {
         timing_ = {};
         auto embeddings = make_prefill_embeddings(input);
         Qwen3TalkerFrameCodes out;
@@ -1318,7 +1358,10 @@ public:
                 options.subtalker_top_k,
                 options.subtalker_top_p,
                 options.subtalker_temperature,
-                rng)
+                rng,
+                weights_->sampling_policy(),
+                options.seed,
+                sample_call_index++)
             : argmax_index(logits.values);
         out.codes.push_back(code);
         for (int64_t group = 1; group < code_groups_ - 1; ++group) {
@@ -1333,7 +1376,10 @@ public:
                     options.subtalker_top_k,
                     options.subtalker_top_p,
                     options.subtalker_temperature,
-                    rng)
+                    rng,
+                    weights_->sampling_policy(),
+                    options.seed,
+                    sample_call_index++)
                 : argmax_index(logits.values);
             out.codes.push_back(code);
         }
@@ -1642,6 +1688,7 @@ public:
         const int64_t trailing_rows = static_cast<int64_t>(state.trailing_text.size()) / config.hidden_size;
         std::vector<int32_t> generated_first_codes;
         generated_first_codes.reserve(static_cast<size_t>(max_new_tokens));
+        uint64_t sample_call_index = 0;
         double processor_ms = 0.0;
         double code_predictor_ms = 0.0;
         double frame_embed_ms = 0.0;
@@ -1653,7 +1700,15 @@ public:
             const auto processor_start = Clock::now();
             apply_main_talker_processors(logits, config, generated_first_codes, step, repetition_penalty);
             const int32_t first_code = options.do_sample
-                ? sample_index(logits, options.top_k, options.top_p, options.temperature, rng)
+                ? sample_index(
+                    logits,
+                    options.top_k,
+                    options.top_p,
+                    options.temperature,
+                    rng,
+                    weights_->sampling_policy(),
+                    options.seed,
+                    sample_call_index++)
                 : argmax_index(logits);
             processor_ms += engine::debug::elapsed_ms(processor_start, Clock::now());
             if (first_code == config.codec_eos_token_id) {
@@ -1667,7 +1722,7 @@ public:
             predictor_input.talker_hidden = current.last_hidden;
             predictor_input.first_code = first_code;
             const auto code_predictor_start = Clock::now();
-            const auto frame = code_predictor_graph_->generate(predictor_input, options, rng);
+            const auto frame = code_predictor_graph_->generate(predictor_input, options, rng, sample_call_index);
             code_predictor_ms += engine::debug::elapsed_ms(code_predictor_start, Clock::now());
             const auto & predictor_timing = code_predictor_graph_->timing();
             code_predictor_timing.input_upload_ms += predictor_timing.input_upload_ms;

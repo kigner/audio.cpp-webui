@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/framework/runtime/cache_slots.h"
 #include "engine/framework/runtime/session_base.h"
 #include "engine/models/qwen3_tts/assets.h"
 #include "engine/models/qwen3_tts/prompt_tts_voice_clone.h"
@@ -33,13 +34,20 @@ public:
     runtime::TaskResult run(const runtime::TaskRequest & request) override;
 
 private:
-    struct VoicePromptCacheEntry {
+    struct VoicePromptCacheKey {
         std::string reference_text;
         Qwen3VoiceCloneMode mode = Qwen3VoiceCloneMode::Icl;
         int sample_rate = 0;
         int channels = 0;
         uint64_t sample_count = 0;
         uint64_t sample_hash = 0;
+    };
+
+    struct VoicePromptCacheKeyEqual {
+        bool operator()(const VoicePromptCacheKey & lhs, const VoicePromptCacheKey & rhs) const noexcept;
+    };
+
+    struct VoicePromptCacheEntry {
         Qwen3VoiceClonePrompt prompt;
     };
 
@@ -55,6 +63,8 @@ private:
     size_t speech_decoder_graph_arena_bytes_ = 32ull * 1024ull * 1024ull;
     size_t speaker_encoder_graph_arena_bytes_ = 32ull * 1024ull * 1024ull;
     // No-alloc GGML context capacities for reusable constant tensor descriptors.
+    // Generous on purpose; ConstantTensorCache fits them to the host when it has
+    // to, so a small machine is not asked to reserve what it does not have.
     size_t talker_constant_context_bytes_ = 4ull * 1024ull * 1024ull * 1024ull;
     size_t code_predictor_constant_context_bytes_ = 1536ull * 1024ull * 1024ull;
     size_t speech_decoder_constant_context_bytes_ = 1536ull * 1024ull * 1024ull;
@@ -71,7 +81,8 @@ private:
     std::unique_ptr<Qwen3SpeechTokenizerDecoderRuntime> speech_decoder_;
     std::unique_ptr<Qwen3SpeechTokenizerEncoderRuntime> speech_encoder_;
     std::unique_ptr<Qwen3SpeakerEncoderRuntime> speaker_encoder_;
-    std::optional<VoicePromptCacheEntry> voice_prompt_cache_;
+    runtime::CacheSlots<VoicePromptCacheKey, VoicePromptCacheEntry, VoicePromptCacheKeyEqual> voice_prompt_cache_;
+    std::optional<VoicePromptCacheEntry> uncached_voice_prompt_;
 };
 
 }  // namespace engine::models::qwen3_tts

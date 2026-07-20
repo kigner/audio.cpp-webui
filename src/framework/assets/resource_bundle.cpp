@@ -120,6 +120,10 @@ engine::io::json::Value ResourceBundle::parse_json(std::string_view id) const {
     return engine::io::json::parse_file(require_file(id));
 }
 
+engine::io::json::Value ResourceBundle::parse_jsonc(std::string_view id) const {
+    return engine::io::json::parse_jsonc_file(require_file(id));
+}
+
 engine::io::yaml::FlattenedDocument ResourceBundle::parse_flattened_yaml(std::string_view id) const {
     return engine::io::yaml::parse_flattened_document(read_text(id));
 }

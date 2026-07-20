@@ -235,4 +235,85 @@ audiocpp_cli --task asr --family vibevoice_asr --model models/VibeVoice-ASR --ba
 | `--turns-out` | JSON path | not set | Write speaker turns when produced. |
 | `--session-option vibevoice_asr.vad_model_path=<path>` | model directory | `assets/framework/models/silero_vad` | Internal VAD model used by `--audio-chunk-mode vad`. |
 
+## Voxtral Realtime
+
+Voxtral Realtime is a Mistral realtime ASR model with offline and streaming sessions. It accepts the native Hugging Face model directory and standalone audio.cpp GGUF packages.
+
+| Field | Value |
+|---|---|
+| Family | `voxtral_realtime` |
+| Model directory | `models/Voxtral-Mini-4B-Realtime-2602` or a standalone Voxtral GGUF |
+| Task | `asr` |
+| Modes | `offline`, `streaming` |
+| Output | Transcription text |
+| Streaming input | Audio chunks |
+| Timestamps | Not exposed |
+
+Offline CLI:
+
+```bash
+audiocpp_cli --task asr --family voxtral_realtime --model <VOXTRAL_MODEL> --backend cuda --threads 8 --audio assets/resources/sample.wav --text-out transcript.txt
+```
+
+Sampling and token-cap options can be passed through request options:
+
+```bash
+audiocpp_cli --task asr --family voxtral_realtime --model <VOXTRAL_MODEL> --backend cuda --threads 8 --audio assets/resources/sample.wav --text-out transcript.txt --request-option max_new_tokens=256 --do-sample false --temperature 1.0 --top-p 1.0 --top-k 50 --seed 1234
+```
+
+Streaming CLI:
+
+```bash
+audiocpp_cli --task asr --family voxtral_realtime --model <VOXTRAL_MODEL> --backend cuda --threads 8 --mode streaming --audio assets/resources/sample.wav --text-out transcript.txt
+```
+
+Streaming server config:
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "backend": "cuda",
+  "device": 0,
+  "threads": 8,
+  "lazy_load": true,
+  "models": [
+    {
+      "id": "voxtral-stream",
+      "family": "voxtral_realtime",
+      "path": "/path/to/Voxtral-Mini-4B-Realtime-2602",
+      "task": "asr",
+      "mode": "streaming"
+    }
+  ]
+}
+```
+
+Streaming server request:
+
+```bash
+curl -N http://127.0.0.1:8080/v1/audio/transcriptions \
+  -F model=voxtral-stream \
+  -F stream=true \
+  -F file=@assets/resources/sample.wav
+```
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `--audio` | WAV path | required | Speech input. |
+| `--mode` | `offline`, `streaming` | `offline` | Full-context or streaming session. |
+| `--request-option max_new_tokens=<n>` | integer | model-derived limit | Maximum generated transcript tokens. |
+| `--do-sample` | bool | `false` | Enable sampling instead of greedy decode. |
+| `--temperature` | float | `1.0` | Sampling temperature. |
+| `--top-p` | float | `1.0` | Nucleus sampling limit. |
+| `--top-k` | integer | `50` | Top-k sampling limit; `0` disables top-k. |
+| `--seed` | integer | `1234` | Sampling seed. |
+| `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
+| `--session-option voxtral_realtime.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Shared matmul weight storage type. |
+| `--session-option voxtral_realtime.audio_encoder_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | shared setting | Audio encoder matmul weight storage type. |
+| `--session-option voxtral_realtime.text_decoder_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | shared setting | Text decoder matmul weight storage type. |
+| `--session-option voxtral_realtime.audio_encoder_graph_arena_mb=<n>` | MB | `512` | Audio encoder graph arena size. |
+| `--session-option voxtral_realtime.text_decoder_prefill_graph_arena_mb=<n>` | MB | `512` | Text decoder prefill graph arena size. |
+| `--session-option voxtral_realtime.text_decoder_decode_graph_arena_mb=<n>` | MB | `512` | Text decoder cached-step graph arena size. |
+
 For backend weight-type controls, use `audiocpp_cli --inspect --model <model-dir> --family <family>`.

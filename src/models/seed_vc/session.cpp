@@ -1,5 +1,7 @@
 #include "engine/models/seed_vc/session.h"
 
+#include "engine/models/seed_vc/assets.h"
+
 #include "engine/framework/modules/bigvgan_vocoder.h"
 #include "engine/framework/modules/campplus_encoder.h"
 #include "engine/framework/debug/profiler.h"
@@ -16,7 +18,6 @@
 #include "engine/models/seed_vc/rmvpe.h"
 #include "engine/models/seed_vc/v1_cfm.h"
 #include "engine/models/seed_vc/v2_cfm.h"
-#include "engine/models/seed_vc/weight_bundle.h"
 #include "engine/models/seed_vc/whisper_content.h"
 
 #include <algorithm>
@@ -45,38 +46,9 @@ std::shared_ptr<const SeedVcAssets> require_assets(std::shared_ptr<const SeedVcA
     return assets;
 }
 
-class SeedVcLoadedModel final : public runtime::ILoadedVoiceModel {
-public:
-    explicit SeedVcLoadedModel(std::shared_ptr<const SeedVcAssets> assets)
-        : assets_(require_assets(std::move(assets))) {}
-
-    const runtime::ModelMetadata & metadata() const noexcept override {
-        return assets_->metadata;
-    }
-
-    const runtime::CapabilitySet & capabilities() const noexcept override {
-        return assets_->capabilities;
-    }
-
-    std::unique_ptr<runtime::IVoiceTaskSession> create_task_session(
-        const runtime::TaskSpec & task,
-        const runtime::SessionOptions & options) const override {
-        if (task.mode != runtime::RunMode::Offline) {
-            throw std::runtime_error("Seed-VC currently supports offline sessions");
-        }
-        if (task.task != runtime::VoiceTaskKind::VoiceConversion && task.task != runtime::VoiceTaskKind::Svc) {
-            throw std::runtime_error("Seed-VC supports VoiceConversion and Svc tasks");
-        }
-        return std::make_unique<SeedVcSession>(task, options, assets_);
-    }
-
-private:
-    std::shared_ptr<const SeedVcAssets> assets_;
-};
-
 }  // namespace
 
-struct SeedVcComponentSources {
+struct SeedVcRouteRuntime {
     enum class Route {
         V2VoiceConversion,
         V1SingingVoiceConversion,
@@ -85,14 +57,6 @@ struct SeedVcComponentSources {
     };
 
     Route route = Route::V2VoiceConversion;
-    std::shared_ptr<const SeedVcWeightBundle> v2_ar;
-    std::shared_ptr<const SeedVcWeightBundle> v2_cfm;
-    std::shared_ptr<const SeedVcWeightBundle> v1_svc;
-    std::shared_ptr<const SeedVcWeightBundle> v1_model;
-    std::shared_ptr<const SeedVcWeightBundle> astral_bsq32;
-    std::shared_ptr<const SeedVcWeightBundle> astral_bsq2048;
-    std::shared_ptr<const SeedVcWeightBundle> rmvpe;
-    std::shared_ptr<const SeedVcWeightBundle> whisper_small;
     SeedVcDiscreteLengthRegulator v2_ar_length_regulator;
     SeedVcCfmLengthRegulator v2_cfm_length_regulator;
     SeedVcV2CfmEstimator v2_cfm_estimator;
@@ -204,10 +168,10 @@ bool is_v1_path(const std::string & path) {
     return path == "v1_svc" || is_v1_voice_conversion_path(path);
 }
 
-bool route_is_v1(const SeedVcComponentSources::Route route) {
-    return route == SeedVcComponentSources::Route::V1SingingVoiceConversion ||
-        route == SeedVcComponentSources::Route::V1WhisperBigVganVoiceConversion ||
-        route == SeedVcComponentSources::Route::V1XlsrHiftVoiceConversion;
+bool route_is_v1(const SeedVcRouteRuntime::Route route) {
+    return route == SeedVcRouteRuntime::Route::V1SingingVoiceConversion ||
+        route == SeedVcRouteRuntime::Route::V1WhisperBigVganVoiceConversion ||
+        route == SeedVcRouteRuntime::Route::V1XlsrHiftVoiceConversion;
 }
 
 std::optional<engine::assets::TensorStorageType> parse_seed_vc_weight_type(
@@ -589,7 +553,7 @@ std::vector<float> load_seed_vc_noise_or_sample(
 runtime::TaskResult run_v2_voice_conversion(
     const runtime::TaskRequest & request,
     const SeedVcExecutionPlan & plan,
-    const SeedVcComponentSources & sources,
+    const SeedVcRouteRuntime & sources,
     const SeedVcAssets & assets,
     size_t threads) {
     if (!plan.v2.has_value()) {
@@ -599,7 +563,7 @@ runtime::TaskResult run_v2_voice_conversion(
     if (config.convert_style) {
         throw std::runtime_error("Seed-VC V2 convert_style path requires AR generation and is not implemented yet");
     }
-    if (sources.route != SeedVcComponentSources::Route::V2VoiceConversion) {
+    if (sources.route != SeedVcRouteRuntime::Route::V2VoiceConversion) {
         throw std::runtime_error("Seed-VC V2 route requires V2 component sources");
     }
     constexpr int64_t kDitMaxContextSeconds = 30;
@@ -811,7 +775,7 @@ runtime::TaskResult run_v2_voice_conversion(
 runtime::TaskResult run_v1_singing_voice_conversion(
     const runtime::TaskRequest & request,
     const SeedVcExecutionPlan & plan,
-    const SeedVcComponentSources & sources,
+    const SeedVcRouteRuntime & sources,
     const SeedVcAssets & assets,
     size_t threads) {
     if (!plan.v1.has_value()) {
@@ -863,7 +827,7 @@ runtime::TaskResult run_v1_singing_voice_conversion(
     std::vector<float> source_content;
     std::vector<float> target_content;
     int64_t content_channels = 0;
-    if (sources.route == SeedVcComponentSources::Route::V1XlsrHiftVoiceConversion) {
+    if (sources.route == SeedVcRouteRuntime::Route::V1XlsrHiftVoiceConversion) {
         const auto source_normalized = seed_vc_wav2vec2_normalize_16k(source_prepared.waveform_16k);
         const auto target_normalized = seed_vc_wav2vec2_normalize_16k(target_prepared.waveform_16k);
         const auto source_encoded = sources.wav2vec2_xlsr.encode(source_normalized, 1, static_cast<int64_t>(source_normalized.size()));
@@ -1019,7 +983,7 @@ runtime::TaskResult run_v1_singing_voice_conversion(
             cfm_output.frames,
             target_mel.frames,
             original_len);
-        const bool use_hift = sources.route == SeedVcComponentSources::Route::V1XlsrHiftVoiceConversion;
+        const bool use_hift = sources.route == SeedVcRouteRuntime::Route::V1XlsrHiftVoiceConversion;
         std::vector<float> hift_source_random;
         const std::vector<float> * hift_source_random_ptr = nullptr;
         uint64_t hift_source_advance_count = 0;
@@ -1053,7 +1017,7 @@ runtime::TaskResult run_v1_singing_voice_conversion(
         if (use_hift) {
             vc_wave = sources.hift.synthesize(vc_mel, chunk_frames, seed, random_offset, hift_source_random_ptr).waveform;
         } else {
-            const int64_t bigvgan_hop_size = sources.route == SeedVcComponentSources::Route::V1SingingVoiceConversion
+            const int64_t bigvgan_hop_size = sources.route == SeedVcRouteRuntime::Route::V1SingingVoiceConversion
                 ? assets.config.bigvgan_44k.hop_size
                 : assets.config.bigvgan_22k.hop_size;
             vc_wave = synthesize_bigvgan_fixed_chunks(
@@ -1100,7 +1064,7 @@ runtime::TaskResult run_v1_singing_voice_conversion(
         engine::debug::elapsed_ms(timing_start, timing_end));
 
     runtime::TaskResult result;
-    const int output_sample_rate = sources.route == SeedVcComponentSources::Route::V1SingingVoiceConversion
+    const int output_sample_rate = sources.route == SeedVcRouteRuntime::Route::V1SingingVoiceConversion
         ? static_cast<int>(assets.config.bigvgan_44k.sampling_rate)
         : static_cast<int>(mel_config.sample_rate);
     result.audio_output = runtime::AudioBuffer{output_sample_rate, 1, std::move(generated_wave)};
@@ -1157,64 +1121,43 @@ SeedVcExecutionPlan make_execution_plan(const runtime::TaskRequest & request, ru
     return plan;
 }
 
-std::shared_ptr<SeedVcComponentSources> open_component_sources(
+std::shared_ptr<SeedVcRouteRuntime> open_route_runtime(
     runtime::VoiceTaskKind task,
     const engine::core::BackendConfig & backend,
     const SeedVcAssets & assets,
     const std::string & route_path,
     std::optional<engine::assets::TensorStorageType> weight_storage_type) {
-    const auto & paths = assets.paths;
     const auto default_weight_storage_type = weight_storage_type.value_or(engine::assets::TensorStorageType::Native);
     const auto rmvpe_weight_storage_type = weight_storage_type.value_or(engine::assets::TensorStorageType::F32);
-    auto sources = std::make_shared<SeedVcComponentSources>();
-    sources->campplus = engine::modules::CampplusEncoderComponent::load_from_safetensors(
-        paths.campplus_weights,
+    auto sources = std::make_shared<SeedVcRouteRuntime>();
+    sources->campplus = engine::modules::CampplusEncoderComponent::load_from_tensor_source(
+        assets.campplus_weights,
         backend,
         engine::modules::CampplusEncoderConfig{80, 192, default_weight_storage_type});
     if (route_path == "v2_vc") {
         if (task != runtime::VoiceTaskKind::VoiceConversion) {
             throw std::runtime_error("Seed-VC v2_vc sources require a VoiceConversion session");
         }
-        sources->route = SeedVcComponentSources::Route::V2VoiceConversion;
-        sources->v2_ar = load_seed_vc_weight_bundle(
-            paths.v2_ar_weights,
-            "v2_ar",
-            backend,
-            {},
-            {},
-            default_weight_storage_type);
+        sources->route = SeedVcRouteRuntime::Route::V2VoiceConversion;
         sources->v2_ar_length_regulator = SeedVcDiscreteLengthRegulator(
-            sources->v2_ar,
-            "length_regulator");
-        sources->v2_cfm = load_seed_vc_weight_bundle(
-            paths.v2_cfm_weights,
-            "v2_cfm",
+            assets.v2_ar_weights,
             backend,
-            {"cfm.estimator.transformer.causal_mask"},
-            {},
-            default_weight_storage_type);
+            default_weight_storage_type,
+            "length_regulator");
         sources->v2_cfm_length_regulator = SeedVcCfmLengthRegulator(
-            sources->v2_cfm,
+            assets.v2_cfm_weights,
+            backend,
+            default_weight_storage_type,
             "length_regulator");
         sources->v2_cfm_estimator = SeedVcV2CfmEstimator(
-            sources->v2_cfm,
+            assets.v2_cfm_weights,
+            backend,
+            default_weight_storage_type,
             assets.config.v2_cfm);
-        sources->astral_bsq32 = load_seed_vc_weight_bundle(
-            paths.astral_bsq32_weights,
-            "astral_bsq32",
-            backend,
-            {"quantizer.mask"},
-            {},
-            default_weight_storage_type);
-        sources->astral_bsq2048 = load_seed_vc_weight_bundle(
-            paths.astral_bsq2048_weights,
-            "astral_bsq2048",
-            backend,
-            {"quantizer.mask"},
-            {},
-            default_weight_storage_type);
         sources->astral_bsq32_quantizer = SeedVcAstralQuantizer(
-            sources->astral_bsq32,
+            assets.astral_bsq32_weights,
+            backend,
+            default_weight_storage_type,
             "",
             assets.config.v2_astral_narrow.encoder_input_dim,
             assets.config.v2_astral_narrow.encoder_dim,
@@ -1222,132 +1165,106 @@ std::shared_ptr<SeedVcComponentSources> open_component_sources(
             assets.config.v2_astral_narrow.encoder_blocks,
             assets.config.v2_astral_narrow.quantizer_codebook_size);
         sources->astral_bsq2048_quantizer = SeedVcAstralQuantizer(
-            sources->astral_bsq2048,
+            assets.astral_bsq2048_weights,
+            backend,
+            default_weight_storage_type,
             "",
             assets.config.v2_astral_wide.encoder_input_dim,
             assets.config.v2_astral_wide.encoder_dim,
             assets.config.v2_astral_wide.encoder_intermediate_dim,
             assets.config.v2_astral_wide.encoder_blocks,
             assets.config.v2_astral_wide.quantizer_codebook_size);
-        sources->bigvgan = engine::modules::BigVganVocoderComponent::load_from_safetensors(
-            paths.bigvgan_22k_weights,
+        sources->bigvgan = engine::modules::BigVganVocoderComponent::load_from_tensor_source(
+            assets.bigvgan_22k_weights,
             backend,
             make_bigvgan_config(assets.config.bigvgan_22k, default_weight_storage_type));
         engine::modules::HubertEncoderConfig hubert_config;
         hubert_config.output_hidden_layer = assets.config.v2_astral_wide.ssl_output_layer;
         hubert_config.apply_final_layer_norm = false;
-        sources->hubert_large = engine::modules::HubertEncoderComponent::load_from_safetensors(
-            paths.hubert_large_weights,
+        sources->hubert_large = engine::modules::HubertEncoderComponent::load_from_tensor_source(
+            assets.hubert_large_weights,
             backend,
             hubert_config);
     } else if (route_path == "v1_svc") {
         if (task != runtime::VoiceTaskKind::Svc) {
             throw std::runtime_error("Seed-VC v1_svc sources require an Svc session");
         }
-        sources->route = SeedVcComponentSources::Route::V1SingingVoiceConversion;
-        sources->v1_svc = load_seed_vc_weight_bundle(
-            paths.v1_svc_weights,
-            "v1_svc",
-            backend,
-            {"cfm.estimator.input_pos"},
-            {},
-            default_weight_storage_type);
-        sources->v1_model = sources->v1_svc;
+        sources->route = SeedVcRouteRuntime::Route::V1SingingVoiceConversion;
         sources->v1_length_regulator = SeedVcV1LengthRegulator(
-            sources->v1_model,
+            assets.v1_svc_weights,
+            backend,
+            default_weight_storage_type,
             "length_regulator");
         sources->v1_cfm_estimator = SeedVcV1CfmEstimator(
-            sources->v1_model,
+            assets.v1_svc_weights,
+            backend,
+            default_weight_storage_type,
             assets.config.v1_dit,
             assets.config.v1_wavenet,
             assets.config.v1_style_dim);
-        sources->rmvpe = load_seed_vc_weight_bundle(
-            paths.rmvpe_weights,
-            "rmvpe",
+        sources->rmvpe_extractor = SeedVcRmvpeF0Extractor(
+            assets.rmvpe_weights,
             backend,
-            {},
-            {".num_batches_tracked"},
             rmvpe_weight_storage_type);
-        sources->rmvpe_extractor = SeedVcRmvpeF0Extractor(sources->rmvpe);
-        sources->whisper_small = load_seed_vc_weight_bundle(
-            paths.whisper_small_weights,
-            "whisper_small",
+        sources->whisper_content = SeedVcWhisperContentEncoder(
+            assets.whisper_small_weights,
             backend,
-            {},
-            {},
             default_weight_storage_type);
-        sources->whisper_content = SeedVcWhisperContentEncoder(sources->whisper_small);
-        sources->bigvgan = engine::modules::BigVganVocoderComponent::load_from_safetensors(
-            paths.bigvgan_44k_weights,
+        sources->bigvgan = engine::modules::BigVganVocoderComponent::load_from_tensor_source(
+            assets.bigvgan_44k_weights,
             backend,
             make_bigvgan_config(assets.config.bigvgan_44k, default_weight_storage_type));
     } else if (route_path == "v1_whisper_bigvgan_vc") {
         if (task != runtime::VoiceTaskKind::VoiceConversion) {
             throw std::runtime_error("Seed-VC v1_whisper_bigvgan_vc sources require a VoiceConversion session");
         }
-        if (paths.v1_whisper_bigvgan_weights.empty()) {
-            throw std::runtime_error("Seed-VC missing V1 Whisper BigVGAN weights for selected route");
-        }
-        sources->route = SeedVcComponentSources::Route::V1WhisperBigVganVoiceConversion;
-        sources->v1_model = load_seed_vc_weight_bundle(
-            paths.v1_whisper_bigvgan_weights,
-            "v1_whisper_bigvgan",
-            backend,
-            {"cfm.estimator.input_pos"},
-            {},
-            default_weight_storage_type);
+        sources->route = SeedVcRouteRuntime::Route::V1WhisperBigVganVoiceConversion;
         sources->v1_length_regulator = SeedVcV1LengthRegulator(
-            sources->v1_model,
+            assets.v1_whisper_bigvgan_weights,
+            backend,
+            default_weight_storage_type,
             "length_regulator");
         sources->v1_cfm_estimator = SeedVcV1CfmEstimator(
-            sources->v1_model,
+            assets.v1_whisper_bigvgan_weights,
+            backend,
+            default_weight_storage_type,
             assets.config.v1_whisper_bigvgan_dit,
             assets.config.v1_whisper_bigvgan_wavenet,
             assets.config.v1_whisper_bigvgan_style_dim);
-        sources->whisper_small = load_seed_vc_weight_bundle(
-            paths.whisper_small_weights,
-            "whisper_small",
+        sources->whisper_content = SeedVcWhisperContentEncoder(
+            assets.whisper_small_weights,
             backend,
-            {},
-            {},
             default_weight_storage_type);
-        sources->whisper_content = SeedVcWhisperContentEncoder(sources->whisper_small);
-        sources->bigvgan = engine::modules::BigVganVocoderComponent::load_from_safetensors(
-            paths.bigvgan_22k_weights,
+        sources->bigvgan = engine::modules::BigVganVocoderComponent::load_from_tensor_source(
+            assets.bigvgan_22k_weights,
             backend,
             make_bigvgan_config(assets.config.bigvgan_22k, default_weight_storage_type));
     } else if (route_path == "v1_xlsr_hift_vc") {
         if (task != runtime::VoiceTaskKind::VoiceConversion) {
             throw std::runtime_error("Seed-VC v1_xlsr_hift_vc sources require a VoiceConversion session");
         }
-        if (paths.v1_xlsr_hift_weights.empty() || paths.wav2vec2_xlsr_weights.empty() || paths.hift_weights.empty()) {
-            throw std::runtime_error("Seed-VC missing V1 XLSR HiFT assets for selected route");
-        }
-        sources->route = SeedVcComponentSources::Route::V1XlsrHiftVoiceConversion;
-        sources->v1_model = load_seed_vc_weight_bundle(
-            paths.v1_xlsr_hift_weights,
-            "v1_xlsr_hift",
-            backend,
-            {"cfm.estimator.input_pos"},
-            {},
-            default_weight_storage_type);
+        sources->route = SeedVcRouteRuntime::Route::V1XlsrHiftVoiceConversion;
         sources->v1_length_regulator = SeedVcV1LengthRegulator(
-            sources->v1_model,
+            assets.v1_xlsr_hift_weights,
+            backend,
+            default_weight_storage_type,
             "length_regulator");
         sources->v1_cfm_estimator = SeedVcV1CfmEstimator(
-            sources->v1_model,
+            assets.v1_xlsr_hift_weights,
+            backend,
+            default_weight_storage_type,
             assets.config.v1_xlsr_hift_dit,
             assets.config.v1_xlsr_hift_wavenet,
             assets.config.v1_xlsr_hift_style_dim);
         engine::modules::HubertEncoderConfig xlsr_config;
         xlsr_config.output_hidden_layer = 12;
         xlsr_config.apply_final_layer_norm = true;
-        sources->wav2vec2_xlsr = engine::modules::HubertEncoderComponent::load_from_safetensors(
-            paths.wav2vec2_xlsr_weights,
+        sources->wav2vec2_xlsr = engine::modules::HubertEncoderComponent::load_from_tensor_source(
+            assets.wav2vec2_xlsr_weights,
             backend,
             xlsr_config);
-        sources->hift = engine::modules::HiftVocoderComponent::load_from_safetensors(
-            paths.hift_weights,
+        sources->hift = engine::modules::HiftVocoderComponent::load_from_tensor_source(
+            assets.hift_weights,
             backend,
             make_hift_config(assets.config.hift, default_weight_storage_type));
     } else {
@@ -1393,15 +1310,15 @@ void validate_request_route(const runtime::TaskRequest & request, runtime::Voice
     throw std::runtime_error("unsupported Seed-VC route: " + route);
 }
 
-std::string route_path_for_sources(SeedVcComponentSources::Route route) {
+std::string route_path_for_runtime(SeedVcRouteRuntime::Route route) {
     switch (route) {
-        case SeedVcComponentSources::Route::V2VoiceConversion:
+        case SeedVcRouteRuntime::Route::V2VoiceConversion:
             return "v2_vc";
-        case SeedVcComponentSources::Route::V1SingingVoiceConversion:
+        case SeedVcRouteRuntime::Route::V1SingingVoiceConversion:
             return "v1_svc";
-        case SeedVcComponentSources::Route::V1WhisperBigVganVoiceConversion:
+        case SeedVcRouteRuntime::Route::V1WhisperBigVganVoiceConversion:
             return "v1_whisper_bigvgan_vc";
-        case SeedVcComponentSources::Route::V1XlsrHiftVoiceConversion:
+        case SeedVcRouteRuntime::Route::V1XlsrHiftVoiceConversion:
             return "v1_xlsr_hift_vc";
     }
     throw std::runtime_error("Seed-VC prepared route is unknown");
@@ -1430,8 +1347,8 @@ runtime::RunMode SeedVcSession::run_mode() const {
 
 void SeedVcSession::prepare(const runtime::SessionPreparationRequest & request) {
     const std::string route_path = route_path_or_default_from_options(request.options, task_.task);
-    if (sources_ != nullptr) {
-        const std::string prepared_route = route_path_for_sources(sources_->route);
+    if (route_runtime_ != nullptr) {
+        const std::string prepared_route = route_path_for_runtime(route_runtime_->route);
         if (prepared_route != route_path) {
             throw std::runtime_error(
                 "Seed-VC session is already prepared for route " + prepared_route +
@@ -1440,29 +1357,29 @@ void SeedVcSession::prepare(const runtime::SessionPreparationRequest & request) 
         mark_prepared();
         return;
     }
-    sources_ = open_component_sources(
+    route_runtime_ = open_route_runtime(
         task_.task,
         options().backend,
         *assets_,
         route_path,
         weight_storage_type_);
     int64_t bigvgan_hop_size = 0;
-    switch (sources_->route) {
-        case SeedVcComponentSources::Route::V2VoiceConversion:
-        case SeedVcComponentSources::Route::V1WhisperBigVganVoiceConversion:
+    switch (route_runtime_->route) {
+        case SeedVcRouteRuntime::Route::V2VoiceConversion:
+        case SeedVcRouteRuntime::Route::V1WhisperBigVganVoiceConversion:
             bigvgan_hop_size = assets_->config.bigvgan_22k.hop_size;
             break;
-        case SeedVcComponentSources::Route::V1SingingVoiceConversion:
+        case SeedVcRouteRuntime::Route::V1SingingVoiceConversion:
             bigvgan_hop_size = assets_->config.bigvgan_44k.hop_size;
             break;
-        case SeedVcComponentSources::Route::V1XlsrHiftVoiceConversion:
+        case SeedVcRouteRuntime::Route::V1XlsrHiftVoiceConversion:
             break;
     }
     if (bigvgan_hop_size > 0) {
-        const int64_t channels = sources_->bigvgan.num_mels();
+        const int64_t channels = route_runtime_->bigvgan.num_mels();
         std::vector<float> mel(static_cast<size_t>(channels * kSeedVcBigVganActiveFrames), 0.0F);
         (void) synthesize_bigvgan_fixed_chunks(
-            sources_->bigvgan,
+            route_runtime_->bigvgan,
             mel,
             kSeedVcBigVganActiveFrames,
             bigvgan_hop_size,
@@ -1477,30 +1394,26 @@ runtime::TaskResult SeedVcSession::run(const runtime::TaskRequest & request) {
     const auto wall_start = std::chrono::steady_clock::now();
     validate_request_route(request, task_.task);
     const auto plan = make_execution_plan(request, task_.task);
-    if (sources_ == nullptr) {
+    if (route_runtime_ == nullptr) {
         throw std::runtime_error("Seed-VC session has no prepared route");
     }
-    const std::string prepared_route = route_path_for_sources(sources_->route);
+    const std::string prepared_route = route_path_for_runtime(route_runtime_->route);
     if (prepared_route != plan.path) {
         throw std::runtime_error(
             "Seed-VC session was prepared for route " + prepared_route +
             " but request route is " + plan.path);
     }
     if (plan.path == "v2_vc") {
-        auto result = run_v2_voice_conversion(request, plan, *sources_, *assets_, static_cast<size_t>(options().backend.threads));
+        auto result = run_v2_voice_conversion(request, plan, *route_runtime_, *assets_, static_cast<size_t>(options().backend.threads));
         engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
         return result;
     }
     if (is_v1_path(plan.path)) {
-        auto result = run_v1_singing_voice_conversion(request, plan, *sources_, *assets_, static_cast<size_t>(options().backend.threads));
+        auto result = run_v1_singing_voice_conversion(request, plan, *route_runtime_, *assets_, static_cast<size_t>(options().backend.threads));
         engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
         return result;
     }
     throw std::runtime_error("Seed-VC " + plan.path + " graph execution is not implemented yet");
-}
-
-std::unique_ptr<runtime::ILoadedVoiceModel> load_seed_vc_model(const std::filesystem::path & model_path) {
-    return std::make_unique<SeedVcLoadedModel>(load_seed_vc_assets(model_path));
 }
 
 }  // namespace engine::models::seed_vc

@@ -49,6 +49,15 @@ public:
         return "sortformer_diar";
     }
 
+    runtime::CapabilitySet advertised_capabilities() const override {
+        runtime::CapabilitySet out;
+        out.supported_tasks = {
+            {runtime::VoiceTaskKind::Diarization, {runtime::RunMode::Offline}},
+        };
+        out.supports_timestamps = true;
+        return out;
+    }
+
     bool can_load(const runtime::ModelLoadRequest & request) const override {
         try {
             const auto root = resolve_model_root(request.model_path);

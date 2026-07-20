@@ -64,6 +64,18 @@ bool optional_audio_equal(const std::optional<runtime::AudioBuffer> &lhs,
   return !lhs.has_value() || audio_buffer_equal(*lhs, *rhs);
 }
 
+size_t prompt_cache_slots_from_options(
+    const std::unordered_map<std::string, std::string> &options) {
+  constexpr int64_t kDefaultPromptCacheSlots = 1;
+  const int64_t slots =
+      runtime::parse_i64_option(options, {"voxcpm2.prompt_cache_slots"})
+          .value_or(kDefaultPromptCacheSlots);
+  if (slots < 0) {
+    throw std::runtime_error("voxcpm2.prompt_cache_slots must be non-negative");
+  }
+  return static_cast<size_t>(slots);
+}
+
 void validate_weight_storage(engine::assets::TensorStorageType storage_type,
                              const char *option_name) {
   if (storage_type == engine::assets::TensorStorageType::Native ||
@@ -108,6 +120,7 @@ void validate_session_options(
         key == "voxcpm2.audiovae_encoder_sample_capacity" ||
         key == "voxcpm2.weight_type" ||
         key == "voxcpm2.audiovae_weight_type" ||
+        key == "voxcpm2.prompt_cache_slots" ||
         key == "voxcpm2.mem_saver" ||
         key == "voxcpm2.denoise" || key == "voxcpm2.load_denoiser") {
       continue;
@@ -129,11 +142,20 @@ int64_t product(const std::vector<int64_t> &values) {
 
 } // namespace
 
+bool VoxCPM2SessionBase::EncodedPromptCacheKeyEqual::operator()(
+    const EncodedPromptCacheKey &lhs,
+    const EncodedPromptCacheKey &rhs) const {
+  return lhs.prompt_text == rhs.prompt_text &&
+         optional_audio_equal(lhs.prompt_audio, rhs.prompt_audio) &&
+         optional_audio_equal(lhs.reference_audio, rhs.reference_audio);
+}
+
 VoxCPM2SessionBase::VoxCPM2SessionBase(runtime::TaskSpec task,
                                        runtime::SessionOptions options,
                                        std::shared_ptr<const VoxCPM2Assets> assets)
     : RuntimeSessionBase(options), task_(task),
-      assets_(require_assets(std::move(assets))) {
+      assets_(require_assets(std::move(assets))),
+      encoded_prompt_cache_(prompt_cache_slots_from_options(options.options)) {
   if (task_.mode != runtime::RunMode::Offline &&
       task_.mode != runtime::RunMode::Streaming) {
     throw std::runtime_error(
@@ -169,6 +191,7 @@ VoxCPM2SessionBase::VoxCPM2SessionBase(runtime::TaskSpec task,
   generator_config_.dit_graph_context_bytes = runtime::parse_size_mb_option(
       options.options, {"voxcpm2.dit_graph_context_mb"},
       generator_config_.dit_graph_context_bytes);
+  generator_config_.prompt_cache_slots = encoded_prompt_cache_.capacity();
   decoder_config_.weight_context_bytes = runtime::parse_size_mb_option(
       options.options, {"voxcpm2.audiovae_weight_context_mb"},
       decoder_config_.weight_context_bytes);
@@ -401,29 +424,57 @@ const VoxCPM2EncodedPrompt *VoxCPM2SessionBase::encoded_prompt_for_request(
   if (!prompt_audio.has_value() && !reference_audio.has_value()) {
     return nullptr;
   }
-  const bool cache_hit =
-      encoded_prompt_cache_.has_value() &&
-      encoded_prompt_cache_->prompt_text == prompt_text &&
-      optional_audio_equal(encoded_prompt_cache_->prompt_audio, prompt_audio) &&
-      optional_audio_equal(encoded_prompt_cache_->reference_audio,
-                           reference_audio);
-  debug::trace_log_scalar("voxcpm2.prompt_cache.hit", cache_hit);
-  if (cache_hit) {
+  EncodedPromptCacheKey key;
+  key.prompt_text = prompt_text;
+  key.prompt_audio = prompt_audio;
+  key.reference_audio = reference_audio;
+  if (auto *cached = encoded_prompt_cache_.find(key)) {
+    debug::trace_log_scalar("voxcpm2.prompt_cache.hit", 1);
+    debug::trace_log_scalar("voxcpm2.prompt_cache.slots",
+                            static_cast<int64_t>(
+                                encoded_prompt_cache_.capacity()));
+    debug::trace_log_scalar("voxcpm2.prompt_cache.entries",
+                            static_cast<int64_t>(encoded_prompt_cache_.size()));
+    debug::trace_log_scalar("voxcpm2.prompt_cache.evicted", 0);
     debug::timing_log_scalar("voxcpm2.prompt_encode_ms", 0.0);
-    return &encoded_prompt_cache_->encoded;
+    return &cached->encoded;
   }
 
   const auto encode_start = Clock::now();
   EncodedPromptCacheEntry entry;
-  entry.prompt_text = prompt_text;
-  entry.prompt_audio = prompt_audio;
-  entry.reference_audio = reference_audio;
   entry.encoded =
       decoder_->encode_prompt_audio(prompt_audio, prompt_text, reference_audio);
-  encoded_prompt_cache_ = std::move(entry);
+  const double encode_ms = engine::debug::elapsed_ms(encode_start);
+  if (encoded_prompt_cache_.capacity() == 0) {
+    uncached_encoded_prompt_ = std::move(entry);
+    debug::trace_log_scalar("voxcpm2.prompt_cache.hit", 0);
+    debug::trace_log_scalar("voxcpm2.prompt_cache.slots", 0);
+    debug::trace_log_scalar("voxcpm2.prompt_cache.entries", 0);
+    debug::trace_log_scalar("voxcpm2.prompt_cache.evicted", 0);
+    debug::timing_log_scalar("voxcpm2.prompt_encode_ms", encode_ms);
+    return &uncached_encoded_prompt_->encoded;
+  }
+  const bool will_evict =
+      encoded_prompt_cache_.size() >= encoded_prompt_cache_.capacity();
+  encoded_prompt_cache_.put(std::move(key), std::move(entry));
+  EncodedPromptCacheKey lookup;
+  lookup.prompt_text = prompt_text;
+  lookup.prompt_audio = prompt_audio;
+  lookup.reference_audio = reference_audio;
+  auto *cached = encoded_prompt_cache_.find(lookup);
+  if (cached == nullptr) {
+    throw std::runtime_error("VoxCPM2 prompt cache insert failed");
+  }
+  debug::trace_log_scalar("voxcpm2.prompt_cache.hit", 0);
+  debug::trace_log_scalar("voxcpm2.prompt_cache.slots",
+                          static_cast<int64_t>(
+                              encoded_prompt_cache_.capacity()));
+  debug::trace_log_scalar("voxcpm2.prompt_cache.entries",
+                          static_cast<int64_t>(encoded_prompt_cache_.size()));
+  debug::trace_log_scalar("voxcpm2.prompt_cache.evicted", will_evict ? 1 : 0);
   debug::timing_log_scalar("voxcpm2.prompt_encode_ms",
-                           engine::debug::elapsed_ms(encode_start));
-  return &encoded_prompt_cache_->encoded;
+                           encode_ms);
+  return &cached->encoded;
 }
 
 VoxCPM2GenerationOptions VoxCPM2SessionBase::generation_options_from_request(

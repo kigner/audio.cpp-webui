@@ -52,6 +52,8 @@ For full setup notes, script arguments, environment variables, API examples, Web
 ## News
 
 > [!IMPORTANT]
+> **2026-07-18 - Voxtral Realtime ASR:** Voxtral is now released in audio.cpp with offline and streaming ASR paths. On warmed normal requests, BF16 GGUF runs at **RTF 0.089** (**11.2x realtime**) and Q8_0 at **RTF 0.064** (**15.7x realtime**); CUDA streaming TTFT is about **209 ms** with BF16 and **171 ms** with Q8_0.
+>
 > **2026-07-14 - Release 0.3:** This release expands audio.cpp with five new TTS families: IndexTTS2, Irodori-TTS, MOSS-TTS-Nano, MOSS-TTS-Local (thanks to [@justinjohn0306](https://github.com/justinjohn0306)), and Supertonic 3. Chatterbox also gains voice-conversion support, extending the existing TTS/voice-cloning path into a fuller speech workflow.
 >
 > **GGUF support:** audio.cpp now has reusable GGUF loading and conversion support, with tested GGUF paths for multiple ASR and TTS models. Some models can run up to 2× faster with Q8 GGUF, without any parity drift. See [docs/gguf.md](docs/gguf.md) for the current support status. Huge thanks to [@mirek190](https://github.com/mirek190) for driving the core GGUF work and model support forward.
@@ -86,6 +88,7 @@ For full setup notes, script arguments, environment variables, API examples, Web
 | **vevo2** | TTS, singing generation, voice conversion, singing conversion, editing | en, zh | Vevo2 with Qwen2.5-0.5B AR model |
 | **vibevoice** | TTS, multi-speaker dialogue TTS | en, zh | VibeVoice-1.5B, VibeVoice-7B |
 | **vibevoice_asr** | ASR | auto | VibeVoice ASR |
+| **voxtral_realtime** | ASR | auto | Voxtral-Mini-4B-Realtime-2602 |
 | **voxcpm2** | TTS, voice cloning, voice design | ar, da, de, el, en, es, fi, fr, he, hi, id, it, ja, km, ko, lo, ms, my, nl, no, pl, pt, ru, sv, sw, th, tl, tr, vi, zh | VoxCPM2-2B, 48 kHz |
 | **index_tts2** | TTS, voice cloning, expressive speech | zh, en | IndexTTS-2 |
 | **irodori_tts** | TTS, voice cloning, voice design | ja | Irodori-TTS-500M-v3, Irodori-TTS-600M-v3-VoiceDesign |
@@ -93,7 +96,7 @@ For full setup notes, script arguments, environment variables, API examples, Web
 | **moss_tts_local** | TTS, voice cloning | auto, optional language hint | MOSS-TTS-Local-Transformer-v1.5 |
 | **supertonic** | TTS | en, ko, ja, ar, bg, cs, da, de, el, es, et, fi, fr, hi, hr, hu, id, it, lt, lv, nl, pl, pt, ro, ru, sk, sl, sv, tr, uk, vi, na | Supertonic 3 |
 
-WIP: Higgs Audio v3 TTS 4B, Fish Audio S2 Pro, Voxtral-Mini-4B-Realtime.
+WIP: Higgs Audio v3 TTS 4B, Fish Audio S2 Pro.
 
 PocketTTS language selection is a model-load option. When the model path points at the PocketTTS root, the loader uses `english` unless you pass `--load-option language=<name>`. Kyutai's normal non-English PocketTTS releases are smaller distilled language models intended for the fast PocketTTS path. The `_24l` variants are larger 24-layer, undistilled preview models that can sound better but are slower. Kyutai currently publishes French only as `french_24l`, not as a normal distilled `french` language directory, so French is not listed as a normal PocketTTS language here.
 
@@ -364,8 +367,12 @@ Dependencies:
 The tool supports three main commands:
 
 - `list` shows the available package ids
+- `list --json` prints a machine-readable package catalog
 - `info` shows the target layout, required files, and install source for one package
+- `info <package> --json` prints machine-readable package details
 - `install` downloads or converts one package into a models root
+
+The CLI also exposes the runtime loader catalog with `audiocpp_cli --list-loaders --json`, including task and endpoint metadata added by [PR #74](https://github.com/0xShug0/audio.cpp/pull/74).
 
 Recommended top-level install packages:
 
@@ -414,6 +421,7 @@ Recommended top-level install packages:
 | `vibevoice_1_5b` | VibeVoice 1.5B | No |
 | `vibevoice_7b` | VibeVoice 7B | No |
 | `vibevoice_asr` | VibeVoice ASR | No |
+| `voxtral_realtime` | Voxtral Mini 4B Realtime | **Yes** |
 | `voxcpm2` | VoxCPM2 | No |
 
 > [!WARNING]

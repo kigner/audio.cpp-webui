@@ -11,7 +11,7 @@
 #include "engine/models/ace_step/loader.h"
 #include "engine/models/chatterbox/loader.h"
 #include "engine/models/citrinet_asr/session.h"
-#include "engine/models/demucs/session.h"
+#include "engine/models/demucs/loader.h"
 #include "engine/models/heartmula/loader.h"
 #include "engine/models/higgs_audio_stt/loader.h"
 #include "engine/models/hviske_asr/loader.h"
@@ -28,7 +28,7 @@
 #include "engine/models/qwen3_asr/loader.h"
 #include "engine/models/qwen3_forced_aligner/loader.h"
 #include "engine/models/qwen3_tts/loader.h"
-#include "engine/models/roformer/session.h"
+#include "engine/models/roformer/loader.h"
 #include "engine/models/silero_vad/session.h"
 #include "engine/models/seed_vc/loader.h"
 #include "engine/models/sortformer_diar/loader.h"
@@ -37,6 +37,7 @@
 #include "engine/models/vevo2/loader.h"
 #include "engine/models/vibevoice/loader.h"
 #include "engine/models/vibevoice_asr/loader.h"
+#include "engine/models/voxtral_realtime/loader.h"
 #include "engine/models/voxcpm2/loader.h"
 
 #include <algorithm>
@@ -118,6 +119,21 @@ bool ModelRegistry::supports_family(const std::string & family) const noexcept {
         }
     }
     return false;
+}
+
+std::vector<LoaderAdvertisement> ModelRegistry::advertise_loaders() const {
+    std::vector<LoaderAdvertisement> out;
+    out.reserve(loaders_.size());
+    for (const auto & loader : loaders_) {
+        if (loader == nullptr) {
+            continue;
+        }
+        out.push_back(loader->advertise());
+    }
+    std::sort(out.begin(), out.end(), [](const LoaderAdvertisement & a, const LoaderAdvertisement & b) {
+        return a.family < b.family;
+    });
+    return out;
 }
 
 ModelInspection ModelRegistry::inspect(const ModelLoadRequest & request) const {
@@ -230,7 +246,7 @@ ModelRegistry make_default_registry(const std::optional<std::filesystem::path> &
         // engine::models::parakeet_tdt::make_parakeet_tdt_loader(),
         engine::models::ace_step::make_ace_step_loader(),
         engine::models::demucs::make_htdemucs_loader(),
-        engine::models::roformer::make_mel_loader(),
+        engine::models::roformer::make_mel_band_roformer_loader(),
         engine::models::omnivoice::make_omnivoice_loader(),
         engine::models::miocodec::make_miocodec_loader(),
         engine::models::miotts::make_miotts_loader(),
@@ -239,6 +255,7 @@ ModelRegistry make_default_registry(const std::optional<std::filesystem::path> &
         engine::models::voxcpm2::make_voxcpm2_loader(),
         engine::models::vibevoice::make_vibevoice_loader(),
         engine::models::vibevoice_asr::make_vibevoice_asr_loader(),
+        engine::models::voxtral_realtime::make_voxtral_realtime_loader(),
         engine::models::heartmula::make_heartmula_loader(),
         engine::models::higgs_audio_stt::make_higgs_audio_stt_loader(),
         engine::models::hviske_asr::make_hviske_asr_loader(),

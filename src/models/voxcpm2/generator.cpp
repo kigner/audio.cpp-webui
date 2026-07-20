@@ -10,6 +10,7 @@
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
 #include "engine/framework/modules/weight_binding.h"
+#include "engine/framework/runtime/cache_slots.h"
 #include "engine/framework/sampling/torch_random.h"
 #include "engine/models/voxcpm2/assets.h"
 #include "engine/models/voxcpm2/minicpm.h"
@@ -1213,7 +1214,8 @@ public:
                     config.mem_saver),
         cfm_(weights_, config.dit_graph_context_bytes, config.mem_saver),
         local_encoder_(weights_, config.local_encoder_graph_context_bytes,
-                       config.mem_saver) {}
+                       config.mem_saver),
+        prompt_audio_embedding_cache_(config.prompt_cache_slots) {}
 
   VoxCPM2Result generate_zero_shot(const std::string &text,
                                    const VoxCPM2GenerationOptions &options) {
@@ -1276,12 +1278,25 @@ public:
   }
 
 private:
-  struct PromptAudioEmbeddingCacheEntry {
+  struct PromptAudioEmbeddingCacheKey {
     std::vector<float> prompt_features;
     int64_t prompt_patches = 0;
-    std::vector<float> prompt_embeddings;
     std::vector<float> reference_features;
     int64_t reference_patches = 0;
+  };
+
+  struct PromptAudioEmbeddingCacheKeyEqual {
+    bool operator()(const PromptAudioEmbeddingCacheKey &lhs,
+                    const PromptAudioEmbeddingCacheKey &rhs) const {
+      return lhs.prompt_patches == rhs.prompt_patches &&
+             lhs.reference_patches == rhs.reference_patches &&
+             lhs.prompt_features == rhs.prompt_features &&
+             lhs.reference_features == rhs.reference_features;
+    }
+  };
+
+  struct PromptAudioEmbeddingCacheEntry {
+    std::vector<float> prompt_embeddings;
     std::vector<float> reference_embeddings;
   };
 
@@ -1394,36 +1409,69 @@ private:
   cached_prompt_audio_embeddings(const VoxCPM2EncodedPrompt &prompt) {
     const int64_t patch_elems =
         assets_->config.patch_size * assets_->config.feat_dim;
-    const bool cache_hit =
-        prompt_audio_embedding_cache_.has_value() &&
-        prompt_audio_embedding_cache_->prompt_patches == prompt.prompt_patches &&
-        prompt_audio_embedding_cache_->reference_patches ==
-            prompt.reference_patches &&
-        prompt_audio_embedding_cache_->prompt_features ==
-            prompt.prompt_features &&
-        prompt_audio_embedding_cache_->reference_features ==
-            prompt.reference_features;
-    debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.hit",
-                            cache_hit);
-    if (cache_hit) {
+    PromptAudioEmbeddingCacheKey key;
+    key.prompt_features = prompt.prompt_features;
+    key.prompt_patches = prompt.prompt_patches;
+    key.reference_features = prompt.reference_features;
+    key.reference_patches = prompt.reference_patches;
+    if (auto *cached = prompt_audio_embedding_cache_.find(key)) {
+      debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.hit", 1);
+      debug::trace_log_scalar(
+          "voxcpm2.prompt_audio_embedding_cache.slots",
+          static_cast<int64_t>(prompt_audio_embedding_cache_.capacity()));
+      debug::trace_log_scalar(
+          "voxcpm2.prompt_audio_embedding_cache.entries",
+          static_cast<int64_t>(prompt_audio_embedding_cache_.size()));
+      debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.evicted",
+                              0);
       debug::timing_log_scalar("voxcpm2.prompt_audio_embedding_ms", 0.0);
-      return *prompt_audio_embedding_cache_;
+      return *cached;
     }
 
     const auto embedding_start = Clock::now();
     PromptAudioEmbeddingCacheEntry entry;
-    entry.prompt_features = prompt.prompt_features;
-    entry.prompt_patches = prompt.prompt_patches;
-    entry.reference_features = prompt.reference_features;
-    entry.reference_patches = prompt.reference_patches;
     entry.prompt_embeddings = encode_feature_embeddings(
         prompt.prompt_features, prompt.prompt_patches, patch_elems);
     entry.reference_embeddings = encode_feature_embeddings(
         prompt.reference_features, prompt.reference_patches, patch_elems);
-    prompt_audio_embedding_cache_ = std::move(entry);
+    const double embedding_ms = engine::debug::elapsed_ms(embedding_start);
+    if (prompt_audio_embedding_cache_.capacity() == 0) {
+      uncached_prompt_audio_embedding_ = std::move(entry);
+      debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.hit", 0);
+      debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.slots", 0);
+      debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.entries",
+                              0);
+      debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.evicted",
+                              0);
+      debug::timing_log_scalar("voxcpm2.prompt_audio_embedding_ms",
+                               embedding_ms);
+      return *uncached_prompt_audio_embedding_;
+    }
+    const bool will_evict = prompt_audio_embedding_cache_.size() >=
+                            prompt_audio_embedding_cache_.capacity();
+    prompt_audio_embedding_cache_.put(std::move(key), std::move(entry));
+    PromptAudioEmbeddingCacheKey lookup;
+    lookup.prompt_features = prompt.prompt_features;
+    lookup.prompt_patches = prompt.prompt_patches;
+    lookup.reference_features = prompt.reference_features;
+    lookup.reference_patches = prompt.reference_patches;
+    auto *cached = prompt_audio_embedding_cache_.find(lookup);
+    if (cached == nullptr) {
+      throw std::runtime_error(
+          "VoxCPM2 prompt audio embedding cache insert failed");
+    }
+    debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.hit", 0);
+    debug::trace_log_scalar(
+        "voxcpm2.prompt_audio_embedding_cache.slots",
+        static_cast<int64_t>(prompt_audio_embedding_cache_.capacity()));
+    debug::trace_log_scalar(
+        "voxcpm2.prompt_audio_embedding_cache.entries",
+        static_cast<int64_t>(prompt_audio_embedding_cache_.size()));
+    debug::trace_log_scalar("voxcpm2.prompt_audio_embedding_cache.evicted",
+                            will_evict ? 1 : 0);
     debug::timing_log_scalar("voxcpm2.prompt_audio_embedding_ms",
-                             engine::debug::elapsed_ms(embedding_start));
-    return *prompt_audio_embedding_cache_;
+                             embedding_ms);
+    return *cached;
   }
 
   VoxCPM2Result
@@ -1558,7 +1606,12 @@ private:
   VoxCPM2StepProjectionRuntime projection_;
   VoxCPM2CFMRuntime cfm_;
   VoxCPM2LocalEncoderRuntime local_encoder_;
-  std::optional<PromptAudioEmbeddingCacheEntry> prompt_audio_embedding_cache_;
+  engine::runtime::CacheSlots<PromptAudioEmbeddingCacheKey,
+                              PromptAudioEmbeddingCacheEntry,
+                              PromptAudioEmbeddingCacheKeyEqual>
+      prompt_audio_embedding_cache_;
+  std::optional<PromptAudioEmbeddingCacheEntry>
+      uncached_prompt_audio_embedding_;
 };
 
 VoxCPM2FeatureGeneratorRuntime::VoxCPM2FeatureGeneratorRuntime(

@@ -51,6 +51,7 @@ public:
 
     [[nodiscard]] std::string read_text(std::string_view id) const;
     [[nodiscard]] engine::io::json::Value parse_json(std::string_view id) const;
+    [[nodiscard]] engine::io::json::Value parse_jsonc(std::string_view id) const;
     [[nodiscard]] engine::io::yaml::FlattenedDocument parse_flattened_yaml(std::string_view id) const;
     [[nodiscard]] std::shared_ptr<const TensorSource> open_tensor_source(std::string_view id) const;
 

@@ -1983,6 +1983,91 @@
       ]
     },
     {
+      "id": "voxtral_realtime_offline_paths",
+      "coverage": "VoxTral Realtime offline ASR with greedy decode, varied audio lengths, and long-lived session request reuse",
+      "family": "voxtral_realtime",
+      "model": "models/Voxtral-Mini-4B-Realtime-2602",
+      "task": "asr",
+      "mode": "offline",
+      "outputs": [
+        "text"
+      ],
+      "requests": [
+        {
+          "id": "male_voice_short",
+          "audio": "reference/HiggsAudioV3TTS/sglang-omni/docs/_static/audio/male-voice.wav",
+          "do_sample": false,
+          "temperature": 1.0,
+          "top_p": 1.0,
+          "top_k": 50,
+          "seed": 1234
+        },
+        {
+          "id": "female_voice_medium",
+          "audio": "reference/HiggsAudioV3TTS/sglang-omni/docs/_static/audio/female-voice.wav",
+          "do_sample": false,
+          "temperature": 1.0,
+          "top_p": 1.0,
+          "top_k": 50,
+          "seed": 1234
+        },
+        {
+          "id": "nature_longer",
+          "audio": "resources/sample.wav",
+          "do_sample": false,
+          "temperature": 1.0,
+          "top_p": 1.0,
+          "top_k": 50,
+          "seed": 1234
+        }
+      ]
+    },
+    {
+      "id": "voxtral_realtime_streaming_path",
+      "coverage": "VoxTral Realtime streaming ASR with chunk ingestion, streaming audio encoder cache, bounded decoder KV cache, and finalize",
+      "family": "voxtral_realtime",
+      "model": "models/Voxtral-Mini-4B-Realtime-2602",
+      "task": "asr",
+      "mode": "streaming",
+      "outputs": [
+        "text"
+      ],
+      "chunk_size": 16000,
+      "requests": [
+        {
+          "id": "nature_streaming",
+          "audio": "resources/sample.wav",
+          "do_sample": false,
+          "temperature": 1.0,
+          "top_p": 1.0,
+          "top_k": 50,
+          "seed": 1234
+        }
+      ]
+    },
+    {
+      "id": "voxtral_realtime_non_greedy_path",
+      "coverage": "VoxTral Realtime offline ASR non-greedy sampling path with top-k, top-p, temperature, and seeded Torch-compatible sampling",
+      "family": "voxtral_realtime",
+      "model": "models/Voxtral-Mini-4B-Realtime-2602",
+      "task": "asr",
+      "mode": "offline",
+      "outputs": [
+        "text"
+      ],
+      "requests": [
+        {
+          "id": "nature_sampled",
+          "audio": "resources/sample.wav",
+          "do_sample": true,
+          "temperature": 0.7,
+          "top_p": 0.95,
+          "top_k": 50,
+          "seed": 1234
+        }
+      ]
+    },
+    {
       "id": "index_tts2_chinese_voice_clone",
       "coverage": "IndexTTS2 Chinese voice clone path with CJK tokenizer normalization",
       "family": "index_tts2",

@@ -773,8 +773,18 @@ HiftVocoderComponent HiftVocoderComponent::load_from_safetensors(
     const std::filesystem::path & checkpoint_path,
     core::BackendConfig backend,
     HiftVocoderConfig config) {
-    validate_config(config);
     const auto source = assets::open_tensor_source(checkpoint_path);
+    return load_from_tensor_source(std::move(source), std::move(backend), std::move(config));
+}
+
+HiftVocoderComponent HiftVocoderComponent::load_from_tensor_source(
+    std::shared_ptr<const assets::TensorSource> source,
+    core::BackendConfig backend,
+    HiftVocoderConfig config) {
+    if (source == nullptr) {
+        throw std::runtime_error("HiFT tensor source is missing");
+    }
+    validate_config(config);
     auto weights = std::make_shared<HiftVocoderWeights>();
     weights->config = std::move(config);
     weights->source_path = source->source_path();

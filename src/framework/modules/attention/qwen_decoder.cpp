@@ -44,6 +44,10 @@ int64_t require_head_dim(const QwenDecoderLayerConfig & config) {
     if (config.num_attention_heads % config.num_key_value_heads != 0) {
         throw std::runtime_error("QwenDecoderLayerConfig.num_attention_heads must be divisible by num_key_value_heads");
     }
+    if (config.activation_cast.enabled && config.activation_cast.type != GGML_TYPE_F32 &&
+        config.activation_cast.type != GGML_TYPE_F16 && config.activation_cast.type != GGML_TYPE_BF16) {
+        throw std::runtime_error("QwenDecoderLayerConfig activation cast supports only f32, f16, and bf16");
+    }
     return config.head_dim;
 }
 
@@ -223,6 +227,85 @@ LinearWeights require_linear(const LinearWeights & weights, bool use_bias, const
     return weights;
 }
 
+core::TensorValue activation_cast(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const QwenDecoderActivationCastPolicy & policy) {
+    if (policy.type == GGML_TYPE_F32) {
+        return core::wrap_tensor(ggml_cast(ctx.ggml, input.tensor, GGML_TYPE_F32), input.shape, GGML_TYPE_F32);
+    }
+    auto rounded = core::wrap_tensor(ggml_cast(ctx.ggml, input.tensor, policy.type), input.shape, policy.type);
+    return core::wrap_tensor(ggml_cast(ctx.ggml, rounded.tensor, GGML_TYPE_F32), input.shape, GGML_TYPE_F32);
+}
+
+struct QKVProjections {
+    core::TensorValue q;
+    core::TensorValue k;
+    core::TensorValue v;
+};
+
+QKVProjections build_qkv_projections(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const QwenDecoderLayerWeights & weights,
+    const QwenDecoderLayerConfig & config,
+    int64_t dim) {
+    const int64_t q_out = config.num_attention_heads * dim;
+    const int64_t kv_out = config.num_key_value_heads * dim;
+    if (config.qkv_layout == QwenDecoderQKVLayout::PackedQKV) {
+        if (!weights.self_attention.qkv_weight.has_value()) {
+            throw std::runtime_error("Qwen packed QKV layout requires self_attention.qkv_weight");
+        }
+        auto qkv = LinearModule(
+                       {
+                           config.hidden_size,
+                           q_out + kv_out * 2,
+                           weights.self_attention.qkv_bias.has_value(),
+                           config.projection_precision,
+                       })
+                       .build(ctx, input, {*weights.self_attention.qkv_weight, weights.self_attention.qkv_bias});
+        return {
+            SliceModule({2, 0, q_out}).build(ctx, qkv),
+            SliceModule({2, q_out, kv_out}).build(ctx, qkv),
+            SliceModule({2, q_out + kv_out, kv_out}).build(ctx, qkv),
+        };
+    }
+    auto q = LinearModule(
+                 {
+                     config.hidden_size,
+                     config.num_attention_heads * dim,
+                     weights.self_attention.q_bias.has_value(),
+                     config.projection_precision,
+                 })
+                 .build(
+                     ctx,
+                     input,
+                     {weights.self_attention.q_weight, weights.self_attention.q_bias});
+    auto k = LinearModule(
+                 {
+                     config.hidden_size,
+                     config.num_key_value_heads * dim,
+                     weights.self_attention.k_bias.has_value(),
+                     config.projection_precision,
+                 })
+                 .build(
+                     ctx,
+                     input,
+                     {weights.self_attention.k_weight, weights.self_attention.k_bias});
+    auto v = LinearModule(
+                 {
+                     config.hidden_size,
+                     config.num_key_value_heads * dim,
+                     weights.self_attention.v_bias.has_value(),
+                     config.projection_precision,
+                 })
+                 .build(
+                     ctx,
+                     input,
+                     {weights.self_attention.v_weight, weights.self_attention.v_bias});
+    return {q, k, v};
+}
+
 }  // namespace
 
 QwenDecoderLayerConfig qwen_decoder_layer_config_from_stack(const QwenDecoderStackConfig & config) {
@@ -234,9 +317,12 @@ QwenDecoderLayerConfig qwen_decoder_layer_config_from_stack(const QwenDecoderSta
     out.intermediate_size = config.intermediate_size;
     out.rms_norm_eps = config.rms_norm_eps;
     out.rope_theta = config.rope_theta;
+    out.rope_type = config.rope_type;
     out.attention_precision = config.attention_precision;
     out.projection_precision = config.projection_precision;
+    out.qkv_layout = config.qkv_layout;
     out.use_qk_norm = config.use_qk_norm;
+    out.activation_cast = config.activation_cast;
     out.runtime = config.runtime;
     return out;
 }
@@ -254,7 +340,13 @@ core::TensorValue build_mlp(
                         config.projection_precision,
                     })
                     .build(ctx, input, require_linear(weights.gate_proj, false, "QwenMLPWeights.gate_proj"));
+    if (config.activation_cast.enabled && config.activation_cast.after_mlp_projection) {
+        gate = activation_cast(ctx, gate, config.activation_cast);
+    }
     gate = SiluModule{}.build(ctx, gate);
+    if (config.activation_cast.enabled && config.activation_cast.after_mlp_silu) {
+        gate = activation_cast(ctx, gate, config.activation_cast);
+    }
     auto up = LinearModule(
                   {
                       config.hidden_size,
@@ -263,15 +355,25 @@ core::TensorValue build_mlp(
                       config.projection_precision,
                   })
                   .build(ctx, input, require_linear(weights.up_proj, false, "QwenMLPWeights.up_proj"));
+    if (config.activation_cast.enabled && config.activation_cast.after_mlp_projection) {
+        up = activation_cast(ctx, up, config.activation_cast);
+    }
     auto gated = MulModule{}.build(ctx, gate, up);
-    return LinearModule(
-               {
-                   config.intermediate_size,
-                   config.hidden_size,
-                   weights.down_proj.bias.has_value(),
-                   config.projection_precision,
-               })
-        .build(ctx, gated, require_linear(weights.down_proj, false, "QwenMLPWeights.down_proj"));
+    if (config.activation_cast.enabled && config.activation_cast.after_mlp_mul) {
+        gated = activation_cast(ctx, gated, config.activation_cast);
+    }
+    auto down = LinearModule(
+                    {
+                        config.intermediate_size,
+                        config.hidden_size,
+                        weights.down_proj.bias.has_value(),
+                        config.projection_precision,
+                    })
+                    .build(ctx, gated, require_linear(weights.down_proj, false, "QwenMLPWeights.down_proj"));
+    if (config.activation_cast.enabled && config.activation_cast.after_mlp_projection) {
+        down = activation_cast(ctx, down, config.activation_cast);
+    }
+    return down;
 }
 
 QwenDecoderLayerModule::QwenDecoderLayerModule(QwenDecoderLayerConfig config) : config_(config) {
@@ -304,50 +406,37 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build(
 
     auto x_norm = RMSNormModule({config_.hidden_size, config_.rms_norm_eps, true, false})
                       .build(ctx, input, weights.input_norm);
-    auto q = LinearModule(
-                 {
-                     config_.hidden_size,
-                     config_.num_attention_heads * dim,
-                     weights.self_attention.q_bias.has_value(),
-                     config_.projection_precision,
-                 })
-                 .build(
-                     ctx,
-                     x_norm,
-                     {weights.self_attention.q_weight, weights.self_attention.q_bias});
-    auto k = LinearModule(
-                 {
-                     config_.hidden_size,
-                     config_.num_key_value_heads * dim,
-                     weights.self_attention.k_bias.has_value(),
-                     config_.projection_precision,
-                 })
-                 .build(
-                     ctx,
-                     x_norm,
-                     {weights.self_attention.k_weight, weights.self_attention.k_bias});
-    auto v = LinearModule(
-                 {
-                     config_.hidden_size,
-                     config_.num_key_value_heads * dim,
-                     weights.self_attention.v_bias.has_value(),
-                     config_.projection_precision,
-                 })
-                 .build(
-                     ctx,
-                     x_norm,
-                     {weights.self_attention.v_weight, weights.self_attention.v_bias});
+    if (config_.activation_cast.enabled && config_.activation_cast.after_input_norm) {
+        x_norm = activation_cast(ctx, x_norm, config_.activation_cast);
+    }
+    auto qkv = build_qkv_projections(ctx, x_norm, weights, config_, dim);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_qkv_projection) {
+        qkv.q = activation_cast(ctx, qkv.q, config_.activation_cast);
+        qkv.k = activation_cast(ctx, qkv.k, config_.activation_cast);
+        qkv.v = activation_cast(ctx, qkv.v, config_.activation_cast);
+    }
 
-    q = reshape_qwen_heads(ctx, q, config_.num_attention_heads, dim);
-    k = reshape_qwen_heads(ctx, k, config_.num_key_value_heads, dim);
+    auto q = reshape_qwen_heads(ctx, qkv.q, config_.num_attention_heads, dim);
+    auto k = reshape_qwen_heads(ctx, qkv.k, config_.num_key_value_heads, dim);
     if (config_.use_qk_norm) {
         q = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, q, weights.q_norm);
         k = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, k, weights.k_norm);
+        if (config_.activation_cast.enabled && config_.activation_cast.after_qk_norm) {
+            q = activation_cast(ctx, q, config_.activation_cast);
+            k = activation_cast(ctx, k, config_.activation_cast);
+        }
     }
-    v = reshape_qwen_heads(ctx, v, config_.num_key_value_heads, dim);
+    auto v = reshape_qwen_heads(ctx, qkv.v, config_.num_key_value_heads, dim);
 
-    q = RoPEModule({dim, GGML_ROPE_TYPE_NEOX, config_.rope_theta}).build(ctx, q, positions);
-    k = RoPEModule({dim, GGML_ROPE_TYPE_NEOX, config_.rope_theta}).build(ctx, k, positions);
+    const core::TensorValue * rope_factors = weights.rope_frequency_factors.has_value()
+        ? &*weights.rope_frequency_factors
+        : nullptr;
+    q = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, q, positions, rope_factors);
+    k = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, k, positions, rope_factors);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_rope) {
+        q = activation_cast(ctx, q, config_.activation_cast);
+        k = activation_cast(ctx, k, config_.activation_cast);
+    }
     k = core::ensure_backend_addressable_layout(ctx, k);
     v = core::ensure_backend_addressable_layout(ctx, v);
 
@@ -394,6 +483,12 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build(
             kv_repeats);
         context = attention_from_heads(ctx, q_heads, k_heads, v_heads, dim, attention_mask);
         context = TransposeModule({{0, 2, 1, 3}, context.shape.rank}).build(ctx, context);
+        if (config_.activation_cast.enabled && config_.activation_cast.after_context_transpose) {
+            context = activation_cast(ctx, context, config_.activation_cast);
+        }
+    }
+    if (config_.activation_cast.enabled && config_.activation_cast.after_attention) {
+        context = activation_cast(ctx, context, config_.activation_cast);
     }
     context = core::ensure_backend_addressable_layout(ctx, context);
     context = core::reshape_tensor(
@@ -412,12 +507,25 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build(
                             ctx,
                             context,
                             {weights.self_attention.out_weight, weights.self_attention.out_bias});
+    if (config_.activation_cast.enabled && config_.activation_cast.after_attention_output) {
+        attn_out = activation_cast(ctx, attn_out, config_.activation_cast);
+    }
     auto x = AddModule{}.build(ctx, input, attn_out);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_residual) {
+        x = activation_cast(ctx, x, config_.activation_cast);
+    }
 
     auto ff_in = RMSNormModule({config_.hidden_size, config_.rms_norm_eps, true, false})
                      .build(ctx, x, weights.post_norm);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_ffn_norm) {
+        ff_in = activation_cast(ctx, ff_in, config_.activation_cast);
+    }
     auto ff = build_mlp(ctx, ff_in, config_, weights.mlp);
-    return {AddModule{}.build(ctx, x, ff), k, v};
+    auto output = AddModule{}.build(ctx, x, ff);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_output) {
+        output = activation_cast(ctx, output, config_.activation_cast);
+    }
+    return {output, k, v};
 }
 
 QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail(
@@ -436,50 +544,37 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail(
 
     auto x_norm = RMSNormModule({config_.hidden_size, config_.rms_norm_eps, true, false})
                       .build(ctx, input, weights.input_norm);
-    auto q = LinearModule(
-                 {
-                     config_.hidden_size,
-                     config_.num_attention_heads * dim,
-                     weights.self_attention.q_bias.has_value(),
-                     config_.projection_precision,
-                 })
-                 .build(
-                     ctx,
-                     x_norm,
-                     {weights.self_attention.q_weight, weights.self_attention.q_bias});
-    auto k = LinearModule(
-                 {
-                     config_.hidden_size,
-                     config_.num_key_value_heads * dim,
-                     weights.self_attention.k_bias.has_value(),
-                     config_.projection_precision,
-                 })
-                 .build(
-                     ctx,
-                     x_norm,
-                     {weights.self_attention.k_weight, weights.self_attention.k_bias});
-    auto v = LinearModule(
-                 {
-                     config_.hidden_size,
-                     config_.num_key_value_heads * dim,
-                     weights.self_attention.v_bias.has_value(),
-                     config_.projection_precision,
-                 })
-                 .build(
-                     ctx,
-                     x_norm,
-                     {weights.self_attention.v_weight, weights.self_attention.v_bias});
+    if (config_.activation_cast.enabled && config_.activation_cast.after_input_norm) {
+        x_norm = activation_cast(ctx, x_norm, config_.activation_cast);
+    }
+    auto qkv = build_qkv_projections(ctx, x_norm, weights, config_, dim);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_qkv_projection) {
+        qkv.q = activation_cast(ctx, qkv.q, config_.activation_cast);
+        qkv.k = activation_cast(ctx, qkv.k, config_.activation_cast);
+        qkv.v = activation_cast(ctx, qkv.v, config_.activation_cast);
+    }
 
-    q = reshape_qwen_heads(ctx, q, config_.num_attention_heads, dim);
-    k = reshape_qwen_heads(ctx, k, config_.num_key_value_heads, dim);
+    auto q = reshape_qwen_heads(ctx, qkv.q, config_.num_attention_heads, dim);
+    auto k = reshape_qwen_heads(ctx, qkv.k, config_.num_key_value_heads, dim);
     if (config_.use_qk_norm) {
         q = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, q, weights.q_norm);
         k = RMSNormModule({dim, config_.rms_norm_eps, true, false}).build(ctx, k, weights.k_norm);
+        if (config_.activation_cast.enabled && config_.activation_cast.after_qk_norm) {
+            q = activation_cast(ctx, q, config_.activation_cast);
+            k = activation_cast(ctx, k, config_.activation_cast);
+        }
     }
-    v = reshape_qwen_heads(ctx, v, config_.num_key_value_heads, dim);
+    auto v = reshape_qwen_heads(ctx, qkv.v, config_.num_key_value_heads, dim);
 
-    q = RoPEModule({dim, GGML_ROPE_TYPE_NEOX, config_.rope_theta}).build(ctx, q, positions);
-    k = RoPEModule({dim, GGML_ROPE_TYPE_NEOX, config_.rope_theta}).build(ctx, k, positions);
+    const core::TensorValue * rope_factors = weights.rope_frequency_factors.has_value()
+        ? &*weights.rope_frequency_factors
+        : nullptr;
+    q = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, q, positions, rope_factors);
+    k = RoPEModule({dim, config_.rope_type, config_.rope_theta}).build(ctx, k, positions, rope_factors);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_rope) {
+        q = activation_cast(ctx, q, config_.activation_cast);
+        k = activation_cast(ctx, k, config_.activation_cast);
+    }
     k = core::ensure_backend_addressable_layout(ctx, k);
     v = core::ensure_backend_addressable_layout(ctx, v);
 
@@ -494,6 +589,10 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail(
         const FastKVSetRowsModule set_rows;
         attention_key_cache = set_rows.build(ctx, cache_key, k, *cache_slot);
         attention_value_cache = set_rows.build(ctx, cache_value, v, *cache_slot);
+        if (config_.activation_cast.enabled && config_.activation_cast.after_static_cache_update) {
+            attention_key_cache = activation_cast(ctx, attention_key_cache, config_.activation_cast);
+            attention_value_cache = activation_cast(ctx, attention_value_cache, config_.activation_cast);
+        }
     } else {
         const int64_t scratch_slot = cache_key.shape.dims[1] - 1;
         stored_key = cache_view(ctx, cache_key, scratch_slot, 1, config_.num_key_value_heads, dim);
@@ -552,8 +651,14 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail(
             attention_mask,
             config_.attention_precision);
     }
+    if (config_.activation_cast.enabled && config_.activation_cast.after_attention) {
+        context = activation_cast(ctx, context, config_.activation_cast);
+    }
     if (config_.runtime.static_cache.transpose_context) {
         context = TransposeModule({{0, 2, 1, 3}, context.shape.rank}).build(ctx, context);
+        if (config_.activation_cast.enabled && config_.activation_cast.after_context_transpose) {
+            context = activation_cast(ctx, context, config_.activation_cast);
+        }
     }
     context = core::ensure_backend_addressable_layout(ctx, context);
     context = core::reshape_tensor(
@@ -572,12 +677,25 @@ QwenDecoderLayerOutputs QwenDecoderLayerModule::build_with_static_cache_tail(
                             ctx,
                             context,
                             {weights.self_attention.out_weight, weights.self_attention.out_bias});
+    if (config_.activation_cast.enabled && config_.activation_cast.after_attention_output) {
+        attn_out = activation_cast(ctx, attn_out, config_.activation_cast);
+    }
     auto x = AddModule{}.build(ctx, input, attn_out);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_residual) {
+        x = activation_cast(ctx, x, config_.activation_cast);
+    }
 
     auto ff_in = RMSNormModule({config_.hidden_size, config_.rms_norm_eps, true, false})
                      .build(ctx, x, weights.post_norm);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_ffn_norm) {
+        ff_in = activation_cast(ctx, ff_in, config_.activation_cast);
+    }
     auto ff = build_mlp(ctx, ff_in, config_, weights.mlp);
-    return {AddModule{}.build(ctx, x, ff), stored_key, stored_value};
+    auto output = AddModule{}.build(ctx, x, ff);
+    if (config_.activation_cast.enabled && config_.activation_cast.after_output) {
+        output = activation_cast(ctx, output, config_.activation_cast);
+    }
+    return {output, stored_key, stored_value};
 }
 
 const core::ModuleSchema & QwenDecoderLayerModule::static_schema() noexcept {

@@ -66,6 +66,17 @@ public:
         return "chatterbox";
     }
 
+    runtime::CapabilitySet advertised_capabilities() const override {
+        runtime::CapabilitySet out;
+        out.supported_tasks = {
+            {runtime::VoiceTaskKind::VoiceCloning, {runtime::RunMode::Offline}},
+            {runtime::VoiceTaskKind::VoiceConversion, {runtime::RunMode::Offline}},
+        };
+        out.supports_speaker_reference = true;
+        out.supports_style_condition = true;
+        return out;
+    }
+
     bool can_load(const runtime::ModelLoadRequest & request) const override {
         try {
             const auto root = resolve_model_root(request.model_path);

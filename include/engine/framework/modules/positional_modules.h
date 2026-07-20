@@ -24,7 +24,8 @@ public:
     core::TensorValue build(
         core::ModuleBuildContext & ctx,
         const core::TensorValue & input,
-        const core::TensorValue & positions) const;
+        const core::TensorValue & positions,
+        const core::TensorValue * frequency_factors = nullptr) const;
 
 private:
     RoPEConfig config_;

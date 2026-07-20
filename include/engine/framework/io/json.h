@@ -69,7 +69,9 @@ private:
 };
 
 Value parse(std::string_view text);
+Value parse_jsonc(std::string_view text);
 Value parse_file(const std::filesystem::path & path);
+Value parse_jsonc_file(const std::filesystem::path & path);
 std::string stringify(const Value & value);
 std::string stringify_number(double value);
 std::string stringify_string(std::string_view value);
@@ -178,6 +180,16 @@ inline std::vector<int64_t> require_i64_array(const Value & object, const std::s
     return number_array_as<int64_t>(object.require(key));
 }
 
+inline std::unordered_map<std::string, int64_t> require_i64_object(const Value & object, const std::string & key) {
+    std::unordered_map<std::string, int64_t> values;
+    const auto & map = object.require(key).as_object();
+    values.reserve(map.size());
+    for (const auto & [name, value] : map) {
+        values.emplace(name, value.as_i64());
+    }
+    return values;
+}
+
 inline std::vector<int64_t> optional_i64_array(const Value & object, const std::string & key) {
     std::vector<int64_t> values;
     const auto * value = object.find(key);
@@ -219,6 +231,16 @@ inline std::vector<float> optional_f32_array(const Value & object, const std::st
         return values;
     }
     return number_array_as<float>(*value);
+}
+
+inline std::vector<std::string> require_string_array(const Value & object, const std::string & key) {
+    std::vector<std::string> values;
+    const auto & array = object.require(key).as_array();
+    values.reserve(array.size());
+    for (const auto & item : array) {
+        values.push_back(item.as_string());
+    }
+    return values;
 }
 
 inline std::vector<std::string> optional_string_array(const Value & object, const std::string & key) {

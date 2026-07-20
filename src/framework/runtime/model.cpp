@@ -96,4 +96,65 @@ const NamedAsset * select_named_asset(
     return &assets.front();
 }
 
+std::vector<std::string> default_api_endpoints_for_capabilities(const CapabilitySet & capabilities) {
+    bool has_asr = false;
+    bool has_speech = false;
+    bool has_other = false;
+    for (const auto & task : capabilities.supported_tasks) {
+        switch (task.task) {
+        case VoiceTaskKind::Asr:
+            has_asr = true;
+            break;
+        case VoiceTaskKind::Tts:
+        case VoiceTaskKind::VoiceCloning:
+        case VoiceTaskKind::VoiceDesign:
+            has_speech = true;
+            break;
+        default:
+            has_other = true;
+            break;
+        }
+    }
+    if (has_asr && !has_speech && !has_other) {
+        return {"/v1/audio/transcriptions"};
+    }
+    if (has_speech && !has_other) {
+        return {"/v1/audio/speech"};
+    }
+    if (has_speech && has_other) {
+        return {"/v1/tasks/run", "/v1/audio/speech"};
+    }
+    return {"/v1/tasks/run"};
+}
+
+CapabilitySet IVoiceModelLoader::advertised_capabilities() const {
+    // Path-free catalog entry. Each loader overrides with the same task/mode
+    // contract it exposes via inspect/load (without requiring a model path).
+    return {};
+}
+
+std::string IVoiceModelLoader::advertised_instructions_policy() const {
+    // Generic default from advertised tasks. Loaders with a different contract override.
+    for (const auto & task : advertised_capabilities().supported_tasks) {
+        if (task.task == VoiceTaskKind::Tts || task.task == VoiceTaskKind::VoiceDesign
+            || task.task == VoiceTaskKind::VoiceCloning) {
+            return "openai_instruct";
+        }
+    }
+    return "none";
+}
+
+std::vector<std::string> IVoiceModelLoader::advertised_api_endpoints() const {
+    return default_api_endpoints_for_capabilities(advertised_capabilities());
+}
+
+LoaderAdvertisement IVoiceModelLoader::advertise() const {
+    LoaderAdvertisement row;
+    row.family = family();
+    row.capabilities = advertised_capabilities();
+    row.instructions_policy = advertised_instructions_policy();
+    row.api_endpoints = advertised_api_endpoints();
+    return row;
+}
+
 }  // namespace engine::runtime

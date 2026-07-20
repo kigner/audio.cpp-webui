@@ -1,5 +1,6 @@
 #pragma once
 
+#include "busy_guard.h"
 #include "config.h"
 #include "http.h"
 
@@ -7,6 +8,8 @@
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/session.h"
 
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -38,8 +41,19 @@ private:
         engine::runtime::IStreamingVoiceTaskSession * streaming = nullptr;
         std::unordered_map<std::string, RuntimeVoicePreset> voice_presets;
         std::optional<RuntimeVoicePreset> default_voice_preset;
-        std::mutex mutex;
+        // Serializes runs on this model and bounds how long a caller waits for its
+        // turn; see BusyGuard.
+        BusyGuard busy;
     };
+
+    // Acquire the model's run guard. `request_timeout_ms` is the caller-supplied
+    // override, clamped by this model's configured ceiling. Throws ServerBusyError
+    // (-> HTTP 503) once the effective timeout has elapsed.
+    BusyGuard::Lock acquire_model_run(LoadedModel & model, std::optional<int> request_timeout_ms);
+
+    // Server policy for this model: its own busy_timeout_ms if set, else the
+    // top-level config value.
+    int model_busy_timeout_ceiling(const LoadedModel & model) const;
 
     void load_models();
     LoadedModel::RuntimeVoicePreset load_runtime_voice_preset(const ServerModelConfig::VoicePreset & preset) const;
@@ -54,11 +68,17 @@ private:
         const LoadedModel & model,
         const engine::io::json::Value & body) const;
     struct TimedTaskResult;
-    TimedTaskResult run_model(LoadedModel & model, const engine::runtime::TaskRequest & request);
+    // `busy_timeout_ms` on each of these is the per-request override parsed from the
+    // request body; nullopt means "use the model's configured ceiling".
+    TimedTaskResult run_model(
+        LoadedModel & model,
+        const engine::runtime::TaskRequest & request,
+        std::optional<int> busy_timeout_ms = std::nullopt);
     TimedTaskResult run_streaming_model(
         LoadedModel & model,
         const engine::runtime::TaskRequest & request,
-        const std::function<void(const engine::runtime::StreamEvent &)> & event_sink = {});
+        const std::function<void(const engine::runtime::StreamEvent &)> & event_sink = {},
+        std::optional<int> busy_timeout_ms = std::nullopt);
     HttpResponse handle_speech(const std::string & body_text);
     HttpResponse handle_speech_stream(
         LoadedModel & model,
@@ -67,8 +87,14 @@ private:
     HttpResponse handle_transcription(const HttpRequest & request);
     HttpResponse handle_transcription_json(const std::string & body_text);
     HttpResponse handle_transcription_multipart(const std::string & body_text, const std::string & boundary);
-    HttpResponse run_transcription(LoadedModel & model, const engine::runtime::TaskRequest & request);
-    HttpResponse run_transcription_stream(LoadedModel & model, const engine::runtime::TaskRequest & request);
+    HttpResponse run_transcription(
+        LoadedModel & model,
+        const engine::runtime::TaskRequest & request,
+        std::optional<int> busy_timeout_ms = std::nullopt);
+    HttpResponse run_transcription_stream(
+        LoadedModel & model,
+        const engine::runtime::TaskRequest & request,
+        std::optional<int> busy_timeout_ms = std::nullopt);
     HttpResponse handle_generic_run(const std::string & body_text);
     HttpResponse handle_generic_stream(const std::string & body_text);
     HttpResponse handle_voices(const HttpRequest & request) const;

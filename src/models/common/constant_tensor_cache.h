@@ -1,7 +1,9 @@
 #pragma once
 
 #include "engine/framework/core/backend.h"
+#include "engine/framework/core/host_memory.h"
 #include "engine/framework/core/module.h"
+#include "engine/framework/debug/trace.h"
 
 #include <ggml-backend.h>
 #include <ggml.h>
@@ -19,6 +21,51 @@
 
 namespace engine::models::common {
 
+namespace detail {
+
+// Smallest context this guard will hand out. A tensor descriptor costs roughly
+// ggml_object + ggml_tensor (~400 B), so even this floor holds ~160k of them --
+// far past what any model here builds.
+inline constexpr size_t kMinConstantContextBytes = 64ull * 1024ull * 1024ull;
+
+// Fraction of still-free host memory a single descriptor context may reserve.
+inline constexpr size_t kConstantContextMemoryDivisor = 4;
+
+// Fit a descriptor-context reservation to what the host can actually afford.
+//
+// These contexts are created with no_alloc, so they only ever hold tensor
+// descriptors -- but ggml_init() mallocs mem_size regardless of no_alloc (it
+// calls ggml_aligned_malloc whenever mem_buffer is null). What that costs
+// depends entirely on the OS: Linux never makes the untouched pages resident,
+// so an oversized request is just address space, while Windows charges the
+// whole reservation against the commit limit immediately and a multi-gigabyte
+// context can fail outright on a small machine.
+//
+// So rather than shrink the defaults for everyone -- capable hosts lose nothing
+// by reserving generously -- only step in when the request outweighs the host.
+inline size_t fit_constant_context_bytes(size_t requested, const std::string & name) {
+    const size_t available = engine::core::available_host_memory_bytes();
+    if (available == 0) {
+        return requested;  // unknown: trust the caller rather than guess
+    }
+    const size_t budget = available / kConstantContextMemoryDivisor;
+    if (requested <= budget) {
+        return requested;
+    }
+    const size_t fitted = std::max(kMinConstantContextBytes, budget);
+    if (fitted >= requested) {
+        return requested;
+    }
+    engine::debug::log_message(
+        engine::debug::LogLevel::Warning, "constant_cache",
+        name + " descriptor context " + std::to_string(requested >> 20) +
+            " MiB exceeds the memory budget; using " + std::to_string(fitted >> 20) +
+            " MiB (host has " + std::to_string(available >> 20) + " MiB free)");
+    return fitted;
+}
+
+}  // namespace detail
+
 class ConstantTensorCache {
 public:
     ConstantTensorCache(
@@ -32,7 +79,8 @@ public:
         if (backend_ == nullptr) {
             throw std::runtime_error(name_ + " constant cache backend is not initialized");
         }
-        ggml_init_params params{context_bytes, nullptr, true};
+        ggml_init_params params{detail::fit_constant_context_bytes(context_bytes, name_),
+                                nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
             throw std::runtime_error("failed to initialize " + name_ + " constant tensor cache");

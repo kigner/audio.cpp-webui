@@ -65,6 +65,8 @@ const char * status_text(int status) noexcept {
         return "Method Not Allowed";
     case 500:
         return "Internal Server Error";
+    case 503:
+        return "Service Unavailable";
     default:
         return "Error";
     }

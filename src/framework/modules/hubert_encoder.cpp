@@ -22,10 +22,6 @@
 namespace engine::modules {
 namespace {
 
-bool is_float_dtype(const std::string & dtype) {
-    return dtype == "F32" || dtype == "F16" || dtype == "BF16";
-}
-
 int64_t tensor_elements(const std::vector<int64_t> & shape) {
     if (shape.empty()) {
         throw std::runtime_error("HuBERT tensor shape is empty");
@@ -414,8 +410,18 @@ HubertEncoderComponent HubertEncoderComponent::load_from_safetensors(
     const std::filesystem::path & checkpoint_path,
     core::BackendConfig backend,
     HubertEncoderConfig config) {
-    validate_config(config);
     const auto source = engine::assets::open_tensor_source(checkpoint_path);
+    return load_from_tensor_source(std::move(source), std::move(backend), std::move(config));
+}
+
+HubertEncoderComponent HubertEncoderComponent::load_from_tensor_source(
+    std::shared_ptr<const engine::assets::TensorSource> source,
+    core::BackendConfig backend,
+    HubertEncoderConfig config) {
+    if (source == nullptr) {
+        throw std::runtime_error("HuBERT tensor source is missing");
+    }
+    validate_config(config);
     auto weights = std::make_shared<HubertEncoderWeights>();
     weights->config = std::move(config);
     weights->source_path = source->source_path();
@@ -429,8 +435,10 @@ HubertEncoderComponent HubertEncoderComponent::load_from_safetensors(
     const auto tensors = source->tensors();
     weights->tensors.reserve(tensors.size());
     for (const auto & tensor : tensors) {
-        if (!is_float_dtype(tensor.dtype)) {
-            throw std::runtime_error("HuBERT safetensors contains non-floating tensor: " + tensor.name);
+        try {
+            (void) engine::assets::tensor_storage_type_for_dtype(tensor.dtype);
+        } catch (const std::exception &) {
+            throw std::runtime_error("HuBERT contains unsupported tensor dtype for " + tensor.name + ": " + tensor.dtype);
         }
         if (tensor.name == "encoder.pos_conv_embed.conv.weight_g" ||
             tensor.name == "encoder.pos_conv_embed.conv.weight_v" ||

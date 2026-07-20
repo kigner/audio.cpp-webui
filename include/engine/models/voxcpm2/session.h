@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/framework/runtime/cache_slots.h"
 #include "engine/framework/runtime/session_base.h"
 #include "engine/models/voxcpm2/assets.h"
 #include "engine/models/voxcpm2/audiovae.h"
@@ -24,10 +25,18 @@ protected:
   runtime::RunMode run_mode_impl() const;
   void prepare_impl(const runtime::SessionPreparationRequest &request);
 
-  struct EncodedPromptCacheEntry {
+  struct EncodedPromptCacheKey {
     std::string prompt_text;
     std::optional<runtime::AudioBuffer> prompt_audio;
     std::optional<runtime::AudioBuffer> reference_audio;
+  };
+
+  struct EncodedPromptCacheKeyEqual {
+    bool operator()(const EncodedPromptCacheKey &lhs,
+                    const EncodedPromptCacheKey &rhs) const;
+  };
+
+  struct EncodedPromptCacheEntry {
     VoxCPM2EncodedPrompt encoded;
   };
 
@@ -51,7 +60,10 @@ protected:
   VoxCPM2AudioVAEDecoderConfig decoder_config_;
   std::unique_ptr<VoxCPM2FeatureGeneratorRuntime> generator_;
   std::unique_ptr<VoxCPM2AudioVAEDecoderRuntime> decoder_;
-  std::optional<EncodedPromptCacheEntry> encoded_prompt_cache_;
+  runtime::CacheSlots<EncodedPromptCacheKey, EncodedPromptCacheEntry,
+                      EncodedPromptCacheKeyEqual>
+      encoded_prompt_cache_;
+  std::optional<EncodedPromptCacheEntry> uncached_encoded_prompt_;
 };
 
 class VoxCPM2OfflineSession final : public VoxCPM2SessionBase,

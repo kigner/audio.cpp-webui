@@ -1,7 +1,6 @@
 #pragma once
 
 #include "engine/framework/runtime/session_base.h"
-#include "engine/framework/assets/tensor_source.h"
 #include "engine/models/seed_vc/assets.h"
 
 #include <memory>
@@ -10,7 +9,7 @@
 
 namespace engine::models::seed_vc {
 
-struct SeedVcComponentSources;
+struct SeedVcRouteRuntime;
 
 class SeedVcSession final
     : public runtime::RuntimeSessionBase
@@ -30,10 +29,8 @@ public:
 private:
     runtime::TaskSpec task_;
     std::shared_ptr<const SeedVcAssets> assets_;
-    std::shared_ptr<SeedVcComponentSources> sources_;
+    std::shared_ptr<SeedVcRouteRuntime> route_runtime_;
     std::optional<engine::assets::TensorStorageType> weight_storage_type_;
 };
-
-std::unique_ptr<runtime::ILoadedVoiceModel> load_seed_vc_model(const std::filesystem::path & model_path);
 
 }  // namespace engine::models::seed_vc

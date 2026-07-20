@@ -124,6 +124,10 @@ public:
         const std::filesystem::path & checkpoint_path,
         core::BackendConfig backend,
         HiftVocoderConfig config);
+    static HiftVocoderComponent load_from_tensor_source(
+        std::shared_ptr<const assets::TensorSource> source,
+        core::BackendConfig backend,
+        HiftVocoderConfig config);
 
     HiftVocoderComponent() = default;
     HiftVocoderComponent(

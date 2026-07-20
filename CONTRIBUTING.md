@@ -64,10 +64,14 @@ If a PR intentionally leaves a model under testing, say what remains before it s
 
 ## Acknowledgments
 
-audio.cpp has already benefited from generous upstream contributions. Thank you to:
+audio.cpp is moving faster because people keep showing up with real fixes, careful testing, and useful pressure on the parts that matter. Thank you to:
 
-- [@mirek190](https://github.com/mirek190) for OMTD tooling, Qwen3-ASR 1.7B HF support, GGUF core/converter work, and standalone GGUF support for ASR models in [#8](https://github.com/0xShug0/audio.cpp/pull/8), [#43](https://github.com/0xShug0/audio.cpp/pull/43), [#45](https://github.com/0xShug0/audio.cpp/pull/45), and [#46](https://github.com/0xShug0/audio.cpp/pull/46).
+- [@mirek190](https://github.com/mirek190) for pushing the GGUF work forward across the converter, standalone package-spec loading, ASR GGUF support, the platform-neutral `audiocpp_gguf` binary, and Qwen decoder improvements in [#8](https://github.com/0xShug0/audio.cpp/pull/8), [#43](https://github.com/0xShug0/audio.cpp/pull/43), [#45](https://github.com/0xShug0/audio.cpp/pull/45), [#46](https://github.com/0xShug0/audio.cpp/pull/46), [#53](https://github.com/0xShug0/audio.cpp/pull/53), [#62](https://github.com/0xShug0/audio.cpp/pull/62), and [#68](https://github.com/0xShug0/audio.cpp/pull/68).
 - [@justinjohn0306](https://github.com/justinjohn0306) for VibeVoice 7B, LoRA/fine-tune adapter loading, and the initial MOSS-TTS-Local model family implementation in [#14](https://github.com/0xShug0/audio.cpp/pull/14) and [#19](https://github.com/0xShug0/audio.cpp/pull/19).
+- [@patrickjchen](https://github.com/patrickjchen) for CUDA build polish, safer constant tensor allocation, and the server busy guard that keeps later requests from hanging behind a stuck model in [#72](https://github.com/0xShug0/audio.cpp/pull/72), [#73](https://github.com/0xShug0/audio.cpp/pull/73), and [#75](https://github.com/0xShug0/audio.cpp/pull/75).
+- [@lapy](https://github.com/lapy) for the machine-readable loader and package catalog exports in [#74](https://github.com/0xShug0/audio.cpp/pull/74).
+- [@Cr4xy](https://github.com/Cr4xy) for improving multipart upload handling and removing temporary-file writes from that path in [#61](https://github.com/0xShug0/audio.cpp/pull/61).
+- [@kevin-ho](https://github.com/kevin-ho) for making single-model server voice discovery work cleanly when the model parameter is omitted in [#64](https://github.com/0xShug0/audio.cpp/pull/64).
 - [@xashr](https://github.com/xashr) for Dockerfiles, Docker examples, and Docker documentation in [#30](https://github.com/0xShug0/audio.cpp/pull/30).
-- [@dkruyt](https://github.com/dkruyt) for multipart transcription uploads and server voice-discovery support in [#25](https://github.com/0xShug0/audio.cpp/pull/25).
+- [@dkruyt](https://github.com/dkruyt) for the first multipart transcription upload support in [#25](https://github.com/0xShug0/audio.cpp/pull/25).
 - [@CaptainArni](https://github.com/CaptainArni) for fixing PocketTTS empty output when switching cached voices in [#22](https://github.com/0xShug0/audio.cpp/pull/22).

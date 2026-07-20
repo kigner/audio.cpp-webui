@@ -83,10 +83,22 @@ option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ON)
 option(ENGINE_BUILD_EXAMPLES "Build example binaries" OFF)
 option(ENGINE_BUILD_TESTS "Build framework unit tests" OFF)
 option(ENGINE_BUILD_WARMBENCH "Build warmbench helper binaries" OFF)
+set(AUDIOCPP_GGML_SOURCE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/ggml"
+    CACHE PATH "ggml source tree to build with AudioCPP")
 
 if (ENGINE_ENABLE_CUDA)
     enable_language(CUDA)
-    find_package(CUDAToolkit REQUIRED)
+    # 12.0 is a floor, not a target: any 12.x or 13.x works (the Dockerfile pins
+    # 12.9.0, and docs/build/windows.md ships a CUDA 13 package). The minimum is
+    # enforced because an older toolkit configures happily and only fails at the
+    # first .cu file, which reads as a code bug rather than a toolchain one: nvcc
+    # < 11.6 cannot parse libstdc++ >= 11.3 headers ("parameter packs not expanded
+    # with '...'" in <functional>), and distros still ship such pairings (Ubuntu
+    # 22.04's nvidia-cuda-toolkit is 11.5). Fail here, with a pointer, instead.
+    # The upper bound is the host compiler the chosen toolkit accepts, not CUDA
+    # itself (e.g. CUDA 12.9 supports GCC <= 14), so it is left to the toolkit.
+    find_package(CUDAToolkit 12.0 REQUIRED)
     if (NOT MSVC)
         set(CMAKE_CUDA_FLAGS_DEBUG "${AUDIOCPP_DEBUG_OPT_FLAGS}" CACHE STRING "Optimized debug CUDA flags" FORCE)
     endif()
@@ -111,7 +123,11 @@ set(SPM_ENABLE_SHARED OFF CACHE BOOL "Build sentencepiece shared libs" FORCE)
 set(SPM_BUILD_TEST OFF CACHE BOOL "Do not build sentencepiece tests" FORCE)
 set(SPM_ENABLE_TCMALLOC OFF CACHE BOOL "Do not probe for tcmalloc" FORCE)
 
-add_subdirectory(external/ggml)
+if (NOT EXISTS "${AUDIOCPP_GGML_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "AUDIOCPP_GGML_SOURCE_DIR does not point to a ggml source tree: ${AUDIOCPP_GGML_SOURCE_DIR}")
+endif()
+message(STATUS "Using ggml source: ${AUDIOCPP_GGML_SOURCE_DIR}")
+add_subdirectory("${AUDIOCPP_GGML_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/ggml")
 add_subdirectory(external/sentencepiece EXCLUDE_FROM_ALL)
 
 add_compile_options(
@@ -131,6 +147,7 @@ add_library(engine_runtime STATIC
     src/framework/core/backend.cpp
     src/framework/core/deferred_tensor_writer.cpp
     src/framework/core/execution_context.cpp
+    src/framework/core/host_memory.cpp
     src/framework/runtime/registry.cpp
     src/framework/runtime/model.cpp
     src/framework/runtime/session.cpp
@@ -140,6 +157,7 @@ add_library(engine_runtime STATIC
     src/framework/runtime/graph_optimizer.cpp
     src/framework/runtime/host_ops.cpp
     src/framework/runtime/kv_cache.cpp
+    src/framework/runtime/bounded_static_kv_decode.cpp
     src/framework/runtime/options.cpp
     src/framework/runtime/session_base.cpp
     src/framework/runtime/workspace.cpp
@@ -184,6 +202,7 @@ add_library(engine_runtime STATIC
     src/framework/modules/attention/common_relative_attention.cpp
     src/framework/modules/attention/relative_attention.cpp
     src/framework/modules/attention/scaled_dot_product_attention.cpp
+    src/framework/modules/attention/streaming_frame_attention_cache.cpp
     src/framework/modules/attention/qwen_decoder.cpp
     src/framework/modules/attention/qwen_causal_decoder.cpp
     src/framework/modules/attention/cross_attention.cpp
@@ -226,12 +245,14 @@ add_library(engine_runtime STATIC
     src/framework/sampling/noise.cpp
     src/framework/sampling/torch_random.cpp
     src/models/roformer/assets.cpp
+    src/models/roformer/loader.cpp
     src/models/roformer/runtime.cpp
     src/models/roformer/session.cpp
     src/models/demucs/assets.cpp
     src/models/demucs/frontend.cpp
     src/models/demucs/pipeline.cpp
     src/models/demucs/postprocess.cpp
+    src/models/demucs/loader.cpp
     src/models/demucs/session.cpp
     src/models/omnivoice/assets.cpp
     src/models/omnivoice/tokenizer_text.cpp
@@ -313,6 +334,13 @@ add_library(engine_runtime STATIC
     src/models/vibevoice_asr/speech_tokenizer.cpp
     src/models/vibevoice_asr/text_decoder.cpp
     src/models/vibevoice_asr/tokenizer_text.cpp
+    src/models/voxtral_realtime/assets.cpp
+    src/models/voxtral_realtime/tokenizer_text.cpp
+    src/models/voxtral_realtime/frontend.cpp
+    src/models/voxtral_realtime/audio_encoder.cpp
+    src/models/voxtral_realtime/text_decoder.cpp
+    src/models/voxtral_realtime/session.cpp
+    src/models/voxtral_realtime/loader.cpp
     src/models/heartmula/assets.cpp
     src/models/heartmula/codec.cpp
     src/models/heartmula/generator.cpp
@@ -394,7 +422,6 @@ add_library(engine_runtime STATIC
     src/models/vevo2/vocoder.cpp
     src/models/vevo2/loader.cpp
     src/models/seed_vc/assets.cpp
-    src/models/seed_vc/weight_bundle.cpp
     src/models/seed_vc/audio_features.cpp
     src/models/seed_vc/length_regulator.cpp
     src/models/seed_vc/astral_quantizer.cpp
@@ -628,40 +655,42 @@ if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(vibevoice_finetune_overlay_check PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-add_executable(moss_tts_local_smoke
-    tests/moss_tts_local/moss_tts_local_smoke.cpp
-)
+if (ENGINE_BUILD_TESTS)
+    add_executable(moss_tts_local_smoke
+        tests/moss_tts_local/moss_tts_local_smoke.cpp
+    )
 
-target_link_libraries(moss_tts_local_smoke PRIVATE engine_runtime ggml)
-if (ENGINE_ENABLE_OPENMP)
-    target_link_libraries(moss_tts_local_smoke PRIVATE OpenMP::OpenMP_CXX)
-endif()
+    target_link_libraries(moss_tts_local_smoke PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(moss_tts_local_smoke PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 
-add_executable(codec_dequant_parity
-    tests/moss_tts_local/codec_dequant_parity.cpp
-)
+    add_executable(codec_dequant_parity
+        tests/moss_tts_local/codec_dequant_parity.cpp
+    )
 
-target_link_libraries(codec_dequant_parity PRIVATE engine_runtime ggml)
-if (ENGINE_ENABLE_OPENMP)
-    target_link_libraries(codec_dequant_parity PRIVATE OpenMP::OpenMP_CXX)
-endif()
+    target_link_libraries(codec_dequant_parity PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(codec_dequant_parity PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 
-add_executable(codec_decode_parity
-    tests/moss_tts_local/codec_decode_parity.cpp
-)
+    add_executable(codec_decode_parity
+        tests/moss_tts_local/codec_decode_parity.cpp
+    )
 
-target_link_libraries(codec_decode_parity PRIVATE engine_runtime ggml)
-if (ENGINE_ENABLE_OPENMP)
-    target_link_libraries(codec_decode_parity PRIVATE OpenMP::OpenMP_CXX)
-endif()
+    target_link_libraries(codec_decode_parity PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(codec_decode_parity PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 
-add_executable(codec_encode_parity
-    tests/moss_tts_local/codec_encode_parity.cpp
-)
+    add_executable(codec_encode_parity
+        tests/moss_tts_local/codec_encode_parity.cpp
+    )
 
-target_link_libraries(codec_encode_parity PRIVATE engine_runtime ggml)
-if (ENGINE_ENABLE_OPENMP)
-    target_link_libraries(codec_encode_parity PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(codec_encode_parity PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(codec_encode_parity PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 if (ENGINE_BUILD_WARMBENCH)
@@ -697,6 +726,7 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(supertonic_warm_bench tests/supertonic/supertonic_warm_bench.cpp)
     add_engine_warmbench(vevo2_warm_bench tests/vevo2/vevo2_warm_bench.cpp)
     add_engine_warmbench(vibevoice_asr_warm_bench tests/vibevoice_asr/vibevoice_asr_warm_bench.cpp)
+    add_engine_warmbench(voxtral_realtime_warm_bench tests/voxtral_realtime/voxtral_realtime_warm_bench.cpp)
     add_engine_warmbench(voxcpm2_warm_bench tests/voxcpm2/voxcpm2_warm_bench.cpp)
 endif()
 
@@ -883,6 +913,21 @@ if (ENGINE_BUILD_TESTS)
         NAME server_multipart_test
         COMMAND server_multipart_test
     )
+
+    add_executable(server_busy_guard_test
+        tests/unittests/test_server_busy_guard.cpp
+    )
+    target_include_directories(server_busy_guard_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app/server)
+    find_package(Threads REQUIRED)
+    target_link_libraries(server_busy_guard_test PRIVATE Threads::Threads)
+
+    add_test(
+        NAME server_busy_guard_test
+        COMMAND server_busy_guard_test
+    )
+    # The suite deliberately drives threads against a held lock; bound it so a
+    # regression that reintroduces unbounded queuing fails instead of hanging CI.
+    set_tests_properties(server_busy_guard_test PROPERTIES TIMEOUT 60)
 
     add_executable(server_config_test
         tests/unittests/test_server_config.cpp

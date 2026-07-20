@@ -1,0 +1,44 @@
+{
+  "family": "voxtral_realtime",
+  "sources": [
+    {
+      "format": "gguf",
+      "roots": {
+        "model": ".",
+        "weights": "$gguf"
+      },
+      "files": {
+        "config": "model:config.json",
+        "generation_config": "model:generation_config.json",
+        "processor_config": "model:processor_config.json",
+        "tekken": "model:tekken.json"
+      },
+      "optional_files": {
+        "params": "model:params.json",
+        "readme": "model:README.md"
+      },
+      "tensors": {
+        "weights": "weights:"
+      }
+    },
+    {
+      "format": "safetensors",
+      "roots": {
+        "model": "."
+      },
+      "files": {
+        "config": "model:config.json",
+        "generation_config": "model:generation_config.json",
+        "processor_config": "model:processor_config.json",
+        "tekken": "model:tekken.json"
+      },
+      "optional_files": {
+        "params": "model:params.json",
+        "readme": "model:README.md"
+      },
+      "tensors": {
+        "weights": "model:model.safetensors"
+      }
+    }
+  ]
+}

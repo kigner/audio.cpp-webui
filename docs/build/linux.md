@@ -7,6 +7,10 @@ This document covers direct CMake builds on Linux. For the quick script-based pa
 - GCC 13 or newer
 - CMake
 - A supported backend toolchain when enabling CUDA or Vulkan
+- For CUDA: CUDA Toolkit 12.0 or newer — any 12.x or 13.x is fine (the Docker image
+  pins 12.9, and a CUDA 13 package is documented for Windows). The real upper bound
+  is the host GCC the chosen toolkit accepts, not the CUDA version: e.g. CUDA 12.9
+  supports up to GCC 14
 
 Native ggml CPU optimization is enabled by default for local performance. If your compiler or assembler rejects a generated CPU instruction such as `vpdpbusd`, reconfigure with `-DENGINE_ENABLE_NATIVE_CPU=OFF` to build portable CPU kernels.
 
@@ -25,6 +29,38 @@ CUDA:
 ```bash
 cmake -S . -B build -DENGINE_ENABLE_CUDA=ON
 ```
+
+CMake picks the first `nvcc` on `PATH`, which is often **not** the toolkit you want:
+distro packages install an old one to `/usr/bin/nvcc` (Ubuntu 22.04's
+`nvidia-cuda-toolkit` is CUDA 11.5) while the toolkit from NVIDIA lands in
+`/usr/local/cuda-<version>`. Point at it explicitly, and set the architecture of the
+GPU you are building for, rather than relying on `PATH`:
+
+```bash
+cmake -S . -B build -DENGINE_ENABLE_CUDA=ON \
+  -DCUDAToolkit_ROOT=/usr/local/cuda-12.9 \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc \
+  -DCMAKE_CUDA_ARCHITECTURES=86      # 86 = RTX 3000, 89 = RTX 4000, 120 = Blackwell
+```
+
+Set **both**. `CMAKE_CUDA_COMPILER` only chooses the compiler, and `CUDAToolkit_ROOT`
+only chooses the libraries — with a distro CUDA also installed, setting just the
+compiler produces a build that compiles with the new `nvcc` but silently links the
+old `libcudart`/`libcublas` from `/usr/lib/x86_64-linux-gnu` (owned by
+`nvidia-cuda-dev`). That mismatch links without warning. Check the result:
+
+```bash
+readelf -d build/bin/audiocpp_server | grep NEEDED | grep cuda
+# want libcudart.so.12 / libcublas.so.12 — libcudart.so.11.0 means a mixed build
+```
+
+Leave `CMAKE_CUDA_ARCHITECTURES` unset to build for the GPUs present at build time
+(`native`). Note that CMake caches the CUDA compiler: switching toolkits in an
+existing build directory requires deleting `CMakeCache.txt` and `CMakeFiles/`.
+
+On WSL2, install the toolkit only — `cuda-toolkit-<version>` from the `wsl-ubuntu`
+repo. The `cuda` and `cuda-drivers` metapackages pull a Linux display driver that
+breaks the GPU passthrough provided by the Windows host driver.
 
 Vulkan:
 

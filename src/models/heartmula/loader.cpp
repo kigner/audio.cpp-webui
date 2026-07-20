@@ -84,6 +84,15 @@ public:
         return "heartmula";
     }
 
+    runtime::CapabilitySet advertised_capabilities() const override {
+        runtime::CapabilitySet out;
+        out.supported_tasks = {
+            {runtime::VoiceTaskKind::AudioGeneration, {runtime::RunMode::Offline}},
+        };
+        out.supports_style_condition = true;
+        return out;
+    }
+
     bool can_load(const runtime::ModelLoadRequest & request) const override {
         try {
             const auto root = resolve_model_root(request.model_path);
