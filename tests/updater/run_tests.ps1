@@ -475,6 +475,7 @@ function Test-ReleaseBuilder {
         New-Item -ItemType Directory -Path (Join-Path $portable $directory) -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_cli.exe") -Value "$directory cli" -Encoding ASCII
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_server.exe") -Value "$directory server" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_gguf.exe") -Value "$directory gguf" -Encoding ASCII
     }
     $secret = Join-Path $root "test-secret.key"
     Set-Content -LiteralPath $secret -Value "test secret" -Encoding ASCII
@@ -527,6 +528,12 @@ function Test-ReleaseBuilder {
     Assert-True (@($manifest.components).Count -eq 5) "release manifest does not contain all five component types"
     Assert-True (@($manifest.preserve) -contains "webui/voice/**") "release manifest omitted voice preservation"
     Assert-True ([string]$manifest.supported_from -eq ">=0.2.0") "release manifest does not keep bootstrap installs eligible for later versions"
+    foreach ($directory in @("cpu", "gpu")) {
+        $archive = Join-Path $output "audiocpp-core-$($directory -replace 'gpu', 'cuda')-win-x64-v0.2.1.zip"
+        $expanded = Join-Path $root "core-$directory-expanded"
+        Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+        Assert-True (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\audiocpp_gguf.exe") -PathType Leaf) "core-$directory ZIP omitted audiocpp_gguf.exe"
+    }
     $stable = Read-JsonFile (Join-Path $output "stable.json")
     Assert-True ([string]$stable.manifest_url -match '/v0\.2\.1-windows-prebuilt/manifest-v0\.2\.1\.json$') "stable.json points at the wrong manifest"
 

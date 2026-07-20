@@ -179,7 +179,7 @@ function Get-AppInputs {
 function New-CoreInputs {
     param([Parameter(Mandatory = $true)][ValidateSet("cpu", "gpu")][string]$Directory)
     $inputs = @()
-    foreach ($name in @("audiocpp_cli.exe", "audiocpp_server.exe")) {
+    foreach ($name in @("audiocpp_cli.exe", "audiocpp_server.exe", "audiocpp_gguf.exe")) {
         $inputs += [pscustomobject]@{
             Source = Join-Path (Join-Path $PortableRoot $Directory) $name
             Path = "$Directory/$name"
