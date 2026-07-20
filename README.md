@@ -52,6 +52,8 @@ For full setup notes, script arguments, environment variables, API examples, Web
 ## News
 
 > [!IMPORTANT]
+> **2026-07-20 - audio.cpp WebUI v0.2.1:** This Windows portable release brings the latest major upstream merge into the WebUI distribution, including Voxtral Mini 4B Realtime ASR in the ASR tab with offline and streaming transcription. Voxtral defaults to Q8_0 and uses model-specific cumulative-text replacement to prevent repeated partial output without changing other ASR pipelines. Existing v0.2 portable users can upgrade through `update.bat`; the signed component update covers the app, CPU, and CUDA packages without requiring a full bundle download. See the [v0.2.1 release](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.2.1-windows-prebuilt) for downloads and update metadata.
+>
 > **2026-07-18 - Voxtral Realtime ASR:** Voxtral is now released in audio.cpp with offline and streaming ASR paths. On warmed normal requests, BF16 GGUF runs at **RTF 0.089** (**11.2x realtime**) and Q8_0 at **RTF 0.064** (**15.7x realtime**); CUDA streaming TTFT is about **209 ms** with BF16 and **171 ms** with Q8_0.
 >
 > **2026-07-14 - Release 0.3:** This release expands audio.cpp with five new TTS families: IndexTTS2, Irodori-TTS, MOSS-TTS-Nano, MOSS-TTS-Local (thanks to [@justinjohn0306](https://github.com/justinjohn0306)), and Supertonic 3. Chatterbox also gains voice-conversion support, extending the existing TTS/voice-cloning path into a fuller speech workflow.
