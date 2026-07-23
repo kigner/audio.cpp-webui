@@ -357,7 +357,7 @@ def _vram_shortfall(entry):
 # 自动检测），所以这里不要再放字面量 "Auto"——带 lang_map 的家族会拒绝它，
 # 且界面上会出现两个分不清的 Auto。
 LANGS = ["", "english", "chinese", "french", "german", "italian",
-         "japanese", "korean", "portuguese", "russian", "spanish"]
+         "japanese", "korean", "portuguese", "russian", "spanish", "vietnamese"]
 
 # Which catalog task tokens each tab can drive. do_tts sends text + optional
 # reference voice, which fits both plain TTS ("tts") and voice cloning ("clon").
@@ -418,6 +418,36 @@ MODEL_PROFILES = {
     "qwen3_tts": {
         "input_hint": (
             "**Qwen3-TTS** 声音克隆：建议上传参考音色并填『参考文本』，否则可能提前截断。"),
+    },
+    "fish_audio": {
+        "input_hint": (
+            "**Fish Audio S2 Pro**：支持中/英 TTS 和声音克隆；上传参考音色时必须填写"
+            "与音频完全一致的『参考文本』。"),
+        "lang_map": {"english": "en", "chinese": "zh"},
+    },
+    "higgs_audio_tts": {
+        "input_hint": (
+            "**Higgs Audio v3 TTS 4B**：可直接合成，也可上传参考音色进行声音克隆；"
+            "参考文本可选。"),
+        # The current backend advertises only Auto. Keep the shared dropdown from
+        # sending an unsupported explicit language.
+        "lang_map": {"auto": "auto"},
+    },
+    "outetts": {
+        "input_hint": (
+            "**OuteTTS 1.0 1B**：无参考可直接合成；声音克隆必须上传参考音色并填写"
+            "逐字匹配的『参考文本』（建议约 10 秒，最长 20 秒）。"),
+        "lang_map": {
+            "english": "en", "chinese": "zh", "french": "fr", "german": "de",
+            "italian": "it", "japanese": "ja", "korean": "ko",
+            "portuguese": "pt", "russian": "ru", "spanish": "es",
+        },
+    },
+    "vietneu_tts": {
+        "input_hint": (
+            "**VieNeu-TTS v3 Turbo**：支持越南语/英语 TTS；上传参考音色可克隆，"
+            "建议同时填写『参考文本』。"),
+        "lang_map": {"english": "en", "vietnamese": "vi"},
     },
     "pocket_tts": {
         "input_hint": "**PocketTTS**：必须提供参考音色（上传/录制/内置）。",
@@ -581,6 +611,10 @@ MODEL_HINTS_EN = {
     "vibevoice": "**VibeVoice**: use one `Speaker N:` line per speaker. Use `voice_samples` for multiple voices.",
     "voxcpm2": "**VoxCPM2**: upload a clean voice reference and its transcript. Streaming is supported.",
     "qwen3_tts": "**Qwen3-TTS**: a voice reference and matching transcript are recommended.",
+    "fish_audio": "**Fish Audio S2 Pro** supports Chinese/English TTS and cloning. Reference audio requires its exact transcript.",
+    "higgs_audio_tts": "**Higgs Audio v3 TTS 4B** supports direct TTS and optional reference-voice cloning.",
+    "outetts": "**OuteTTS 1.0 1B** supports multilingual TTS. Cloning requires reference audio and its exact transcript.",
+    "vietneu_tts": "**VieNeu-TTS v3 Turbo** supports Vietnamese/English TTS and optional voice cloning.",
     "pocket_tts": "**PocketTTS** requires a voice reference.",
     "chatterbox": "**Chatterbox** requires a voice reference and supports en/es/fr/de/it/pt/ko.",
     "qwen3_asr": "**Qwen3-ASR** automatically splits long audio. Language and context are optional.",

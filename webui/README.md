@@ -286,6 +286,11 @@ singing 路线默认开，style_converted_vc / editing 默认关。
   立体声；Nano 100M 轻量，无参考=续写式生成（音色随机），有参考=克隆。
 - **Supertonic 3**（0.3 新增）：预置音色多语种 TTS（英/日/韩/欧洲语种，**无中文**），
   高级参数选 `voice`（M1-M5 男 / F1-F5 女）和 `speaking_rate`；不支持参考音频克隆。
+- **Fish Audio S2 Pro / Higgs Audio v3 TTS 4B**：均支持直接 TTS 和参考音色克隆；
+  Fish Audio 使用参考音频时必须填写逐字匹配的参考文本。
+- **OuteTTS 1.0 1B**：多语种 TTS；克隆必须提供参考音频和逐字匹配的参考文本，
+  建议约 10 秒、最长 20 秒。
+- **VieNeu-TTS v3 Turbo**：越南语/英语 TTS，上传参考音色可进行即时声音克隆。
 - **模型下载**在后台进行，进度自动刷新，也可点「📊 下载进度」手动查看。
 
 ### GGUF 转换、检查与加载
@@ -325,6 +330,10 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 | `moss-tts-local` | moss_tts_local | tts | MOSS-TTS-Local v1.5（48kHz 立体声） |
 | `moss-tts-nano` | moss_tts_nano | tts | MOSS-TTS-Nano 100M（轻量） |
 | `supertonic` | supertonic | tts | Supertonic 3（预置音色，无中文） |
+| `fish-audio-s2-pro` | fish_audio | tts | Fish Audio S2 Pro（中英 TTS/克隆） |
+| `higgs-audio-tts` | higgs_audio_tts | tts | Higgs Audio v3 TTS 4B（TTS/克隆） |
+| `outetts` | outetts | tts | OuteTTS 1.0 1B（多语种 TTS/克隆） |
+| `vietneu-tts` | vietneu_tts | tts | VieNeu-TTS v3 Turbo（越英 TTS/克隆） |
 
 未安装的 id 运行时会提示，可在 WebUI 里点“下载”，或
 `python tools\model_manager.py install <download_id> --models-root <bundle>\models`。

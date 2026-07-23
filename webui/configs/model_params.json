@@ -11,6 +11,41 @@
     {"name": "speaker", "type": "text", "label": "speaker（仅 CustomVoice）", "default": "", "placeholder": "内置音色名，其它版忽略"}
   ],
 
+  "fish_audio": [
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 0.8, "minimum": 0.05, "maximum": 1.95, "step": 0.05},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 30, "minimum": 1, "step": 1, "precision": 0},
+    {"name": "top_p", "type": "slider", "label": "top_p", "default": 0.8, "minimum": 0.01, "maximum": 1.0, "step": 0.01},
+    {"name": "text_chunk_size", "type": "number", "label": "text_chunk_size（长文本分段）", "label_en": "text_chunk_size", "default": 200, "minimum": 1, "step": 1, "precision": 0}
+  ],
+
+  "higgs_audio_tts": [
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 0.8, "minimum": 0.05, "maximum": 2.0, "step": 0.05},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 30, "minimum": 0, "step": 1, "precision": 0},
+    {"name": "top_p", "type": "slider", "label": "top_p", "default": 0.8, "minimum": 0.01, "maximum": 1.0, "step": 0.01},
+    {"name": "text_chunk_size", "type": "number", "label": "text_chunk_size（长文本分段）", "label_en": "text_chunk_size", "default": 1024, "minimum": 1, "step": 1, "precision": 0}
+  ],
+
+  "outetts": [
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 0.4, "minimum": 0.05, "maximum": 2.0, "step": 0.05},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 40, "minimum": 0, "step": 1, "precision": 0},
+    {"name": "top_p", "type": "slider", "label": "top_p", "default": 0.9, "minimum": 0.01, "maximum": 1.0, "step": 0.01},
+    {"name": "min_p", "type": "slider", "label": "min_p", "default": 0.05, "minimum": 0.0, "maximum": 1.0, "step": 0.01},
+    {"name": "repetition_penalty", "type": "slider", "label": "repetition_penalty", "default": 1.1, "minimum": 0.1, "maximum": 2.0, "step": 0.01},
+    {"name": "repetition_window", "type": "number", "label": "repetition_window", "default": 64, "minimum": 0, "step": 1, "precision": 0},
+    {"name": "text_chunk_size", "type": "number", "label": "text_chunk_size（长文本分段）", "label_en": "text_chunk_size", "default": 256, "minimum": 1, "step": 1, "precision": 0}
+  ],
+
+  "vietneu_tts": [
+    {"name": "do_sample", "type": "bool", "label": "do_sample", "default": true},
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 0.9, "minimum": 0.05, "maximum": 2.0, "step": 0.05},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 50, "minimum": 0, "step": 1, "precision": 0},
+    {"name": "top_p", "type": "slider", "label": "top_p", "default": 1.0, "minimum": 0.01, "maximum": 1.0, "step": 0.01},
+    {"name": "repetition_penalty", "type": "slider", "label": "repetition_penalty", "default": 1.05, "minimum": 0.1, "maximum": 2.0, "step": 0.01},
+    {"name": "subtalker_do_sample", "type": "bool", "label": "subtalker_do_sample", "default": true},
+    {"name": "subtalker_temperature", "type": "slider", "label": "subtalker_temperature", "default": 0.9, "minimum": 0.05, "maximum": 2.0, "step": 0.05},
+    {"name": "text_chunk_size", "type": "number", "label": "text_chunk_size（长文本分段）", "label_en": "text_chunk_size", "default": 200, "minimum": 1, "step": 1, "precision": 0}
+  ],
+
   "vibevoice": [
     {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 10, "minimum": 1, "step": 1, "precision": 0, "info": "扩散步数（官方默认 10），越大越慢越稳"},
     {"name": "guidance_scale", "type": "slider", "label": "guidance_scale", "default": 1.3, "minimum": 0.0, "maximum": 5.0, "step": 0.1, "info": "CFG 引导强度"},
