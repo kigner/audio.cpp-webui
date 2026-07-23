@@ -32,6 +32,7 @@ PARKED_FAMILY_ALIASES: dict[str, set[str]] = {
 
 # Registered loaders that intentionally have no installable ModelPackage.
 BUNDLED_LOADERS_WITHOUT_PACKAGE: set[str] = {
+    "marblenet_vad",
     "silero_vad",
 }
 

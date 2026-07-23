@@ -31,7 +31,13 @@ function Write-Json {
 }
 
 function New-TestBundle {
-    param([string]$Name)
+    param(
+        [string]$Name,
+        [string]$BundleVersion = "0.2.0",
+        [string]$AppVersion = $BundleVersion,
+        [string]$CoreCpuVersion = $BundleVersion,
+        [string]$CoreCudaVersion = $BundleVersion
+    )
     $root = Join-Path $testRoot $Name
     New-Item -ItemType Directory -Path (Join-Path $root "updater") -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repoRoot "update.bat") -Destination (Join-Path $root "update.bat")
@@ -48,11 +54,17 @@ function New-TestBundle {
     ) | Set-Content -LiteralPath $verifier -Encoding ASCII
     $version = [ordered]@{
         product = "audiocpp-portable"
-        version = "0.2.0"
+        version = $BundleVersion
         channel = "stable"
         platform = "windows-x64"
         python = "3.11"
-        components = [ordered]@{ app = "0.2.0"; core_cpu = "0.2.0"; core_cuda = "0.2.0"; python_env = "0.2.0"; updater = $testUpdaterVersion }
+        components = [ordered]@{
+            app = $AppVersion
+            core_cpu = $CoreCpuVersion
+            core_cuda = $CoreCudaVersion
+            python_env = "0.2.0"
+            updater = $testUpdaterVersion
+        }
     }
     Write-Json $version (Join-Path $root "version.json")
     return $root
@@ -63,7 +75,8 @@ function New-TestArchive {
         [string]$Directory,
         [string]$FileName,
         [string]$ManagedPath,
-        [string]$Content = "new managed content"
+        [string]$Content = "new managed content",
+        [string]$Component = "app"
     )
     $stage = Join-Path $Directory ("stage-" + [guid]::NewGuid().ToString("N"))
     $payload = Join-Path $stage "payload"
@@ -73,7 +86,7 @@ function New-TestArchive {
     $file = Get-Item -LiteralPath $filePath
     $index = [ordered]@{
         schema = 1
-        component = "app"
+        component = $Component
         files = @([ordered]@{
             path = $ManagedPath
             size = [int64]$file.Length
@@ -135,14 +148,16 @@ function New-CustomManifest {
         [string]$Directory,
         [object[]]$Components,
         [string]$MinimumUpdater = $testUpdaterVersion,
-        [string[]]$HealthChecks = @()
+        [string[]]$HealthChecks = @(),
+        [string]$ManifestVersion = "0.2.1",
+        [string]$SupportedFrom = ">=0.2.0 <0.3.0"
     )
     $value = [ordered]@{
         schema = 1
         product = "audiocpp-portable"
         platform = "windows-x64"
-        version = "0.2.1"
-        supported_from = ">=0.2.0 <0.3.0"
+        version = $ManifestVersion
+        supported_from = $SupportedFrom
         minimum_updater = $MinimumUpdater
         components = $Components
         preserve = $requiredPreserve
@@ -468,6 +483,62 @@ function Test-UpdaterSelfUpdate {
     Assert-True ((Read-JsonFile (Join-Path $root "version.json")).components.updater -eq "1.2.0") "version.json did not record the new updater version"
 }
 
+function Test-UpgradeMatrixFromSupportedVersions {
+    $cases = @(
+        [pscustomobject]@{
+            Version = "0.2.0"
+            App = "0.2.0"
+            CoreCpu = "0.2.0"
+            CoreCuda = "0.2.0"
+        },
+        [pscustomobject]@{
+            Version = "0.2.1"
+            App = "0.2.1"
+            CoreCpu = "0.2.1"
+            CoreCuda = "0.2.1"
+        },
+        [pscustomobject]@{
+            Version = "0.2.2"
+            App = "0.2.1"
+            CoreCpu = "0.2.1"
+            CoreCuda = "0.2.2"
+        }
+    )
+
+    foreach ($case in $cases) {
+        $root = New-TestBundle "upgrade-$($case.Version)" `
+            -BundleVersion $case.Version `
+            -AppVersion $case.App `
+            -CoreCpuVersion $case.CoreCpu `
+            -CoreCudaVersion $case.CoreCuda
+        New-Item -ItemType Directory -Path (Join-Path $root "models") -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $root "models\user-model.bin") -Value "preserve me" -Encoding ASCII
+
+        $assets = Join-Path $root "assets"
+        New-Item -ItemType Directory -Path $assets -Force | Out-Null
+        $appArchive = New-TestArchive $assets "app-v0.3.0.zip" "webui\upgrade-matrix.txt" "app 0.3.0" "app"
+        $cpuArchive = New-TestArchive $assets "core-cpu-v0.3.0.zip" "cpu\audiocpp_cli.exe" "cpu 0.3.0" "core-cpu"
+        $cudaArchive = New-TestArchive $assets "core-cuda-v0.3.0.zip" "gpu\audiocpp_cli.exe" "cuda 0.3.0" "core-cuda"
+        $components = @(
+            (New-ComponentDescriptor "app" "0.3.0" $appArchive),
+            (New-ComponentDescriptor "core-cpu" "0.3.0" $cpuArchive),
+            (New-ComponentDescriptor "core-cuda" "0.3.0" $cudaArchive)
+        )
+        $manifest = New-CustomManifest $assets $components `
+            -ManifestVersion "0.3.0" `
+            -SupportedFrom ">=0.2.0"
+
+        $result = Invoke-TestUpdater $root "--apply" $manifest
+        Assert-True ($result.ExitCode -eq 0) "upgrade from $($case.Version) failed: $($result.Output)"
+        $installed = Read-JsonFile (Join-Path $root "version.json")
+        Assert-True ([string]$installed.version -eq "0.3.0") "upgrade from $($case.Version) did not commit target version"
+        Assert-True ([string]$installed.components.app -eq "0.3.0") "upgrade from $($case.Version) did not update app"
+        Assert-True ([string]$installed.components.core_cpu -eq "0.3.0") "upgrade from $($case.Version) did not update core-cpu"
+        Assert-True ([string]$installed.components.core_cuda -eq "0.3.0") "upgrade from $($case.Version) did not update core-cuda"
+        Assert-True ((Get-Content -LiteralPath (Join-Path $root "models\user-model.bin") -Raw) -match "preserve me") "upgrade from $($case.Version) changed preserved model data"
+    }
+}
+
 function Test-ReleaseBuilder {
     $root = Join-Path $testRoot "release-builder"
     $portable = Join-Path $root "portable"
@@ -499,13 +570,15 @@ function Test-ReleaseBuilder {
     Expand-Archive -LiteralPath $pythonDepsZip -DestinationPath $pythonDepsSource
     Remove-Item -LiteralPath (Join-Path $pythonDepsSource "files.json") -Force
     $output = Join-Path $root "output"
+    $releaseNotes = Join-Path $root "custom-release-notes.md"
+    Set-Content -LiteralPath $releaseNotes -Value "# Custom release notes" -Encoding UTF8
     $builder = Join-Path $repoRoot "scripts\build_update_release.ps1"
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     $builderOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $builder `
         -Version "0.2.1" -PortableRoot $portable -OutputDir $output -MinisignSecretKey $secret `
         -MinisignPublicKey $publicKey -MinisignPath $signer -PythonDepsSource $pythonDepsSource `
-        -IncludeUpdater -UpdaterMinisignBinary $signer -Stable -AllowDirty 2>&1)
+        -IncludeUpdater -UpdaterMinisignBinary $signer -ReleaseNotesPath $releaseNotes -Stable -AllowDirty 2>&1)
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousErrorAction
     Assert-True ($exitCode -eq 0) "release builder failed: $($builderOutput -join "`n")"
@@ -528,6 +601,18 @@ function Test-ReleaseBuilder {
     Assert-True (@($manifest.components).Count -eq 5) "release manifest does not contain all five component types"
     Assert-True (@($manifest.preserve) -contains "webui/voice/**") "release manifest omitted voice preservation"
     Assert-True ([string]$manifest.supported_from -eq ">=0.2.0") "release manifest does not keep bootstrap installs eligible for later versions"
+    Assert-True ((Get-Content -LiteralPath (Join-Path $output "release-notes.md") -Raw) -match "Custom release notes") "release builder did not use custom release notes"
+    $appExpanded = Join-Path $root "app-expanded"
+    Expand-Archive -LiteralPath (Join-Path $output "audiocpp-app-v0.2.1.zip") -DestinationPath $appExpanded
+    foreach ($relative in @(
+        "payload\tools\model_manager.py",
+        "payload\model_specs\qwen3_asr.json",
+        "payload\assets\framework\models\marblenet_vad\marblenet_vad.safetensors",
+        "payload\assets\framework\models\marblenet_vad\marblenet_vad_config.json",
+        "payload\assets\framework\models\marblenet_vad\marblenet_vad_labels.txt"
+    )) {
+        Assert-True (Test-Path -LiteralPath (Join-Path $appExpanded $relative) -PathType Leaf) "app ZIP omitted $relative"
+    }
     foreach ($directory in @("cpu", "gpu")) {
         $archive = Join-Path $output "audiocpp-core-$($directory -replace 'gpu', 'cuda')-win-x64-v0.2.1.zip"
         $expanded = Join-Path $root "core-$directory-expanded"
@@ -565,6 +650,7 @@ try {
         "Test-ProtectedPathAndLock",
         "Test-PythonDependencyUpdateAndRollback",
         "Test-UpdaterSelfUpdate",
+        "Test-UpgradeMatrixFromSupportedVersions",
         "Test-ReleaseBuilder"
     )
     foreach ($test in $tests) {

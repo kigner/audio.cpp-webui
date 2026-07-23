@@ -5,6 +5,7 @@ param(
     [string]$OutputDir = "",
     [string]$ReleaseTag = "",
     [string]$Repository = "kigner/audio.cpp-webui",
+    [string]$ReleaseNotesPath = "",
     [Parameter(Mandatory = $true)][string]$MinisignSecretKey,
     [Parameter(Mandatory = $true)][string]$MinisignPublicKey,
     [string]$MinisignPath = "minisign.exe",
@@ -29,6 +30,7 @@ $PortableRoot = [IO.Path]::GetFullPath($PortableRoot)
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
 $MinisignSecretKey = [IO.Path]::GetFullPath($MinisignSecretKey)
 $MinisignPublicKey = [IO.Path]::GetFullPath($MinisignPublicKey)
+if ($ReleaseNotesPath -ne "") { $ReleaseNotesPath = [IO.Path]::GetFullPath($ReleaseNotesPath) }
 $stageRoot = Join-Path $OutputDir ".staging"
 
 $preserveRules = @(
@@ -152,6 +154,7 @@ function Get-AppInputs {
         SpeakType `
         tools/model_manager.py `
         assets/model_manager `
+        assets/framework/models/marblenet_vad `
         model_specs)
     if ($LASTEXITCODE -ne 0) { throw "git ls-files failed." }
     foreach ($relative in $tracked) {
@@ -166,6 +169,7 @@ function Get-AppInputs {
                 $normalized -notin @("SpeakType/config.json", "SpeakType/logs/.gitkeep")
         } elseif ($normalized -eq "tools/model_manager.py" -or
                   $normalized.StartsWith("assets/model_manager/") -or
+                  $normalized.StartsWith("assets/framework/models/marblenet_vad/") -or
                   $normalized.StartsWith("model_specs/")) {
             $include = $true
         }
@@ -261,6 +265,9 @@ if (-not (Test-Path -LiteralPath $MinisignSecretKey -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $MinisignPublicKey -PathType Leaf)) {
     throw "Minisign public key not found: $MinisignPublicKey"
 }
+if ($ReleaseNotesPath -ne "" -and -not (Test-Path -LiteralPath $ReleaseNotesPath -PathType Leaf)) {
+    throw "Release notes file not found: $ReleaseNotesPath"
+}
 if ((Get-Content -LiteralPath $MinisignPublicKey -Raw -Encoding UTF8) -match 'REPLACE_WITH_') {
     throw "Refusing to use a placeholder minisign public key."
 }
@@ -339,7 +346,11 @@ if ($Stable) {
     $stablePointer | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $stablePath -Encoding UTF8
 }
 
-$releaseNotes = @"
+$releaseNotesOutput = Join-Path $OutputDir "release-notes.md"
+if ($ReleaseNotesPath -ne "") {
+    Copy-Item -LiteralPath $ReleaseNotesPath -Destination $releaseNotesOutput -Force
+} else {
+    $releaseNotes = @"
 # audio.cpp Windows portable v$Version
 
 ## Update
@@ -355,7 +366,8 @@ The updater does not overwrite models, custom voices, output files, API keys,
 logs, or SpeakType user configuration. Failed updates roll back managed files
 from `_update\\backup\\`.
 "@
-Set-Content -LiteralPath (Join-Path $OutputDir "release-notes.md") -Value $releaseNotes -Encoding UTF8
+    Set-Content -LiteralPath $releaseNotesOutput -Value $releaseNotes -Encoding UTF8
+}
 
 $sumCandidates = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object {
     $_.Name -notin @("SHA256SUMS.txt", "SHA256SUMS.txt.minisig")
