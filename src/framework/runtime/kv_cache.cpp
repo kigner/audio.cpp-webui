@@ -9,13 +9,76 @@
 
 namespace engine::runtime {
 
+namespace {
+
+void validate_cache_tensor(const core::TensorValue & tensor, const TransformerKVCacheOptions & options) {
+    if (tensor.type == GGML_TYPE_F32) {
+        return;
+    }
+    if (options.allow_f16_storage && tensor.type == GGML_TYPE_F16) {
+        return;
+    }
+    if (options.allow_bf16_storage && tensor.type == GGML_TYPE_BF16) {
+        return;
+    }
+    throw std::runtime_error(
+        options.allow_f16_storage || options.allow_bf16_storage
+            ? "TransformerKVCache supports only f32/f16/bf16 cache tensors when enabled"
+            : "TransformerKVCache requires f32 cache tensors");
+}
+
+void write_cache_tensor(
+    const core::TensorValue & tensor,
+    const std::vector<float> & values,
+    const TransformerKVCacheOptions & options) {
+    validate_cache_tensor(tensor, options);
+    if (tensor.type == GGML_TYPE_F32) {
+        core::write_tensor_f32(tensor, values);
+        return;
+    }
+    if (options.allow_f16_storage && tensor.type == GGML_TYPE_F16) {
+        core::write_tensor_f16(tensor, values);
+        return;
+    }
+    if (options.allow_bf16_storage && tensor.type == GGML_TYPE_BF16) {
+        core::write_tensor_bf16(tensor, values);
+        return;
+    }
+    throw std::runtime_error("TransformerKVCache requires f32 cache tensors");
+}
+
+std::vector<float> read_cache_tensor(const core::TensorValue & tensor, const TransformerKVCacheOptions & options) {
+    validate_cache_tensor(tensor, options);
+    if (tensor.type == GGML_TYPE_F32) {
+        return core::read_tensor_f32(tensor.tensor);
+    }
+    if (options.allow_f16_storage && tensor.type == GGML_TYPE_F16) {
+        return core::read_tensor_f16(tensor.tensor);
+    }
+    if (options.allow_bf16_storage && tensor.type == GGML_TYPE_BF16) {
+        return core::read_tensor_bf16(tensor.tensor);
+    }
+    throw std::runtime_error("TransformerKVCache requires f32 cache tensors");
+}
+
+}  // namespace
+
 TransformerKVCache::TransformerKVCache(
     int64_t cache_steps,
     int64_t step_elems,
     std::vector<core::TensorValue> keys,
     std::vector<core::TensorValue> values)
+    : TransformerKVCache(cache_steps, step_elems, std::move(keys), std::move(values), {}) {}
+
+TransformerKVCache::TransformerKVCache(
+    int64_t cache_steps,
+    int64_t step_elems,
+    std::vector<core::TensorValue> keys,
+    std::vector<core::TensorValue> values,
+    TransformerKVCacheOptions options)
     : cache_steps_(std::max<int64_t>(0, cache_steps)),
-      step_elems_(std::max<int64_t>(0, step_elems)) {
+      step_elems_(std::max<int64_t>(0, step_elems)),
+      options_(options) {
     if (step_elems_ <= 0) {
         throw std::runtime_error("TransformerKVCache requires positive step_elems");
     }
@@ -25,6 +88,8 @@ TransformerKVCache::TransformerKVCache(
     const size_t cache_elems = static_cast<size_t>(cache_steps_ * step_elems_);
     layers_.reserve(keys.size());
     for (size_t layer = 0; layer < keys.size(); ++layer) {
+        validate_cache_tensor(keys[layer], options_);
+        validate_cache_tensor(values[layer], options_);
         layers_.push_back(LayerCache{
             std::move(keys[layer]),
             std::move(values[layer]),
@@ -68,8 +133,8 @@ void TransformerKVCache::import_state(const TransformerKVState & state) {
                 std::copy(source.key.begin(), source.key.end(), cache.import_key_scratch.begin());
                 std::copy(source.value.begin(), source.value.end(), cache.import_value_scratch.begin());
             }
-            core::write_tensor_f32(cache.key_tensor, cache.import_key_scratch);
-            core::write_tensor_f32(cache.value_tensor, cache.import_value_scratch);
+            write_cache_tensor(cache.key_tensor, cache.import_key_scratch, options_);
+            write_cache_tensor(cache.value_tensor, cache.import_value_scratch, options_);
         }
     }
 }
@@ -85,8 +150,8 @@ TransformerKVState TransformerKVCache::export_state() const {
         if (keep_elems == 0) {
             continue;
         }
-        const auto key_values = core::read_tensor_f32(layers_[layer].key_tensor.tensor);
-        const auto value_values = core::read_tensor_f32(layers_[layer].value_tensor.tensor);
+        const auto key_values = read_cache_tensor(layers_[layer].key_tensor, options_);
+        const auto value_values = read_cache_tensor(layers_[layer].value_tensor, options_);
         out.key.assign(key_values.begin(), key_values.begin() + static_cast<ptrdiff_t>(keep_elems));
         out.value.assign(value_values.begin(), value_values.begin() + static_cast<ptrdiff_t>(keep_elems));
     }
@@ -141,11 +206,11 @@ void TransformerKVCache::trace_log_state(const std::string & name, int64_t num_h
         return;
     }
     const size_t keep_elems = static_cast<size_t>(valid_steps_ * step_elems_);
-    const auto first_key = core::read_tensor_f32(layers_.front().key_tensor.tensor);
+    const auto first_key = read_cache_tensor(layers_.front().key_tensor, options_);
     std::vector<float> first_key_keep(first_key.begin(), first_key.begin() + static_cast<ptrdiff_t>(keep_elems));
     debug::trace_log_f32(name + ".layer0.key", {1, valid_steps_, num_heads, head_dim}, first_key_keep);
     if (layers_.size() > 1) {
-        const auto last_key = core::read_tensor_f32(layers_.back().key_tensor.tensor);
+        const auto last_key = read_cache_tensor(layers_.back().key_tensor, options_);
         std::vector<float> last_key_keep(last_key.begin(), last_key.begin() + static_cast<ptrdiff_t>(keep_elems));
         debug::trace_log_f32(name + ".layer_last.key", {1, valid_steps_, num_heads, head_dim}, last_key_keep);
     }
@@ -158,7 +223,8 @@ core::TensorValue view_transformer_kv_cache_steps(
     int64_t steps,
     int64_t heads,
     int64_t head_dim,
-    const char * label) {
+    const char * label,
+    ggml_type view_type) {
     if (start < 0 || steps <= 0 || start + steps > cache.shape.dims[1]) {
         throw std::runtime_error(std::string(label) + " cache view range is invalid");
     }
@@ -175,7 +241,7 @@ core::TensorValue view_transformer_kv_cache_steps(
             cache.tensor->nb[3],
             static_cast<size_t>(start) * cache.tensor->nb[2]),
         core::TensorShape::from_dims({1, steps, heads, head_dim}),
-        GGML_TYPE_F32);
+        view_type);
 }
 
 }  // namespace engine::runtime

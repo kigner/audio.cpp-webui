@@ -147,7 +147,7 @@ def wait_for_health(base_url: str, timeout_s: float) -> None:
     raise RuntimeError(f"server health timeout for {base_url}: {last_error}")
 
 
-def stream_speech_request(base_url: str, model: str, text: str) -> dict[str, Any]:
+def stream_speech_request(base_url: str, model: str, text: str, sample_rate: int) -> dict[str, Any]:
     payload = {
         "model": model,
         "input": text,
@@ -208,7 +208,7 @@ def stream_speech_request(base_url: str, model: str, text: str) -> dict[str, Any
         "ttft_ms": ttft_ms,
         "client_first_delta_ms": first_delta_ms,
         "client_done_ms": done_ms,
-        "audio_duration_s": len(pcm) / (2.0 * DEFAULT_SAMPLE_RATE),
+        "audio_duration_s": len(pcm) / (2.0 * sample_rate),
         "delta_events": delta_events,
         "pcm_bytes": len(pcm),
         "done_event": done_event,
@@ -289,8 +289,8 @@ def run_measurement(args: argparse.Namespace) -> dict[str, Any]:
                 text=True,
             )
         wait_for_health(base_url, args.health_timeout_s)
-        warmup = stream_speech_request(base_url, model, args.warmup_text)
-        write_wav(output_dir / "warmup_discard.wav", warmup["pcm"])
+        warmup = stream_speech_request(base_url, model, args.warmup_text, args.sample_rate)
+        write_wav(output_dir / "warmup_discard.wav", warmup["pcm"], args.sample_rate)
         warmup_meta = {key: value for key, value in warmup.items() if key != "pcm"}
         write_json(output_dir / "warmup_discard.json", warmup_meta)
 
@@ -299,10 +299,10 @@ def run_measurement(args: argparse.Namespace) -> dict[str, Any]:
         sequence_start = time.perf_counter()
         with VramSampler(output_dir / "measured_vram.csv", args.vram_sample_ms / 1000.0):
             for index, chunk in enumerate(chunks):
-                result = stream_speech_request(base_url, model, chunk)
+                result = stream_speech_request(base_url, model, chunk, args.sample_rate)
                 chunk_pcm = result.pop("pcm")
                 merged_pcm.extend(chunk_pcm)
-                write_wav(output_dir / f"chunk_{index:03d}.wav", chunk_pcm)
+                write_wav(output_dir / f"chunk_{index:03d}.wav", chunk_pcm, args.sample_rate)
                 record = {
                     "index": index,
                     "input_chars": len(chunk),
@@ -313,7 +313,7 @@ def run_measurement(args: argparse.Namespace) -> dict[str, Any]:
                 with requests_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         sequence_elapsed_ms = (time.perf_counter() - sequence_start) * 1000.0
-        write_wav(output_dir / "merged.wav", bytes(merged_pcm))
+        write_wav(output_dir / "merged.wav", bytes(merged_pcm), args.sample_rate)
 
         ttfts = [float(item["ttft_ms"]) for item in measured]
         summary = {
@@ -332,7 +332,8 @@ def run_measurement(args: argparse.Namespace) -> dict[str, Any]:
             "chunk_count": len(chunks),
             "warmup": warmup_meta,
             "measured_sequence_elapsed_ms": sequence_elapsed_ms,
-            "total_audio_duration_s": len(merged_pcm) / (2.0 * DEFAULT_SAMPLE_RATE),
+            "sample_rate": args.sample_rate,
+            "total_audio_duration_s": len(merged_pcm) / (2.0 * args.sample_rate),
             "ttft_first_chunk_ms": ttfts[0],
             "ttft_min_ms": min(ttfts),
             "ttft_p50_ms": percentile(ttfts, 0.50),
@@ -385,6 +386,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory-saver-label", required=True)
     parser.add_argument("--max-chars", type=int, default=480)
     parser.add_argument("--warmup-text", default="Short warmup request for streaming timing.")
+    parser.add_argument("--sample-rate", type=int, default=DEFAULT_SAMPLE_RATE)
     parser.add_argument("--health-timeout-s", type=float, default=180.0)
     parser.add_argument("--vram-sample-ms", type=float, default=200.0)
     return parser.parse_args()

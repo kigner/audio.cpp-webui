@@ -548,9 +548,9 @@
       ]
     },
     {
-      "id": "higgs_tts_voice_clone_chunked",
+      "id": "higgs_audio_tts_voice_clone_chunked",
       "coverage": "Higgs Audio v3 voice clone path with framework text chunking, AR generation, and codec decode",
-      "family": "higgs_tts",
+      "family": "higgs_audio_tts",
       "model": "models/higgs-audio-v3-tts-4b",
       "task": "tts",
       "mode": "offline",
@@ -571,9 +571,9 @@
       ]
     },
     {
-      "id": "higgs_tts_voice_clone_cache_pollution",
+      "id": "higgs_audio_tts_voice_clone_cache_pollution",
       "coverage": "Higgs Audio v3 long-lived session cache pollution check with short, long, medium, and long requests",
-      "family": "higgs_tts",
+      "family": "higgs_audio_tts",
       "model": "models/higgs-audio-v3-tts-4b",
       "task": "tts",
       "mode": "offline",
@@ -608,6 +608,53 @@
           "voice_ref": "resources/sample.wav",
           "reference_text": "This little work was finished in the year eighteen o three, and intended for immediate publication.",
           "seed": 1234
+        }
+      ]
+    },
+    {
+      "id": "fish_audio_s2_pro_paths",
+      "coverage": "Fish Audio S2-Pro path coverage for default voice, reference voice clone, inline control tag, AR generation, and codec decode in one offline session",
+      "family": "fish_audio",
+      "model": "models/s2-pro",
+      "task": "tts",
+      "mode": "offline",
+      "session_options": {
+        "fish_audio.weight_type": "native",
+        "fish_audio.codec_weight_type": "native",
+        "fish_audio.reference_cache_slots": "1"
+      },
+      "outputs": [
+        "audio"
+      ],
+      "requests": [
+        {
+          "id": "official_auto_voice_english",
+          "text": "The field recorder captured a clean reference take, and the operator confirmed that every timestamp matched the written production notes.",
+          "text_chunk_size": 200,
+          "top_p": 0.8,
+          "repetition_penalty": 1.1,
+          "temperature": 0.8,
+          "seed": 1234
+        },
+        {
+          "id": "official_reference_voice_clone",
+          "text": "The studio engineer checked the short voice prompt, confirmed the take was clear, and started the final render.",
+          "voice_ref": "resources/sample.wav",
+          "reference_text": "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you.",
+          "text_chunk_size": 200,
+          "top_p": 0.8,
+          "repetition_penalty": 1.1,
+          "temperature": 0.8,
+          "seed": 2234
+        },
+        {
+          "id": "official_inline_control_tag",
+          "text": "[whisper in small voice] The prototype actually worked after the last reset, and the control room stayed quiet until every green light appeared.",
+          "text_chunk_size": 200,
+          "top_p": 0.8,
+          "repetition_penalty": 1.1,
+          "temperature": 0.8,
+          "seed": 3234
         }
       ]
     },
@@ -1251,6 +1298,35 @@
           "text": "This second request uses an instruction instead of a reference voice.",
           "language": "en",
           "instruct": "female, low pitch, british accent",
+          "seed": 1234,
+          "guidance_scale": 2.0,
+          "num_inference_steps": 16
+        }
+      ]
+    },
+    {
+      "id": "omnivoice_streaming_voice_clone",
+      "coverage": "OmniVoice pseudo-streaming TTS path with text chunk events, reference clone conditioning, generator chunking, and final merged audio",
+      "family": "omnivoice",
+      "model": "models/OmniVoice",
+      "task": "tts",
+      "mode": "streaming",
+      "outputs": [
+        "audio",
+        "named_audio"
+      ],
+      "requests": [
+        {
+          "id": "streaming_clone",
+          "text": "OmniVoice pseudo streaming should emit one audio event per text chunk while preserving the same reference speaker and final merged result.",
+          "language": "en",
+          "voice_ref": "resources/a.wav",
+          "reference_text": "This little work was finished in the year eighteen o three, and intended for immediate publication.",
+          "options": {
+            "text_chunk_size": 48,
+            "text_chunk_mode": "tag_aware",
+            "audio_chunk_duration": 15.0
+          },
           "seed": 1234,
           "guidance_scale": 2.0,
           "num_inference_steps": 16
@@ -1918,7 +1994,7 @@
       "id": "marblenet_vad_offline",
       "coverage": "MarbleNet VAD offline frontend and segment postprocess",
       "family": "marblenet_vad",
-      "model": "models/marblenet_vad",
+      "model": "assets/framework/models/marblenet_vad",
       "task": "vad",
       "mode": "offline",
       "outputs": [

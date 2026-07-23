@@ -5,6 +5,7 @@
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/modules/activation_modules.h"
+#include "engine/framework/modules/attention/scaled_dot_product_attention.h"
 #include "engine/framework/modules/linear_module.h"
 #include "engine/framework/modules/lookup_modules.h"
 #include "engine/framework/modules/norm_modules.h"
@@ -125,12 +126,16 @@ core::TensorValue attention_from_heads(
     const core::TensorValue & k_heads,
     const core::TensorValue & v_heads,
     int64_t dim,
-    const core::TensorValue & attention_mask) {
-    // NOTE: Keep OmniVoice on this explicit attention path for now.
-    // We previously tried a CUDA flash-attention path here, but it introduced
-    // parity drift across iterative refinement steps. Treat flash attention as
-    // experimental for OmniVoice and do not re-enable it until Python/C++
-    // parity is proven on the full audiocpp_cli path.
+    const core::TensorValue & attention_mask,
+    OmniVoiceGeneratorPerfMode perf_mode) {
+    if (perf_mode == OmniVoiceGeneratorPerfMode::FlashAttention) {
+        return modules::ScaledDotProductAttentionModule({
+            dim,
+            modules::ScaledDotProductAttentionLowering::Flash,
+            GGML_PREC_F32,
+            modules::AttentionCausality::NonCausal,
+        }).build(ctx, q_heads, k_heads, v_heads, attention_mask);
+    }
     const modules::MatMulModule matmul;
     auto scores = matmul.build(
         ctx,
@@ -146,7 +151,8 @@ core::TensorValue attention_from_heads(
             0.0F),
         scores.shape,
         GGML_TYPE_F32);
-    return matmul.build(ctx, attn, v_heads);
+    auto context = matmul.build(ctx, attn, v_heads);
+    return modules::TransposeModule({{0, 2, 1, 3}, context.shape.rank}).build(ctx, context);
 }
 
 struct LayerWeights {
@@ -290,7 +296,8 @@ core::TensorValue decoder_layer(
     const core::TensorValue & positions,
     const LayerWeights & weights,
     const OmniVoiceLLMConfig & config,
-    const core::TensorValue & attention_mask) {
+    const core::TensorValue & attention_mask,
+    OmniVoiceGeneratorPerfMode perf_mode = OmniVoiceGeneratorPerfMode::Standard) {
     const int64_t dim = head_dim(config);
     const int64_t kv_repeats = config.num_attention_heads / config.num_key_value_heads;
     const modules::LinearModule q_proj(
@@ -316,8 +323,7 @@ core::TensorValue decoder_layer(
     auto q_heads = modules::TransposeModule({{0, 2, 1, 3}, q.shape.rank}).build(ctx, q);
     auto k_heads = repeat_kv_heads(ctx, modules::TransposeModule({{0, 2, 1, 3}, k.shape.rank}).build(ctx, k), kv_repeats);
     auto v_heads = repeat_kv_heads(ctx, modules::TransposeModule({{0, 2, 1, 3}, v.shape.rank}).build(ctx, v), kv_repeats);
-    auto context = attention_from_heads(ctx, q_heads, k_heads, v_heads, dim, attention_mask);
-    context = modules::TransposeModule({{0, 2, 1, 3}, context.shape.rank}).build(ctx, context);
+    auto context = attention_from_heads(ctx, q_heads, k_heads, v_heads, dim, attention_mask, perf_mode);
     context = ensure_contiguous(ctx, context);
     context = core::reshape_tensor(
         ctx,
@@ -422,9 +428,11 @@ public:
         std::shared_ptr<WeightsRuntime> runtime,
         size_t graph_arena_bytes,
         int64_t total_token_capacity,
-        int64_t target_frame_capacity)
+        int64_t target_frame_capacity,
+        OmniVoiceGeneratorPerfMode perf_mode)
         : runtime_(std::move(runtime)),
-          graph_arena_bytes_(graph_arena_bytes) {
+          graph_arena_bytes_(graph_arena_bytes),
+          perf_mode_(perf_mode) {
         rebuild(total_token_capacity, target_frame_capacity);
     }
 
@@ -509,7 +517,7 @@ public:
         auto attention_mask =
             core::make_tensor(
                 input_ctx,
-                GGML_TYPE_F32,
+                perf_mode_ == OmniVoiceGeneratorPerfMode::FlashAttention ? GGML_TYPE_F16 : GGML_TYPE_F32,
                 core::TensorShape::from_dims({2, 1, total_tokens_capacity_, total_tokens_capacity_}));
         attention_mask_ = attention_mask.tensor;
         guidance_scale_ = core::make_tensor(input_ctx, GGML_TYPE_F32, core::TensorShape::from_dims({1})).tensor;
@@ -518,7 +526,7 @@ public:
 
         auto x = build_embeddings(ctx, config, weights, text_ids, audio_id_values, audio_mask, text_mask);
         for (const auto & layer : weights.layers) {
-            x = decoder_layer(ctx, x, positions, layer, config.llm, attention_mask);
+            x = decoder_layer(ctx, x, positions, layer, config.llm, attention_mask, perf_mode_);
         }
         x = modules::RMSNormModule({config.llm.hidden_size, config.llm.rms_norm_eps, true, false})
                 .build(ctx, x, binding::norm_data(ctx, weights.norm));
@@ -612,9 +620,17 @@ public:
         unconditional_target_indices_host_.assign(static_cast<size_t>(target_frame_capacity_), 0);
         audio_mask_values_host_.assign(static_cast<size_t>(2 * total_tokens_capacity_), 0.0F);
         text_mask_values_host_.assign(static_cast<size_t>(2 * total_tokens_capacity_), 0.0F);
-        attention_values_host_.assign(
-            static_cast<size_t>(2 * total_tokens_capacity_ * total_tokens_capacity_),
-            kMaskedAttentionBias);
+        if (perf_mode_ == OmniVoiceGeneratorPerfMode::FlashAttention) {
+            attention_values_host_f16_.assign(
+                static_cast<size_t>(2 * total_tokens_capacity_ * total_tokens_capacity_),
+                ggml_fp32_to_fp16(kMaskedAttentionBias));
+            attention_values_host_.clear();
+        } else {
+            attention_values_host_.assign(
+                static_cast<size_t>(2 * total_tokens_capacity_ * total_tokens_capacity_),
+                kMaskedAttentionBias);
+            attention_values_host_f16_.clear();
+        }
         for (auto & ids : audio_ids_host_) {
             ids.assign(static_cast<size_t>(2 * total_tokens_capacity_), 0);
         }
@@ -856,14 +872,25 @@ private:
             text_mask_values_host_.data(),
             0,
             text_mask_values_host_.size() * sizeof(float));
-        std::fill(
-            attention_values_host_.begin(),
-            attention_values_host_.end(),
-            kMaskedAttentionBias);
+        if (perf_mode_ == OmniVoiceGeneratorPerfMode::FlashAttention) {
+            std::fill(
+                attention_values_host_f16_.begin(),
+                attention_values_host_f16_.end(),
+                ggml_fp32_to_fp16(kMaskedAttentionBias));
+        } else {
+            std::fill(
+                attention_values_host_.begin(),
+                attention_values_host_.end(),
+                kMaskedAttentionBias);
+        }
         const auto write_zero = [&](int batch, int64_t q, int64_t k) {
             const size_t index = static_cast<size_t>(
                 k + total_tokens_capacity_ * (q + total_tokens_capacity_ * batch));
-            attention_values_host_[index] = 0.0F;
+            if (perf_mode_ == OmniVoiceGeneratorPerfMode::FlashAttention) {
+                attention_values_host_f16_[index] = ggml_fp32_to_fp16(0.0F);
+            } else {
+                attention_values_host_[index] = 0.0F;
+            }
         };
         for (int64_t q = 0; q < conditional_total; ++q) {
             for (int64_t k = 0; k < conditional_total; ++k) {
@@ -881,15 +908,24 @@ private:
         for (int64_t q = unconditional_total; q < total_tokens_capacity_; ++q) {
             write_zero(1, q, q);
         }
-        ggml_backend_tensor_set(
-            attention_mask_,
-            attention_values_host_.data(),
-            0,
-            attention_values_host_.size() * sizeof(float));
+        if (perf_mode_ == OmniVoiceGeneratorPerfMode::FlashAttention) {
+            ggml_backend_tensor_set(
+                attention_mask_,
+                attention_values_host_f16_.data(),
+                0,
+                attention_values_host_f16_.size() * sizeof(ggml_fp16_t));
+        } else {
+            ggml_backend_tensor_set(
+                attention_mask_,
+                attention_values_host_.data(),
+                0,
+                attention_values_host_.size() * sizeof(float));
+        }
     }
 
     std::shared_ptr<WeightsRuntime> runtime_;
     size_t graph_arena_bytes_ = 0;
+    OmniVoiceGeneratorPerfMode perf_mode_ = OmniVoiceGeneratorPerfMode::Standard;
     int64_t total_tokens_capacity_ = 0;
     int64_t target_frame_capacity_ = 0;
     std::unique_ptr<ggml_context, GgmlContextDeleter> input_ctx_;
@@ -924,6 +960,7 @@ private:
     std::vector<float> audio_mask_values_host_;
     std::vector<float> text_mask_values_host_;
     std::vector<float> attention_values_host_;
+    std::vector<ggml_fp16_t> attention_values_host_f16_;
     float guidance_scale_host_ = 0.0F;
     float last_guidance_scale_ = std::numeric_limits<float>::quiet_NaN();
     std::vector<float> logits_host_;
@@ -1217,6 +1254,7 @@ struct OmniVoiceGeneratorRuntime::Impl {
     std::shared_ptr<WeightsRuntime> runtime;
     std::unique_ptr<GeneratorForwardGraph> forward_graph;
     bool mem_saver = false;
+    OmniVoiceGeneratorPerfMode perf_mode = OmniVoiceGeneratorPerfMode::Standard;
     OmniVoiceGeneratorRuntimeStats last_stats = {};
     std::mt19937 rng{std::random_device{}()};
 };
@@ -1228,7 +1266,8 @@ OmniVoiceGeneratorRuntime::OmniVoiceGeneratorRuntime(
     size_t decode_graph_arena_bytes,
     size_t weight_context_bytes,
     assets_ns::TensorStorageType weight_storage_type,
-    bool mem_saver)
+    bool mem_saver,
+    OmniVoiceGeneratorPerfMode perf_mode)
     : impl_(std::make_unique<Impl>()) {
     if (assets == nullptr) {
         throw std::runtime_error("OmniVoice generator requires assets");
@@ -1244,6 +1283,7 @@ OmniVoiceGeneratorRuntime::OmniVoiceGeneratorRuntime(
         weight_context_bytes,
         weight_storage_type);
     impl_->mem_saver = mem_saver;
+    impl_->perf_mode = perf_mode;
 }
 
 OmniVoiceGeneratorRuntime::~OmniVoiceGeneratorRuntime() = default;
@@ -1306,7 +1346,8 @@ OmniVoiceGeneratedAudioTokens OmniVoiceGeneratorRuntime::generate(
                     impl_->runtime,
                     impl_->graph_arena_bytes,
                     required_total_tokens,
-                    packed.target_frames);
+                    packed.target_frames,
+                    impl_->perf_mode);
             }
         } else {
             impl_->forward_graph->rebuild(required_total_tokens, packed.target_frames);

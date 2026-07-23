@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 option(AUDIOCPP_DEPLOYMENT_BUILD
-    "Compile model package specs into the runtime for self-contained deployments"
+    "Compile model specs into the runtime for self-contained deployments"
     OFF)
 
 # Package layouts remain editable runtime data in normal builds. The converter always
@@ -32,7 +32,7 @@ foreach(AUDIOCPP_MODEL_SPEC_FILE IN LISTS AUDIOCPP_MODEL_SPEC_FILES)
 endforeach()
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(GENERATE
-    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/model_package_specs.inc"
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/model_specs.inc"
     CONTENT "${AUDIOCPP_BUILTIN_MODEL_SPEC_ENTRIES}")
 file(GENERATE
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/gguf_converter_model_specs.inc"
@@ -140,7 +140,8 @@ add_compile_options(
 
 add_library(engine_runtime STATIC
     src/framework/assets/resource_bundle.cpp
-    src/framework/assets/model_package.cpp
+    src/framework/model_spec/package.cpp
+    src/framework/model_spec/schema.cpp
     src/framework/assets/tensor_source.cpp
     src/framework/assets/torch_bin.cpp
     src/framework/core/module.cpp
@@ -150,6 +151,7 @@ add_library(engine_runtime STATIC
     src/framework/core/host_memory.cpp
     src/framework/runtime/registry.cpp
     src/framework/runtime/model.cpp
+    src/framework/model_spec/metadata.cpp
     src/framework/runtime/session.cpp
     src/framework/runtime/artifacts.cpp
     src/framework/runtime/cache.cpp
@@ -202,6 +204,7 @@ add_library(engine_runtime STATIC
     src/framework/modules/attention/common_relative_attention.cpp
     src/framework/modules/attention/relative_attention.cpp
     src/framework/modules/attention/scaled_dot_product_attention.cpp
+    src/framework/modules/attention/grouped_query_attention.cpp
     src/framework/modules/attention/streaming_frame_attention_cache.cpp
     src/framework/modules/attention/qwen_decoder.cpp
     src/framework/modules/attention/qwen_causal_decoder.cpp
@@ -257,18 +260,26 @@ add_library(engine_runtime STATIC
     src/models/omnivoice/assets.cpp
     src/models/omnivoice/tokenizer_text.cpp
     src/models/omnivoice/audio_tokenizer.cpp
+    src/community_models/outetts/assets.cpp
+    src/community_models/outetts/dac.cpp
+    src/community_models/outetts/llama.cpp
+    src/community_models/outetts/loader.cpp
+    src/community_models/outetts/session.cpp
+    src/community_models/outetts/tokenizer.cpp
     src/models/omnivoice/prompt_builder.cpp
     src/models/omnivoice/generator.cpp
     src/models/omnivoice/postprocess.cpp
     src/models/omnivoice/session.cpp
     src/models/omnivoice/loader.cpp
     src/models/pocket_tts/assets.cpp
+    src/models/pocket_tts/backend_weights.cpp
     src/models/pocket_tts/acoustic_model.cpp
     src/models/pocket_tts/audio_decoder.cpp
     src/models/pocket_tts/flow_lm.cpp
     src/models/pocket_tts/mimi_decoder.cpp
     src/models/pocket_tts/mimi_encoder.cpp
     src/models/pocket_tts/text_conditioner.cpp
+    src/models/pocket_tts/voice_state_assets.cpp
     src/models/pocket_tts/voice_conditioner.cpp
     src/models/pocket_tts/loader.cpp
     src/models/pocket_tts/session.cpp
@@ -341,6 +352,14 @@ add_library(engine_runtime STATIC
     src/models/voxtral_realtime/text_decoder.cpp
     src/models/voxtral_realtime/session.cpp
     src/models/voxtral_realtime/loader.cpp
+    src/models/fish_audio/ar.cpp
+    src/models/fish_audio/assets.cpp
+    src/models/fish_audio/codec.cpp
+    src/models/fish_audio/generator.cpp
+    src/models/fish_audio/loader.cpp
+    src/models/fish_audio/prompt_builder.cpp
+    src/models/fish_audio/session.cpp
+    src/models/fish_audio/tokenizer_text.cpp
     src/models/heartmula/assets.cpp
     src/models/heartmula/codec.cpp
     src/models/heartmula/generator.cpp
@@ -364,6 +383,15 @@ add_library(engine_runtime STATIC
     src/models/higgs_audio_stt/postprocess.cpp
     src/models/higgs_audio_stt/session.cpp
     src/models/higgs_audio_stt/loader.cpp
+    src/models/higgs_audio_tts/ar.cpp
+    src/models/higgs_audio_tts/assets.cpp
+    src/models/higgs_audio_tts/codec.cpp
+    src/models/higgs_audio_tts/codebooks.cpp
+    src/models/higgs_audio_tts/generator.cpp
+    src/models/higgs_audio_tts/loader.cpp
+    src/models/higgs_audio_tts/sampler.cpp
+    src/models/higgs_audio_tts/session.cpp
+    src/models/higgs_audio_tts/tokenizer_text.cpp
     src/models/irodori_tts/assets.cpp
     src/models/irodori_tts/codec.cpp
     src/models/irodori_tts/condition_encoder.cpp
@@ -403,6 +431,15 @@ add_library(engine_runtime STATIC
     src/models/qwen3_tts/prompt_tts_custom_voice.cpp
     src/models/qwen3_tts/session.cpp
     src/models/qwen3_tts/loader.cpp
+    src/community_models/vietneu_tts/assets.cpp
+    src/community_models/vietneu_tts/tokenizer_text.cpp
+    src/community_models/vietneu_tts/tokenizer_speech_encoder.cpp
+    src/community_models/vietneu_tts/tokenizer_speech_decoder.cpp
+    src/community_models/vietneu_tts/speaker_encoder.cpp
+    src/community_models/vietneu_tts/talker.cpp
+    src/community_models/vietneu_tts/prompt_tts_voice_clone.cpp
+    src/community_models/vietneu_tts/session.cpp
+    src/community_models/vietneu_tts/loader.cpp
     src/models/qwen3_asr/assets.cpp
     src/models/qwen3_asr/tokenizer_text.cpp
     src/models/qwen3_asr/frontend_whisper.cpp
@@ -454,7 +491,6 @@ add_library(engine_runtime STATIC
     src/models/qwen3_forced_aligner/session.cpp
     src/models/qwen3_forced_aligner/loader.cpp
     src/models/ace_step/assets.cpp
-    src/models/ace_step/audio_preprocess.cpp
     src/models/ace_step/condition_encoder.cpp
     src/models/ace_step/cover_tokenizer.cpp
     src/models/ace_step/detokenizer.cpp
@@ -552,6 +588,13 @@ target_link_libraries(engine_runtime PUBLIC ggml)
 target_link_libraries(engine_runtime PRIVATE sentencepiece cjson_vendor yaml_vendor)
 if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(engine_runtime PRIVATE OpenMP::OpenMP_CXX)
+    if (MSVC)
+        # MSVC's default /openmp implements only OpenMP 2.0 and rejects the
+        # '#pragma omp simd' directives in longformer_attention.cpp (error C7660).
+        # /openmp:experimental enables the OpenMP 4.0 SIMD support; it overrides the
+        # /openmp added by OpenMP::OpenMP_CXX above (harmless D9025 override notice).
+        target_compile_options(engine_runtime PRIVATE /openmp:experimental)
+    endif()
 endif()
 
 if (ENGINE_ENABLE_CUDA)
@@ -631,6 +674,22 @@ if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(model_perf PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+add_executable(model_spec_demo
+    examples/model_spec_demo/model_spec_demo.cpp
+)
+target_link_libraries(model_spec_demo PRIVATE engine_runtime ggml)
+if (ENGINE_ENABLE_OPENMP)
+    target_link_libraries(model_spec_demo PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+add_executable(model_spec_download_demo
+    examples/model_spec_demo/model_spec_download_demo.cpp
+)
+target_link_libraries(model_spec_download_demo PRIVATE engine_runtime ggml)
+if (ENGINE_ENABLE_OPENMP)
+    target_link_libraries(model_spec_download_demo PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 add_executable(miocodec_wavlm_parity
     tests/miocodec/miocodec_wavlm_parity.cpp
 )
@@ -707,6 +766,7 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(chatterbox_warm_bench tests/chatterbox/chatterbox_warm_bench.cpp)
     add_engine_warmbench(citrinet_asr_warm_bench tests/citrinet_asr/citrinet_asr_warm_bench.cpp)
     add_engine_warmbench(higgs_audio_stt_warm_bench tests/higgs_audio_stt/higgs_audio_stt_warm_bench.cpp)
+    add_engine_warmbench(higgs_audio_tts_warm_bench tests/higgs_audio_tts/higgs_audio_tts_warm_bench.cpp)
     add_engine_warmbench(hviske_asr_warm_bench tests/hviske_asr/hviske_asr_warm_bench.cpp)
     add_engine_warmbench(index_tts2_warm_bench tests/index_tts2/index_tts2_warm_bench.cpp)
     add_engine_warmbench(irodori_tts_warm_bench tests/irodori_tts/irodori_tts_warm_bench.cpp)
@@ -716,6 +776,7 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(moss_tts_local_warm_bench tests/moss_tts_local/moss_tts_local_warm_bench.cpp)
     add_engine_warmbench(nemotron_asr_warm_bench tests/nemotron_asr/nemotron_asr_warm_bench.cpp)
     add_engine_warmbench(omnivoice_warm_bench tests/omnivoice/omnivoice_warm_bench.cpp)
+    add_engine_warmbench(outetts_warm_bench tests/outetts/outetts_warm_bench.cpp)
     add_engine_warmbench(pocket_tts_warm_bench tests/pocket_tts/pocket_tts_warm_bench.cpp)
     add_engine_warmbench(qwen3_asr_warm_bench tests/qwen3_asr/qwen3_asr_warm_bench.cpp)
     add_engine_warmbench(qwen3_forced_aligner_warm_bench tests/qwen3_forced_aligner/qwen3_forced_aligner_warm_bench.cpp)
@@ -783,6 +844,14 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME audio_chunking_test
         COMMAND audio_chunking_test
+    )
+
+    add_engine_unittest(outetts_generation_budget_test tests/unittests/test_outetts_generation_budget.cpp)
+    target_include_directories(outetts_generation_budget_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+
+    add_test(
+        NAME outetts_generation_budget_test
+        COMMAND outetts_generation_budget_test
     )
 
     add_engine_unittest(subtitle_formatter_test tests/unittests/test_subtitle_formatter.cpp)
@@ -856,6 +925,16 @@ if (ENGINE_BUILD_TESTS)
         COMMAND encoder_module_test
     )
 
+    add_engine_unittest(
+        qwen_decoder_packed_projection_test
+        tests/unittests/test_qwen_decoder_packed_projections.cpp
+    )
+
+    add_test(
+        NAME qwen_decoder_packed_projection_test
+        COMMAND qwen_decoder_packed_projection_test
+    )
+
     add_engine_unittest(conv_transpose_fast_path_test tests/unittests/test_conv_transpose_fast_path.cpp)
 
     add_test(
@@ -875,6 +954,16 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME depthwise_conv1d_lowering_test
         COMMAND depthwise_conv1d_lowering_test
+    )
+
+    add_engine_unittest(conv_lowering_matrix_test tests/unittests/test_conv_lowering_matrix.cpp)
+    if (ENGINE_ENABLE_HIP)
+        target_compile_definitions(conv_lowering_matrix_test PRIVATE ENGINE_TEST_ENABLE_HIP=1)
+    endif()
+
+    add_test(
+        NAME conv_lowering_matrix_test
+        COMMAND conv_lowering_matrix_test
     )
 
     add_engine_unittest(gguf_tensor_source_test tests/unittests/test_gguf_tensor_source.cpp)

@@ -24,9 +24,30 @@ enum class QwenDecoderStaticCacheUpdateMode {
     DirectSetRows,
 };
 
+enum class QwenDecoderStaticCacheSetRowsMode {
+    Exact,
+    BackendViewOptimized,
+};
+
 enum class QwenDecoderQKVLayout {
     Separate,
     PackedQKV,
+};
+
+enum class QwenDecoderMLPMode {
+    Exact,
+    FusedSwiGLU,
+    PackedGateUp,
+};
+
+enum class QwenDecoderPrefixAttentionMode {
+    Exact,
+    FlashWithPrefix,
+};
+
+enum class QwenDecoderPositionEncoding {
+    Rotary,
+    None,
 };
 
 struct QwenDecoderActivationCastPolicy {
@@ -38,7 +59,6 @@ struct QwenDecoderActivationCastPolicy {
     bool after_rope = false;
     bool after_static_cache_update = false;
     bool after_attention = false;
-    bool after_context_transpose = false;
     bool after_attention_output = false;
     bool after_residual = false;
     bool after_ffn_norm = false;
@@ -51,17 +71,23 @@ struct QwenDecoderActivationCastPolicy {
 struct QwenDecoderAttentionPolicy {
     QwenDecoderAttentionMode prefill_mode = QwenDecoderAttentionMode::ManualRepeat;
     QwenDecoderAttentionMode static_mode = QwenDecoderAttentionMode::FlashGrouped;
+    QwenDecoderPrefixAttentionMode prefix_mode = QwenDecoderPrefixAttentionMode::Exact;
     int64_t grouped_query_min_steps = 0;
 };
 
 struct QwenDecoderStaticCachePolicy {
     QwenDecoderStaticCacheUpdateMode update_mode = QwenDecoderStaticCacheUpdateMode::ScratchTail;
-    bool transpose_context = false;
+    QwenDecoderStaticCacheSetRowsMode set_rows_mode = QwenDecoderStaticCacheSetRowsMode::Exact;
+};
+
+struct QwenDecoderMLPPolicy {
+    QwenDecoderMLPMode mode = QwenDecoderMLPMode::Exact;
 };
 
 struct QwenDecoderRuntimePolicy {
     QwenDecoderAttentionPolicy attention;
     QwenDecoderStaticCachePolicy static_cache;
+    QwenDecoderMLPPolicy mlp;
 };
 
 struct QwenDecoderLayerConfig {
@@ -73,6 +99,7 @@ struct QwenDecoderLayerConfig {
     float rms_norm_eps = 1e-5f;
     float rope_theta = 10000.0f;
     int rope_type = GGML_ROPE_TYPE_NEOX;
+    QwenDecoderPositionEncoding position_encoding = QwenDecoderPositionEncoding::Rotary;
     ggml_prec attention_precision = GGML_PREC_F32;
     ggml_prec projection_precision = GGML_PREC_DEFAULT;
     QwenDecoderQKVLayout qkv_layout = QwenDecoderQKVLayout::Separate;
@@ -84,6 +111,7 @@ struct QwenDecoderLayerConfig {
 struct QwenMLPWeights {
     LinearWeights gate_proj;
     LinearWeights up_proj;
+    std::optional<LinearWeights> gate_up_proj;
     LinearWeights down_proj;
 };
 
@@ -148,6 +176,7 @@ struct QwenDecoderStackConfig {
     float rms_norm_eps = 1e-5f;
     float rope_theta = 10000.0f;
     int rope_type = GGML_ROPE_TYPE_NEOX;
+    QwenDecoderPositionEncoding position_encoding = QwenDecoderPositionEncoding::Rotary;
     ggml_prec attention_precision = GGML_PREC_F32;
     ggml_prec projection_precision = GGML_PREC_DEFAULT;
     QwenDecoderQKVLayout qkv_layout = QwenDecoderQKVLayout::Separate;

@@ -1,6 +1,24 @@
 # TTS Models
 
-This page covers speech TTS-style families that do not have a dedicated model page. Qwen3, VeVo2, Seed-VC, ACE-Step, and Stable Audio have dedicated pages.
+| Model | Family | Task(s) | Quick Start |
+|---|---|---|---|
+| Qwen3 TTS | `qwen3_tts` | `tts`, `vdes` | [Qwen3 TTS](#qwen3-tts) |
+| Chatterbox | `chatterbox` | `clon`, `vc` | [Chatterbox](#chatterbox) |
+| MioTTS | `miotts` | `tts` | [MioTTS](#miotts) |
+| MOSS-TTS-Local | `moss_tts_local` | `tts`, `clon` | [MOSS-TTS-Local](#moss-tts-local) |
+| MOSS-TTS-Nano | `moss_tts_nano` | `tts`, `clon` | [MOSS-TTS-Nano](#moss-tts-nano) |
+| OmniVoice | `omnivoice` | `tts` | [OmniVoice](#omnivoice), [full guide](models/omnivoice.md) |
+| PocketTTS | `pocket_tts` | `tts` | [PocketTTS](#pockettts) |
+| VoxCPM2 | `voxcpm2` | `tts`, `vdes` | [VoxCPM2](#voxcpm2) |
+| Higgs Audio v3 TTS | `higgs_audio_tts` | `tts` | [Higgs Audio v3 TTS](#higgs-audio-v3-tts) |
+| Fish Audio S2 Pro | `fish_audio` | `tts` | [Fish Audio S2 Pro](#fish-audio-s2-pro) |
+| IndexTTS2 | `index_tts2` | `tts` | [IndexTTS2](#indextts2) |
+| Irodori-TTS | `irodori_tts` | `tts`, `vdes` | [Irodori-TTS](#irodori-tts) |
+| OuteTTS | `outetts` | `tts`, `clon` | [OuteTTS](#outetts) |
+| Supertonic | `supertonic` | `tts` | [Supertonic](#supertonic) |
+| VibeVoice | `vibevoice` | `tts` | [VibeVoice](#vibevoice) |
+
+This page covers speech TTS-style families. Detailed route manuals live under `docs/models/` or `docs/community_models/` when a model needs more space.
 
 Common CLI shape:
 
@@ -19,6 +37,14 @@ Common options:
 | `--language` | Model language code when the model requires one. |
 | `--text-chunk-size` | Long-form chunk budget in characters. Each model has its own default. |
 | `--seed` | Optional fixed seed. If omitted, models that sample use a random seed unless their upstream default is fixed. |
+
+## Qwen3 TTS
+
+Qwen3 TTS supports reference voice cloning, voice design, and packaged custom voices. See [Qwen3 models](models/qwen3.md) for the full Base, VoiceDesign, CustomVoice, ASR, and forced-alignment manual.
+
+```bash
+audiocpp_cli --task tts --family qwen3_tts --model models/Qwen3-TTS-12Hz-1.7B-Base --backend cuda --text "Hello from Qwen3 TTS." --voice-ref assets/resources/b.wav --out out.wav
+```
 
 ## Chatterbox
 
@@ -59,30 +85,6 @@ audiocpp_cli --task vc --family chatterbox --model models/chatterbox --backend c
 | `--max-tokens` | integer | `1000` | Maximum generated T3 tokens per chunk. |
 | `--do-sample` | `true`, `false` | `true` | Enable stochastic T3 sampling. |
 
-## Kokoro
-
-Kokoro is a small preset-voice TTS model. Upstream Kokoro supports packaged voice tensors; audio.cpp exposes the packaged voices by id through `--voice-id`.
-
-| Field | Value |
-|---|---|
-| Family | `kokoro_tts` |
-| Model directory | `models/kokoro-82m-v1_0-ggml` |
-| Task | `tts` |
-| Modes | `offline` |
-| Languages | `a` for American English, `b` for British English |
-| Voice input | Built-in voice id |
-| External voice tensor | Not exposed by the CLI |
-
-```bash
-audiocpp_cli --task tts --family kokoro_tts --model models/kokoro-82m-v1_0-ggml --backend cuda --language a --text "Hello from Kokoro." --voice-id af_heart --out out.wav
-```
-
-| Option | Values | Default | Meaning |
-|---|---|---:|---|
-| `--voice-id` | packaged Kokoro voice id | required | Built-in voice tensor name. |
-| `--language` | `a`, `b` | `a` | Kokoro language/accent code. |
-| `--text-chunk-size` | integer chars | `240` | Long-form chunk size. |
-
 ## MioTTS
 
 MioTTS is a 1.7B voice-clone TTS path that uses MioCodec for acoustic decoding. It requires a reference voice.
@@ -115,7 +117,7 @@ audiocpp_cli --task tts --family miotts --model models/MioTTS-1.7B --backend cud
 
 ## MOSS-TTS-Local
 
-MOSS-TTS-Local is the larger local-transformer MOSS TTS path. It supports text-only speech and optional zero-shot voice cloning through the framework speaker-reference interface.
+MOSS-TTS-Local is the larger local-transformer MOSS TTS path. It supports text-only speech and optional zero-shot voice cloning through the framework speaker-reference interface. See [MOSS-TTS](models/moss_tts.md) for tokenizer layout, sampling options, cache options, and Nano details.
 
 | Field | Value |
 |---|---|
@@ -140,28 +142,9 @@ Voice clone:
 audiocpp_cli --task clon --family moss_tts_local --model /path/to/MOSS-TTS-Local-Transformer-v1.5 --backend cuda --text "Hello from MOSS-TTS-Local." --voice-ref /path/to/reference.wav --reference-text "Reference transcript when available." --out out.wav
 ```
 
-| Option | Values | Default | Meaning |
-|---|---|---:|---|
-| `--voice-ref` | WAV path | not set | Reference speaker audio for cloning. |
-| `--reference-text` | text | empty string | Transcript for reference audio. |
-| `--language` | language hint | auto | Optional language hint for the prompt template. |
-| `--max-tokens` | integer | `4096` | Maximum generated audio frames. |
-| `--do-sample` | `true`, `false` | `true` | Enable stochastic audio-token sampling. |
-| `--temperature` | float | `1.7` | Audio-token sampling temperature. |
-| `--top-p` | float | `0.8` | Audio-token nucleus sampling limit. |
-| `--top-k` | integer | `25` | Audio-token top-k sampling limit. |
-| `--repetition-penalty` | float | `1.0` | Audio-token repetition penalty. |
-| `--request-option text_temperature=<float>` | float | `1.0` | Text-gate sampling temperature. |
-| `--request-option text_top_p=<float>` | float | `1.0` | Text-gate nucleus sampling limit. |
-| `--request-option text_top_k=<n>` | integer | `50` | Text-gate top-k sampling limit. |
-| `--text-chunk-size` | characters | `2048` | Framework long-form text chunk size. |
-| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework long-form text chunking mode. |
-| `--session-option moss_tts_local.weight_type=auto|native|f32|f16|bf16|q8_0` | enum | `auto` | Backbone weight storage type. |
-| `--session-option moss_tts_local.reference_cache_slots=<n>` | integer slots | `1` | Prepared reference-voice cache slots; set `0` to disable reuse. |
-
 ## MOSS-TTS-Nano
 
-MOSS-TTS-Nano is the smaller MOSS TTS path. It supports text-only continuation generation and voice cloning through the framework speaker-reference interface.
+MOSS-TTS-Nano is the smaller MOSS TTS path. It supports text-only continuation generation and voice cloning through the framework speaker-reference interface. See [MOSS-TTS](models/moss_tts.md) for tokenizer layout, sampling options, cache options, and Local details.
 
 | Field | Value |
 |---|---|
@@ -186,43 +169,16 @@ Voice clone:
 audiocpp_cli --task clon --family moss_tts_nano --model /path/to/MOSS-TTS-Nano-100M --backend cuda --text "Hello from MOSS-TTS-Nano." --voice-ref /path/to/reference.wav --reference-text "Reference transcript when available." --out out.wav
 ```
 
-| Option | Values | Default | Meaning |
-|---|---|---:|---|
-| `--voice-ref` | WAV path | not set | Reference speaker audio for cloning. When omitted, Nano uses text-only continuation mode. |
-| `--reference-text` | text | empty string | Transcript for reference audio; valid only with `--voice-ref`. |
-| `--max-tokens` | integer | `300` | Maximum generated audio frames per chunk. |
-| `--do-sample` | `true`, `false` | `true` | Enable stochastic audio-token sampling. |
-| `--temperature` | float | `1.7` | Audio-token sampling temperature. |
-| `--top-p` | float | `0.8` | Audio-token nucleus sampling limit. |
-| `--top-k` | integer | `25` | Audio-token top-k sampling limit. |
-| `--repetition-penalty` | float | `1.0` | Audio-token repetition penalty. |
-| `--request-option text_temperature=<float>` | float | `1.5` | Text-gate sampling temperature. |
-| `--request-option text_top_p=<float>` | float | `1.0` | Text-gate nucleus sampling limit. |
-| `--request-option text_top_k=<n>` | integer | `50` | Text-gate top-k sampling limit. |
-| `--text-chunk-size` | characters | `256` | Framework long-form text chunk size. |
-| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework long-form text chunking mode. |
-| `--session-option moss_tts_nano.weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Global and local-frame weight storage type. |
-| `--session-option moss_tts_nano.global_weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Global transformer weight storage type. |
-| `--session-option moss_tts_nano.local_frame_weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Local frame decoder weight storage type. |
-| `--session-option moss_tts_nano.global_prefill_graph_arena_mb=<n>` | MB | `256` | Global prefill graph arena size. |
-| `--session-option moss_tts_nano.global_decode_graph_arena_mb=<n>` | MB | `128` | Global decode graph arena size. |
-| `--session-option moss_tts_nano.global_weight_context_mb=<n>` | MB | `512` | Global transformer weight context size. |
-| `--session-option moss_tts_nano.local_frame_graph_arena_mb=<n>` | MB | `64` | Local frame decoder graph arena size. |
-| `--session-option moss_tts_nano.local_frame_weight_context_mb=<n>` | MB | `128` | Local frame decoder weight context size. |
-| `--session-option moss_tts_nano.audio_tokenizer_encoder_graph_arena_mb=<n>` | MB | `64` | Audio tokenizer encoder graph arena size. |
-| `--session-option moss_tts_nano.audio_tokenizer_decoder_graph_arena_mb=<n>` | MB | `64` | Audio tokenizer decoder graph arena size. |
-| `--session-option moss_tts_nano.audio_tokenizer_weight_context_mb=<n>` | MB | `128` | Audio tokenizer weight context size. |
-
 ## OmniVoice
 
-OmniVoice supports multilingual TTS, voice cloning, voice design, and non-verbal tag tokens. The integration exposes both reference-audio cloning and instruction-based voice design.
+OmniVoice supports multilingual TTS, voice cloning, voice design, non-verbal tag tokens, long-form chunking, and chunked pseudo-streaming. See [OmniVoice](models/omnivoice.md) for the full guide.
 
 | Field | Value |
 |---|---|
 | Family | `omnivoice` |
 | Model directory | `models/OmniVoice` |
 | Task | `tts` |
-| Modes | `offline` |
+| Modes | `offline`, `streaming` |
 | Languages | 600+ languages handled by the model |
 | Voice input | `--voice-ref` plus optional `--reference-text`, or instruction text through `--instruct` |
 | Built-in voices | Auto voice is supported by the model; CLI examples use clone or design for repeatability |
@@ -239,23 +195,13 @@ Voice design:
 audiocpp_cli --task tts --family omnivoice --model models/OmniVoice --backend cuda --text "Hello from OmniVoice." --instruct "female, young adult, moderate pitch" --out out.wav
 ```
 
-Non-verbal tags are written directly in `--text`. Supported tag spellings include `[laughter]`, `[sigh]`, `[confirmation-en]`, `[question-en]`, `[question-ah]`, `[question-oh]`, `[question-ei]`, `[question-yi]`, `[surprise-ah]`, `[surprise-oh]`, `[surprise-wa]`, `[surprise-yo]`, and `[dissatisfaction-hnn]`.
+Streaming voice clone:
 
-| Option | Values | Default | Meaning |
-|---|---|---:|---|
-| `--voice-ref` | WAV path | not set | Reference speaker audio for cloning. |
-| `--reference-text` | text | empty string | Transcript for reference audio. |
-| `--instruct` | text | empty string | Voice-design instruction. |
-| `--text-chunk-size` | integer chars | disabled | Optional framework text chunking. |
-| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `tag_aware` | Framework text chunking mode used only when `--text-chunk-size` is set. |
-| `--num-inference-steps` | integer | `32` | Decoder diffusion steps. |
-| `--guidance-scale` | float | `2.0` | Decoder CFG strength. |
-| `--request-option speed=<float>` | float | `1.0` | Speech speed multiplier. |
-| `--request-option audio_chunk_duration_seconds=<float>` | seconds | `15.0` | Audio chunk duration used by the model prompt path. |
-| `--request-option audio_chunk_threshold_seconds=<float>` | seconds | `30.0` | Audio length threshold before model-side chunking. |
-| `--session-option omnivoice.mem_saver=true|false` | bool | `false` | Release staged generator and audio-tokenizer runtime graphs after request phases to reduce resident VRAM. Later requests may rebuild released graphs. |
+```bash
+audiocpp_cli --task tts --mode streaming --family omnivoice --model models/OmniVoice --backend cuda --text "Hello from OmniVoice." --voice-ref assets/resources/b.wav --reference-text "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you." --text-chunk-size 160 --out stream.wav --out-dir stream_chunks
+```
 
-When `--text-chunk-size` is not set, long OmniVoice requests keep the model-specific automatic punctuation chunker controlled by `audio_chunk_duration_seconds` and `audio_chunk_threshold_seconds`.
+OmniVoice streaming is pseudo streaming: audio.cpp emits audio chunk events from text chunks and returns a merged final WAV. Upstream Python does not expose model-native streaming. For server SSE examples, options, and tag controls, see [OmniVoice](models/omnivoice.md).
 
 ## PocketTTS
 
@@ -349,8 +295,8 @@ Higgs Audio v3 TTS is a voice-clone TTS model. The current integration uses the 
 
 | Field | Value |
 |---|---|
-| Family | `higgs_tts` |
-| Model directory | `models/higgs-audio-v3-tts-4b` |
+| Family | `higgs_audio_tts` |
+| Model path | `models/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf` when installed through the model manager |
 | Task | `tts` |
 | Modes | `offline` |
 | Languages | Model auto-handles supported languages |
@@ -358,19 +304,73 @@ Higgs Audio v3 TTS is a voice-clone TTS model. The current integration uses the 
 | Built-in voices | Not exposed |
 
 ```bash
-audiocpp_cli --task tts --family higgs_tts --model models/higgs-audio-v3-tts-4b --backend cuda --text "Hello from Higgs Audio." --voice-ref assets/resources/b.wav --reference-text "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you." --out out.wav
+audiocpp_cli --task tts --family higgs_audio_tts --model models/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf --backend cuda --text "Hello from Higgs Audio." --voice-ref assets/resources/b.wav --reference-text "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you." --out out.wav
+```
+
+The model manager installs the Q8_0 standalone GGUF package by default:
+
+```bash
+python3 tools/model_manager.py install --models-root models higgs_audio_v3_tts_4b
 ```
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--voice-ref` | WAV path | required | Reference speaker audio. |
 | `--reference-text` | text | empty string | Transcript for reference audio. |
-| `--text-chunk-size` | integer chars | `512` | Long-form chunk size. |
-| `--max-tokens` | integer | `1024` | Maximum generated AR tokens per chunk. |
+| `--text-chunk-size` | integer chars | `1024` | Long-form chunk size. |
+| `--max-tokens` | integer | `2048` | Maximum generated AR tokens per chunk. |
 | `--temperature` | float | `0.8` | AR sampling temperature. |
-| `--top-k` | integer | `30` | AR top-k sampling limit. |
-| `--top-p` | float | `0.8` | AR nucleus sampling limit. |
-| `--repetition-penalty` | float | `1.1` | AR repetition penalty. |
+| `--top-k` | integer | `30` | AR top-k sampling limit. The narrower default is less prone to premature EOC than the Python client's `50`. |
+| `--top-p` | float | `0.8` | AR nucleus sampling limit. The Python client's unfiltered equivalent is `1.0`. |
+| `--repetition-penalty` | float | `1.1` | Accepted for Python API compatibility; Higgs audio-code sampling does not consume it. |
+
+## Fish Audio S2 Pro
+
+Fish Audio S2 Pro is a TTS and reference voice-clone model. The integration uses the framework text chunker for long-form input, caches prepared reference audio in the session, and supports GGUF loading through the package spec path.
+
+| Field | Value |
+|---|---|
+| Family | `fish_audio` |
+| Model path | `models/Fish-Audio-S2-Pro-GGUF/fish-audio-s2-pro-q8_0.gguf` when installed through the model manager |
+| Task | `tts` |
+| Modes | `offline` |
+| Languages | Model auto-handles language; tested paths cover English and Chinese-style prompts |
+| Voice input | Optional reference WAV through `--voice-ref`; transcript through `--reference-text` when known |
+| Built-in voices | Not exposed |
+
+Text-to-speech:
+
+```bash
+audiocpp_cli --task tts --family fish_audio --model models/Fish-Audio-S2-Pro-GGUF/fish-audio-s2-pro-q8_0.gguf --backend cuda --text "Hello from Fish Audio." --out out.wav
+```
+
+Reference voice clone:
+
+```bash
+audiocpp_cli --task tts --family fish_audio --model models/Fish-Audio-S2-Pro-GGUF/fish-audio-s2-pro-q8_0.gguf --backend cuda --text "The final render is ready for review." --voice-ref assets/resources/b.wav --reference-text "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you." --out out.wav
+```
+
+The model manager installs the Q8_0 standalone GGUF package by default:
+
+```bash
+python3 tools/model_manager.py install --models-root models fish_audio_s2_pro
+```
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `--voice-ref` | WAV path | not set | Reference speaker audio for voice cloning. |
+| `--reference-text` | text | empty string | Transcript for reference audio. |
+| `--max-new-tokens` | integer | `1024` | Maximum generated semantic tokens per chunk. `0` uses the default. |
+| `--text-chunk-size` | integer chars | `200` | Long-form chunk size. |
+| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework text chunking mode. |
+| `--temperature` | float | `0.8` | Sampling temperature. |
+| `--top-k` | integer | `30` | Top-k sampling limit. |
+| `--top-p` | float | `0.8` | Nucleus sampling limit. |
+| `--seed` | integer | random when omitted | Sampling seed for reproducible output. |
+| `--session-option fish_audio.mem_saver=true|false` | bool | `false` | Release cached AR runtime graphs after each request. |
+| `--session-option fish_audio.reference_cache_slots=<n>` | integer | `1` | Prepared reference-audio cache slots. |
+| `--session-option fish_audio.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | AR matmul weight storage type. |
+| `--session-option fish_audio.codec_weight_type=<type>` | `native`, `f32`, `f16`, `q8_0` | `native` | Codec conv/matmul weight storage type. |
 
 ## IndexTTS2
 
@@ -491,6 +491,38 @@ audiocpp_cli --task clon --family irodori_tts --model /path/to/Irodori-TTS-500M-
 | `--session-option irodori_tts.condition_weight_context_mb=<n>` | MB | `512` | Condition encoder weight context size. |
 | `--session-option irodori_tts.rf_weight_context_mb=<n>` | MB | `768` | RF sampler weight context size. |
 | `--session-option irodori_tts.codec_weight_context_mb=<n>` | MB | `512` | DACVAE codec weight context size. |
+
+## OuteTTS
+
+OuteTTS 1.0 1B is a community model for 24 kHz TTS and voice cloning. Install both the language model and DAC dependency:
+
+```bash
+python tools/model_manager.py install outetts_1_0_1b --models-dir models
+```
+
+Quick start:
+
+```bash
+audiocpp_cli --task tts --family outetts \
+  --model models/Llama-OuteTTS-1.0-1B \
+  --backend cuda --text "Hello from OuteTTS." \
+  --max-tokens 1024 --out out.wav
+```
+
+Voice clone quick start:
+
+```bash
+audiocpp_cli --task clon --family outetts \
+  --model models/Llama-OuteTTS-1.0-1B \
+  --backend cuda \
+  --voice-ref reference.wav \
+  --reference-text "The exact words spoken in reference.wav." \
+  --request-option reference_language=en \
+  --text "This sentence uses the cloned voice." \
+  --max-tokens 1024 --out cloned.wav
+```
+
+See [OuteTTS community model usage](community_models/outetts.md) for cloning notes, GGUF packing, all options, and validation details.
 
 ## Supertonic
 

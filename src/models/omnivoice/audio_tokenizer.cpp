@@ -735,7 +735,7 @@ FlatConv1dWeights load_flat_conv1d(
         {out_channels, in_channels, kernel_size},
         core::TensorShape::from_dims({out_channels, in_channels * kernel_size}));
     if (use_bias) {
-        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::Native, {out_channels});
+        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::F32, {out_channels});
     }
     return weights;
 }
@@ -759,7 +759,7 @@ FlatConv1dWeights load_conv1d(
         storage_type,
         {out_channels, in_channels, kernel_size});
     if (use_bias) {
-        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::Native, {out_channels});
+        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::F32, {out_channels});
     }
     return weights;
 }
@@ -784,7 +784,7 @@ FlatConvTranspose1dWeights load_flat_conv_transpose1d(
         {in_channels, out_channels, kernel_size},
         core::TensorShape::from_dims({in_channels, out_channels * kernel_size}));
     if (use_bias) {
-        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::Native, {out_channels});
+        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::F32, {out_channels});
     }
     return weights;
 }
@@ -814,7 +814,7 @@ modules::LinearWeights load_linear(
     modules::LinearWeights weights = {};
     weights.weight = store.load_tensor(source, prefix + ".weight", storage_type, {out_features, in_features});
     if (use_bias) {
-        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::Native, {out_features});
+        weights.bias = store.load_tensor(source, prefix + ".bias", assets_ns::TensorStorageType::F32, {out_features});
     }
     return weights;
 }
@@ -838,13 +838,13 @@ modules::AttentionWeights load_attention(
     assets_ns::TensorStorageType storage_type) {
     modules::AttentionWeights weights = {};
     weights.q_weight = store.load_tensor(source, prefix + ".q_proj.weight", storage_type, {hidden_size, hidden_size});
-    weights.q_bias = store.load_tensor(source, prefix + ".q_proj.bias", assets_ns::TensorStorageType::Native, {hidden_size});
+    weights.q_bias = store.load_tensor(source, prefix + ".q_proj.bias", assets_ns::TensorStorageType::F32, {hidden_size});
     weights.k_weight = store.load_tensor(source, prefix + ".k_proj.weight", storage_type, {hidden_size, hidden_size});
-    weights.k_bias = store.load_tensor(source, prefix + ".k_proj.bias", assets_ns::TensorStorageType::Native, {hidden_size});
+    weights.k_bias = store.load_tensor(source, prefix + ".k_proj.bias", assets_ns::TensorStorageType::F32, {hidden_size});
     weights.v_weight = store.load_tensor(source, prefix + ".v_proj.weight", storage_type, {hidden_size, hidden_size});
-    weights.v_bias = store.load_tensor(source, prefix + ".v_proj.bias", assets_ns::TensorStorageType::Native, {hidden_size});
+    weights.v_bias = store.load_tensor(source, prefix + ".v_proj.bias", assets_ns::TensorStorageType::F32, {hidden_size});
     weights.out_weight = store.load_tensor(source, prefix + ".out_proj.weight", storage_type, {hidden_size, hidden_size});
-    weights.out_bias = store.load_tensor(source, prefix + ".out_proj.bias", assets_ns::TensorStorageType::Native, {hidden_size});
+    weights.out_bias = store.load_tensor(source, prefix + ".out_proj.bias", assets_ns::TensorStorageType::F32, {hidden_size});
     return weights;
 }
 
@@ -959,9 +959,9 @@ modules::FeedForwardWeights load_feed_forward(
     assets_ns::TensorStorageType storage_type) {
     return {
         store.load_tensor(source, prefix + ".intermediate_dense.weight", storage_type, {intermediate_size, hidden_size}),
-        store.load_tensor(source, prefix + ".intermediate_dense.bias", assets_ns::TensorStorageType::Native, {intermediate_size}),
+        store.load_tensor(source, prefix + ".intermediate_dense.bias", assets_ns::TensorStorageType::F32, {intermediate_size}),
         store.load_tensor(source, prefix + ".output_dense.weight", storage_type, {hidden_size, intermediate_size}),
-        store.load_tensor(source, prefix + ".output_dense.bias", assets_ns::TensorStorageType::Native, {hidden_size}),
+        store.load_tensor(source, prefix + ".output_dense.bias", assets_ns::TensorStorageType::F32, {hidden_size}),
     };
 }
 
@@ -1027,7 +1027,7 @@ std::shared_ptr<const AudioTokenizerWeights> load_weights(
         "semantic_model.feature_projection.projection",
         semantic.hidden_size,
         semantic.conv_dim.back(),
-        storage_type,
+        assets_ns::TensorStorageType::F32,
         true);
 
     if (semantic.do_stable_layer_norm) {
@@ -1247,7 +1247,7 @@ std::shared_ptr<const AudioTokenizerWeights> load_weights(
         quantizer.score = {
             weights->store->make_from_f32(
                 core::TensorShape::from_dims({config.codebook_size, config.codebook_dim}),
-                storage_type,
+                assets_ns::TensorStorageType::F32,
                 score_weight),
             weights->store->make_from_f32(
                 core::TensorShape::from_dims({config.codebook_size}),
@@ -1257,7 +1257,7 @@ std::shared_ptr<const AudioTokenizerWeights> load_weights(
         quantizer.codebook = weights->store->load_tensor(
             source,
             prefix + ".codebook.embed",
-            storage_type,
+            assets_ns::TensorStorageType::F32,
             {config.codebook_size, config.codebook_dim});
         quantizer.project_out = load_linear(
             *weights->store,
@@ -1276,7 +1276,7 @@ std::shared_ptr<const AudioTokenizerWeights> load_weights(
         "fc2",
         acoustic.hidden_size,
         config.hidden_size,
-        storage_type,
+        assets_ns::TensorStorageType::F32,
         true);
 
     weights->acoustic_decoder.conv1 = load_flat_conv1d(

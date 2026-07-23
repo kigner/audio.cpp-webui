@@ -1,6 +1,12 @@
 # Speech Analysis
 
-This page covers VAD and diarization models that do not have a dedicated page. ASR models are documented in [asr.md](asr.md). Qwen3 ASR is documented in [qwen3.md](qwen3.md).
+| Model | Family | Task | Quick Start |
+|---|---|---|---|
+| Silero VAD | `silero_vad` | `vad` | [Silero VAD](#silero-vad) |
+| MarbleNet VAD | `marblenet_vad` | `vad` | [MarbleNet VAD](#marblenet-vad) |
+| Sortformer Diarization | `sortformer_diar` | `diar` | [Sortformer Diarization](#sortformer-diarization) |
+
+This page covers VAD and diarization models. ASR models are documented in [ASR models](asr.md).
 
 Common CLI shape:
 
@@ -74,14 +80,14 @@ MarbleNet VAD is an offline speech activity detector.
 | Field | Value |
 |---|---|
 | Family | `marblenet_vad` |
-| Model directory | `models/marblenet_vad` |
+| Model directory | `assets/framework/models/marblenet_vad` |
 | Task | `vad` |
 | Modes | `offline` |
 | Output | Speech segment JSON through `--segments-out` |
 | Streaming | Not exposed |
 
 ```bash
-audiocpp_cli --task vad --family marblenet_vad --model models/marblenet_vad --backend cuda --audio speech_16k.wav --segments-out segments.json
+audiocpp_cli --task vad --family marblenet_vad --model assets/framework/models/marblenet_vad --backend cuda --audio speech_16k.wav --segments-out segments.json
 ```
 
 | Option | Values | Default | Meaning |

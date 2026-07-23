@@ -23,6 +23,11 @@ struct OmniVoiceGeneratorRuntimeStats {
     double readback_ms = 0.0;
 };
 
+enum class OmniVoiceGeneratorPerfMode {
+    Standard,
+    FlashAttention,
+};
+
 class OmniVoiceGeneratorRuntime {
 public:
     OmniVoiceGeneratorRuntime(
@@ -32,7 +37,8 @@ public:
         size_t decode_graph_arena_bytes,
         size_t weight_context_bytes,
         engine::assets::TensorStorageType weight_storage_type,
-        bool mem_saver);
+        bool mem_saver,
+        OmniVoiceGeneratorPerfMode perf_mode);
     ~OmniVoiceGeneratorRuntime();
 
     OmniVoiceGeneratedAudioTokens generate(

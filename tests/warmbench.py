@@ -460,21 +460,21 @@ FAMILY_CONFIG: dict[str, dict[str, Any]] = {
         "log_mel_cosine_min": 0.90,
         "cpp_session_options": ["heartmula.weight_type=f32"],
     },
-    "higgs_tts": {
-        "kind": "higgs_tts",
+    "higgs_audio_tts": {
+        "kind": "higgs_audio_tts",
         "modes": ["offline"],
-        "cpp_bin": "build/debug/bin/higgs_tts_warm_bench",
-        "python_script": "tests/higgs_tts/higgs_tts_python_warm_bench.py",
+        "cpp_bin": "build/debug/bin/higgs_audio_tts_warm_bench",
+        "python_script": "tests/higgs_audio_tts/higgs_audio_tts_python_warm_bench.py",
         "python_conda_env": "qwen3-tts",
         "model": "models/higgs-audio-v3-tts-4b",
-        "case_catalog": "tests/higgs_tts/higgs_tts_warm_bench_cases.json",
+        "case_catalog": "tests/higgs_audio_tts/higgs_audio_tts_warm_bench_cases.json",
         "default_case_name": "default",
         "default_requests_per_session": 1,
         "default_warmup": 0,
         "wav_cosine_min": 0.90,
         "log_mel_cosine_min": 0.90,
         "length_ratio_min": 0.98,
-        "cpp_session_options": ["higgs_tts.codec_weight_type=f32"],
+        "cpp_session_options": ["higgs_audio_tts.codec_weight_type=f32"],
     },
     "index_tts2": {
         "kind": "index_tts2",
@@ -4215,7 +4215,7 @@ def build_heartmula_commands(
     return python_command, cpp_command
 
 
-def build_higgs_tts_commands(
+def build_higgs_audio_tts_commands(
     config: dict[str, Any],
     backend: str,
     args: argparse.Namespace,
@@ -4370,7 +4370,7 @@ def validate_sequence_result(summary: dict[str, Any], request_count: int, kind: 
             and len(step.get("stems", [])) > 0
             and isinstance(step.get("metrics", {}), dict)
             for step in steps)
-    elif kind in {"vevo2", "seed_vc", "miocodec", "voxcpm2", "supertonic", "vibevoice", "irodori_tts", "heartmula", "higgs_tts", "index_tts2"}:
+    elif kind in {"vevo2", "seed_vc", "miocodec", "voxcpm2", "supertonic", "vibevoice", "irodori_tts", "heartmula", "higgs_audio_tts", "index_tts2"}:
         payload_valid = all(
             isinstance(step.get("stems", []), list)
             and len(step.get("stems", [])) > 0
@@ -4514,10 +4514,10 @@ def run_scenario(
         irodori_requests, request_manifest = resolve_vevo2_case(config, args)
         args.requests_per_session = len(irodori_requests)
         python_command, cpp_command = build_irodori_tts_commands(scenario_config, backend, args, scenario_dir, irodori_requests)
-    elif scenario_config["kind"] == "higgs_tts":
+    elif scenario_config["kind"] == "higgs_audio_tts":
         higgs_requests, request_manifest = resolve_vevo2_case(config, args)
         args.requests_per_session = len(higgs_requests)
-        python_command, cpp_command = build_higgs_tts_commands(scenario_config, backend, args, scenario_dir, higgs_requests)
+        python_command, cpp_command = build_higgs_audio_tts_commands(scenario_config, backend, args, scenario_dir, higgs_requests)
     elif scenario_config["kind"] == "index_tts2":
         index_tts2_requests, request_manifest = resolve_vevo2_case(config, args)
         args.requests_per_session = len(index_tts2_requests)
@@ -4865,7 +4865,7 @@ def run_scenario(
             cpp_step_path = cpp_step_paths[request_index] if request_index < len(cpp_step_paths) else ""
             append_log(master_log, f"PYTHON OUTPUT family={family} mode={mode} backend={backend} request={request_index} path={python_step_path} valid={int(file_is_nonempty(python_step_path))}")
             append_log(master_log, f"CPP OUTPUT family={family} mode={mode} backend={backend} request={request_index} path={cpp_step_path} valid={int(file_is_nonempty(cpp_step_path))}")
-    elif scenario_config["kind"] in {"vevo2", "seed_vc", "miocodec", "voxcpm2", "supertonic", "vibevoice", "irodori_tts", "heartmula", "higgs_tts", "index_tts2"}:
+    elif scenario_config["kind"] in {"vevo2", "seed_vc", "miocodec", "voxcpm2", "supertonic", "vibevoice", "irodori_tts", "heartmula", "higgs_audio_tts", "index_tts2"}:
         python_valid = validate_sequence_result(python_summary, args.requests_per_session, scenario_config["kind"])
         cpp_valid = validate_sequence_result(cpp_summary, args.requests_per_session, scenario_config["kind"])
         python_step_paths = write_sequence_step_artifacts(python_summary.get("sequence_steps", []), scenario_dir / "python_json", "python")

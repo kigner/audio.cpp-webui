@@ -38,6 +38,71 @@ the same command-line option and a `model_spec_override` field either at the top
 or inside an individual model entry. A per-model field takes precedence over the
 server-wide value.
 
+## Support And Test Status
+
+Status labels:
+
+| Label | Meaning |
+|---|---|
+| `Done` | Package-spec refactor is in place for this family. |
+| `No` | Package-spec refactor is not done, or the tested format is not usable. |
+| `Skip (...)` | Package-spec refactor is intentionally skipped. |
+| `Pass` | Covered by the path-test matrix with acceptable output. |
+| `Pass (TTS + clone)` | Both no-reference TTS and reference-audio voice cloning run successfully. |
+| `Pass (drift)` | Loads and runs, with known acceptable output drift. |
+| `Pass (ASR match, drift)` | TTS output has similarity/frame drift but ASR transcript remains usable. |
+| `No (...)` | Known unsupported, failing, or too much output drift. |
+| `---` | Not tested in the current GGUF path-test matrix. |
+
+| Family | Package-spec refactor | Safetensors tested after refactor | `orig` GGUF tested | 16-bit GGUF tested | `q8_0` GGUF tested |
+|---|---|---|---|---|---|
+| `ace_step` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `chatterbox` | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
+| `citrinet_asr` | Done | Pass | --- | --- | Pass |
+| `fish_audio` | Done | Pass | --- | Pass | Pass |
+| `heartmula` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `higgs_audio_stt` | Done | Pass | --- | Pass | Pass |
+| `higgs_audio_tts` | Done | Pass | --- | Pass | Pass |
+| `htdemucs` | Done | Pass | --- | Pass | Pass (drift) |
+| `hviske_asr` | Done | Pass | --- | --- | Pass |
+| `index_tts2` | Done | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
+| `irodori_tts` | Done | Pass | --- | Pass | Pass (drift) |
+| `marblenet_vad` | Bundled (tiny model) | Pass | --- | --- | --- |
+| `mel_band_roformer` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `miocodec` | Done | Pass | Pass | Pass (drift) | Pass (drift) |
+| `miotts` | Done | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
+| `moss_tts_local` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
+| `moss_tts_nano` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
+| `nemotron_asr` | Done | Pass | --- | Pass | Pass (minor filler drift) |
+| `omnivoice` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `outetts` | Done | Pass (TTS + clone) | --- | --- | Pass (TTS + clone) |
+| `pocket_tts` | Done | Pass | --- | Pass | Pass (drift) |
+| `qwen3_asr` | Done | Pass | --- | Pass | Pass |
+| `qwen3_forced_aligner` | Done | Pass | --- | Pass | Pass |
+| `qwen3_tts` base | Done | Pass | Pass | Pass (ASR match, drift) | Pass (ASR match, drift) |
+| `qwen3_tts` custom voice | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
+| `qwen3_tts` voice design | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
+| `seed_vc` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `silero_vad` | Skip (tiny model) | --- | --- | --- | --- |
+| `sortformer_diar` | Done | Pass | --- | Pass | Pass |
+| `stable_audio` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `supertonic` | Done | Pass | Pass | --- | No (unsupported weight dtype) |
+| `vevo2` | Done | Pass | Pass | Pass (drift) | No (mixed route drift; speech ASR match) |
+| `vibevoice` | Done | Pass | --- | Pass | Pass (drift) |
+| `vibevoice_asr` | Done | Pass | --- | Pass | Pass |
+| `voxcpm2` | Done | Pass | Pass | Pass (ASR match, drift) | Pass (ASR match, drift) |
+| `voxtral_realtime` | Done | Pass | --- | Pass | Pass |
+
+Q8 packaging notes:
+
+- `chatterbox` Q8 is intentionally mixed type. Graph-sensitive scalar, norm,
+  bias, and side tensors stay in non-Q8 types while matmul-compatible weights
+  are quantized.
+- `pocket_tts` Q8 keeps the four `flow_lm.flow_net.time_embed.*.mlp.{0,2}.weight`
+  tensors in Q8 in addition to the default converter selection. `conditioner.embed`,
+  `cond_embed`, and Mimi conv tensors are not forced to Q8 because tested outputs
+  drifted or the current conv path casts quantized conv weights back to F32.
+
 ## Build The Converter
 
 ```bash
@@ -238,54 +303,3 @@ Compatibility with older binaries:
 Quantized GGUF support is model- and route-specific. A model may load successfully but
 still drift in length, waveform similarity, or recognized text, so validate the exact
 route you plan to ship.
-
-## Support And Test Status
-
-Status labels:
-
-| Label | Meaning |
-|---|---|
-| `Done` | Package-spec refactor is in place for this family. |
-| `No` | Package-spec refactor is not done, or the tested format is not usable. |
-| `Skip (...)` | Package-spec refactor is intentionally skipped. |
-| `Pass` | Covered by the path-test matrix with acceptable output. |
-| `Pass (TTS + clone)` | Both no-reference TTS and reference-audio voice cloning run successfully. |
-| `Pass (drift)` | Loads and runs, with known acceptable output drift. |
-| `No (...)` | Known unsupported, failing, or too much output drift. |
-| `---` | Not tested in the current GGUF path-test matrix. |
-
-| Family | Package-spec refactor | Safetensors tested after refactor | `orig` GGUF tested | 16-bit GGUF tested | `q8_0` GGUF tested |
-|---|---|---|---|---|---|
-| `ace_step` | No | --- | --- | --- | --- |
-| `chatterbox` | No | --- | --- | --- | --- |
-| `citrinet_asr` | Done | Pass | --- | --- | Pass |
-| `heartmula` | No | --- | --- | --- | --- |
-| `higgs_audio_stt` | Done | Pass | --- | Pass | Pass |
-| `htdemucs` | Done | Pass | --- | Pass | Pass (drift) |
-| `hviske_asr` | Done | Pass | --- | --- | Pass |
-| `index_tts2` | Done | Pass | Pass | Pass (drift) | No (similarity drift, frame drift, text minor drift) |
-| `irodori_tts` | Done | Pass | --- | Pass | Pass (drift) |
-| `marblenet_vad` | Skip (tiny model) | --- | --- | --- | --- |
-| `mel_band_roformer` | Done | Pass | --- | Pass (drift) | Pass (drift) |
-| `miocodec` | Done | Pass | Pass | Pass (drift) | Pass (drift) |
-| `miotts` | Done | Pass | Pass | Pass (drift) | No (similarity drift, frame drift) |
-| `moss_tts_local` | Done | Pass | --- | Pass | No (similarity drift, frame drift, text minor drift) |
-| `moss_tts_nano` | Done | Pass | --- | Pass | No (similarity drift, frame drift, text large drift) |
-| `nemotron_asr` | Done | Pass | --- | Pass | Pass (minor filler drift) |
-| `omnivoice` | Done | Pass | --- | No (runtime assert, no audio) | No (runtime assert, no audio) |
-| `pocket_tts` | No | --- | --- | --- | --- |
-| `qwen3_asr` | Done | Pass | --- | Pass | Pass |
-| `qwen3_forced_aligner` | Done | Pass | --- | Pass | Pass |
-| `qwen3_tts` base | Done | Pass | Pass | No (similarity drift, frame drift, text minor drift) | No (similarity drift, frame drift, text minor drift) |
-| `qwen3_tts` custom voice | Done | Pass | --- | Pass (drift) | No (similarity drift, frame drift, text minor drift) |
-| `qwen3_tts` voice design | Done | Pass | --- | Pass (drift) | No (similarity drift, frame drift, text minor drift) |
-| `seed_vc` | Done | Pass | --- | Pass (drift) | Pass (drift) |
-| `silero_vad` | Skip (tiny model) | --- | --- | --- | --- |
-| `sortformer_diar` | No | --- | --- | --- | --- |
-| `stable_audio` | Done | Pass | --- | Pass (drift) | Pass (drift) |
-| `supertonic` | Done | Pass | Pass | --- | No (unsupported weight dtype) |
-| `vevo2` | Done | Pass | Pass | Pass (drift) | No (similarity drift, frame drift) |
-| `vibevoice` | No | --- | --- | --- | --- |
-| `vibevoice_asr` | Done | Pass | --- | Pass | Pass |
-| `voxcpm2` | Done | Pass | Pass | No (clone similarity drift, frame drift) | No (similarity drift, frame drift) |
-| `voxtral_realtime` | Done | Pass | --- | Pass | Pass |
