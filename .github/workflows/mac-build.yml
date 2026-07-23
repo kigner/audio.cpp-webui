@@ -6,12 +6,12 @@ on:
       - ci/**
       - main
       - dev
-      - release-0.2
+      - release-0.3
   pull_request:
     branches:
       - main
       - dev
-      - release-0.2
+      - release-0.3
   workflow_dispatch:
 
 jobs:

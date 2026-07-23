@@ -52,6 +52,8 @@ For full setup notes, script arguments, environment variables, API examples, Web
 ## News
 
 > [!IMPORTANT]
+> **2026-07-23 - audio.cpp WebUI v0.3.0:** This release advances the downstream distribution to 0.3 after a major upstream C++ backend merge, with follow-up Windows CUDA build fixes and WebUI support for Fish Audio S2 Pro, Higgs Audio v3 TTS 4B, OuteTTS 1.0 1B, and VieNeu-TTS v3 Turbo. The local TTS/API backend default is now consistently `8088` across launchers, the Gradio WebUI, realtime voice chat, saved-setting migration, examples, and documentation; ASR remains on its dedicated `8081` preset.
+>
 > **2026-07-20 - audio.cpp WebUI v0.2.1:** This Windows portable release brings the latest major upstream merge into the WebUI distribution, including Voxtral Mini 4B Realtime ASR in the ASR tab with offline and streaming transcription. Voxtral defaults to Q8_0 and uses model-specific cumulative-text replacement to prevent repeated partial output without changing other ASR pipelines. Existing v0.2 portable users can upgrade through `update.bat`; the signed component update covers the app, CPU, and CUDA packages without requiring a full bundle download. See the [v0.2.1 release](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.2.1-windows-prebuilt) for downloads and update metadata.
 >
 > **2026-07-18 - Voxtral Realtime ASR:** Voxtral is now released in audio.cpp with offline and streaming ASR paths. On warmed normal requests, BF16 GGUF runs at **RTF 0.089** (**11.2x realtime**) and Q8_0 at **RTF 0.064** (**15.7x realtime**); CUDA streaming TTFT is about **209 ms** with BF16 and **171 ms** with Q8_0.
