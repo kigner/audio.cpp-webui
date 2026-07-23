@@ -723,7 +723,7 @@ std::vector<int32_t> AceStepPreDitRuntime::encode_source_audio_codes(
     const runtime::AudioBuffer & audio,
     uint32_t seed) const {
     const auto total_start = Clock::now();
-    const runtime::AudioBuffer normalized = ace_step_normalize_audio_to_stereo_48k(audio);
+    const runtime::AudioBuffer normalized = normalize_audio_to_stereo_48k(audio);
     if (is_silent_audio(normalized)) {
         throw std::runtime_error("ACE-Step analyze source audio appears to be silent");
     }
