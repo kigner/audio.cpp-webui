@@ -1263,7 +1263,7 @@ def _msg_from_error(e):
 
 # Fallback catalog if models_catalog.json is missing/unreadable.
 DEFAULT_CATALOG = {
-    "host": "127.0.0.1", "port": 8080, "device": 0, "threads": 1,
+    "host": "127.0.0.1", "port": 8088, "device": 0, "threads": 1,
     "models": [
         {"id": "qwen3-tts", "display_name": "Qwen3-TTS 0.6B (tts)",
          "family": "qwen3_tts", "path": "models/Qwen3-TTS-12Hz-0.6B-Base",
@@ -1320,7 +1320,7 @@ CATALOG = _load_catalog()
 MODEL_PARAMS = _load_model_params()
 REQUIRED_FILES = _load_required_files()
 HOST = CATALOG.get("host", "127.0.0.1")
-PORT = int(CATALOG.get("port", 8080))
+PORT = int(CATALOG.get("port", 8088))
 DEVICE = int(CATALOG.get("device", 0))
 THREADS = int(os.environ.get("AUDIOCPP_THREADS") or CATALOG.get("threads", 1))
 if BACKEND == "cpu" and THREADS <= 1:

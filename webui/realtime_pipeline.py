@@ -17,7 +17,7 @@ Topology (URLs/models are per-session, pushed from the browser Settings panel):
 
 Two independent audio.cpp servers are expected, e.g.:
 
-    run_server.bat qwen3-tts 8080     (TTS)
+    run_server.bat qwen3-tts 8088     (TTS)
     run_server.bat qwen3-asr 8081     (ASR)
 
 Both may also be the *same* multi-model server; the pipeline only needs a URL +
@@ -447,7 +447,7 @@ class RealtimePipeline:
 
     def __init__(
         self,
-        tts_server: str = "http://127.0.0.1:8080",
+        tts_server: str = "http://127.0.0.1:8088",
         tts_model: str = "qwen3-tts",
         tts_voice: str = "",
         tts_voice_ref: str = "",

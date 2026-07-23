@@ -9,9 +9,9 @@ REM  API server mode (OpenAI-compatible HTTP; backend auto-detected:
 REM  CUDA when an NVIDIA driver + gpu build exist, else CPU).
 REM
 REM  Usage:  run_server.bat <model_id> [port] [device] [voice_ref.wav]
-REM    e.g.  run_server.bat qwen3-tts 8080        (TTS server on :8080)
+REM    e.g.  run_server.bat qwen3-tts 8088        (TTS server on :8088)
 REM          run_server.bat qwen3-asr 8081        (ASR server on :8081, 2nd window)
-REM          run_server.bat qwen3-tts 8080 D:\voices\me.wav
+REM          run_server.bat qwen3-tts 8088 D:\voices\me.wav
 REM                (bakes a default reference voice into the server, for clients
 REM                 that have no field to send reference audio per request;
 REM                 the wav goes in the 3rd or 4th slot - device defaults to 0)
@@ -44,7 +44,7 @@ if not "%~3"=="" echo %~3| findstr /r /c:"^[0-9][0-9]*$" >nul || (
 )
 if not "%~4"=="" set "AUDIOCPP_VOICE_REF=%~4"
 if "%MODEL_ID%"=="" goto :usage
-if "%PORT%"=="" set "PORT=8080"
+if "%PORT%"=="" set "PORT=8088"
 if "%DEVICE%"=="" set "DEVICE=0"
 if defined AUDIOCPP_VOICE_REF if not exist "%AUDIOCPP_VOICE_REF%" (
   echo [ERROR] voice ref audio not found: %AUDIOCPP_VOICE_REF%
@@ -97,9 +97,9 @@ goto :end
 
 :usage
 echo Usage: %~nx0 ^<model_id^> [port] [device] [voice_ref.wav]
-echo   e.g. %~nx0 qwen3-tts 8080        (TTS server on :8080)
+echo   e.g. %~nx0 qwen3-tts 8088        (TTS server on :8088)
 echo        %~nx0 qwen3-asr 8081        (ASR server on :8081, run in a 2nd window)
-echo        %~nx0 qwen3-tts 8080 D:\voices\me.wav   (bake a default reference voice)
+echo        %~nx0 qwen3-tts 8088 D:\voices\me.wav   (bake a default reference voice)
 echo Model ids are the entries in %WEBUI_DIR%\configs\models_catalog.json.
 echo.
 echo Reference voice: per-request "voice_ref" in the JSON body always works. For
@@ -109,7 +109,7 @@ echo server as the default voice; OpenAI voice names (alloy etc.) map to it too.
 echo Without AUDIOCPP_REF_TEXT the transcript is looked up by wav basename in
 echo %WEBUI_DIR%\voice\prompt_text (qwen3-tts needs a matching transcript).
 echo TTS example (uses the ready template %WEBUI_DIR%\configs\req_speech.json):
-echo   curl http://127.0.0.1:8080/v1/audio/speech -H "Content-Type: application/json" -o %WEBUI_DIR%\output\out_server.wav -d @%WEBUI_DIR%\configs\req_speech.json
+echo   curl http://127.0.0.1:8088/v1/audio/speech -H "Content-Type: application/json" -o %WEBUI_DIR%\output\out_server.wav -d @%WEBUI_DIR%\configs\req_speech.json
 echo ASR example:
 echo   curl http://127.0.0.1:8081/v1/audio/transcriptions -H "Content-Type: application/json" -d "{\"model\":\"qwen3-asr\",\"audio\":\"D:/path/to/input.wav\"}"
 

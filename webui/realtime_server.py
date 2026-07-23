@@ -15,7 +15,7 @@ Environment variables::
     AUDIOCPP_LLM_API_KEY     DeepSeek / OpenAI-compatible API key
     AUDIOCPP_LLM_BASE_URL    Chat Completions endpoint (default: https://api.deepseek.com/v1)
     AUDIOCPP_LLM_MODEL       Model ID (default: deepseek-chat)
-    AUDIOCPP_TTS_SERVER      C++ TTS server URL (default: http://127.0.0.1:8080)
+    AUDIOCPP_TTS_SERVER      C++ TTS server URL (default: http://127.0.0.1:8088)
     AUDIOCPP_TTS_MODEL       TTS model id loaded in that server (default: qwen3-tts)
     AUDIOCPP_TTS_VOICE       Named cached voice id (optional; else use voice_ref)
     AUDIOCPP_TTS_VOICE_REF   Reference audio path for voice cloning
@@ -102,7 +102,7 @@ def _resolve_voice_ref(path: str) -> str:
 def _default_config() -> dict:
     """Pipeline config from environment (browser Settings override per session)."""
     return {
-        "tts_server": _env("AUDIOCPP_TTS_SERVER", "http://127.0.0.1:8080"),
+        "tts_server": _env("AUDIOCPP_TTS_SERVER", "http://127.0.0.1:8088"),
         "tts_model": _env("AUDIOCPP_TTS_MODEL", "qwen3-tts"),
         "tts_voice": _env("AUDIOCPP_TTS_VOICE", ""),
         "tts_voice_ref": _resolve_voice_ref(_env("AUDIOCPP_TTS_VOICE_REF", "")),

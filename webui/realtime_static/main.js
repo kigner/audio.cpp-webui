@@ -15,6 +15,7 @@ import { $, truncateError, DEBUG } from "./ui/dom.js";
 
 // ── Settings (persisted in localStorage) ───────────────────────────────
 const DEFAULT_RT_URL = "ws://127.0.0.1:8765/v1/realtime";
+const LEGACY_DEFAULT_TTS_URL = "http://127.0.0.1:8080";
 const DEFAULT_INSTRUCTIONS =
   "You are a friendly voice assistant. Keep replies short and spoken. " +
   "Always reply in the same language the user speaks. " +
@@ -44,7 +45,7 @@ const GATE_DEFAULT_DB = -50;
 
 const DEFAULTS = {
   rtUrl: DEFAULT_RT_URL,
-  ttsUrl: "http://127.0.0.1:8080",
+  ttsUrl: "http://127.0.0.1:8088",
   ttsModel: "qwen3-tts",
   ttsVoice: "",
   ttsVoiceRef: "",
@@ -68,6 +69,11 @@ function loadSettings() {
       continue;
     }
     const v = localStorage.getItem(STORAGE[k]);
+    if (k === "ttsUrl" && v === LEGACY_DEFAULT_TTS_URL) {
+      localStorage.removeItem(STORAGE[k]);
+      s[k] = def;
+      continue;
+    }
     s[k] = v === null ? def : v;
   }
   return s;

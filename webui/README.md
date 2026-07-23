@@ -7,7 +7,7 @@ HTTP API 服务、图形界面。所有脚本都可以**双击运行**，也可�
 | 脚本 | 作用 | 典型命令 |
 |---|---|---|
 | `run_cli_tts.bat` | 单句/单次命令行 TTS | `run_cli_tts.bat qwen3-tts "你好世界"` |
-| `run_server.bat` | OpenAI 兼容 HTTP API 服务 | `run_server.bat qwen3-tts 8080` |
+| `run_server.bat` | OpenAI 兼容 HTTP API 服务 | `run_server.bat qwen3-tts 8088` |
 | `run_server_asr.bat` | Qwen3-ASR 服务（`run_server.bat` 的 ASR 预设） | `run_server_asr.bat`（默认 :8081） |
 | `run_webui.bat` | Gradio 网页界面（按需起服务） | `run_webui.bat` |
 | `_env.bat` | 共享环境探测（**不直接运行**） | 被其它脚本 `call` |
@@ -93,7 +93,7 @@ set AUDIOCPP_BACKEND=cpu & run_cli_tts.bat qwen3-tts "强制用 CPU 跑"
 | 位置参数 | 含义 | 默认 |
 |---|---|---|
 | 1 `model_id` | catalog 里的模型 id | （必填） |
-| 2 `port` | 监听端口 | `8080` |
+| 2 `port` | 监听端口 | `8088` |
 | 3 `device` | GPU 设备号 | `0` |
 
 - 脚本会用该 id 生成一份**单模型、绝对路径**的临时配置
@@ -101,7 +101,7 @@ set AUDIOCPP_BACKEND=cpu & run_cli_tts.bat qwen3-tts "强制用 CPU 跑"
 - **同时起两个服务**：在两个窗口分别运行不同 id + 不同端口，例如一个做 TTS、一个做 ASR：
 
   ```bat
-  run_server.bat qwen3-tts 8080     :: 窗口 A：TTS
+  run_server.bat qwen3-tts 8088     :: 窗口 A：TTS
   run_server_asr.bat                :: 窗口 B：ASR（= run_server.bat qwen3-asr 8081）
   ```
 
@@ -129,7 +129,7 @@ set AUDIOCPP_BACKEND=cpu & run_cli_tts.bat qwen3-tts "强制用 CPU 跑"
 TTS（用现成模板 `configs\req_speech.json`，其中含 `input`/`voice_ref`/`reference_text`）：
 
 ```bat
-curl http://127.0.0.1:8080/v1/audio/speech -H "Content-Type: application/json" -o output\out_server.wav -d @configs\req_speech.json
+curl http://127.0.0.1:8088/v1/audio/speech -H "Content-Type: application/json" -o output\out_server.wav -d @configs\req_speech.json
 ```
 
 ASR（音频用服务器本机路径）：
@@ -141,8 +141,8 @@ curl http://127.0.0.1:8081/v1/audio/transcriptions -H "Content-Type: application
 查看状态：
 
 ```bat
-curl http://127.0.0.1:8080/health
-curl http://127.0.0.1:8080/v1/models
+curl http://127.0.0.1:8088/health
+curl http://127.0.0.1:8088/v1/models
 ```
 
 ---
@@ -157,8 +157,8 @@ curl http://127.0.0.1:8080/v1/models
 - 后端自动检测（同上：有 CUDA 用 GPU，否则 CPU）；`AUDIOCPP_BACKEND=gpu|cpu` 可强制。
   CPU 模式下 ggml 线程数自动设为核数-1（可用 `AUDIOCPP_THREADS=N` 覆盖），且不再显示显存警告。
 
-> 网页界面（7860）是给人用的；要给**其它程序**当 API，请用 `run_server.bat` 起的 **8080** 那个服务，
-> 或让 WebUI 起来后直接打它的 8080 端口（见 `run_server.bat` 的端点表）。
+> 网页界面（7860）是给人用的；要给**其它程序**当 API，请用 `run_server.bat` 起的 **8088** 那个服务，
+> 或让 WebUI 起来后直接打它的 8088 端口（见 `run_server.bat` 的端点表）。
 
 ---
 
@@ -356,7 +356,7 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 
 - **`.bat` 双击闪退 / 命令语法错误**：这些脚本必须是 **CRLF** 行尾（LF 会让 cmd 解析出错），
   编辑后请保持 CRLF。
-- **端口被占用**：`run_server.bat` 和 WebUI 默认都用 8080。要同时用，就给 server 换端口，
+- **端口被占用**：`run_server.bat` 和 WebUI 默认都用 8088。要同时用，就给 server 换端口，
   或设 `AUDIOCPP_SERVER` 让 WebUI 复用外部 server。
 - **`model path does not exist` / not installed**：模型没装。用上面的 model_manager 命令或 WebUI 下载。
 - **显存不足**：8GB 下同时跑两个 server 时，两个模型都要装得下；1.7B 建议单开。
@@ -373,7 +373,7 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 - `run_server.bat` 的服务**只加载一次、常驻**，之后每个请求只花“推理 + 极小的传输”。
   本机 HTTP + 几 MB 的 wav 传输 ≈ 毫秒级，相对多秒的推理可忽略（建议用默认二进制 wav，
   别用 `response_format:"json"` 的 base64，会大约 +33%）。
-- 网页界面（7860）比直连 8080 多一跳代理；其它程序直接打 8080 就没有这一跳。
+- 网页界面（7860）比直连 8088 多一跳代理；其它程序直接打 8088 就没有这一跳。
 
 **结论**：走 API 每次生成几乎没有额外成本，只有一次性的预热被服务端摊掉了——除了“只生成一次”的
 场景，API 方式通常比反复调 CLI **更快**。
