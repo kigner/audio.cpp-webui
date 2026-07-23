@@ -11,15 +11,17 @@ See docs/maintainers/loader_and_catalog.md.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "src" / "framework" / "runtime" / "registry.cpp"
 MODEL_MANAGER_PATH = REPO_ROOT / "tools" / "model_manager.py"
 README_PATH = REPO_ROOT / "README.md"
+WEBUI_CATALOG_PATH = REPO_ROOT / "webui" / "configs" / "models_catalog.json"
 
 _LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader\s*\(\s*\)")
 
@@ -232,6 +234,42 @@ def check_readme(
     return errors, warnings
 
 
+def check_webui_model_paths(
+    *,
+    catalog: dict,
+    packages_by_id: dict[str, dict],
+) -> list[str]:
+    """Require named standalone GGUF packages to pass the file, not its directory.
+
+    The model-spec loader recognizes a directory as GGUF only when it contains
+    ``model.gguf``. Model-manager packages commonly preserve descriptive GGUF
+    filenames, so their WebUI entries must point at that file explicitly.
+    """
+    errors: list[str] = []
+    for model in catalog.get("models", []):
+        package_id = str(model.get("download_id") or "")
+        payload = packages_by_id.get(package_id)
+        if payload is None:
+            continue
+        required = [
+            str(path).replace("\\", "/")
+            for path in payload.get("required_files", [])
+        ]
+        if len(required) != 1 or not required[0].lower().endswith(".gguf"):
+            continue
+        gguf_name = PurePosixPath(required[0]).name
+        if gguf_name.lower() == "model.gguf":
+            continue
+        catalog_path = str(model.get("path") or "").replace("\\", "/")
+        if PurePosixPath(catalog_path).name != gguf_name:
+            errors.append(
+                f"webui model '{model.get('id')}' points to '{catalog_path}', but "
+                f"standalone GGUF package '{package_id}' installs '{gguf_name}'; "
+                "point the catalog path at the GGUF file"
+            )
+    return errors
+
+
 class _SyncCheckSelfTests(unittest.TestCase):
     def test_parse_active_and_commented(self) -> None:
         text = """
@@ -269,6 +307,41 @@ class _SyncCheckSelfTests(unittest.TestCase):
         )
         self.assertTrue(any(alias in e for e in errors))
         self.assertTrue(any(f"parked loader '{stub}'" in e for e in errors))
+
+    def test_named_standalone_gguf_requires_file_path(self) -> None:
+        packages = {
+            "named_gguf": {
+                "required_files": ["Example/model-q8_0.gguf"],
+            },
+            "default_gguf": {
+                "required_files": ["model.gguf"],
+            },
+        }
+        catalog = {
+            "models": [
+                {
+                    "id": "bad",
+                    "download_id": "named_gguf",
+                    "path": "models/Example",
+                },
+                {
+                    "id": "good",
+                    "download_id": "named_gguf",
+                    "path": "models/Example/model-q8_0.gguf",
+                },
+                {
+                    "id": "directory-compatible",
+                    "download_id": "default_gguf",
+                    "path": "models/Default",
+                },
+            ],
+        }
+        errors = check_webui_model_paths(
+            catalog=catalog,
+            packages_by_id=packages,
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("webui model 'bad'", errors[0])
 
 
 def main() -> int:
@@ -318,6 +391,25 @@ def main() -> int:
         package_payload=mm.package_payload,
         default_family_from_package_id=mm._default_family_from_package_id,
     )
+    package_payloads = {
+        str(payload["id"]): payload
+        for package in mm.CATALOG
+        for payload in (mm.package_payload(package),)
+    }
+    if not WEBUI_CATALOG_PATH.is_file():
+        errors.append(f"WebUI catalog not found: {WEBUI_CATALOG_PATH}")
+    else:
+        try:
+            webui_catalog = json.loads(WEBUI_CATALOG_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            errors.append(f"failed to read WebUI catalog: {error}")
+        else:
+            errors.extend(
+                check_webui_model_paths(
+                    catalog=webui_catalog,
+                    packages_by_id=package_payloads,
+                )
+            )
 
     if not args.skip_readme:
         if not README_PATH.is_file():

@@ -1347,17 +1347,51 @@ _loaded_mode = None              # 本次加载的运行模式（offline/streami
 
 
 def _missing_required_files(entry):
-    """目录已存在但缺失的必须文件（相对模型目录）；目录不存在或无清单时返回 []。"""
+    """原始模型安装缺失的必须文件；目录不存在或无清单时返回 []。"""
     req = REQUIRED_FILES.get(entry.get("download_id") or "")
     if not req or not os.path.isdir(entry["abs_path"]):
         return []
     return [f for f in req if not os.path.isfile(os.path.join(entry["abs_path"], f))]
 
 
+def _existing_native_gguf(entry):
+    """Return a directly loadable GGUF path for native-GGUF families."""
+    if entry.get("family") not in GGUF_NATIVE_FAMILIES:
+        return None
+    model_path = entry["abs_path"]
+    if os.path.isfile(model_path) and model_path.lower().endswith(".gguf"):
+        return model_path
+    if os.path.isdir(model_path):
+        candidate = os.path.join(model_path, "model.gguf")
+        if os.path.isfile(candidate):
+            return os.path.normpath(candidate).replace("\\", "/")
+    return None
+
+
+def _load_storage_note(entry):
+    if entry.get("gguf_only"):
+        return _t("（仅 GGUF）", " (GGUF only)")
+    if entry.get("gguf_ready"):
+        return _t("（GGUF）", " (GGUF)")
+    return ""
+
+
+def _model_display_label(entry, language=None):
+    """Return a model label localized for visible UI messages."""
+    language = language or get_language()
+    label = entry.get("display_name") or entry.get("id", "?")
+    if language == "en":
+        return entry.get("display_name_en") or (label if label.isascii() else entry.get("id", "?"))
+    return _t(label, label, language)
+
+
 def catalog_models():
-    """Catalog entries annotated with abs_path / installed / incomplete / label.
-    installed 要求目录存在且 required_files 清单齐全；目录在但缺文件记为
-    incomplete（missing_files 列出缺什么），加载入口据此给出明确报错。"""
+    """Catalog entries annotated with their install and load state.
+
+    原始 required_files 完整，或存在后端可直接加载的 GGUF，均视为 installed。
+    只有两种形式都不可用时才标记 incomplete；GGUF-only 模型保留原始权重
+    的 missing_files 信息，但不会被错误拦截为不完整。
+    """
     out = []
     for m in CATALOG.get("models", []):
         rel = m.get("path", "")
@@ -1365,8 +1399,13 @@ def catalog_models():
         entry = dict(m)
         entry["abs_path"] = os.path.normpath(ap).replace("\\", "/")
         entry["missing_files"] = _missing_required_files(entry)
-        entry["incomplete"] = bool(entry["missing_files"])
-        entry["installed"] = os.path.exists(entry["abs_path"]) and not entry["incomplete"]
+        entry["gguf_path"] = _existing_native_gguf(entry)
+        entry["gguf_ready"] = bool(entry["gguf_path"])
+        entry["gguf_only"] = entry["gguf_ready"] and bool(entry["missing_files"])
+        entry["incomplete"] = bool(entry["missing_files"]) and not entry["gguf_ready"]
+        entry["installed"] = entry["gguf_ready"] or (
+            os.path.exists(entry["abs_path"]) and not entry["incomplete"])
+        entry["load_path"] = entry["gguf_path"] or entry["abs_path"]
         entry["label"] = m.get("display_name") or m.get("id", "?")
         out.append(entry)
     return out
@@ -1387,13 +1426,11 @@ def choices_for_tasks(tasks, language=None):
     for m in catalog_models():
         if m.get("task") not in tasks:
             continue
-        label = m["label"]
-        if language == "en":
-            label = m.get("display_name_en") or (label if label.isascii() else m["id"])
-        else:
-            label = _t(label, label, language)
+        label = _model_display_label(m, language)
         if m["incomplete"]:
             label += _t(" · 目录不完整", " · incomplete", language)
+        elif m["gguf_only"]:
+            label += _t(" · 仅 GGUF", " · GGUF only", language)
         elif not m["installed"]:
             label += _t(" · 未安装", " · not installed", language)
             short = _vram_shortfall(m)
@@ -1694,7 +1731,7 @@ def _write_temp_config(entry):
     model = {
         "id": entry["id"],
         "family": entry["family"],
-        "path": entry["abs_path"],
+        "path": entry.get("load_path") or entry["abs_path"],
         "task": entry.get("task", "tts"),
         "mode": entry.get("mode", "offline"),
     }
@@ -1878,6 +1915,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
     if entry is None:
         raise gr.Error(_t("catalog 里没有模型 id：{model}",
                           "Model id not found in catalog: {model}", model=model_id))
+    display_label = _model_display_label(entry)
     if not entry["installed"]:
         if entry["incomplete"]:
             missing = entry["missing_files"]
@@ -1894,6 +1932,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
             "Model {model} has task {actual}; expected {expected}.",
             model=model_id, actual=entry.get("task"), expected="/".join(expect_tasks)))
     want_mode = mode or entry.get("mode", "offline")
+    storage_note = _load_storage_note(entry)
     mode_note = (_t("（流式模式）", " (streaming)")
                  if want_mode == "streaming" else "")
 
@@ -1902,8 +1941,9 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
         if (managed_alive and _loaded_id == model_id and server_alive()
                 and (session_options or {}) == (_loaded_session_options or {})
                 and want_mode == (_loaded_mode or entry.get("mode", "offline"))):
-            return _t("✅ 已加载：{label}{mode}", "✅ Loaded: {label}{mode}",
-                      label=entry["label"], mode=mode_note)
+            return _t("✅ 已加载：{label}{storage}{mode}",
+                      "✅ Loaded: {label}{storage}{mode}",
+                      label=display_label, storage=storage_note, mode=mode_note)
 
         if not managed_alive and server_alive():
             # A server we didn't launch is holding the port.
@@ -1919,7 +1959,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
                     host=HOST, port=PORT, mode=mode))
             if model_id in loaded_ids():
                 return _t("✅ 复用外部 server：{label}",
-                          "✅ Using external server: {label}", label=entry["label"])
+                          "✅ Using external server: {label}", label=display_label)
             raise gr.Error(_t(
                 "检测到外部 server 占用 {host}:{port}，请先关闭或设置 AUDIOCPP_SERVER。",
                 "An external server is using {host}:{port}. Stop it or set AUDIOCPP_SERVER.",
@@ -1942,10 +1982,11 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
             _ui_log(f"模型 {entry['label']} 加载失败/超时（{LOAD_TIMEOUT}s）")
             raise gr.Error(_t("加载 {label} 失败/超时（{timeout}s）。\n日志尾部：\n{tail}",
                               "Loading {label} failed or timed out ({timeout}s).\nLog tail:\n{tail}",
-                              label=entry["label"], timeout=LOAD_TIMEOUT, tail=tail))
+                              label=display_label, timeout=LOAD_TIMEOUT, tail=tail))
         _ui_log(f"模型 {entry['label']} 加载完成{mode_note}，用时 {time.time() - t0:.1f}s")
-        return _t("✅ 已加载：{label}{mode}", "✅ Loaded: {label}{mode}",
-                  label=entry["label"], mode=mode_note)
+        return _t("✅ 已加载：{label}{storage}{mode}",
+                  "✅ Loaded: {label}{storage}{mode}",
+                  label=display_label, storage=storage_note, mode=mode_note)
 
 
 def unload_model():
@@ -2085,13 +2126,19 @@ def download_model(model_id, hf_token="", proxy=""):
     if entry is None:
         return _t("❌ catalog 里没有模型 id：{model}",
                   "❌ Model id not found: {model}", model=model_id)
+    display_label = _model_display_label(entry)
     if entry["installed"]:
+        if entry["gguf_only"]:
+            return _t(
+                "✅ {label} 已安装（仅 GGUF；原始模型文件不完整或已清理），无需下载",
+                "✅ {label} is installed as GGUF only; the original model files are incomplete or were removed.",
+                label=display_label)
         return _t("✅ {label} 已安装，无需下载", "✅ {label} is already installed.",
-                  label=entry["label"])
+                  label=display_label)
     dl_id = entry.get("download_id")
     if not dl_id:
         return _t("⚠️ {label} 没有 download_id，请手动安装。",
-                  "⚠️ {label} has no download_id; install it manually.", label=entry["label"])
+                  "⚠️ {label} has no download_id; install it manually.", label=display_label)
     if MODEL_MANAGER is None:
         return _t("❌ 找不到 tools/model_manager.py",
                   "❌ tools/model_manager.py was not found.")
@@ -2141,29 +2188,35 @@ def download_model(model_id, hf_token="", proxy=""):
     return warn + proxy_note + _t(
         "⏳ 已开始下载 **{label}**（{download_id}）。完成后刷新列表。\n日志：{log}",
         "⏳ Download started: **{label}** ({download_id}). Refresh the list when complete.\nLog: {log}",
-        label=entry["label"], download_id=dl_id, log=log)
+        label=display_label, download_id=dl_id, log=log)
 
 
 def download_status(model_id):
     entry = catalog_by_id(model_id) if model_id else None
     if entry is None:
         return ""
+    display_label = _model_display_label(entry)
     if entry["installed"]:
-        return _t("✅ {label} 已安装", "✅ {label} is installed.", label=entry["label"])
+        if entry["gguf_only"]:
+            return _t(
+                "✅ {label} 已安装（仅 GGUF；原始模型文件不完整或已清理）",
+                "✅ {label} is installed as GGUF only; the original model files are incomplete or were removed.",
+                label=display_label)
+        return _t("✅ {label} 已安装", "✅ {label} is installed.", label=display_label)
     rec = _downloads.get(model_id)
     if rec is None:
         if entry["incomplete"]:
             return _t("⚠️ {label} 目录不完整（缺 {count} 个文件），请重新下载。",
                       "⚠️ {label} is incomplete ({count} files missing). Download it again.",
-                      label=entry["label"], count=len(entry["missing_files"]))
+                      label=display_label, count=len(entry["missing_files"]))
         return _t("⚪ {label} 未安装，未开始下载", "⚪ {label} is not installed.",
-                  label=entry["label"])
+                  label=display_label)
     code = rec["proc"].poll()
     tail = _read_tail(rec["log"], n=12)
     if code is None:
         return _t("⏳ 正在下载 {label}… {progress} · 更新于 {time}\n```\n{tail}\n```",
                   "⏳ Downloading {label}… {progress} · {time}\n```\n{tail}\n```",
-                  label=entry["label"], progress=_download_progress_note(entry),
+                  label=display_label, progress=_download_progress_note(entry),
                   time=_ts(), tail=tail)
     if not rec.get("reported"):
         rec["reported"] = True
@@ -2171,10 +2224,10 @@ def download_status(model_id):
     if code == 0:
         return _t("✅ {label} 下载完成，请刷新列表。\n```\n{tail}\n```",
                   "✅ {label} downloaded. Refresh the model list.\n```\n{tail}\n```",
-                  label=entry["label"], tail=tail)
+                  label=display_label, tail=tail)
     return _t("❌ {label} 下载失败（exit {code}）。\n```\n{tail}\n```",
               "❌ {label} download failed (exit {code}).\n```\n{tail}\n```",
-              label=entry["label"], code=code, tail=tail)
+              label=display_label, code=code, tail=tail)
 
 
 def _download_running(model_id):
@@ -2274,6 +2327,10 @@ def gguf_status(model_id):
     output = _gguf_output_path(entry)
     converter = _find_gguf_exe()
     if os.path.isfile(output):
+        if entry["gguf_only"]:
+            return _t(
+                "🧊 已有 GGUF（原始模型文件不完整或已清理），将直接加载该文件。",
+                "🧊 GGUF is available and will be loaded directly; the original model files are incomplete or were removed.")
         return _t("🧊 已有GGUF，将优先加载该模型。", "🧊 GGUF is available and will be loaded first.")
     if converter is None:
         return _t("⚠️ 找不到转换器。", "⚠️ Converter not found.")
@@ -2422,6 +2479,12 @@ def delete_gguf(model_id):
     except OSError as exc:
         return _t("❌ 删除 GGUF 失败：{error}", "❌ Could not delete GGUF: {error}", error=exc), server_status()
     _ui_log(f"删除 GGUF：{output}")
+    if entry["gguf_only"]:
+        return (_t(
+            "✅ 已删除：`{path}`\n\n⚠️ 原始模型文件不完整或已清理，模型现在无法加载；请重新下载原始模型后再转换。",
+            "✅ Deleted: `{path}`\n\n⚠️ The original model files are incomplete or were removed, so the model can no longer load. Download the original model before converting it again.",
+            path=output),
+            server_status())
     return _t("✅ 已删除：`{path}`", "✅ Deleted: `{path}`", path=output), server_status()
 
 
