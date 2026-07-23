@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sys
 import time
 
 import numpy as np
@@ -22,10 +23,24 @@ class AudioCapture:
         self._stream: sd.RawInputStream | None = None
         self._capture_rate = sample_rate
         self._last_drop_log = 0.0
+        self._resample_source_rate = sample_rate
+        self._resample_buffer = np.empty(0, dtype=np.float32)
+        self._resample_position = 0.0
 
     @property
     def active(self) -> bool:
         return self._stream is not None and self._stream.active
+
+    @staticmethod
+    def _preferred_input_device() -> tuple[int | None, object]:
+        if sys.platform == "win32":
+            for hostapi in sd.query_hostapis():
+                if str(hostapi["name"]).casefold() != "windows wasapi":
+                    continue
+                device_index = int(hostapi["default_input_device"])
+                if device_index >= 0:
+                    return device_index, sd.query_devices(device_index)
+        return None, sd.query_devices(kind="input")
 
     def _callback(self, indata: bytes, frames: int, time_info: object, status: sd.CallbackFlags) -> None:
         del frames, time_info
@@ -51,16 +66,18 @@ class AudioCapture:
     def start(self) -> None:
         self.stop()
         self.clear()
-        device = sd.query_devices(kind="input")
+        device_index, device = self._preferred_input_device()
         native_rate = int(round(float(device["default_samplerate"])))
-        try:
-            sd.check_input_settings(channels=self.channels, dtype="int16", samplerate=self.sample_rate)
-            self._capture_rate = self.sample_rate
-        except sd.PortAudioError:
-            self._capture_rate = native_rate
-            LOGGER.info("microphone does not accept %s Hz; capturing at %s Hz", self.sample_rate, native_rate)
+        self._capture_rate = native_rate
+        sd.check_input_settings(
+            device=device_index,
+            channels=self.channels,
+            dtype="int16",
+            samplerate=self._capture_rate,
+        )
         blocksize = max(1, round(self._capture_rate * self.frame_ms / 1000))
         self._stream = sd.RawInputStream(
+            device=device_index,
             samplerate=self._capture_rate,
             blocksize=blocksize,
             channels=self.channels,
@@ -68,6 +85,15 @@ class AudioCapture:
             callback=self._callback,
         )
         self._stream.start()
+        hostapi = sd.query_hostapis(int(device["hostapi"]))
+        LOGGER.info(
+            "microphone opened device=%s name=%r hostapi=%s capture_rate=%s output_rate=%s",
+            device_index if device_index is not None else "<default>",
+            device["name"],
+            hostapi["name"],
+            self._capture_rate,
+            self.sample_rate,
+        )
 
     def stop(self) -> None:
         stream, self._stream = self._stream, None
@@ -82,20 +108,40 @@ class AudioCapture:
             try:
                 self._queue.get_nowait()
             except queue.Empty:
-                return
+                break
+        self._resample_source_rate = self.sample_rate
+        self._resample_buffer = np.empty(0, dtype=np.float32)
+        self._resample_position = 0.0
+
+    def _resample(self, pcm: bytes, source_rate: int) -> bytes:
+        if source_rate == self.sample_rate:
+            return pcm
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+        if source_rate != self._resample_source_rate:
+            self._resample_source_rate = source_rate
+            self._resample_buffer = np.empty(0, dtype=np.float32)
+            self._resample_position = 0.0
+        if self._resample_buffer.size:
+            samples = np.concatenate((self._resample_buffer, samples))
+        if samples.size < 2:
+            self._resample_buffer = samples
+            return b""
+
+        step = source_rate / float(self.sample_rate)
+        positions = np.arange(self._resample_position, samples.size - 1, step, dtype=np.float64)
+        if positions.size == 0:
+            self._resample_buffer = samples
+            return b""
+        resampled = np.interp(positions, np.arange(samples.size), samples)
+        next_position = float(positions[-1] + step)
+        consumed = min(int(np.floor(next_position)), samples.size)
+        self._resample_buffer = samples[consumed:]
+        self._resample_position = next_position - consumed
+        return np.clip(resampled, -32768, 32767).astype("<i2").tobytes()
 
     def get_frame(self, timeout: float = 0.1) -> bytes | None:
         try:
             pcm, source_rate = self._queue.get(timeout=timeout)
         except queue.Empty:
             return None
-        if source_rate == self.sample_rate:
-            return pcm
-        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
-        if samples.size < 2:
-            return pcm
-        output_size = max(1, round(samples.size * self.sample_rate / source_rate))
-        positions = np.linspace(0, samples.size - 1, output_size)
-        resampled = np.interp(positions, np.arange(samples.size), samples)
-        return np.clip(resampled, -32768, 32767).astype("<i2").tobytes()
-
+        return self._resample(pcm, source_rate)
