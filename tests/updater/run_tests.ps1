@@ -484,6 +484,7 @@ function Test-UpdaterSelfUpdate {
 }
 
 function Test-UpgradeMatrixFromSupportedVersions {
+    $targetVersion = "0.4.2"
     $cases = @(
         [pscustomobject]@{
             Version = "0.2.0"
@@ -502,6 +503,24 @@ function Test-UpgradeMatrixFromSupportedVersions {
             App = "0.2.1"
             CoreCpu = "0.2.1"
             CoreCuda = "0.2.2"
+        },
+        [pscustomobject]@{
+            Version = "0.3.0"
+            App = "0.3.0"
+            CoreCpu = "0.3.0"
+            CoreCuda = "0.3.0"
+        },
+        [pscustomobject]@{
+            Version = "0.4.0"
+            App = "0.4.0"
+            CoreCpu = "0.4.0"
+            CoreCuda = "0.4.0"
+        },
+        [pscustomobject]@{
+            Version = "0.4.1"
+            App = "0.4.1"
+            CoreCpu = "0.4.1"
+            CoreCuda = "0.4.1"
         }
     )
 
@@ -516,25 +535,25 @@ function Test-UpgradeMatrixFromSupportedVersions {
 
         $assets = Join-Path $root "assets"
         New-Item -ItemType Directory -Path $assets -Force | Out-Null
-        $appArchive = New-TestArchive $assets "app-v0.3.0.zip" "webui\upgrade-matrix.txt" "app 0.3.0" "app"
-        $cpuArchive = New-TestArchive $assets "core-cpu-v0.3.0.zip" "cpu\audiocpp_cli.exe" "cpu 0.3.0" "core-cpu"
-        $cudaArchive = New-TestArchive $assets "core-cuda-v0.3.0.zip" "gpu\audiocpp_cli.exe" "cuda 0.3.0" "core-cuda"
+        $appArchive = New-TestArchive $assets "app-v$targetVersion.zip" "webui\upgrade-matrix.txt" "app $targetVersion" "app"
+        $cpuArchive = New-TestArchive $assets "core-cpu-v$targetVersion.zip" "cpu\audiocpp_cli.exe" "cpu $targetVersion" "core-cpu"
+        $cudaArchive = New-TestArchive $assets "core-cuda-v$targetVersion.zip" "gpu\audiocpp_cli.exe" "cuda $targetVersion" "core-cuda"
         $components = @(
-            (New-ComponentDescriptor "app" "0.3.0" $appArchive),
-            (New-ComponentDescriptor "core-cpu" "0.3.0" $cpuArchive),
-            (New-ComponentDescriptor "core-cuda" "0.3.0" $cudaArchive)
+            (New-ComponentDescriptor "app" $targetVersion $appArchive),
+            (New-ComponentDescriptor "core-cpu" $targetVersion $cpuArchive),
+            (New-ComponentDescriptor "core-cuda" $targetVersion $cudaArchive)
         )
         $manifest = New-CustomManifest $assets $components `
-            -ManifestVersion "0.3.0" `
+            -ManifestVersion $targetVersion `
             -SupportedFrom ">=0.2.0"
 
         $result = Invoke-TestUpdater $root "--apply" $manifest
         Assert-True ($result.ExitCode -eq 0) "upgrade from $($case.Version) failed: $($result.Output)"
         $installed = Read-JsonFile (Join-Path $root "version.json")
-        Assert-True ([string]$installed.version -eq "0.3.0") "upgrade from $($case.Version) did not commit target version"
-        Assert-True ([string]$installed.components.app -eq "0.3.0") "upgrade from $($case.Version) did not update app"
-        Assert-True ([string]$installed.components.core_cpu -eq "0.3.0") "upgrade from $($case.Version) did not update core-cpu"
-        Assert-True ([string]$installed.components.core_cuda -eq "0.3.0") "upgrade from $($case.Version) did not update core-cuda"
+        Assert-True ([string]$installed.version -eq $targetVersion) "upgrade from $($case.Version) did not commit target version"
+        Assert-True ([string]$installed.components.app -eq $targetVersion) "upgrade from $($case.Version) did not update app"
+        Assert-True ([string]$installed.components.core_cpu -eq $targetVersion) "upgrade from $($case.Version) did not update core-cpu"
+        Assert-True ([string]$installed.components.core_cuda -eq $targetVersion) "upgrade from $($case.Version) did not update core-cuda"
         Assert-True ((Get-Content -LiteralPath (Join-Path $root "models\user-model.bin") -Raw) -match "preserve me") "upgrade from $($case.Version) changed preserved model data"
     }
 }
@@ -606,6 +625,7 @@ function Test-ReleaseBuilder {
     Expand-Archive -LiteralPath (Join-Path $output "audiocpp-app-v0.2.1.zip") -DestinationPath $appExpanded
     foreach ($relative in @(
         "payload\tools\model_manager.py",
+        "payload\tools\convert_glm_tts.py",
         "payload\model_specs\qwen3_asr.json",
         "payload\assets\framework\models\marblenet_vad\marblenet_vad.safetensors",
         "payload\assets\framework\models\marblenet_vad\marblenet_vad_config.json",

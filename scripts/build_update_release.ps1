@@ -153,6 +153,7 @@ function Get-AppInputs {
         webui `
         SpeakType `
         tools/model_manager.py `
+        tools/convert_glm_tts.py `
         assets/model_manager `
         assets/framework/models/marblenet_vad `
         model_specs)
@@ -167,7 +168,7 @@ function Get-AppInputs {
         } elseif ($normalized.StartsWith("SpeakType/")) {
             $include = $normalized -match '^SpeakType/(app/|web/|third_party/|run\.py$|run_speaktype\.pyw$|run_mock\.pyw$|README\.md$)' -and
                 $normalized -notin @("SpeakType/config.json", "SpeakType/logs/.gitkeep")
-        } elseif ($normalized -eq "tools/model_manager.py" -or
+        } elseif ($normalized -in @("tools/model_manager.py", "tools/convert_glm_tts.py") -or
                   $normalized.StartsWith("assets/model_manager/") -or
                   $normalized.StartsWith("assets/framework/models/marblenet_vad/") -or
                   $normalized.StartsWith("model_specs/")) {
@@ -355,7 +356,7 @@ if ($ReleaseNotesPath -ne "") {
 
 ## Update
 
-- Supported from: 0.2.0 and later 0.2.x portable bundles
+- Supported from: 0.2.0 and later portable bundles
 - Components: app, core-cpu, core-cuda$(if ($hasPythonDeps) { ', python-deps' })$(if ($hasUpdater) { ', updater' })
 - Python dependency changes: $(if ($hasPythonDeps) { 'yes' } else { 'no' })
 - CUDA runtime changes: no
