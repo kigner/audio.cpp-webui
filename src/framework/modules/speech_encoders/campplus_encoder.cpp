@@ -3,6 +3,7 @@
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/deferred_tensor_writer.h"
+#include "engine/framework/modules/structural_modules.h"
 
 #include <ggml-alloc.h>
 #include <ggml.h>
@@ -291,7 +292,6 @@ public:
         core::ModuleBuildContext ctx = {};
         ctx.ggml = ggml_;
         ctx.module_instance_name = "framework.campplus";
-
         input_tensor_ = core::make_tensor(ctx, GGML_TYPE_F32, core::TensorShape::from_dims({1, 1, 80, frames}));
 
         const auto conv2d = [&](const core::TensorValue & input,
@@ -401,6 +401,49 @@ public:
                                          int64_t channels,
                                          int64_t time_steps,
                                          int64_t seg_len) {
+            if (weights.config.normalize_partial_segment_by_full_length) {
+                std::optional<core::TensorValue> expanded;
+                for (int64_t begin = 0;
+                     begin < time_steps;
+                     begin += seg_len) {
+                    const int64_t length =
+                        std::min<int64_t>(seg_len, time_steps - begin);
+                    const auto segment =
+                        SliceModule({2, begin, length}).build(ctx, input);
+                    const auto segment_contiguous =
+                        contiguous(ctx, segment);
+                    auto mean = core::wrap_tensor(
+                        ggml_mean(ctx.ggml, segment_contiguous.tensor),
+                        core::TensorShape::from_dims({1, channels, 1}),
+                        GGML_TYPE_F32);
+                    if (length != seg_len) {
+                        mean = core::wrap_tensor(
+                            ggml_scale(
+                                ctx.ggml,
+                                mean.tensor,
+                                static_cast<float>(length) /
+                                    static_cast<float>(seg_len)),
+                            mean.shape,
+                            GGML_TYPE_F32);
+                    }
+                    const auto repeated = core::wrap_tensor(
+                        ggml_repeat(
+                            ctx.ggml,
+                            mean.tensor,
+                            segment_contiguous.tensor),
+                        segment.shape,
+                        GGML_TYPE_F32);
+                    expanded = expanded.has_value()
+                        ? concat_along_axis(
+                            ctx, *expanded, repeated, 2)
+                        : repeated;
+                }
+                return *expanded;
+            }
+
+            // Established shared behavior used by Chatterbox, IndexTTS2, and
+            // Seed-VC. Keep this graph unchanged unless a caller explicitly
+            // selects the GLM-TTS partial-segment normalization above.
             const int64_t seg_frames = (time_steps + seg_len - 1) / seg_len;
             const int64_t padded_time = seg_frames * seg_len;
             auto input4d = as_bchw(input, channels, time_steps);
@@ -511,14 +554,12 @@ public:
         x4 = run_res_block(x4, height, frames, weights.head_layer2[1]);
         x4 = relu(conv2d(x4, height, frames, weights.head_conv2_folded));
         height = (height + 1) / 2;
-
         int64_t channels = 32 * height;
         int64_t time_steps = frames;
         auto x = as_bct(x4, channels, time_steps);
         x = relu(conv1d(x, channels, time_steps, weights.tdnn_linear_folded));
         channels = 128;
         time_steps = (time_steps + 1) / 2;
-
         const int block_layers[3] = {12, 24, 16};
         for (int block_index = 0; block_index < 3; ++block_index) {
             for (int layer_index = 0; layer_index < block_layers[block_index]; ++layer_index) {

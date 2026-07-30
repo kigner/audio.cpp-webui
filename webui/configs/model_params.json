@@ -11,6 +11,14 @@
     {"name": "speaker", "type": "text", "label": "speaker（仅 CustomVoice）", "default": "", "placeholder": "内置音色名，其它版忽略"}
   ],
 
+  "glm_tts": [
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 1.0, "minimum": 0.0, "maximum": 2.0, "step": 0.05},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 25, "minimum": 0, "step": 1, "precision": 0},
+    {"name": "top_p", "type": "slider", "label": "top_p", "default": 0.8, "minimum": 0.0, "maximum": 1.0, "step": 0.01},
+    {"name": "flow_steps", "type": "number", "label": "flow_steps（Flow 采样步数）", "label_en": "flow_steps", "default": 10, "minimum": 1, "step": 1, "precision": 0},
+    {"name": "cfg_rate", "type": "slider", "label": "cfg_rate（Flow CFG）", "label_en": "cfg_rate", "default": 0.7, "minimum": 0.0, "maximum": 2.0, "step": 0.05}
+  ],
+
   "fish_audio": [
     {"name": "temperature", "type": "slider", "label": "temperature", "default": 0.8, "minimum": 0.05, "maximum": 1.95, "step": 0.05},
     {"name": "top_k", "type": "number", "label": "top_k", "default": 30, "minimum": 1, "step": 1, "precision": 0},

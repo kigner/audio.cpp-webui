@@ -123,8 +123,8 @@ function Write-PackageReadme {
             "",
             "This package contains:",
             "",
-            "- `audiocpp_cli.exe`",
-            "- `audiocpp_server.exe`",
+            '- `audiocpp_cli.exe`',
+            '- `audiocpp_server.exe`',
             $cudaRuntimeBullet,
             "- MSVC and OpenMP runtime DLLs required by this build",
             "",
@@ -178,7 +178,9 @@ This package contains:
 
 The CUDA Toolkit, NVIDIA GPU, and Visual Studio Build Tools are not required to run this package.
 
-'@ + $profileText + @'
+'@
+        $body += $profileText
+        $body += @'
 
 ## Quick Use
 

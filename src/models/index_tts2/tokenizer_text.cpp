@@ -1,5 +1,7 @@
 #include "engine/models/index_tts2/tokenizer_text.h"
 
+#include "engine/framework/text/chinese_normalization.h"
+
 #include <algorithm>
 #include <cctype>
 #include <regex>
@@ -283,52 +285,9 @@ std::string IndexTTS2TextTokenizer::normalize_english(const std::string & text) 
 }
 
 std::string IndexTTS2TextTokenizer::normalize_chinese(const std::string & text) const {
-    std::string out = std::regex_replace(
+    return engine::text::normalize_chinese_text(
         text,
-        std::regex(R"((what|where|who|which|how|t?here|it|s?he|that|this)'s)", std::regex_constants::icase),
-        "$1 is");
-    const std::vector<std::pair<std::string, std::string>> replacements = {
-        {"$", "."},
-        {"：", ","},
-        {"；", ","},
-        {";", ","},
-        {"，", ","},
-        {"。", "."},
-        {"！", "!"},
-        {"？", "?"},
-        {"\n", " "},
-        {"·", "-"},
-        {"、", ","},
-        {"...", "…"},
-        {",,,", "…"},
-        {"，，，", "…"},
-        {"……", "…"},
-        {"“", "'"},
-        {"”", "'"},
-        {"\"", "'"},
-        {"‘", "'"},
-        {"’", "'"},
-        {"（", "'"},
-        {"）", "'"},
-        {"(", "'"},
-        {")", "'"},
-        {"《", "'"},
-        {"》", "'"},
-        {"【", "'"},
-        {"】", "'"},
-        {"[", "'"},
-        {"]", "'"},
-        {"—", "-"},
-        {"～", "-"},
-        {"~", "-"},
-        {"「", "'"},
-        {"」", "'"},
-        {":", ","},
-    };
-    for (const auto & [from, to] : replacements) {
-        out = replace_all(std::move(out), from, to);
-    }
-    return out;
+        engine::text::ChineseTextNormalizationTarget::IndexTTS);
 }
 
 std::string IndexTTS2TextTokenizer::normalize_text(const std::string & text) const {

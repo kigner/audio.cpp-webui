@@ -1,0 +1,342 @@
+#include "engine/framework/text/chinese_normalization.h"
+
+#include <algorithm>
+#include <cctype>
+#include <regex>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace engine::text {
+namespace {
+
+std::string replace_all(std::string text, const std::string & from, const std::string & to) {
+    if (from.empty()) {
+        return text;
+    }
+    size_t pos = 0;
+    while ((pos = text.find(from, pos)) != std::string::npos) {
+        text.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+    return text;
+}
+
+bool is_ascii_digit(char ch) {
+    return ch >= '0' && ch <= '9';
+}
+
+bool is_ascii_alpha(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
+
+bool starts_with_at(const std::string & text, size_t offset, const std::string & needle) {
+    return offset + needle.size() <= text.size() && text.compare(offset, needle.size(), needle) == 0;
+}
+
+const std::string & chinese_digit_word(char digit, bool telephone_one = false) {
+    static const std::string digits[] = {"零", "一", "二", "三", "四", "五", "六", "七", "八", "九"};
+    static const std::string yao = "幺";
+    if (telephone_one && digit == '1') {
+        return yao;
+    }
+    return digits[static_cast<size_t>(digit - '0')];
+}
+
+std::string chinese_digits_individually(std::string_view digits, bool telephone_one = false) {
+    std::string out;
+    for (char digit : digits) {
+        out += chinese_digit_word(digit, telephone_one);
+    }
+    return out;
+}
+
+std::string chinese_cardinal_under_10000(int value) {
+    if (value == 0) {
+        return "零";
+    }
+
+    static const std::string units[] = {"", "十", "百", "千"};
+    std::string out;
+    bool pending_zero = false;
+    for (int unit_index = 3; unit_index >= 0; --unit_index) {
+        int divisor = 1;
+        for (int i = 0; i < unit_index; ++i) {
+            divisor *= 10;
+        }
+        const int digit = value / divisor;
+        value %= divisor;
+        if (digit == 0) {
+            if (!out.empty() && value > 0) {
+                pending_zero = true;
+            }
+            continue;
+        }
+        if (pending_zero) {
+            out += "零";
+            pending_zero = false;
+        }
+        if (!(digit == 1 && unit_index == 1 && out.empty())) {
+            if (digit == 2 && unit_index >= 2) {
+                out += "两";
+            } else {
+                out += chinese_digit_word(static_cast<char>('0' + digit));
+            }
+        }
+        out += units[static_cast<size_t>(unit_index)];
+    }
+    return out;
+}
+
+std::string chinese_cardinal_from_digits(const std::string & digits) {
+    if (digits.empty()) {
+        return "";
+    }
+    if (digits.size() > 4) {
+        return chinese_digits_individually(digits, true);
+    }
+    return chinese_cardinal_under_10000(std::stoi(digits));
+}
+
+std::string uppercase_ascii_and_v(std::string value) {
+    std::string out;
+    out.reserve(value.size());
+    for (size_t i = 0; i < value.size();) {
+        const unsigned char ch = static_cast<unsigned char>(value[i]);
+        if (i + 1 < value.size() && ch == 0xC3U &&
+            (static_cast<unsigned char>(value[i + 1]) == 0xBCU || static_cast<unsigned char>(value[i + 1]) == 0x9CU)) {
+            out.push_back('V');
+            i += 2;
+            continue;
+        }
+        out.push_back(static_cast<char>(std::toupper(ch)));
+        ++i;
+    }
+    return out;
+}
+
+std::string correct_index_tts_pinyin(std::string value) {
+    if (value.size() >= 3) {
+        const char initial = static_cast<char>(std::tolower(static_cast<unsigned char>(value[0])));
+        if (initial == 'j' || initial == 'q' || initial == 'x') {
+            const char next = static_cast<char>(std::tolower(static_cast<unsigned char>(value[1])));
+            if (next == 'u') {
+                value[1] = 'v';
+            } else if (value.size() >= 4 &&
+                       static_cast<unsigned char>(value[1]) == 0xC3U &&
+                       static_cast<unsigned char>(value[2]) == 0xBCU) {
+                value.replace(1, 2, "v");
+            }
+        }
+    }
+    return uppercase_ascii_and_v(std::move(value));
+}
+
+bool is_index_tts_pinyin_candidate(const std::string & candidate) {
+    static const std::vector<std::string> initials = {
+        "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h",
+        "j", "q", "x", "z", "c", "s", "r", "y", "w",
+    };
+    static const std::vector<std::string> finals = {
+        "a", "ai", "an", "ang", "ao", "e", "ei", "en", "eng", "er", "i", "ia", "ian", "iang",
+        "iao", "ie", "in", "ing", "iong", "iu", "o", "ong", "ou", "u", "ua", "uai", "uan",
+        "uang", "ue", "ui", "un", "uo", "v", "van", "ve", "vn", "ng",
+    };
+    if (candidate.size() < 2 || !is_ascii_digit(candidate.back()) || candidate.back() < '1' || candidate.back() > '5') {
+        return false;
+    }
+    std::string body = candidate.substr(0, candidate.size() - 1);
+    body = uppercase_ascii_and_v(std::move(body));
+    std::transform(body.begin(), body.end(), body.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    for (const auto & initial : initials) {
+        if (body.rfind(initial, 0) == 0) {
+            const std::string final = body.substr(initial.size());
+            return std::find(finals.begin(), finals.end(), final) != finals.end();
+        }
+    }
+    return std::find(finals.begin(), finals.end(), body) != finals.end();
+}
+
+std::vector<std::pair<std::string, std::string>> save_regex_matches(
+    std::string & text,
+    const std::regex & pattern,
+    std::string_view placeholder_prefix) {
+    std::vector<std::string> matches;
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), pattern); it != std::sregex_iterator(); ++it) {
+        matches.push_back(it->str());
+    }
+    std::sort(matches.begin(), matches.end());
+    matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+    std::sort(matches.begin(), matches.end(), [](const auto & lhs, const auto & rhs) {
+        return lhs.size() > rhs.size();
+    });
+
+    std::vector<std::pair<std::string, std::string>> saved;
+    for (size_t i = 0; i < matches.size(); ++i) {
+        const std::string placeholder = "<" + std::string(placeholder_prefix) + "_" + std::to_string(i) + ">";
+        text = replace_all(std::move(text), matches[i], placeholder);
+        saved.emplace_back(placeholder, matches[i]);
+    }
+    return saved;
+}
+
+void protect_tech_terms(std::string & text) {
+    const std::regex pattern(R"([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+)");
+    std::vector<std::string> matches;
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), pattern); it != std::sregex_iterator(); ++it) {
+        matches.push_back(it->str());
+    }
+    std::sort(matches.begin(), matches.end());
+    matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+    std::sort(matches.begin(), matches.end(), [](const auto & lhs, const auto & rhs) {
+        return lhs.size() > rhs.size();
+    });
+    for (const auto & term : matches) {
+        text = replace_all(std::move(text), term, replace_all(term, "-", "<H>"));
+    }
+}
+
+std::vector<std::pair<std::string, std::string>> save_pinyin_tones(std::string & text) {
+    std::vector<std::string> matches;
+    const std::regex pattern(R"([A-Za-z\xC3\x9C\xC3\xBCvV]+[1-5])");
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), pattern); it != std::sregex_iterator(); ++it) {
+        const size_t pos = static_cast<size_t>(it->position());
+        if (pos > 0 && is_ascii_alpha(text[pos - 1])) {
+            continue;
+        }
+        const std::string value = it->str();
+        if (is_index_tts_pinyin_candidate(value)) {
+            matches.push_back(value);
+        }
+    }
+    std::sort(matches.begin(), matches.end());
+    matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+
+    std::vector<std::pair<std::string, std::string>> saved;
+    for (size_t i = 0; i < matches.size(); ++i) {
+        const std::string placeholder = "<pinyin_" + std::to_string(i) + ">";
+        text = replace_all(std::move(text), matches[i], placeholder);
+        saved.emplace_back(placeholder, correct_index_tts_pinyin(matches[i]));
+    }
+    return saved;
+}
+
+void restore_saved(std::string & text, const std::vector<std::pair<std::string, std::string>> & saved) {
+    for (const auto & [placeholder, value] : saved) {
+        text = replace_all(std::move(text), placeholder, value);
+    }
+}
+
+std::string normalize_chinese_numbers(const std::string & text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size();) {
+        if (!is_ascii_digit(text[i])) {
+            out.push_back(text[i++]);
+            continue;
+        }
+
+        const size_t begin = i;
+        while (i < text.size() && is_ascii_digit(text[i])) {
+            ++i;
+        }
+        const std::string digits = text.substr(begin, i - begin);
+        if (i < text.size() && text[i] == '.' && i + 1 < text.size() && is_ascii_digit(text[i + 1])) {
+            size_t decimal_end = i + 1;
+            while (decimal_end < text.size() && is_ascii_digit(text[decimal_end])) {
+                ++decimal_end;
+            }
+            out += chinese_cardinal_from_digits(digits);
+            out += "点";
+            out += chinese_digits_individually(text.substr(i + 1, decimal_end - i - 1));
+            i = decimal_end;
+            continue;
+        }
+        if (digits.size() == 4 && starts_with_at(text, i, "年")) {
+            out += chinese_digits_individually(digits);
+        } else {
+            out += chinese_cardinal_from_digits(digits);
+        }
+    }
+    return out;
+}
+
+std::string normalize_date_separators(std::string text) {
+    const std::regex date_pattern(R"((\d{4})/(\d{1,2})/(\d{1,2}))");
+    return std::regex_replace(text, date_pattern, "$1年$2月$3日");
+}
+
+std::string normalize_time_zero_minutes(std::string text) {
+    const std::regex time_pattern(R"((\d{1,2}):00)");
+    return std::regex_replace(text, time_pattern, "$1点");
+}
+
+std::string normalize_telephone_runs(std::string text) {
+    const std::regex phone_pattern(R"((\d{3})-(\d{4})-(\d{4}))");
+    for (std::smatch match; std::regex_search(text, match, phone_pattern);) {
+        const std::string digits = match[1].str() + match[2].str() + match[3].str();
+        text.replace(static_cast<size_t>(match.position()), static_cast<size_t>(match.length()),
+            chinese_digits_individually(digits));
+    }
+    return text;
+}
+
+std::string apply_index_tts_punctuation_map(std::string text) {
+    const std::vector<std::pair<std::string, std::string>> replacements = {
+        {"$", "."}, {"：", ","}, {"；", ","}, {";", ","}, {"，", ","}, {"。", "."},
+        {"！", "!"}, {"？", "?"}, {"\n", " "}, {"·", "-"}, {"、", ","}, {"...", "…"},
+        {",,,", "…"}, {"，，，", "…"}, {"……", "…"}, {"“", "'"}, {"”", "'"}, {"\"", "'"},
+        {"‘", "'"}, {"’", "'"}, {"（", "'"}, {"）", "'"}, {"(", "'"}, {")", "'"},
+        {"《", "'"}, {"》", "'"}, {"【", "'"}, {"】", "'"}, {"[", "'"}, {"]", "'"},
+        {"—", "-"}, {"～", "-"}, {"~", "-"}, {"「", "'"}, {"」", "'"}, {":", ","},
+    };
+    for (const auto & [from, to] : replacements) {
+        text = replace_all(std::move(text), from, to);
+    }
+    return text;
+}
+
+std::string normalize_index_tts_chinese_text(std::string_view text) {
+    std::string out = std::regex_replace(
+        std::string(text),
+        std::regex(R"((what|where|who|which|how|t?here|it|s?he|that|this)'s)", std::regex_constants::icase),
+        "$1 is");
+
+    const std::regex name_pattern("([\xE4-\xE9][\x80-\xBF][\x80-\xBF]+(?:[-·—][\xE4-\xE9][\x80-\xBF][\x80-\xBF]+){1,2})");
+    protect_tech_terms(out);
+    const auto pinyin_tones = save_pinyin_tones(out);
+    const auto names = save_regex_matches(out, name_pattern, "name");
+
+    out = normalize_telephone_runs(std::move(out));
+    out = normalize_date_separators(std::move(out));
+    out = normalize_time_zero_minutes(std::move(out));
+    out = normalize_chinese_numbers(out);
+
+    restore_saved(out, names);
+    restore_saved(out, pinyin_tones);
+    out = std::regex_replace(out, std::regex(R"(\s*<H>\s*)"), "-");
+    return apply_index_tts_punctuation_map(std::move(out));
+}
+
+}  // namespace
+
+ChineseTextNormalizer::ChineseTextNormalizer(ChineseTextNormalizationTarget target)
+    : target_(target) {}
+
+std::string ChineseTextNormalizer::normalize(std::string_view text) const {
+    switch (target_) {
+    case ChineseTextNormalizationTarget::IndexTTS:
+        return normalize_index_tts_chinese_text(text);
+    }
+    throw std::runtime_error("unsupported Chinese text normalization target");
+}
+
+std::string normalize_chinese_text(std::string_view text, ChineseTextNormalizationTarget target) {
+    return ChineseTextNormalizer(target).normalize(text);
+}
+
+}  // namespace engine::text

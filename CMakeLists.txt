@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 option(AUDIOCPP_DEPLOYMENT_BUILD
     "Compile model specs into the runtime for self-contained deployments"
@@ -80,6 +81,9 @@ option(ENGINE_ENABLE_LLAMAFILE "Build ggml with llamafile SGEMM support" ${ENGIN
 option(ENGINE_ENABLE_CUDA_GRAPHS "Enable ggml CUDA graphs support" ${ENGINE_DEFAULT_ENABLE_CUDA_GRAPHS})
 option(ENGINE_ENABLE_NATIVE_CPU "Build ggml CPU kernels with native host ISA flags" ${ENGINE_DEFAULT_ENABLE_NATIVE_CPU})
 option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ON)
+option(ENGINE_ENABLE_CPU_ALL_VARIANTS
+    "Build CPU backends as dynamic libraries with per-ISA variants (for Docker/portable builds)"
+    OFF)
 option(ENGINE_BUILD_EXAMPLES "Build example binaries" OFF)
 option(ENGINE_BUILD_TESTS "Build framework unit tests" OFF)
 option(ENGINE_BUILD_WARMBENCH "Build warmbench helper binaries" OFF)
@@ -107,7 +111,22 @@ if (ENGINE_ENABLE_OPENMP)
     find_package(OpenMP REQUIRED COMPONENTS CXX)
 endif()
 
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
+if (ENGINE_ENABLE_CPU_ALL_VARIANTS)
+    message(STATUS "CPU all variants mode: enabling shared libraries + backends as dynamic libs")
+    set(BUILD_SHARED_LIBS ON CACHE BOOL "Build shared libraries" FORCE)
+    set(GGML_BACKEND_DL ON CACHE BOOL "Build backends as dynamic libraries" FORCE)
+    set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "Build all CPU backend variants" FORCE)
+    set(GGML_NATIVE OFF CACHE BOOL "Build ggml CPU kernels with native host ISA flags" FORCE)
+    # Ensure libraries in the same directory as the binary are found at runtime
+    set(CMAKE_INSTALL_RPATH "\$ORIGIN")
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+else()
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+    set(GGML_BACKEND_DL OFF CACHE BOOL "Build backends as dynamic libraries" FORCE)
+    set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "Build all CPU backend variants" FORCE)
+    set(GGML_NATIVE ${ENGINE_ENABLE_NATIVE_CPU} CACHE BOOL "Build ggml CPU kernels with native host ISA flags" FORCE)
+endif()
+
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "Do not build upstream examples" FORCE)
 set(GGML_BUILD_TESTS OFF CACHE BOOL "Do not build upstream tests" FORCE)
 set(GGML_ALL_WARNINGS OFF CACHE BOOL "Keep upstream warnings quiet in this sample" FORCE)
@@ -117,7 +136,6 @@ set(GGML_VULKAN ${ENGINE_ENABLE_VULKAN} CACHE BOOL "Build ggml with Vulkan backe
 set(GGML_METAL ${ENGINE_ENABLE_METAL} CACHE BOOL "Build ggml with Metal backend support" FORCE)
 set(GGML_LLAMAFILE ${ENGINE_ENABLE_LLAMAFILE} CACHE BOOL "Build ggml with llamafile SGEMM support" FORCE)
 set(GGML_CUDA_GRAPHS ${ENGINE_ENABLE_CUDA_GRAPHS} CACHE BOOL "Enable ggml CUDA graphs support" FORCE)
-set(GGML_NATIVE ${ENGINE_ENABLE_NATIVE_CPU} CACHE BOOL "Build ggml CPU kernels with native host ISA flags" FORCE)
 
 set(SPM_ENABLE_SHARED OFF CACHE BOOL "Build sentencepiece shared libs" FORCE)
 set(SPM_BUILD_TEST OFF CACHE BOOL "Do not build sentencepiece tests" FORCE)
@@ -167,6 +185,7 @@ add_library(engine_runtime STATIC
     src/framework/io/config.cpp
     src/framework/io/json.cpp
     src/framework/io/text.cpp
+    src/framework/text/chinese_normalization.cpp
     src/framework/text/chunking.cpp
     src/framework/text/subtitle.cpp
     src/framework/io/yaml.cpp
@@ -263,6 +282,15 @@ add_library(engine_runtime STATIC
     src/models/omnivoice/assets.cpp
     src/models/omnivoice/tokenizer_text.cpp
     src/models/omnivoice/audio_tokenizer.cpp
+    src/community_models/glm_tts/assets.cpp
+    src/community_models/glm_tts/flow.cpp
+    src/community_models/glm_tts/frontend.cpp
+    src/community_models/glm_tts/loader.cpp
+    src/community_models/glm_tts/llama.cpp
+    src/community_models/glm_tts/session.cpp
+    src/community_models/glm_tts/prompt.cpp
+    src/community_models/glm_tts/speech_tokenizer.cpp
+    src/community_models/glm_tts/tokenizer_text.cpp
     src/community_models/outetts/assets.cpp
     src/community_models/outetts/dac.cpp
     src/community_models/outetts/llama.cpp
@@ -753,6 +781,7 @@ if (ENGINE_BUILD_WARMBENCH)
         endif()
     endfunction()
 
+    add_engine_warmbench(campplus_shared_default_probe tests/glm_tts/campplus_shared_default_probe.cpp)
     add_engine_warmbench(chatterbox_warm_bench tests/chatterbox/chatterbox_warm_bench.cpp)
     add_engine_warmbench(citrinet_asr_warm_bench tests/citrinet_asr/citrinet_asr_warm_bench.cpp)
     add_engine_warmbench(higgs_audio_stt_warm_bench tests/higgs_audio_stt/higgs_audio_stt_warm_bench.cpp)
@@ -767,6 +796,16 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(nemotron_asr_warm_bench tests/nemotron_asr/nemotron_asr_warm_bench.cpp)
     add_engine_warmbench(omnivoice_warm_bench tests/omnivoice/omnivoice_warm_bench.cpp)
     add_engine_warmbench(outetts_warm_bench tests/outetts/outetts_warm_bench.cpp)
+    add_engine_warmbench(glm_tts_tokenizer_probe tests/glm_tts/glm_tts_tokenizer_probe.cpp)
+    add_engine_warmbench(glm_tts_assets_probe tests/glm_tts/glm_tts_assets_probe.cpp)
+    add_engine_warmbench(glm_tts_prompt_probe tests/glm_tts/glm_tts_prompt_probe.cpp)
+    add_engine_warmbench(glm_tts_speech_tokenizer_probe tests/glm_tts/glm_tts_speech_tokenizer_probe.cpp)
+    add_engine_warmbench(glm_tts_flow_probe tests/glm_tts/glm_tts_flow_probe.cpp)
+    add_engine_warmbench(glm_tts_flow_conditioned_probe tests/glm_tts/glm_tts_flow_conditioned_probe.cpp)
+    add_engine_warmbench(glm_tts_frontend_probe tests/glm_tts/glm_tts_frontend_probe.cpp)
+    add_engine_warmbench(glm_tts_campplus_probe tests/glm_tts/glm_tts_campplus_probe.cpp)
+    add_engine_warmbench(glm_tts_llama_probe tests/glm_tts/glm_tts_llama_probe.cpp)
+    add_engine_warmbench(glm_tts_warm_bench tests/glm_tts/glm_tts_warm_bench.cpp)
     add_engine_warmbench(pocket_tts_warm_bench tests/pocket_tts/pocket_tts_warm_bench.cpp)
     add_engine_warmbench(qwen3_asr_warm_bench tests/qwen3_asr/qwen3_asr_warm_bench.cpp)
     add_engine_warmbench(qwen3_forced_aligner_warm_bench tests/qwen3_forced_aligner/qwen3_forced_aligner_warm_bench.cpp)
@@ -899,6 +938,14 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME torch_random_test
         COMMAND torch_random_test
+    )
+
+    add_engine_unittest(backend_device_resolution_test tests/unittests/test_backend_device_resolution.cpp)
+    target_include_directories(backend_device_resolution_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+
+    add_test(
+        NAME backend_device_resolution_test
+        COMMAND backend_device_resolution_test
     )
 
     add_engine_unittest(hf_sampler_test tests/unittests/test_hf_sampler.cpp)

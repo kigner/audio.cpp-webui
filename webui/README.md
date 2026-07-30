@@ -84,7 +84,8 @@ set AUDIOCPP_BACKEND=cpu & run_cli_tts.bat qwen3-tts "强制用 CPU 跑"
 ## 2. `run_server.bat` — HTTP API 服务
 
 启动一个 OpenAI 兼容的 HTTP 服务，供**其它应用**调用。后端自动检测：有 CUDA 用 GPU，
-否则用 CPU 版 server（CPU 下自动把 ggml 线程数设为核数-1；速度较慢，部分大模型不实用）。
+否则用 CPU 版 server（CPU 下默认按物理核心数分配 ggml 线程，4 核以上再留 1 核给系统；
+速度较慢，部分大模型不实用）。
 
 ```
 用法: run_server.bat <model_id> [port] [device]
@@ -155,7 +156,8 @@ curl http://127.0.0.1:8088/v1/models
   起/切换底层的 `audiocpp_server`（一次一个模型在显存里，换模型即重启）。
 - 界面里可上传参考音色、下载未安装的模型、填 HF token / 代理等。
 - 后端自动检测（同上：有 CUDA 用 GPU，否则 CPU）；`AUDIOCPP_BACKEND=gpu|cpu` 可强制。
-  CPU 模式下 ggml 线程数自动设为核数-1（可用 `AUDIOCPP_THREADS=N` 覆盖），且不再显示显存警告。
+  CPU 模式下按物理核心数分配 ggml 线程（不计 SMT/超线程，4 核以上留 1 核给系统），
+  可用 `AUDIOCPP_THREADS=N` 覆盖；CPU 模式下不显示显存警告。
 
 > 网页界面（7860）是给人用的；要给**其它程序**当 API，请用 `run_server.bat` 起的 **8088** 那个服务，
 > 或让 WebUI 起来后直接打它的 8088 端口（见 `run_server.bat` 的端点表）。
