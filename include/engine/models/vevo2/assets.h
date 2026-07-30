@@ -2,7 +2,7 @@
 
 #include "engine/framework/assets/resource_bundle.h"
 #include "engine/framework/assets/tensor_source.h"
-#include "engine/framework/modules/whisper_embedding.h"
+#include "engine/framework/modules/speech_encoders/whisper_embedding.h"
 
 #include <filesystem>
 #include <memory>

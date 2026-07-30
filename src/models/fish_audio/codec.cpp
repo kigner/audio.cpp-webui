@@ -17,6 +17,7 @@
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/streaming_conv_modules.h"
 #include "engine/framework/modules/structural_modules.h"
+#include "engine/framework/modules/transformer_modules.h"
 #include "engine/framework/modules/weight_binding.h"
 
 #include "engine/framework/core/constant_tensor_cache.h"

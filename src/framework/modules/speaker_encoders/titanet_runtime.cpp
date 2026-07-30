@@ -1,4 +1,4 @@
-#include "engine/framework/modules/titanet_runtime.h"
+#include "engine/framework/modules/speaker_encoders/titanet_runtime.h"
 
 #include "engine/framework/audio/conversion.h"
 #include "engine/framework/audio/dsp.h"
@@ -14,7 +14,7 @@
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/streaming_conv_modules.h"
 #include "engine/framework/modules/structural_modules.h"
-#include "engine/framework/modules/titanet_speaker.h"
+#include "engine/framework/modules/speaker_encoders/titanet_speaker.h"
 
 #include <ggml-backend.h>
 #include <ggml.h>

@@ -3,7 +3,7 @@
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/core/module.h"
-#include "engine/framework/modules/attention/qwen_decoder.h"
+#include "engine/framework/modules/transformers/qwen_decoder.h"
 #include "engine/framework/runtime/kv_cache.h"
 #include "engine/models/higgs_audio_tts/assets.h"
 

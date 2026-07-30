@@ -77,6 +77,32 @@ private:
     Conv2dConfig config_;
 };
 
+struct CausalConv2dConfig {
+    Conv2dConfig conv;
+    int64_t pad_left = 0;
+    int64_t pad_right = 0;
+    int64_t pad_top = 0;
+    int64_t pad_bottom = 0;
+};
+
+class CausalConv2dModule {
+public:
+    explicit CausalConv2dModule(CausalConv2dConfig config);
+
+    const CausalConv2dConfig & config() const noexcept;
+    const core::ModuleSchema & schema() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const Conv2dWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    CausalConv2dConfig config_;
+};
+
 struct DepthwiseConv2dConfig {
     int64_t channels = 0;
     int64_t kernel_height = 0;

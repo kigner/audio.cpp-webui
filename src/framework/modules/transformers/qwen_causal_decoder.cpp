@@ -1,4 +1,4 @@
-#include "engine/framework/modules/attention/qwen_causal_decoder.h"
+#include "engine/framework/modules/transformers/qwen_causal_decoder.h"
 
 #include "engine/framework/core/backend.h"
 #include "engine/framework/modules/linear_module.h"

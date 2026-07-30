@@ -2,7 +2,7 @@
 
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/assets/tensor_source.h"
-#include "engine/framework/modules/ecapa_tdnn_speaker.h"
+#include "engine/framework/modules/speaker_encoders/ecapa_tdnn_speaker.h"
 #include "engine/framework/runtime/session.h"
 
 #include <cstdint>

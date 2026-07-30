@@ -8,6 +8,7 @@
 #include "engine/models/vevo2/fm.h"
 #include "engine/models/vevo2/prompt_builder.h"
 #include "engine/models/vevo2/vocoder.h"
+#include "engine/framework/modules/speech_encoders/whisper_frontend.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,49 +17,14 @@
 #include <vector>
 
 namespace engine::assets {
-class TensorSource;
 enum class TensorStorageType;
 }
 
 namespace engine::core {
-enum class BackendType;
-class BackendWeightStore;
 class ExecutionContext;
 }
 
 namespace engine::models::vevo2 {
-
-class Vevo2WhisperEmbeddingRuntime final {
-public:
-    Vevo2WhisperEmbeddingRuntime(
-        const Vevo2Assets & assets,
-        engine::core::ExecutionContext & execution_context,
-        size_t weight_context_bytes,
-        size_t graph_context_bytes,
-        engine::assets::TensorStorageType matmul_weight_storage_type,
-        engine::assets::TensorStorageType conv_weight_storage_type);
-    ~Vevo2WhisperEmbeddingRuntime();
-
-    Vevo2WhisperEmbeddingRuntime(const Vevo2WhisperEmbeddingRuntime &) = delete;
-    Vevo2WhisperEmbeddingRuntime & operator=(const Vevo2WhisperEmbeddingRuntime &) = delete;
-
-    std::vector<float> encode_log_mel(const std::vector<float> & log_mel);
-    std::vector<float> extract_features(const runtime::AudioBuffer & audio, int64_t target_frames, size_t threads = 0);
-
-private:
-    struct Graph;
-
-    void ensure_graph();
-
-    engine::core::ExecutionContext & execution_context_;
-    engine::core::BackendType backend_type_;
-    size_t graph_context_bytes_ = 0;
-    engine::modules::WhisperEmbeddingConfig config_;
-    std::shared_ptr<const engine::assets::TensorSource> weight_source_;
-    std::shared_ptr<engine::core::BackendWeightStore> weight_store_;
-    engine::modules::WhisperEmbeddingWeights weights_;
-    std::unique_ptr<Graph> graph_;
-};
 
 class Vevo2Session final
     : public runtime::RuntimeSessionBase
@@ -135,7 +101,7 @@ private:
     size_t vocoder_graph_context_bytes_ = 768ull * 1024ull * 1024ull;
     engine::assets::TensorStorageType vocoder_matmul_weight_storage_type_;
     engine::assets::TensorStorageType vocoder_conv_weight_storage_type_;
-    Vevo2WhisperEmbeddingRuntime whisper_embedding_;
+    engine::modules::WhisperFrontendComponent whisper_frontend_;
     Vevo2ProsodyTokenizerRuntime prosody_tokenizer_;
     Vevo2ContentStyleTokenizerRuntime content_style_tokenizer_;
     Vevo2AutoregressiveRuntime autoregressive_model_;

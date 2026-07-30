@@ -1,12 +1,11 @@
-#include "engine/framework/modules/attention/qwen_decoder.h"
-
-#include "attention_internal.h"
+#include "engine/framework/modules/transformers/qwen_decoder.h"
 
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/optimizations/fast_kv_modules.h"
 #include "engine/framework/modules/positional_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
+#include "../module_internal.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -14,7 +13,8 @@
 namespace engine::modules {
 namespace {
 
-using namespace attention::internal;
+using engine::modules::internal::concat_all;
+using engine::modules::internal::validate_sequence_input;
 
 inline const core::ModulePortSpec kQwenDecoderInputs[] = {
     {"input", core::PortKind::Activation, false},

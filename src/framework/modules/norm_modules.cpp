@@ -1,4 +1,5 @@
 #include "engine/framework/modules/norm_modules.h"
+#include "engine/framework/modules/primitive_modules.h"
 #include "tensor_layout_utils.h"
 
 #include <stdexcept>
@@ -35,6 +36,26 @@ const core::ModuleSchema kRmsNormSchema = {
     kNormOutputs,
     1,
     "Applies RMS normalization over the last logical dimension.",
+};
+
+const core::ModuleSchema kGemmaRmsNormSchema = {
+    "GemmaRMSNorm",
+    "nn.normalization",
+    kNormInputs,
+    3,
+    kNormOutputs,
+    1,
+    "Applies Gemma RMS normalization over the last logical dimension using x * (1 + weight).",
+};
+
+const core::ModuleSchema kPixelNormSchema = {
+    "PixelNorm",
+    "nn.normalization",
+    kNormInputs,
+    1,
+    kNormOutputs,
+    1,
+    "Normalizes an input by RMS energy along one logical axis.",
 };
 
 const core::ModulePortSpec kAdaptiveInstanceNorm1dInputs[] = {
@@ -208,6 +229,88 @@ core::TensorValue RMSNormModule::build(
 
 const core::ModuleSchema & RMSNormModule::static_schema() noexcept {
     return kRmsNormSchema;
+}
+
+GemmaRMSNormModule::GemmaRMSNormModule(NormConfig config) : config_(config) {
+    validate_norm_config(config_);
+    if (!config_.use_weight || config_.use_bias) {
+        throw std::runtime_error("GemmaRMSNormConfig requires use_weight=true and use_bias=false");
+    }
+}
+
+const core::ModuleSchema & GemmaRMSNormModule::schema() const noexcept {
+    return static_schema();
+}
+
+const NormConfig & GemmaRMSNormModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue GemmaRMSNormModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const NormWeights & weights) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    if (!weights.weight.has_value()) {
+        throw std::runtime_error("GemmaRMSNorm weight is required");
+    }
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    core::validate_last_dim(input, config_.hidden_size, "input");
+    core::validate_shape(*weights.weight, core::TensorShape::from_dims({config_.hidden_size}), "weight");
+
+    const auto input_contiguous = tensor_layout::ensure_contiguous_layout_if_needed(ctx, input);
+    auto normalized = core::wrap_tensor(
+        ggml_rms_norm(ctx.ggml, input_contiguous.tensor, config_.eps),
+        input.shape,
+        GGML_TYPE_F32);
+    const auto one_plus_weight = core::wrap_tensor(
+        ggml_scale_bias(ctx.ggml, ensure_f32(ctx, *weights.weight).tensor, 1.0F, 1.0F),
+        weights.weight->shape,
+        GGML_TYPE_F32);
+    return core::wrap_tensor(
+        ggml_mul(ctx.ggml, normalized.tensor, one_plus_weight.tensor),
+        input.shape,
+        GGML_TYPE_F32);
+}
+
+const core::ModuleSchema & GemmaRMSNormModule::static_schema() noexcept {
+    return kGemmaRmsNormSchema;
+}
+
+PixelNormModule::PixelNormModule(PixelNormConfig config) : config_(config) {
+    if (!(config_.eps > 0.0F)) {
+        throw std::runtime_error("PixelNormConfig.eps must be positive");
+    }
+}
+
+const core::ModuleSchema & PixelNormModule::schema() const noexcept {
+    return static_schema();
+}
+
+const PixelNormConfig & PixelNormModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue PixelNormModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    const auto input_f32 = ensure_f32(ctx, tensor_layout::ensure_contiguous_layout_if_needed(ctx, input));
+    auto squared = core::wrap_tensor(ggml_sqr(ctx.ggml, input_f32.tensor), input.shape, GGML_TYPE_F32);
+    auto mean = ReduceMeanModule({config_.axis}).build(ctx, squared);
+    auto denom = core::wrap_tensor(
+        ggml_sqrt(ctx.ggml, ggml_scale_bias(ctx.ggml, mean.tensor, 1.0F, config_.eps)),
+        mean.shape,
+        GGML_TYPE_F32);
+    auto denom_full = core::wrap_tensor(ggml_repeat(ctx.ggml, denom.tensor, input_f32.tensor), input.shape, GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_div(ctx.ggml, input_f32.tensor, denom_full.tensor), input.shape, GGML_TYPE_F32);
+}
+
+const core::ModuleSchema & PixelNormModule::static_schema() noexcept {
+    return kPixelNormSchema;
 }
 
 AdaptiveInstanceNorm1dModule::AdaptiveInstanceNorm1dModule(AdaptiveInstanceNorm1dConfig config) : config_(config) {

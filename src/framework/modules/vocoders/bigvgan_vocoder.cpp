@@ -1,4 +1,4 @@
-#include "engine/framework/modules/bigvgan_vocoder.h"
+#include "engine/framework/modules/vocoders/bigvgan_vocoder.h"
 
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"

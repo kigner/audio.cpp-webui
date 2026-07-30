@@ -4,7 +4,7 @@
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/modules/activation_modules.h"
-#include "engine/framework/modules/attention/qwen_causal_decoder.h"
+#include "engine/framework/modules/transformers/qwen_causal_decoder.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/lookup_modules.h"
 #include "engine/framework/modules/optimizations/fast_kv_modules.h"

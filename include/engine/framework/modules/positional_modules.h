@@ -31,4 +31,24 @@ private:
     RoPEConfig config_;
 };
 
+struct SplitRoPEConfig {
+    int64_t dimensions = 0;
+};
+
+class SplitRoPEModule {
+public:
+    explicit SplitRoPEModule(SplitRoPEConfig config);
+
+    const SplitRoPEConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const core::TensorValue & cos,
+        const core::TensorValue & sin) const;
+
+private:
+    SplitRoPEConfig config_;
+};
+
 }  // namespace engine::modules

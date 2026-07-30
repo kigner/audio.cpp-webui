@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/framework/modules/bigvgan_vocoder.h"
+#include "engine/framework/modules/vocoders/bigvgan_vocoder.h"
 #include "engine/models/index_tts2/assets.h"
 
 #include <memory>

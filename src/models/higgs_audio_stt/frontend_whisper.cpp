@@ -13,7 +13,6 @@
 namespace engine::models::higgs_audio_stt {
 namespace {
 
-constexpr float kLogFloor = 1.0e-10F;
 using Clock = std::chrono::steady_clock;
 
 void validate_audio_input(const runtime::AudioBuffer & audio) {
@@ -54,78 +53,35 @@ struct ChunkFeatures {
 
 ChunkFeatures compute_chunk_features(
     const std::vector<float> & samples,
-    const engine::audio::SparseMelFilterbank & filterbank,
+    const engine::audio::WhisperLogMelExtractor & extractor,
     const HiggsAudioSTTFrontendConfig & config) {
     std::vector<float> chunk = samples;
     if (static_cast<int64_t>(chunk.size()) < config.n_fft) {
         chunk.resize(static_cast<size_t>(config.n_fft), 0.0F);
     }
-    const engine::audio::STFTConfig stft_config{
+    auto features = extractor.compute(chunk);
+    return {std::move(features.values), features.frames};
+}
+
+engine::audio::WhisperLogMelConfig make_extractor_config(const std::shared_ptr<const HiggsAudioSTTAssets> & assets) {
+    if (assets == nullptr) {
+        throw std::runtime_error("Higgs Audio STT Whisper frontend requires assets");
+    }
+    const auto & config = assets->config.frontend;
+    return {
+        config.sample_rate,
         config.n_fft,
         config.hop_length,
-        config.n_fft,
-        true,
-        engine::audio::STFTPadMode::Reflect,
+        config.feature_size,
         engine::audio::STFTFamily::Default,
     };
-    const auto & window = engine::audio::get_cached_stft_window(stft_config);
-    auto magnitude = engine::audio::STFT().compute_magnitude(
-        chunk,
-        window,
-        1,
-        static_cast<int64_t>(chunk.size()),
-        stft_config);
-    if (magnitude.shape.size() != 3) {
-        throw std::runtime_error("Higgs Audio STT STFT returned unexpected rank");
-    }
-    const int64_t freq_bins = magnitude.shape[1];
-    const int64_t stft_frames = magnitude.shape[2];
-    if (stft_frames <= 1) {
-        throw std::runtime_error("Higgs Audio STT STFT produced too few frames");
-    }
-    ChunkFeatures out;
-    out.frames = stft_frames - 1;
-    auto mel = engine::audio::MelFilterbank().compute_custom_sparse_from_magnitude(
-        magnitude.values,
-        1,
-        freq_bins,
-        stft_frames,
-        out.frames,
-        filterbank);
-    if (mel.shape.size() != 3 || mel.shape[1] != config.feature_size || mel.shape[2] != out.frames) {
-        throw std::runtime_error("Higgs Audio STT mel frontend returned unexpected shape");
-    }
-    float max_log = -INFINITY;
-    for (float & value : mel.values) {
-        value = std::log10(std::max(value, kLogFloor));
-        max_log = std::max(max_log, value);
-    }
-    const float floor = max_log - 8.0F;
-    for (float & value : mel.values) {
-        value = (std::max(value, floor) + 4.0F) / 4.0F;
-    }
-    out.values = std::move(mel.values);
-    return out;
 }
 
 }  // namespace
 
 HiggsAudioSTTWhisperFrontend::HiggsAudioSTTWhisperFrontend(std::shared_ptr<const HiggsAudioSTTAssets> assets)
-    : assets_(std::move(assets)) {
-    if (assets_ == nullptr) {
-        throw std::runtime_error("Higgs Audio STT Whisper frontend requires assets");
-    }
-    const auto & config = assets_->config.frontend;
-    filterbank_ = engine::audio::MelFilterbank().build_sparse(
-        engine::audio::MelFilterbankConfig{
-            config.sample_rate,
-            config.n_fft,
-            config.feature_size,
-            0.0F,
-            static_cast<float>(config.sample_rate) / 2.0F,
-            true,
-        });
-}
+    : assets_(std::move(assets)),
+      extractor_(make_extractor_config(assets_)) {}
 
 HiggsAudioSTTAudioFeatures HiggsAudioSTTWhisperFrontend::extract(const runtime::AudioBuffer & audio) const {
     const auto wall_start = Clock::now();
@@ -149,7 +105,7 @@ HiggsAudioSTTAudioFeatures HiggsAudioSTTWhisperFrontend::extract(const runtime::
         std::vector<float> chunk(
             samples.begin() + static_cast<std::ptrdiff_t>(offset),
             samples.begin() + static_cast<std::ptrdiff_t>(offset + length));
-        chunks.push_back(compute_chunk_features(chunk, filterbank_, config));
+        chunks.push_back(compute_chunk_features(chunk, extractor_, config));
     }
     if (chunks.empty()) {
         throw std::runtime_error("Higgs Audio STT produced no audio chunks");

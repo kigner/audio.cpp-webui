@@ -3,6 +3,7 @@
 #include "engine/framework/modules/attention_modules.h"
 
 #include "engine/framework/modules/linear_module.h"
+#include "../module_internal.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
 
@@ -43,6 +44,16 @@ inline const core::ModuleSchema kFeedForwardSchema = {
     kSingleOutput,
     1,
     "Applies a two-layer MLP block with GELU activation.",
+};
+
+inline const core::ModuleSchema kFeedForwardGeluSchema = {
+    "FeedForwardGelu",
+    "nn.block",
+    kInputOutputInputs,
+    1,
+    kSingleOutput,
+    1,
+    "Applies a two-layer MLP block with tanh-approximated GELU activation.",
 };
 
 inline const core::ModuleSchema kSelfAttentionSchema = {
@@ -124,10 +135,9 @@ inline void validate_relative_attention_config(const RelativeAttentionConfig & c
     }
 }
 
-inline void validate_sequence_input(const core::TensorValue & input, int64_t hidden_size, const char * name) {
-    core::validate_rank_between(input, 3, 3, name);
-    core::validate_last_dim(input, hidden_size, name);
-}
+using engine::modules::internal::concat_all;
+using engine::modules::internal::concat_range;
+using engine::modules::internal::validate_sequence_input;
 
 inline core::TensorValue ensure_contiguous_layout(core::ModuleBuildContext & ctx, const core::TensorValue & value) {
     return core::ensure_backend_addressable_layout(ctx, value);
@@ -221,32 +231,6 @@ core::TensorValue build_global_relative_attention_impl(
     const std::optional<core::TensorValue> & attention_mask,
     const std::optional<core::TensorValue> & query_keep_mask,
     const std::optional<core::TensorValue> & projected_pos_emb);
-
-inline core::TensorValue concat_range(
-    core::ModuleBuildContext & ctx,
-    const std::vector<core::TensorValue> & values,
-    size_t begin,
-    size_t end,
-    int axis) {
-    if (begin + 1 == end) {
-        return values[begin];
-    }
-    const size_t mid = begin + (end - begin) / 2;
-    return ConcatModule({axis}).build(
-        ctx,
-        concat_range(ctx, values, begin, mid, axis),
-        concat_range(ctx, values, mid, end, axis));
-}
-
-inline core::TensorValue concat_all(
-    core::ModuleBuildContext & ctx,
-    const std::vector<core::TensorValue> & values,
-    int axis) {
-    if (values.empty()) {
-        throw std::runtime_error("concat_all requires at least one tensor");
-    }
-    return concat_range(ctx, values, 0, values.size(), axis);
-}
 
 inline core::TensorValue add_range(
     core::ModuleBuildContext & ctx,

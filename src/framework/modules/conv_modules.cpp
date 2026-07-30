@@ -40,6 +40,16 @@ const core::ModuleSchema kConv2dSchema = {
     "Applies a 2D convolution to channel-first inputs [batch, channels, height, width].",
 };
 
+const core::ModuleSchema kCausalConv2dSchema = {
+    "CausalConv2d",
+    "nn.conv",
+    kConvInputs,
+    3,
+    kSingleOutput,
+    1,
+    "Applies explicit asymmetric 2D padding followed by Conv2d.",
+};
+
 const core::ModuleSchema kDepthwiseConv2dSchema = {
     "DepthwiseConv2d",
     "nn.conv",
@@ -416,6 +426,40 @@ core::TensorValue Conv2dModule::build(
 
 const core::ModuleSchema & Conv2dModule::static_schema() noexcept {
     return kConv2dSchema;
+}
+
+CausalConv2dModule::CausalConv2dModule(CausalConv2dConfig config) : config_(config) {
+    if (config_.pad_left < 0 || config_.pad_right < 0 || config_.pad_top < 0 || config_.pad_bottom < 0) {
+        throw std::runtime_error("CausalConv2d padding must be non-negative");
+    }
+    if (config_.conv.padding_height != 0 || config_.conv.padding_width != 0) {
+        throw std::runtime_error("CausalConv2d uses explicit Pad2d padding; Conv2dConfig padding must be zero");
+    }
+}
+
+const CausalConv2dConfig & CausalConv2dModule::config() const noexcept {
+    return config_;
+}
+
+const core::ModuleSchema & CausalConv2dModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue CausalConv2dModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const Conv2dWeights & weights) const {
+    auto padded = Pad2dModule({
+        config_.pad_left,
+        config_.pad_right,
+        config_.pad_top,
+        config_.pad_bottom,
+    }).build(ctx, input);
+    return Conv2dModule(config_.conv).build(ctx, padded, weights);
+}
+
+const core::ModuleSchema & CausalConv2dModule::static_schema() noexcept {
+    return kCausalConv2dSchema;
 }
 
 DepthwiseConv2dModule::DepthwiseConv2dModule(DepthwiseConv2dConfig config) : config_(config) {

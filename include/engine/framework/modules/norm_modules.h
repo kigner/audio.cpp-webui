@@ -54,6 +54,44 @@ private:
     NormConfig config_;
 };
 
+class GemmaRMSNormModule {
+public:
+    explicit GemmaRMSNormModule(NormConfig config);
+
+    const core::ModuleSchema & schema() const noexcept;
+    const NormConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const NormWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    NormConfig config_;
+};
+
+struct PixelNormConfig {
+    int axis = 1;
+    float eps = 1e-8f;
+};
+
+class PixelNormModule {
+public:
+    explicit PixelNormModule(PixelNormConfig config = {});
+
+    const core::ModuleSchema & schema() const noexcept;
+    const PixelNormConfig & config() const noexcept;
+
+    core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    PixelNormConfig config_;
+};
+
 struct AdaptiveInstanceNorm1dConfig {
     int64_t hidden_size = 0;
     float eps = 1e-5f;

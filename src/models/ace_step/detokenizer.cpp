@@ -1,6 +1,6 @@
 #include "engine/models/ace_step/detokenizer.h"
 #include "engine/framework/core/backend.h"
-#include "engine/framework/modules/attention/qwen_decoder.h"
+#include "engine/framework/modules/transformers/qwen_decoder.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/linear_module.h"
 #include "engine/framework/modules/norm_modules.h"

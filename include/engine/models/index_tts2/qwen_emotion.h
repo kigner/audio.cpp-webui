@@ -2,7 +2,7 @@
 
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/core/execution_context.h"
-#include "engine/framework/modules/attention/qwen_decoder.h"
+#include "engine/framework/modules/transformers/qwen_decoder.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/tokenizers/llama_bpe.h"
 #include "engine/models/index_tts2/assets.h"

@@ -2,7 +2,7 @@
 
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
-#include "engine/framework/modules/whisper_embedding.h"
+#include "engine/framework/modules/speech_encoders/whisper_frontend.h"
 
 #include <cstdint>
 #include <memory>
@@ -30,10 +30,7 @@ public:
         size_t threads) const;
 
 private:
-    struct State;
-
-    engine::modules::WhisperEmbeddingConfig config_;
-    std::shared_ptr<State> state_;
+    engine::modules::WhisperFrontendComponent frontend_;
 };
 
 }  // namespace engine::models::seed_vc

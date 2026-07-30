@@ -179,6 +179,7 @@ add_library(engine_runtime STATIC
     src/framework/decoders/tdt_decoder_greedy_duration_loop.cpp
     src/framework/decoders/tdt_decoder_greedy_separate_heads.cpp
     src/framework/modules/linear_module.cpp
+    src/framework/modules/packed_linear_weights.cpp
     src/framework/modules/primitive_modules.cpp
     src/framework/modules/activation_modules.cpp
     src/framework/modules/norm_modules.cpp
@@ -186,12 +187,13 @@ add_library(engine_runtime STATIC
     src/framework/modules/structural_modules.cpp
     src/framework/modules/asr_helpers.cpp
     src/framework/modules/conv_modules.cpp
-    src/framework/modules/whisper_embedding.cpp
-    src/framework/modules/campplus_encoder.cpp
-    src/framework/modules/bigvgan_vocoder.cpp
-    src/framework/modules/hift_vocoder.cpp
-    src/framework/modules/hubert_encoder.cpp
-    src/framework/modules/wavlm_encoder.cpp
+    src/framework/modules/speech_encoders/whisper_embedding.cpp
+    src/framework/modules/speech_encoders/whisper_frontend.cpp
+    src/framework/modules/speech_encoders/campplus_encoder.cpp
+    src/framework/modules/vocoders/bigvgan_vocoder.cpp
+    src/framework/modules/vocoders/hift_vocoder.cpp
+    src/framework/modules/speech_encoders/hubert_encoder.cpp
+    src/framework/modules/speech_encoders/wavlm_encoder.cpp
     src/framework/modules/optimizations/fast_conv_modules.cpp
     src/framework/modules/optimizations/fast_projection_modules.cpp
     src/framework/modules/recurrent_modules.cpp
@@ -206,8 +208,8 @@ add_library(engine_runtime STATIC
     src/framework/modules/attention/scaled_dot_product_attention.cpp
     src/framework/modules/attention/grouped_query_attention.cpp
     src/framework/modules/attention/streaming_frame_attention_cache.cpp
-    src/framework/modules/attention/qwen_decoder.cpp
-    src/framework/modules/attention/qwen_causal_decoder.cpp
+    src/framework/modules/transformers/qwen_decoder.cpp
+    src/framework/modules/transformers/qwen_causal_decoder.cpp
     src/framework/modules/attention/cross_attention.cpp
     src/framework/modules/attention/transformer_blocks.cpp
     src/framework/modules/conditioning_modules.cpp
@@ -240,11 +242,12 @@ add_library(engine_runtime STATIC
     src/framework/audio/wav_reader.cpp
     src/framework/audio/wav_writer.cpp
     src/framework/audio/zipenhancer.cpp
-    src/framework/modules/ecapa_tdnn_runtime.cpp
-    src/framework/modules/titanet_runtime.cpp
+    src/framework/modules/speaker_encoders/ecapa_tdnn_runtime.cpp
+    src/framework/modules/speaker_encoders/titanet_runtime.cpp
     src/framework/codecs/neural_audio.cpp
     src/framework/sampling/decode_modules.cpp
     src/framework/sampling/diffusion_math.cpp
+    src/framework/sampling/hf_sampler.cpp
     src/framework/sampling/noise.cpp
     src/framework/sampling/torch_random.cpp
     src/models/roformer/assets.cpp
@@ -593,6 +596,8 @@ if (ENGINE_ENABLE_OPENMP)
         # '#pragma omp simd' directives in longformer_attention.cpp (error C7660).
         # /openmp:experimental enables the OpenMP 4.0 SIMD support; it overrides the
         # /openmp added by OpenMP::OpenMP_CXX above (harmless D9025 override notice).
+        # Guard on CXX: nvcc does not forward a bare /openmp:experimental to the host
+        # compiler and instead treats it as a second input file, which is fatal.
         target_compile_options(engine_runtime PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:/openmp:experimental>)
     endif()
@@ -673,22 +678,6 @@ target_link_libraries(model_perf PRIVATE engine_runtime ggml)
 target_include_directories(model_perf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(model_perf PRIVATE OpenMP::OpenMP_CXX)
-endif()
-
-add_executable(model_spec_demo
-    examples/model_spec_demo/model_spec_demo.cpp
-)
-target_link_libraries(model_spec_demo PRIVATE engine_runtime ggml)
-if (ENGINE_ENABLE_OPENMP)
-    target_link_libraries(model_spec_demo PRIVATE OpenMP::OpenMP_CXX)
-endif()
-
-add_executable(model_spec_download_demo
-    examples/model_spec_demo/model_spec_download_demo.cpp
-)
-target_link_libraries(model_spec_download_demo PRIVATE engine_runtime ggml)
-if (ENGINE_ENABLE_OPENMP)
-    target_link_libraries(model_spec_download_demo PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 add_executable(miocodec_wavlm_parity
@@ -912,6 +901,13 @@ if (ENGINE_BUILD_TESTS)
         COMMAND torch_random_test
     )
 
+    add_engine_unittest(hf_sampler_test tests/unittests/test_hf_sampler.cpp)
+
+    add_test(
+        NAME hf_sampler_test
+        COMMAND hf_sampler_test
+    )
+
     add_engine_unittest(diffusion_math_test tests/unittests/test_diffusion_math.cpp)
 
     add_test(
@@ -1043,4 +1039,20 @@ if (ENGINE_BUILD_EXAMPLES)
     )
 
     target_link_libraries(ggml_simple_inference PRIVATE ggml)
+
+    add_executable(model_spec_demo
+        examples/model_spec_demo/model_spec_demo.cpp
+    )
+    target_link_libraries(model_spec_demo PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(model_spec_demo PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+
+    add_executable(model_spec_download_demo
+        examples/model_spec_demo/model_spec_download_demo.cpp
+    )
+    target_link_libraries(model_spec_download_demo PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(model_spec_download_demo PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 endif()

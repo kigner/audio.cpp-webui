@@ -3,7 +3,7 @@
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
-#include "engine/framework/modules/attention/qwen_causal_decoder.h"
+#include "engine/framework/modules/transformers/qwen_causal_decoder.h"
 #include "engine/framework/modules/lookup_modules.h"
 #include "engine/framework/modules/weight_binding.h"
 #include "engine/framework/sampling/torch_random.h"

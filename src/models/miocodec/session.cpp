@@ -3,7 +3,7 @@
 #include "engine/models/miocodec/audio_pipeline.h"
 
 #include "engine/framework/audio/dsp.h"
-#include "engine/framework/modules/wavlm_encoder.h"
+#include "engine/framework/modules/speech_encoders/wavlm_encoder.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/models/miocodec/assets.h"

@@ -1,4 +1,4 @@
-#include "engine/framework/modules/whisper_embedding.h"
+#include "engine/framework/modules/speech_encoders/whisper_embedding.h"
 
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/primitive_modules.h"

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/framework/core/module.h"
-#include "engine/framework/modules/attention/qwen_decoder.h"
+#include "engine/framework/modules/transformers/qwen_decoder.h"
 #include "engine/framework/modules/linear_module.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/runtime/kv_cache.h"

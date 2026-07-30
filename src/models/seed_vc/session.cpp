@@ -2,12 +2,12 @@
 
 #include "engine/models/seed_vc/assets.h"
 
-#include "engine/framework/modules/bigvgan_vocoder.h"
-#include "engine/framework/modules/campplus_encoder.h"
+#include "engine/framework/modules/vocoders/bigvgan_vocoder.h"
+#include "engine/framework/modules/speech_encoders/campplus_encoder.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
-#include "engine/framework/modules/hift_vocoder.h"
-#include "engine/framework/modules/hubert_encoder.h"
+#include "engine/framework/modules/vocoders/hift_vocoder.h"
+#include "engine/framework/modules/speech_encoders/hubert_encoder.h"
 #include "engine/framework/io/binary.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/sampling/torch_random.h"

@@ -1,5 +1,7 @@
 #include "engine/framework/modules/positional_modules.h"
 
+#include "engine/framework/modules/structural_modules.h"
+
 #include <stdexcept>
 #include <string>
 
@@ -10,6 +12,36 @@ void require_positive(int64_t value, const char * name) {
     if (value <= 0) {
         throw std::runtime_error(std::string(name) + " must be positive");
     }
+}
+
+void validate_split_rope_table(
+    const core::TensorValue & input,
+    const core::TensorValue & table,
+    int64_t half_dim,
+    const char * label) {
+    core::validate_rank_between(table, 4, 4, label);
+    if (!((table.shape.dims[0] == 1 || table.shape.dims[0] == input.shape.dims[0]) &&
+          table.shape.dims[1] == input.shape.dims[1] &&
+          table.shape.dims[2] == input.shape.dims[2] &&
+          table.shape.dims[3] == half_dim)) {
+        throw std::runtime_error(std::string("SplitRoPE ") + label + " shape mismatch");
+    }
+}
+
+core::TensorValue repeat_like(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & value,
+    const core::TensorValue & like) {
+    if (value.shape.rank == like.shape.rank) {
+        bool same = true;
+        for (size_t axis = 0; axis < value.shape.rank; ++axis) {
+            same = same && value.shape.dims[axis] == like.shape.dims[axis];
+        }
+        if (same) {
+            return value;
+        }
+    }
+    return core::wrap_tensor(ggml_repeat(ctx.ggml, value.tensor, like.tensor), like.shape, value.type);
 }
 
 }  // namespace
@@ -57,6 +89,53 @@ core::TensorValue RoPEModule::build(
             config_.beta_slow),
         input.shape,
         input.type);
+}
+
+SplitRoPEModule::SplitRoPEModule(SplitRoPEConfig config) : config_(config) {
+    require_positive(config_.dimensions, "SplitRoPEConfig.dimensions");
+    if (config_.dimensions % 2 != 0) {
+        throw std::runtime_error("SplitRoPEConfig.dimensions must be even");
+    }
+}
+
+const SplitRoPEConfig & SplitRoPEModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue SplitRoPEModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const core::TensorValue & cos,
+    const core::TensorValue & sin) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 4, 4, "input");
+    core::validate_last_dim(input, config_.dimensions, "input");
+    const int64_t half_dim = config_.dimensions / 2;
+    validate_split_rope_table(input, cos, half_dim, "cos");
+    validate_split_rope_table(input, sin, half_dim, "sin");
+
+    const int last_axis = static_cast<int>(input.shape.rank - 1);
+    const auto x1 = SliceModule({last_axis, 0, half_dim}).build(ctx, input);
+    const auto x2 = SliceModule({last_axis, half_dim, half_dim}).build(ctx, input);
+    const auto cos_full = repeat_like(ctx, cos, x1);
+    const auto sin_full = repeat_like(ctx, sin, x1);
+    auto first = core::wrap_tensor(
+        ggml_sub(
+            ctx.ggml,
+            ggml_mul(ctx.ggml, x1.tensor, cos_full.tensor),
+            ggml_mul(ctx.ggml, x2.tensor, sin_full.tensor)),
+        x1.shape,
+        GGML_TYPE_F32);
+    auto second = core::wrap_tensor(
+        ggml_add(
+            ctx.ggml,
+            ggml_mul(ctx.ggml, x2.tensor, cos_full.tensor),
+            ggml_mul(ctx.ggml, x1.tensor, sin_full.tensor)),
+        x2.shape,
+        GGML_TYPE_F32);
+    return ConcatModule({last_axis}).build(ctx, first, second);
 }
 
 }  // namespace engine::modules

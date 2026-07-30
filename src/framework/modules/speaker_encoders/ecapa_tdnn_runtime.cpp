@@ -1,4 +1,4 @@
-#include "engine/framework/modules/ecapa_tdnn_runtime.h"
+#include "engine/framework/modules/speaker_encoders/ecapa_tdnn_runtime.h"
 
 #include "engine/framework/audio/conversion.h"
 #include "engine/framework/audio/dsp.h"
@@ -12,7 +12,7 @@
 #include "engine/framework/modules/optimizations/fast_conv_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
-#include "engine/framework/modules/ecapa_tdnn_speaker.h"
+#include "engine/framework/modules/speaker_encoders/ecapa_tdnn_speaker.h"
 
 #include <ggml.h>
 #include <ggml-backend.h>

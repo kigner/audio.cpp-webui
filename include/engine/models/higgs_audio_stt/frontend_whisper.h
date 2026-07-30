@@ -16,7 +16,7 @@ public:
 
 private:
     std::shared_ptr<const HiggsAudioSTTAssets> assets_;
-    engine::audio::SparseMelFilterbank filterbank_;
+    engine::audio::WhisperLogMelExtractor extractor_;
 };
 
 }  // namespace engine::models::higgs_audio_stt

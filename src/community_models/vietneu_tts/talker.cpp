@@ -4,7 +4,7 @@
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/debug/profiler.h"
-#include "engine/framework/modules/attention/qwen_causal_decoder.h"
+#include "engine/framework/modules/transformers/qwen_causal_decoder.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/linear_module.h"
 #include "engine/framework/modules/norm_modules.h"

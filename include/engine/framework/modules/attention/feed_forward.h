@@ -39,4 +39,22 @@ private:
     FeedForwardConfig config_;
 };
 
+class FeedForwardGeluModule {
+public:
+    explicit FeedForwardGeluModule(FeedForwardConfig config);
+
+    const FeedForwardConfig & config() const noexcept;
+    const core::ModuleSchema & schema() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const FeedForwardWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    FeedForwardConfig config_;
+};
+
 }  // namespace engine::modules
