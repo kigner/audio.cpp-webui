@@ -500,9 +500,11 @@ MODEL_PROFILES = {
         # 但 8G 卡上先撞显存：thinker prefill 图随时长超线性膨胀（4060 8G 实测
         # 65s 可过、70s 要 13.2GB、75s 要 14.6GB），所以客户端按 max_input_seconds
         # =60s 在静音处切段逐段转写再拼接，顺带解决 70~115s 音频原本的 OOM。
-        "input_hint": ("**Qwen3-ASR**：长音频自动分段转写；"
+        "input_hint": ("**Qwen3-ASR**：长音频自动分段转写；支持⚡流式转写，"
+                       "边接收音频边输出缓冲后的文本增量；时间戳仍走离线模式。"
                        "语种/上下文/对话模式见『转写选项』。"),
         "max_input_seconds": 60,
+        "supports_streaming": True,
     },
     "voxtral_realtime": {
         "input_hint": (
@@ -551,6 +553,13 @@ MODEL_PROFILES = {
         "input_hint": (
             "**Seed-VC**：源语音 + 目标音色参考（几秒干净人声）；"
             "默认 v2 路线，v1 旧路线在高级参数切换。"),
+    },
+    "rvc": {
+        "input_hint": (
+            "**RVC**：所选 GGUF 即目标音色；上传源语音即可转换；"
+            "索引/音高等选项可用 JSON 传。"),
+        "send_seed": False,
+        "model_as_target_voice": True,
     },
     "miocodec": {
         "input_hint": "**MioCodec**：codec 重建式转换——源提供内容，参考提供音色。",
@@ -647,7 +656,8 @@ MODEL_HINTS_EN = {
     "vietneu_tts": "**VieNeu-TTS v3 Turbo** supports Vietnamese/English TTS and optional voice cloning.",
     "pocket_tts": "**PocketTTS** requires a voice reference.",
     "chatterbox": "**Chatterbox** requires a voice reference and supports en/es/fr/de/it/pt/ko.",
-    "qwen3_asr": "**Qwen3-ASR** automatically splits long audio. Language and context are optional.",
+    "qwen3_asr": ("**Qwen3-ASR** automatically splits long audio and supports streaming transcription. "
+                   "Streaming emits buffered transcript deltas; timestamps remain offline-only."),
     "voxtral_realtime": "**Voxtral Mini 4B Realtime** auto-detects language and supports streaming transcription. Timestamps are not exposed.",
     "ace_step": "**ACE-Step**: describe style, instruments and mood. Editing routes require source audio.",
     "stable_audio": "**Stable Audio** accepts English prompts only. Source audio enables init/inpaint.",
@@ -687,6 +697,7 @@ QWEN3_ASR_LANGUAGES = [
 
 DEFAULT_PROFILE = {"input_hint": "", "input_hint_en": "", "wrap_speaker_script": False,
                    "default_options": {},
+                   "model_as_target_voice": False,
                    # C++ 会话实现了 IStreamingVoiceTaskSession 的家族（server 需以
                    # mode=streaming 加载才走流式路由）；见 registry 各家族 loader。
                    "supports_streaming": False,
@@ -719,6 +730,20 @@ def supports_streaming(model_id):
 def asr_stream_update(model_id):
     """Reset and show the ASR streaming toggle for the selected model."""
     return gr.update(visible=supports_streaming(model_id), value=False)
+
+
+def vc_voice_input_updates(model_id):
+    """Switch VC target controls between reference-audio and RVC voice-model inputs."""
+    entry = catalog_by_id(model_id) if model_id else None
+    hide_target_voice = bool(entry) and bool(profile_for(entry).get("model_as_target_voice"))
+    return (
+        gr.update(visible=not hide_target_voice),
+        gr.update(value="(none)"),
+        gr.update(value=None),
+        gr.update(visible=hide_target_voice),
+        gr.update(value=None),
+        gr.update(value=None),
+    )
 
 
 def model_hint_for(model_id, language=None):
@@ -1060,6 +1085,19 @@ def _ensure_wav(path, target_sr=None):
     _ui_log(f"输入转码：{os.path.basename(path)}（{ext}）→ 16-bit PCM WAV{note}")
     _WAV_CACHE[key] = out
     return out
+
+
+def _uploaded_file_path(value, label):
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    name = getattr(value, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    raise gr.Error(_t("{label} 上传结果不是可用文件路径。",
+                      "{label} upload did not produce a usable file path.",
+                      label=label))
 
 
 def _to_16k_mono_wav(path, target_sr=16000):
@@ -3332,10 +3370,12 @@ def do_music_analyze(model, source_audio, seed, adv_values):
                                          "❌ Analysis failed: {error}", error=e)
 
 
-def do_vc(model, source_audio, target_upload, builtin_voice, seed,
+def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
+          rvc_retrieval_index, seed,
           adv_values, adv_options, progress=gr.Progress()):
     """声音/歌声转换（vc/svc/s2s），走通用 /v1/tasks/run 路由：`audio` 是源音频，
-    `voice_ref` 是目标音色。seed_vc/miocodec 直接用这两个字段；vevo2 也接受它们
+    通常 `voice_ref` 是目标音色；RVC 这类模型自身就是目标音色，不发送 voice_ref。
+    seed_vc/miocodec 直接用这两个字段；vevo2 也接受它们
     （audio_input/voice speaker 是 source_audio/target_voice 选项的回退），
     风格转换类 route 的额外字段（style_ref 等）由“其它参数(JSON)”兜底。
     profile 带 vc_chunk_seconds 的族（vevo2 FM 图按整段建，8G 卡长音频必炸）
@@ -3349,18 +3389,29 @@ def do_vc(model, source_audio, target_upload, builtin_voice, seed,
         options = _merged_options(prof, adv_values, adv_options)
 
         source_audio = _ensure_wav(source_audio)
-        # 同一 seed 用于所有分段，保证各段结果一致可复现。
-        seed, seed_note = _resolve_seed(seed)
-        req = {"seed": seed}
-        voice_path = target_upload or (
-            os.path.join(PROMPTS_DIR, builtin_voice)
-            if builtin_voice and builtin_voice != "(none)" else None)
-        if voice_path:
-            ref_wav = _ensure_wav(voice_path)
-            ref_cap = prof.get("vc_ref_max_seconds")
-            if ref_cap:                     # 参考音色截短，别让 prompt 段吃满显存
-                ref_wav = _trim_wav_seconds(ref_wav, ref_cap)
-            req["voice_ref"] = ref_wav
+        seed_note = ""
+        req = {}
+        if prof.get("send_seed", True):
+            # 同一 seed 用于所有分段，保证各段结果一致可复现。
+            seed, seed_note = _resolve_seed(seed)
+            req["seed"] = seed
+        if not prof.get("model_as_target_voice"):
+            voice_path = target_upload or (
+                os.path.join(PROMPTS_DIR, builtin_voice)
+                if builtin_voice and builtin_voice != "(none)" else None)
+            if voice_path:
+                ref_wav = _ensure_wav(voice_path)
+                ref_cap = prof.get("vc_ref_max_seconds")
+                if ref_cap:                     # 参考音色截短，别让 prompt 段吃满显存
+                    ref_wav = _trim_wav_seconds(ref_wav, ref_cap)
+                req["voice_ref"] = ref_wav
+        else:
+            voice_model_path = _uploaded_file_path(rvc_voice_model, "RVC voice model")
+            retrieval_index_path = _uploaded_file_path(rvc_retrieval_index, "RVC retrieval index")
+            if voice_model_path and "voice_model_path" not in options:
+                options["voice_model_path"] = voice_model_path
+            if retrieval_index_path and "retrieval_index_path" not in options:
+                options["retrieval_index_path"] = retrieval_index_path
         if options:
             req["options"] = options
 
@@ -4273,7 +4324,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         gr.Audio(label="上传/录制源音频", type="filepath",
                                  elem_classes="audio-default"),
                         label=("上传/录制源音频", "Upload/record source"))
-                with gr.Group():
+                vc_target_visible = not profile_for(
+                    catalog_by_id(vc_model.value) or {}).get("model_as_target_voice")
+                rvc_target_visible = not vc_target_visible
+                with gr.Group(visible=vc_target_visible) as vc_target_group:
                     _localized(gr.Markdown("#### 🎧 目标音色（转换成谁的声音）"),
                                value=("#### 🎧 目标音色（转换成谁的声音）",
                                       "#### 🎧 Target voice"))
@@ -4289,6 +4343,18 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         gr.Audio(label="上传/录制目标音色", type="filepath",
                                  elem_classes="audio-default"),
                         label=("上传/录制目标音色", "Upload/record target voice"))
+                with gr.Group(visible=rvc_target_visible) as vc_rvc_group:
+                    _localized(gr.Markdown("#### 🎧 RVC 目标声音模型"),
+                               value=("#### 🎧 RVC 目标声音模型",
+                                      "#### 🎧 RVC target voice model"))
+                    vc_rvc_voice_model = _localized(
+                        gr.File(label="上传 RVC .pth/.pt 声音模型", type="filepath",
+                                file_types=[".pth", ".pt"]),
+                        label=("上传 RVC .pth/.pt 声音模型", "Upload RVC .pth/.pt voice model"))
+                    vc_rvc_retrieval_index = _localized(
+                        gr.File(label="上传 FAISS .index（可选）", type="filepath",
+                                file_types=[".index"]),
+                        label=("上传 FAISS .index（可选）", "Upload FAISS .index (optional)"))
 
                 vc_hint = gr.Markdown(model_hint_for(vc_model.value))
 
@@ -4327,12 +4393,18 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
         _wire_model_manager(vc_mm, VC_TASKS, vc_hint)
         vc_model.change(lambda: {}, None, vc_adv_state)  # reset knobs on model switch
+        vc_model.change(
+            vc_voice_input_updates,
+            vc_model,
+            [vc_target_group, vc_builtin, vc_target,
+             vc_rvc_group, vc_rvc_voice_model, vc_rvc_retrieval_index])
         vc_builtin.change(lambda n: on_builtin_voice_change(n)[0], vc_builtin, vc_target)
         vc_voice_refresh.click(lambda n: refresh_builtin_voices(n)[:2],
                                vc_builtin, [vc_builtin, vc_target])
         vc_btn.click(lambda: (None, ""), None, [vc_out, vc_msg]).then(
             do_vc,
-            [vc_model, vc_source, vc_target, vc_builtin, vc_seed,
+            [vc_model, vc_source, vc_target, vc_builtin,
+             vc_rvc_voice_model, vc_rvc_retrieval_index, vc_seed,
              vc_adv_state, vc_adv],
             [vc_out, vc_msg])
 

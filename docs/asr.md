@@ -2,7 +2,8 @@
 
 | Model | Family | Mode(s) | Quick Start |
 |---|---|---|---|
-| Qwen3 ASR | `qwen3_asr` | offline | [Qwen3 ASR](#qwen3-asr) |
+| Fun-ASR-Nano | `fun_asr_nano` | offline | [Fun-ASR-Nano](#fun-asr-nano) |
+| Qwen3 ASR | `qwen3_asr` | offline, streaming | [Qwen3 ASR](#qwen3-asr) |
 | Citrinet ASR | `citrinet_asr` | offline | [Citrinet ASR](#citrinet-asr) |
 | Higgs Audio STT | `higgs_audio_stt` | offline, streaming | [Higgs Audio STT](#higgs-audio-stt) |
 | Hviske ASR | `hviske_asr` | offline | [Hviske ASR](#hviske-asr) |
@@ -22,10 +23,14 @@ When `--mode streaming` is used, the selected model provides its default streami
 
 ## Qwen3 ASR
 
-Qwen3 ASR transcribes speech and can be paired with Qwen3 Forced Aligner when timestamps are needed. See [Qwen3 models](models/qwen3.md) for the full ASR and alignment manual.
+Qwen3 ASR transcribes speech and can be paired with Qwen3 Forced Aligner when timestamps are needed. Streaming mode accepts live audio chunks and emits buffered transcript deltas; timestamp output remains an offline path. See [Qwen3 models](models/qwen3.md) for the full ASR and alignment manual.
 
 ```bash
 audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-1.7B-hf --backend cuda --audio speech_16k.wav --text-out transcript.txt
+```
+
+```bash
+audiocpp_cli --task asr --mode streaming --family qwen3_asr --model models/Qwen3-ASR-1.7B-hf --backend cuda --audio speech_16k.wav --request-option audio_chunk_seconds=5 --text-out transcript.txt
 ```
 
 ## Citrinet ASR

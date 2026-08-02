@@ -52,5 +52,5 @@ __pycache__/
 /webui/llm_api_key.txt
 # written by the in-UI language picker; per-machine, not a project setting
 /webui/configs/ui_language.json
-# personal voice recording — stays local, repo is public
-/webui/voice/my-record.wav
+# personal and saved voices — stay local, repo is public
+/webui/voice/

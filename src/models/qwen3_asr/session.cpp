@@ -19,6 +19,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr double kTimestampFixedChunkContextSeconds = 1.0;
+constexpr double kPreferredStreamingFeedSeconds = 1.0;
+constexpr float kDefaultStreamingWindowSeconds = 30.0F;
 
 std::shared_ptr<const Qwen3ASRAssets> require_assets(std::shared_ptr<const Qwen3ASRAssets> assets) {
     if (assets == nullptr) {
@@ -113,8 +115,8 @@ Qwen3ASRSession::Qwen3ASRSession(
     if (task_.task != runtime::VoiceTaskKind::Asr) {
         throw std::runtime_error("Qwen3 ASR only supports VoiceTaskKind::Asr");
     }
-    if (task_.mode != runtime::RunMode::Offline) {
-        throw std::runtime_error("Qwen3 ASR currently supports offline sessions");
+    if (task_.mode != runtime::RunMode::Offline && task_.mode != runtime::RunMode::Streaming) {
+        throw std::runtime_error("Qwen3 ASR supports offline and streaming sessions");
     }
     validate_audio_encoder_weight_storage(audio_encoder_weight_storage_type_);
     validate_matmul_weight_storage(thinker_weight_storage_type_, "qwen3_asr.thinker_weight_type");
@@ -175,6 +177,9 @@ void Qwen3ASRSession::prepare(const runtime::SessionPreparationRequest & request
 
 runtime::TaskResult Qwen3ASRSession::run(const runtime::TaskRequest & request) {
     require_prepared("Qwen3 ASR run()");
+    if (task_.mode != runtime::RunMode::Offline) {
+        throw std::runtime_error("Qwen3 ASR run() requires an offline session");
+    }
     const auto chunks = audio_chunk_plan(request);
     if (chunks.empty()) {
         const auto mode = engine::audio::parse_audio_chunk_mode(request.options);
@@ -197,7 +202,9 @@ runtime::TaskResult Qwen3ASRSession::run(const runtime::TaskRequest & request) {
             merged_words,
             item.word_timestamps,
             chunks.front().source_span,
-            chunks.front().keep_span);
+            chunks.front().keep_span,
+            audio.sample_rate,
+            assets_->config.sample_rate);
         item.word_timestamps = std::move(merged_words);
         return item;
     }
@@ -222,7 +229,9 @@ runtime::TaskResult Qwen3ASRSession::run(const runtime::TaskRequest & request) {
             merged.word_timestamps,
             item.word_timestamps,
             chunk.source_span,
-            chunk.keep_span);
+            chunk.keep_span,
+            audio.sample_rate,
+            assets_->config.sample_rate);
     }
     if (merged.text_output.has_value()) {
         if (request_return_timestamps(request) && !merged.word_timestamps.empty()) {
@@ -239,6 +248,114 @@ runtime::TaskResult Qwen3ASRSession::run(const runtime::TaskRequest & request) {
         }
     }
     return merged;
+}
+
+runtime::StreamingPolicy Qwen3ASRSession::streaming_policy() const {
+    runtime::StreamingPolicy policy;
+    policy.input = runtime::StreamingInputKind::AudioChunks;
+    policy.output = runtime::StreamingOutputKind::FinalResult;
+    policy.preferred_audio_chunk_seconds = kPreferredStreamingFeedSeconds;
+    return policy;
+}
+
+void Qwen3ASRSession::start_stream(const runtime::TaskRequest & request) {
+    require_prepared("Qwen3 ASR start_stream()");
+    if (task_.mode != runtime::RunMode::Streaming) {
+        throw std::runtime_error("Qwen3 ASR start_stream() requires a streaming session");
+    }
+    if (request_return_timestamps(request)) {
+        throw std::runtime_error("Qwen3 ASR streaming does not support return_timestamps");
+    }
+    reset();
+    streaming_request_ = request;
+    if (streaming_request_.audio_input.has_value()) {
+        streaming_request_.audio_input->samples.clear();
+    }
+    stream_started_ = true;
+    stream_wall_start_ = Clock::now();
+}
+
+void Qwen3ASRSession::set_stream_event_sink(runtime::StreamEventCallback sink) {
+    stream_event_sink_ = std::move(sink);
+}
+
+void Qwen3ASRSession::reset() {
+    require_prepared("Qwen3 ASR reset()");
+    streaming_request_ = runtime::TaskRequest{};
+    streaming_result_ = runtime::TaskResult{};
+    streaming_audio_ = runtime::AudioBuffer{};
+    streaming_audio_offset_values_ = 0;
+    streaming_text_.clear();
+    streaming_published_bytes_ = 0;
+    streaming_windows_processed_ = 0;
+    stream_started_ = false;
+    stream_wall_start_ = {};
+}
+
+runtime::StreamEvent Qwen3ASRSession::process_audio_chunk(const runtime::AudioChunk & chunk) {
+    require_prepared("Qwen3 ASR process_audio_chunk()");
+    if (task_.mode != runtime::RunMode::Streaming) {
+        throw std::runtime_error("Qwen3 ASR process_audio_chunk() requires a streaming session");
+    }
+    if (!stream_started_) {
+        throw std::runtime_error("Qwen3 ASR process_audio_chunk() requires start_stream");
+    }
+    runtime::AudioBuffer audio;
+    audio.sample_rate = chunk.sample_rate;
+    audio.channels = chunk.channels;
+    audio.samples = chunk.samples;
+    if (audio.channels <= 0 || audio.samples.size() % static_cast<size_t>(audio.channels) != 0) {
+        throw std::runtime_error("Qwen3 ASR streaming audio chunk has invalid channel layout");
+    }
+    if (streaming_audio_offset_values_ == streaming_audio_.samples.size() && streaming_audio_offset_values_ > 0) {
+        streaming_audio_.samples.clear();
+        streaming_audio_offset_values_ = 0;
+    }
+    runtime::append_audio_buffer(streaming_audio_, audio);
+    return process_available_stream_chunks(false);
+}
+
+runtime::TaskResult Qwen3ASRSession::finish_stream() {
+    return finalize();
+}
+
+runtime::TaskResult Qwen3ASRSession::finalize() {
+    const auto finalize_start = Clock::now();
+    require_prepared("Qwen3 ASR finalize()");
+    if (task_.mode != runtime::RunMode::Streaming) {
+        throw std::runtime_error("Qwen3 ASR finalize() requires a streaming session");
+    }
+    if (!stream_started_) {
+        throw std::runtime_error("Qwen3 ASR finalize() requires start_stream");
+    }
+    if (streaming_audio_offset_values_ > streaming_audio_.samples.size()) {
+        throw std::runtime_error("Qwen3 ASR streaming pending audio offset is out of range");
+    }
+    if (streaming_audio_offset_values_ == streaming_audio_.samples.size() && streaming_windows_processed_ == 0) {
+        throw std::runtime_error("Qwen3 ASR finalize() requires streamed audio");
+    }
+    (void) process_available_stream_chunks(true);
+    if (!streaming_result_.text_output.has_value()) {
+        streaming_result_.text_output =
+            runtime::Transcript{"", streaming_request_.text_input.has_value() ? streaming_request_.text_input->language : ""};
+    }
+    stream_started_ = false;
+    if (stream_event_sink_ != nullptr) {
+        runtime::StreamEvent event;
+        event.is_final = true;
+        stream_event_sink_(event);
+    }
+    engine::debug::timing_log_scalar("qwen3_asr.session.stream.windows", streaming_windows_processed_);
+    engine::debug::timing_log_scalar(
+        "qwen3_asr.session.stream.finalize_ms",
+        engine::debug::elapsed_ms(finalize_start));
+    if (stream_wall_start_ != std::chrono::steady_clock::time_point{}) {
+        engine::debug::timing_log_scalar(
+            "qwen3_asr.session.stream.wall_ms",
+            engine::debug::elapsed_ms(stream_wall_start_));
+        engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(stream_wall_start_));
+    }
+    return streaming_result_;
 }
 
 runtime::TaskResult Qwen3ASRSession::run_single(const Qwen3ASRRequest & asr_request) {
@@ -291,6 +408,100 @@ runtime::TaskResult Qwen3ASRSession::run_single(const Qwen3ASRRequest & asr_requ
     debug::trace_log_scalar("qwen3_asr.audio_frames", features.frames);
     debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start, wall_end));
     return result;
+}
+
+runtime::StreamEvent Qwen3ASRSession::process_available_stream_chunks(bool final) {
+    runtime::StreamEvent last_event;
+    last_event.is_final = false;
+    if (streaming_audio_.sample_rate <= 0 || streaming_audio_.channels <= 0) {
+        return last_event;
+    }
+    if (streaming_audio_offset_values_ > streaming_audio_.samples.size()) {
+        throw std::runtime_error("Qwen3 ASR streaming pending audio offset is out of range");
+    }
+    if (streaming_audio_.samples.size() % static_cast<size_t>(streaming_audio_.channels) != 0 ||
+        streaming_audio_offset_values_ % static_cast<size_t>(streaming_audio_.channels) != 0) {
+        throw std::runtime_error("Qwen3 ASR streaming pending audio has invalid channel layout");
+    }
+    const auto seconds = engine::audio::parse_audio_chunk_seconds_override(streaming_request_.options)
+        .value_or(kDefaultStreamingWindowSeconds);
+    if (!(seconds > 0.0F)) {
+        throw std::runtime_error("Qwen3 ASR streaming audio_chunk_seconds must be positive");
+    }
+    const int64_t window_frames =
+        static_cast<int64_t>(std::llround(static_cast<double>(seconds) * static_cast<double>(streaming_audio_.sample_rate)));
+    if (window_frames <= 0) {
+        throw std::runtime_error("Qwen3 ASR streaming audio_chunk_seconds produced an empty chunk");
+    }
+
+    int64_t processed_chunks = 0;
+    while (true) {
+        const int64_t pending_frames = static_cast<int64_t>(
+            (streaming_audio_.samples.size() - streaming_audio_offset_values_) /
+            static_cast<size_t>(streaming_audio_.channels));
+        if (pending_frames <= 0 || (!final && pending_frames < window_frames)) {
+            break;
+        }
+        const int64_t take_frames = final ? std::min<int64_t>(pending_frames, window_frames) : window_frames;
+        const size_t take_values = static_cast<size_t>(take_frames * streaming_audio_.channels);
+        runtime::AudioBuffer chunk;
+        chunk.sample_rate = streaming_audio_.sample_rate;
+        chunk.channels = streaming_audio_.channels;
+        const auto begin = streaming_audio_.samples.begin() + static_cast<std::ptrdiff_t>(streaming_audio_offset_values_);
+        chunk.samples.assign(begin, begin + static_cast<std::ptrdiff_t>(take_values));
+        streaming_audio_offset_values_ += take_values;
+        last_event = process_one_stream_chunk(chunk);
+        ++streaming_windows_processed_;
+        ++processed_chunks;
+        if (stream_event_sink_ != nullptr && last_event.partial_text.has_value()) {
+            stream_event_sink_(last_event);
+            last_event.partial_text.reset();
+        }
+    }
+    if (processed_chunks > 0) {
+        if (streaming_audio_offset_values_ == streaming_audio_.samples.size()) {
+            streaming_audio_.samples.clear();
+            streaming_audio_offset_values_ = 0;
+        } else if (streaming_audio_offset_values_ > 1ull * 1024ull * 1024ull &&
+                   streaming_audio_offset_values_ * 2 > streaming_audio_.samples.size()) {
+            streaming_audio_.samples.erase(
+                streaming_audio_.samples.begin(),
+                streaming_audio_.samples.begin() + static_cast<std::ptrdiff_t>(streaming_audio_offset_values_));
+            streaming_audio_offset_values_ = 0;
+        }
+    }
+    return last_event;
+}
+
+runtime::StreamEvent Qwen3ASRSession::process_one_stream_chunk(const runtime::AudioBuffer & audio) {
+    runtime::TaskRequest item_request = streaming_request_;
+    item_request.audio_input = audio;
+    item_request.options["audio_chunk_mode"] = "none";
+    auto item = run_single(make_request(item_request));
+
+    runtime::StreamEvent event;
+    event.is_final = false;
+    if (!item.text_output.has_value() || item.text_output->text.empty()) {
+        return event;
+    }
+    const std::string delta = streaming_text_.empty()
+        ? item.text_output->text
+        : " " + item.text_output->text;
+    streaming_text_ += delta;
+    if (!streaming_result_.text_output.has_value()) {
+        streaming_result_.text_output = runtime::Transcript{"", item.text_output->language};
+    } else if (streaming_result_.text_output->language.empty()) {
+        streaming_result_.text_output->language = item.text_output->language;
+    }
+    streaming_result_.text_output->text = streaming_text_;
+    if (streaming_published_bytes_ < streaming_text_.size()) {
+        event.partial_text = runtime::Transcript{
+            streaming_text_.substr(streaming_published_bytes_),
+            streaming_result_.text_output->language,
+        };
+        streaming_published_bytes_ = streaming_text_.size();
+    }
+    return event;
 }
 
 std::vector<Qwen3ASRSession::AudioChunkPlan> Qwen3ASRSession::audio_chunk_plan(const runtime::TaskRequest & request) {

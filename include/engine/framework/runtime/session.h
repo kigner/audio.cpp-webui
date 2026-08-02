@@ -89,12 +89,14 @@ struct TimeSpan {
 struct SpeechSegment {
     TimeSpan span;
     float confidence = 0.0f;
+    std::string text;
 };
 
 struct SpeakerTurn {
     TimeSpan span;
     std::string speaker_id;
     float confidence = 0.0f;
+    std::string text;
 };
 
 struct WordTimestamp {

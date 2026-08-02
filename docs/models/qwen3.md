@@ -105,6 +105,10 @@ the forced aligner model path. Long audio is split inside the model session
 before ASR inference; word timestamps are shifted back onto the original audio
 timeline.
 
+Streaming mode accepts live audio chunks and emits buffered transcript deltas.
+Timestamp output remains offline-only because word alignment runs after the full
+transcript is known.
+
 `audio_chunk_mode=auto` is the default. For transcript-only ASR, Qwen3 ASR uses
 fixed chunks. When word timestamps are requested, it uses bundled Silero VAD
 internally to choose speech-aware chunks before running ASR and alignment.
@@ -114,12 +118,16 @@ internally to choose speech-aware chunks before running ASR and alignment.
 | Family | `qwen3_asr` |
 | Model directory | `models/Qwen3-ASR-0.6B` or `models/Qwen3-ASR-1.7B-hf` |
 | Task | `asr` |
-| Modes | `offline` |
+| Modes | `offline`, `streaming` |
 | Input | Speech WAV through `--audio` |
 | Output | Text to stdout or `--text-out`; optional word JSON through `--words-out` with a forced aligner |
 
 ```bash
 audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-0.6B --backend cuda --audio speech_16k.wav --text "" --text-out transcript.txt
+```
+
+```bash
+audiocpp_cli --task asr --mode streaming --family qwen3_asr --model models/Qwen3-ASR-0.6B --backend cuda --audio speech_16k.wav --text "" --request-option audio_chunk_seconds=5 --text-out transcript.txt
 ```
 
 The native Hugging Face Transformers layout of `Qwen/Qwen3-ASR-1.7B-hf` is

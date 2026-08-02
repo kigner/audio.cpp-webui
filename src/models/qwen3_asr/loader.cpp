@@ -21,7 +21,7 @@ runtime::ModelMetadata metadata(const Qwen3ASRAssets & assets) {
 runtime::CapabilitySet capabilities(const Qwen3ASRAssets & assets) {
     runtime::CapabilitySet out;
     out.supported_tasks = {
-        {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline}},
+        {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
     };
     out.languages = assets.config.supported_languages;
     out.supports_timestamps = false;
@@ -37,7 +37,7 @@ public:
     runtime::CapabilitySet advertised_capabilities() const override {
         runtime::CapabilitySet out;
         out.supported_tasks = {
-            {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline}},
+            {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         out.supports_timestamps = true;
         return out;
@@ -102,8 +102,8 @@ std::unique_ptr<runtime::IVoiceTaskSession> Qwen3ASRLoadedModel::create_task_ses
     if (task.task != runtime::VoiceTaskKind::Asr) {
         throw std::runtime_error("Qwen3 ASR only supports the Asr task");
     }
-    if (task.mode != runtime::RunMode::Offline) {
-        throw std::runtime_error("Qwen3 ASR currently supports offline sessions");
+    if (task.mode != runtime::RunMode::Offline && task.mode != runtime::RunMode::Streaming) {
+        throw std::runtime_error("Qwen3 ASR supports offline and streaming sessions");
     }
     return std::make_unique<Qwen3ASRSession>(task, options, assets_);
 }

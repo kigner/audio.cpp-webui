@@ -45,7 +45,8 @@
 
     { "id": "qwen3-asr",              "display_name": "Qwen3-ASR 0.6B (asr)",                  "family": "qwen3_asr",            "path": "models/Qwen3-ASR-0.6B",                  "task": "asr",   "mode": "offline", "download_id": "qwen3_asr_0_6b",          "min_vram_gb": 3 },
     { "id": "qwen3-asr-1.7b",         "display_name": "Qwen3-ASR 1.7B HF (asr)",               "family": "qwen3_asr",            "path": "models/Qwen3-ASR-1.7B-hf",               "task": "asr",   "mode": "offline", "download_id": "qwen3_asr_1_7b_hf",       "min_vram_gb": 6,
-      "input_hint": "**Qwen3-ASR 1.7B**（HF 原生权重，免转换）：精度高于 0.6B；长音频自动分段转写；8G 卡显存偏紧，长音频建议先短段试跑。" },
+      "input_hint": "**Qwen3-ASR 1.7B**（HF 原生权重，免转换）：精度高于 0.6B；长音频自动分段转写；支持⚡流式转写（输出缓冲后的文本增量）；时间戳仍走离线模式；8G 卡显存偏紧，长音频建议先短段试跑。",
+      "input_hint_en": "**Qwen3-ASR 1.7B** (native HF weights): higher accuracy than 0.6B; long audio is split automatically; streaming transcription emits buffered text deltas; timestamps remain offline-only. 8 GB GPUs may be tight." },
     { "id": "citrinet-asr",           "display_name": "Citrinet ASR (asr)",                    "family": "citrinet_asr",         "path": "models/citrinet",                        "task": "asr",   "mode": "offline", "download_id": "citrinet_asr",            "min_vram_gb": 2 },
     { "id": "nemotron-asr",           "display_name": "Nemotron 3.5 ASR 0.6B (asr, 100+语种)",  "family": "nemotron_asr",         "path": "models/nemotron-3.5-asr-streaming-0.6b", "task": "asr",   "mode": "offline", "download_id": "nemotron_asr",            "min_vram_gb": 4,
       "input_hint": "**Nemotron ASR**：100+ 语种，语种码为 BCP-47（如 en-US / zh-CN），留空=auto；模型自带长音频处理。" },
@@ -81,6 +82,9 @@
     { "id": "qwen3-tts-1.7b-vdesign", "display_name": "Qwen3-TTS 1.7B VoiceDesign (vdes)",     "family": "qwen3_tts",            "path": "models/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "task": "vdes",  "mode": "offline", "download_id": "qwen3_tts_1_7b_voice_design", "min_vram_gb": 8,
       "input_hint": "**Qwen3-TTS VoiceDesign**：在『音色描述』里用文字描述想要的声音（如“低沉磁性的中年男声，语速偏慢”），配上要念的文本即可，无需参考音频。" },
     { "id": "irodori-tts-vdesign",    "display_name": "Irodori-TTS 600M VoiceDesign (vdes 日语)", "display_name_en": "Irodori-TTS 600M VoiceDesign (ja vdes)", "family": "irodori_tts", "path": "models/Irodori-TTS-600M-v3-VoiceDesign", "task": "vdes", "mode": "offline", "download_id": "irodori_tts_600m_v3_voice_design", "min_vram_gb": 4,
-      "input_hint": "**Irodori-TTS VoiceDesign**（日语）：『音色描述』用日语 caption 描述音色（如「落ち着いた大人の男性。深く響く声。」），文本填要念的日语内容，无需参考音频。" }
+      "input_hint": "**Irodori-TTS VoiceDesign**（日语）：『音色描述』用日语 caption 描述音色（如「落ち着いた大人の男性。深く響く声。」），文本填要念的日语内容，无需参考音频。" },
+    { "id": "rvc", "display_name": "RVC (vc custom voice)", "display_name_en": "RVC (vc, custom voice)", "family": "rvc", "path": "models/RVC/inference/safetensors", "task": "vc", "mode": "offline", "min_vram_gb": 2,
+      "input_hint": "**RVC**：上传源音频和 .pth/.pt 目标音色模型；FAISS .index 可选。",
+      "input_hint_en": "**RVC**: upload source audio and a .pth/.pt target voice model; a FAISS .index is optional." }
   ]
 }

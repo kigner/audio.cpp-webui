@@ -126,37 +126,6 @@ std::string append_streaming_transcript(
     return delta;
 }
 
-void append_offset_speech_metadata(
-    runtime::TaskResult & total,
-    const runtime::TaskResult & chunk,
-    const runtime::TimeSpan & source_span,
-    const runtime::TimeSpan & keep_span) {
-    for (const auto & segment : chunk.speech_segments) {
-        auto shifted = segment;
-        shifted.span.start_sample += source_span.start_sample;
-        shifted.span.end_sample += source_span.start_sample;
-        if (shifted.span.end_sample <= keep_span.start_sample ||
-            shifted.span.start_sample >= keep_span.end_sample) {
-            continue;
-        }
-        shifted.span.start_sample = std::max<int64_t>(shifted.span.start_sample, keep_span.start_sample);
-        shifted.span.end_sample = std::min<int64_t>(shifted.span.end_sample, keep_span.end_sample);
-        total.speech_segments.push_back(std::move(shifted));
-    }
-    for (const auto & turn : chunk.speaker_turns) {
-        auto shifted = turn;
-        shifted.span.start_sample += source_span.start_sample;
-        shifted.span.end_sample += source_span.start_sample;
-        if (shifted.span.end_sample <= keep_span.start_sample ||
-            shifted.span.start_sample >= keep_span.end_sample) {
-            continue;
-        }
-        shifted.span.start_sample = std::max<int64_t>(shifted.span.start_sample, keep_span.start_sample);
-        shifted.span.end_sample = std::min<int64_t>(shifted.span.end_sample, keep_span.end_sample);
-        total.speaker_turns.push_back(std::move(shifted));
-    }
-}
-
 std::string decode_json_string_fragment(const std::string & value, size_t start, size_t * end) {
     std::string decoded;
     bool escaped = false;
@@ -641,7 +610,13 @@ runtime::TaskResult VibeVoiceASRSession::run(const runtime::TaskRequest & reques
             adjusted.text_output = std::move(item.text_output);
         }
         adjusted.output_artifacts = std::move(item.output_artifacts);
-        append_offset_speech_metadata(adjusted, item, chunks.front().source_span, chunks.front().keep_span);
+        engine::audio::append_chunk_speech_metadata(
+            adjusted,
+            item,
+            chunks.front().source_span,
+            chunks.front().keep_span,
+            audio.sample_rate,
+            assets_->processor.audio_processor.sample_rate);
         return adjusted;
     }
     runtime::TaskResult merged;
@@ -661,7 +636,13 @@ runtime::TaskResult VibeVoiceASRSession::run(const runtime::TaskRequest & reques
                 merged.text_output->language = item.text_output->language;
             }
         }
-        append_offset_speech_metadata(merged, item, chunk.source_span, chunk.keep_span);
+        engine::audio::append_chunk_speech_metadata(
+            merged,
+            item,
+            chunk.source_span,
+            chunk.keep_span,
+            audio.sample_rate,
+            assets_->processor.audio_processor.sample_rate);
     }
     if (merged.text_output.has_value()) {
         merged.text_output->text = text.str();
@@ -749,7 +730,13 @@ runtime::StreamEvent VibeVoiceASRSession::process_audio_chunk(const runtime::Aud
         chunk.start_sample,
         chunk.start_sample + static_cast<int64_t>(chunk.samples.size() / static_cast<size_t>(chunk.channels)),
     };
-    append_offset_speech_metadata(streaming_result_, result, streamed_span, streamed_span);
+    engine::audio::append_chunk_speech_metadata(
+        streaming_result_,
+        result,
+        streamed_span,
+        streamed_span,
+        chunk.sample_rate,
+        assets_->processor.audio_processor.sample_rate);
     event.is_final = false;
     return event;
 }
@@ -968,10 +955,12 @@ runtime::TaskResult VibeVoiceASRSession::run_single(const VibeVoiceASRRequest & 
         runtime::SpeechSegment speech_segment;
         speech_segment.span.start_sample = static_cast<int64_t>(segment.start_time * audio.sample_rate);
         speech_segment.span.end_sample = static_cast<int64_t>(segment.end_time * audio.sample_rate);
+        speech_segment.text = segment.text;
         result.speech_segments.push_back(speech_segment);
         runtime::SpeakerTurn turn;
         turn.span = speech_segment.span;
         turn.speaker_id = segment.speaker_id;
+        turn.text = segment.text;
         result.speaker_turns.push_back(std::move(turn));
     }
 

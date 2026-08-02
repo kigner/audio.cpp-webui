@@ -375,7 +375,11 @@ std::string task_result_json_with_timing(
             const auto & segment = result.speech_segments[i];
             out << "{\"start_sample\":" << segment.span.start_sample
                 << ",\"end_sample\":" << segment.span.end_sample
-                << ",\"confidence\":" << segment.confidence << "}";
+                << ",\"confidence\":" << segment.confidence;
+            if (!segment.text.empty()) {
+                out << ",\"text\":" << json_quote(segment.text);
+            }
+            out << "}";
         }
         out << "]";
     }
@@ -390,7 +394,11 @@ std::string task_result_json_with_timing(
             out << "{\"start_sample\":" << turn.span.start_sample
                 << ",\"end_sample\":" << turn.span.end_sample
                 << ",\"speaker_id\":" << json_quote(turn.speaker_id)
-                << ",\"confidence\":" << turn.confidence << "}";
+                << ",\"confidence\":" << turn.confidence;
+            if (!turn.text.empty()) {
+                out << ",\"text\":" << json_quote(turn.text);
+            }
+            out << "}";
         }
         out << "]";
     }

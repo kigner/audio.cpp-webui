@@ -765,6 +765,56 @@ void test_chunk_word_timestamp_merge_keeps_non_overlapping_source_span() {
     require_span(merged[1].span, 1160, 1220, "inside word source span");
 }
 
+void test_chunk_word_timestamp_merge_rescales_chunk_domain() {
+    std::vector<engine::runtime::WordTimestamp> merged;
+    engine::audio::append_chunk_word_timestamps(
+        merged,
+        {
+            word("kept", 12000, 18000),
+            word("right_context", 20000, 23000),
+        },
+        engine::runtime::TimeSpan{16000, 32000},
+        engine::runtime::TimeSpan{20000, 28000},
+        16000,
+        24000);
+
+    engine::test::require_eq(merged.size(), static_cast<size_t>(1), "rescaled merged word count");
+    engine::test::require_eq(merged[0].word, std::string("kept"), "rescaled word kept");
+    require_span(merged[0].span, 36000, 42000, "rescaled word timestamp");
+}
+
+void test_chunk_speech_metadata_merge_rescales_chunk_domain() {
+    engine::runtime::TaskResult chunk;
+    auto segment = speech(0, 24000);
+    segment.text = "speaker text";
+    chunk.speech_segments.push_back(segment);
+    engine::runtime::SpeakerTurn turn;
+    turn.span = engine::runtime::TimeSpan{12000, 18000};
+    turn.speaker_id = "SPEAKER_00";
+    turn.text = "turn text";
+    chunk.speaker_turns.push_back(turn);
+    chunk.word_timestamps.push_back(word("word", 12000, 18000));
+
+    engine::runtime::TaskResult merged;
+    engine::audio::append_chunk_speech_metadata(
+        merged,
+        chunk,
+        engine::runtime::TimeSpan{16000, 32000},
+        engine::runtime::TimeSpan{16000, 32000},
+        16000,
+        24000);
+
+    engine::test::require_eq(merged.speech_segments.size(), static_cast<size_t>(1), "rescaled speech segment count");
+    require_span(merged.speech_segments[0].span, 24000, 48000, "rescaled speech segment");
+    engine::test::require_eq(merged.speech_segments[0].text, std::string("speaker text"), "speech segment text kept");
+    engine::test::require_eq(merged.speaker_turns.size(), static_cast<size_t>(1), "rescaled speaker turn count");
+    require_span(merged.speaker_turns[0].span, 36000, 42000, "rescaled speaker turn");
+    engine::test::require_eq(merged.speaker_turns[0].speaker_id, std::string("SPEAKER_00"), "speaker id kept");
+    engine::test::require_eq(merged.speaker_turns[0].text, std::string("turn text"), "speaker turn text kept");
+    engine::test::require_eq(merged.word_timestamps.size(), static_cast<size_t>(1), "rescaled word count");
+    require_span(merged.word_timestamps[0].span, 36000, 42000, "rescaled metadata word");
+}
+
 void test_chunk_word_timestamp_merge_rejects_invalid_spans() {
     require_throws(
         []() {
@@ -806,6 +856,19 @@ void test_chunk_word_timestamp_merge_rejects_invalid_spans() {
                 engine::runtime::TimeSpan{900, 1100});
         },
         "keep span outside source");
+
+    require_throws(
+        []() {
+            std::vector<engine::runtime::WordTimestamp> merged;
+            engine::audio::append_chunk_word_timestamps(
+                merged,
+                {word("bad", 0, 10)},
+                engine::runtime::TimeSpan{0, 100},
+                engine::runtime::TimeSpan{0, 100},
+                0,
+                24000);
+        },
+        "invalid source sample rate");
 }
 
 }  // namespace
@@ -837,6 +900,8 @@ int main() {
         test_chunk_word_timestamp_merge_offsets_and_clips();
         test_chunk_word_timestamp_merge_appends_multiple_chunks();
         test_chunk_word_timestamp_merge_keeps_non_overlapping_source_span();
+        test_chunk_word_timestamp_merge_rescales_chunk_domain();
+        test_chunk_speech_metadata_merge_rescales_chunk_domain();
         test_chunk_word_timestamp_merge_rejects_invalid_spans();
         std::cout << "audio_chunking_test passed\n";
     } catch (const std::exception & ex) {

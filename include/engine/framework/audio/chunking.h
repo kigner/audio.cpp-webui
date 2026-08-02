@@ -134,4 +134,20 @@ void append_chunk_word_timestamps(
     const runtime::TimeSpan & source_span,
     const runtime::TimeSpan & keep_span);
 
+void append_chunk_word_timestamps(
+    std::vector<runtime::WordTimestamp> & output,
+    const std::vector<runtime::WordTimestamp> & chunk_words,
+    const runtime::TimeSpan & source_span,
+    const runtime::TimeSpan & keep_span,
+    int64_t source_sample_rate,
+    int64_t timestamp_sample_rate);
+
+void append_chunk_speech_metadata(
+    runtime::TaskResult & output,
+    const runtime::TaskResult & chunk_result,
+    const runtime::TimeSpan & source_span,
+    const runtime::TimeSpan & keep_span,
+    int64_t source_sample_rate,
+    int64_t timestamp_sample_rate);
+
 }  // namespace engine::audio

@@ -35,8 +35,11 @@ std::string speech_segments_to_json(const std::vector<engine::runtime::SpeechSeg
         }
         out << "{\"start_sample\":" << segments[i].span.start_sample
             << ",\"end_sample\":" << segments[i].span.end_sample
-            << ",\"confidence\":" << segments[i].confidence
-            << "}";
+            << ",\"confidence\":" << segments[i].confidence;
+        if (!segments[i].text.empty()) {
+            out << ",\"text\":" << quote_json(segments[i].text);
+        }
+        out << "}";
     }
     out << "]";
     return out.str();
@@ -52,8 +55,11 @@ std::string speaker_turns_to_json(const std::vector<engine::runtime::SpeakerTurn
         out << "{\"start_sample\":" << turns[i].span.start_sample
             << ",\"end_sample\":" << turns[i].span.end_sample
             << ",\"speaker_id\":" << quote_json(turns[i].speaker_id)
-            << ",\"confidence\":" << turns[i].confidence
-            << "}";
+            << ",\"confidence\":" << turns[i].confidence;
+        if (!turns[i].text.empty()) {
+            out << ",\"text\":" << quote_json(turns[i].text);
+        }
+        out << "}";
     }
     out << "]";
     return out.str();
