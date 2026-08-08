@@ -152,8 +152,9 @@ function Get-AppInputs {
     $tracked = @(& git -C $repoRoot ls-files -- `
         webui `
         SpeakType `
-        tools/model_manager.py `
-        tools/convert_glm_tts.py `
+        tools/model_manager_v2.py `
+        tools/model_manager_deprecated.py `
+        tools/community_models/convert_glm_tts.py `
         assets/model_manager `
         assets/framework/models/marblenet_vad `
         model_specs)
@@ -168,7 +169,11 @@ function Get-AppInputs {
         } elseif ($normalized.StartsWith("SpeakType/")) {
             $include = $normalized -match '^SpeakType/(app/|web/|third_party/|run\.py$|run_speaktype\.pyw$|run_mock\.pyw$|README\.md$)' -and
                 $normalized -notin @("SpeakType/config.json", "SpeakType/logs/.gitkeep")
-        } elseif ($normalized -in @("tools/model_manager.py", "tools/convert_glm_tts.py") -or
+        } elseif ($normalized -in @(
+                      "tools/model_manager_v2.py",
+                      "tools/model_manager_deprecated.py",
+                      "tools/community_models/convert_glm_tts.py"
+                  ) -or
                   $normalized.StartsWith("assets/model_manager/") -or
                   $normalized.StartsWith("assets/framework/models/marblenet_vad/") -or
                   $normalized.StartsWith("model_specs/")) {

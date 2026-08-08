@@ -37,6 +37,11 @@ def _usage(free, total=100 * GB):
 class _AppPatch(unittest.TestCase):
     """Patches module globals and restores them, so tests never touch the real disk."""
 
+    def setUp(self):
+        previous_language = app.get_language()
+        app.set_language("en")
+        self.addCleanup(app.set_language, previous_language)
+
     def patch(self, **values):
         for name, value in values.items():
             self.addCleanup(setattr, app, name, getattr(app, name))
@@ -51,6 +56,7 @@ class _AppPatch(unittest.TestCase):
 
 class RequirementsNoteTests(_AppPatch):
     def setUp(self):
+        super().setUp()
         self.entry = {"id": "vevo2", "label": "Vevo2", "family": "vevo2",
                       "download_id": "vevo2_q8_0", "abs_path": "/nonexistent",
                       "installed": False, "incomplete": False, "missing_files": [],
@@ -110,6 +116,7 @@ class DiskAlarmTests(_AppPatch):
     """Low remaining space after a download is still offered, but loudly."""
 
     def setUp(self):
+        super().setUp()
         self.entry = {"id": "m", "label": "M", "family": "vevo2", "download_id": "vevo2_q8_0",
                       "abs_path": "/nonexistent", "installed": False, "incomplete": False,
                       "missing_files": []}
@@ -144,6 +151,7 @@ class MemoryAlarmTests(_AppPatch):
     """Above MEMORY_USAGE_ALARM of the device it will run on, the model is flagged."""
 
     def setUp(self):
+        super().setUp()
         self.entry = {"id": "m", "label": "M", "family": "vevo2", "download_id": "vevo2_q8_0",
                       "abs_path": "/nonexistent", "installed": False, "incomplete": False,
                       "missing_files": [], "min_vram_gb": 7}
@@ -216,6 +224,7 @@ class WarningsSurviveTheProgressRefreshTests(_AppPatch):
     indistinguishable from never having been shown."""
 
     def setUp(self):
+        super().setUp()
         self.entry = {"id": "m", "label": "Big Model", "family": "vevo2", "path": "models/M",
                       "download_id": "vevo2_q8_0", "abs_path": "/nonexistent", "installed": False,
                       "download_installed": False, "incomplete": False, "missing_files": [],
@@ -270,6 +279,7 @@ class ConfirmBeforeDownloadTests(_AppPatch):
     undone once the bytes are written, so one stray click must not start one."""
 
     def setUp(self):
+        super().setUp()
         self.entry = {"id": "m", "label": "Big Model", "family": "vevo2", "path": "models/M",
                       "download_id": "vevo2_q8_0", "abs_path": "/nonexistent", "installed": False,
                       "incomplete": False, "missing_files": [], "min_vram_gb": 20}

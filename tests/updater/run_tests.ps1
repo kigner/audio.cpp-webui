@@ -624,8 +624,9 @@ function Test-ReleaseBuilder {
     $appExpanded = Join-Path $root "app-expanded"
     Expand-Archive -LiteralPath (Join-Path $output "audiocpp-app-v0.2.1.zip") -DestinationPath $appExpanded
     foreach ($relative in @(
-        "payload\tools\model_manager.py",
-        "payload\tools\convert_glm_tts.py",
+        "payload\tools\model_manager_v2.py",
+        "payload\tools\model_manager_deprecated.py",
+        "payload\tools\community_models\convert_glm_tts.py",
         "payload\model_specs\qwen3_asr.json",
         "payload\assets\framework\models\marblenet_vad\marblenet_vad.safetensors",
         "payload\assets\framework\models\marblenet_vad\marblenet_vad_config.json",
