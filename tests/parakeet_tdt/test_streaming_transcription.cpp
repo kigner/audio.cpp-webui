@@ -40,8 +40,16 @@ std::string arg_value(int argc, char** argv, const std::string& name, const std:
 engine::runtime::TaskResult run_stream(
     engine::runtime::IStreamingVoiceTaskSession& session,
     const engine::audio::WavData& wav,
-    bool& saw_partial) {
+    bool& saw_partial,
+    std::string& partial_text) {
     engine::runtime::TaskRequest stream_request;
+    session.set_stream_event_sink(
+        [&](const engine::runtime::StreamEvent& event) {
+            if (event.partial_text.has_value() && !event.partial_text->text.empty()) {
+                saw_partial = true;
+                partial_text += event.partial_text->text;
+            }
+        });
     session.start_stream(stream_request);
     constexpr size_t chunk_samples = 8000;
     for (size_t offset = 0; offset < wav.samples.size(); offset += chunk_samples) {
@@ -53,11 +61,11 @@ engine::runtime::TaskResult run_stream(
         chunk.samples.assign(
             wav.samples.begin() + static_cast<std::ptrdiff_t>(offset),
             wav.samples.begin() + static_cast<std::ptrdiff_t>(offset + count));
-        const auto event = session.process_audio_chunk(chunk);
-        saw_partial = saw_partial ||
-            (event.partial_text.has_value() && !event.partial_text->text.empty());
+        (void)session.process_audio_chunk(chunk);
     }
-    return session.finalize();
+    auto result = session.finalize();
+    session.set_stream_event_sink(nullptr);
+    return result;
 }
 
 }  // namespace
@@ -168,7 +176,8 @@ int main(int argc, char** argv) {
         }
 
         bool saw_partial = false;
-        const auto first = run_stream(*session, wav, saw_partial);
+        std::string first_partials;
+        const auto first = run_stream(*session, wav, saw_partial, first_partials);
         if (!saw_partial) {
             throw std::runtime_error("stream produced no partial result before finalize");
         }
@@ -176,6 +185,10 @@ int main(int argc, char** argv) {
             first.text_output.has_value() ? first.text_output->text : "";
         if (first_text != kExpectedText) {
             throw std::runtime_error("buffered-streaming final transcript mismatch");
+        }
+        if (first_partials != first_text) {
+            throw std::runtime_error(
+                "buffered-streaming partials are not append-only transcript deltas");
         }
 
         bool repeated_finalize_failed = false;
@@ -203,10 +216,13 @@ int main(int argc, char** argv) {
         }
 
         bool second_saw_partial = false;
-        const auto second = run_stream(*session, wav, second_saw_partial);
+        std::string second_partials;
+        const auto second = run_stream(*session, wav, second_saw_partial, second_partials);
         const std::string second_text =
             second.text_output.has_value() ? second.text_output->text : "";
-        if (second_text != first_text || !second_saw_partial) {
+        if (second_text != first_text ||
+            second_partials != second_text ||
+            !second_saw_partial) {
             throw std::runtime_error("reset stream did not reproduce the first result");
         }
 

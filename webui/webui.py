@@ -209,6 +209,7 @@ REQUIRED_FILES_PATH = os.path.join(CONFIG_DIR, "required_files.json")
 EXE_SUFFIX = ".exe" if os.name == "nt" else ""
 SERVER_EXE_NAME = "audiocpp_server" + EXE_SUFFIX
 GGUF_EXE_NAME = "audiocpp_gguf" + EXE_SUFFIX
+GGUF_TYPES = ("orig", "f16", "bf16", "q8_0", "q2_k", "q3_k", "q4_k", "q5_k", "q6_k")
 # The standalone server executable, named only in messages telling the user what
 # may be holding the port.
 SERVER_LAUNCHER = SERVER_EXE_NAME
@@ -379,6 +380,61 @@ def _find_bundle_root():
 
 
 BUNDLE_ROOT = _find_bundle_root()
+
+
+_SEMVER_RE = re.compile(r"^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$")
+
+
+def _normalized_version(value):
+    match = _SEMVER_RE.fullmatch(str(value or "").strip())
+    return match.group(1) if match else ""
+
+
+def _version_from_json(root):
+    path = os.path.join(root, "version.json")
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return _normalized_version(json.load(f).get("version"))
+    except (OSError, TypeError, ValueError):
+        return ""
+
+
+def _current_app_version(project_root=PROJECT_ROOT, bundle_root=BUNDLE_ROOT, environ=None):
+    """Current release version for the footer in dev and portable layouts."""
+    env = os.environ if environ is None else environ
+    overridden = _normalized_version(env.get("AUDIOCPP_VERSION"))
+    if overridden:
+        return overridden
+
+    # Only query Git when this exact directory is a checkout. A portable bundle
+    # may live inside a development tree and must keep using its own version.json.
+    if os.path.exists(os.path.join(project_root, ".git")):
+        try:
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"], cwd=project_root,
+                capture_output=True, text=True, timeout=2, check=False)
+            version = _normalized_version(branch.stdout)
+            if version:
+                return version
+            tag = subprocess.run(
+                ["git", "describe", "--tags", "--match", "v[0-9]*",
+                 "--abbrev=0"], cwd=project_root,
+                capture_output=True, text=True, timeout=2, check=False)
+            version = _normalized_version(tag.stdout)
+            if version:
+                return version
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    for root in dict.fromkeys((bundle_root, project_root)):
+        version = _version_from_json(root)
+        if version:
+            return version
+    return ""
+
+
+APP_VERSION = _current_app_version()
+APP_VERSION_SUFFIX = f" v{APP_VERSION}" if APP_VERSION else ""
 SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = _load_spec_packages()
 
 def _detect_backend():
@@ -464,6 +520,19 @@ def _spec_families():
 
 
 GGUF_NATIVE_FAMILIES = _spec_families()
+
+# These families have source-weight layouts the WebUI can assemble without
+# guessing. Other native-GGUF families can still use ready-made packages or the
+# audiocpp_gguf CLI until their multi-input layout is described here.
+GGUF_SIMPLE_MODEL_FAMILIES = frozenset({
+    "higgs_audio_stt",
+    "hviske_asr",
+    "nemotron_asr",
+    "qwen3_asr",
+    "qwen3_forced_aligner",
+    "vibevoice_asr",
+})
+GGUF_WEBUI_CONVERTIBLE_FAMILIES = GGUF_SIMPLE_MODEL_FAMILIES | {"qwen3_tts"}
 
 def _find_gguf_exe():
     """Find the converter in a development build or an integrated bundle.
@@ -606,7 +675,14 @@ MODEL_PROFILES = {
     },
     "qwen3_tts": {
         "input_hint": (
-            "**Qwen3-TTS** 声音克隆：建议上传参考音色并填『参考文本』，否则可能提前截断。"),
+            "**Qwen3-TTS** 声音克隆：建议上传参考音色并填『参考文本』；长文本会自动安全分段，"
+            "避免单段耗尽声学 token 后漏读。"),
+        # Keep the WebUI split coarse: it bounds HTTP request duration and exposes
+        # progress, while the C++ Qwen session performs the token-aware inner split
+        # (200 codepoints at the UI default max_tokens=1200).  Using 200 here too
+        # turns every inner chunk into a separate request and repeats fixed request
+        # overhead for long-form synthesis.
+        "chunk_chars": 1000,
     },
     "pocket_tts": {
         "input_hint": "**PocketTTS**：必须提供参考音色（上传/录制/内置）。",
@@ -666,8 +742,9 @@ MODEL_PROFILES = {
     "parakeet_tdt": {
         "input_hint": (
             "**Parakeet-TDT**：离线/长音频/流式 ASR；支持多种欧洲语言，"
-            "留空=自动。"),
+            "留空=自动；流式输入自动转换为 16 kHz 单声道。"),
         "supports_streaming": True,
+        "stream_input_16k_mono": True,
     },
     "ace_step": {
         "input_hint": (
@@ -811,7 +888,8 @@ MODEL_PROFILES = {
 MODEL_HINTS_EN = {
     "vibevoice": "**VibeVoice**: use one `Speaker N:` line per speaker. Use `voice_samples` for multiple voices.",
     "voxcpm2": "**VoxCPM2**: upload a clean voice reference and its transcript. Streaming is supported.",
-    "qwen3_tts": "**Qwen3-TTS**: a voice reference and matching transcript are recommended.",
+    "qwen3_tts": ("**Qwen3-TTS**: a voice reference and matching transcript are recommended. "
+                  "Long text is split automatically to prevent acoustic-token truncation."),
     "pocket_tts": "**PocketTTS** requires a voice reference.",
     "inflect_v2": "**Inflect Micro v2**: English offline TTS. Micro is the default package; Nano can be selected manually.",
     "dramabox": "**DramaBox**: English TTS and voice clone. Upload a reference voice to clone.",
@@ -820,7 +898,8 @@ MODEL_HINTS_EN = {
     "qwen3_asr": "**Qwen3-ASR** automatically splits long audio. Language and context are optional.",
     "voxtral_realtime": "**Voxtral Mini 4B Realtime** auto-detects language and supports streaming transcription. Timestamps are not exposed.",
     "fun_asr_nano": "**Fun-ASR-Nano** is a lightweight offline ASR model for auto/zh/en/ja.",
-    "parakeet_tdt": "**Parakeet-TDT** supports offline, long-form and streaming ASR for many European languages.",
+    "parakeet_tdt": ("**Parakeet-TDT** supports offline, long-form and streaming ASR for many "
+                     "European languages. Streaming input is converted to mono 16 kHz automatically."),
     "ace_step": "**ACE-Step**: describe style, instruments and mood. Editing routes require source audio.",
     "stable_audio": "**Stable Audio** accepts English prompts only. Source audio enables init/inpaint.",
     "heartmula": "**HeartMuLa** requires `tags` and lyrics. Estimated peak VRAM is about 25 GB.",
@@ -1019,9 +1098,38 @@ def _split_long_line(line, budget):
     re-attaching its `Speaker N:` prefix (if any) to every piece."""
     m = _SPEAKER_LINE_RE.match(line)
     prefix, body = (m.group(1) + " ", m.group(2)) if m else ("", line.strip())
+    body_budget = max(1, budget - len(prefix))
+
+    def hard_split(value):
+        """Bound a single sentence too long to fit by itself.
+
+        Prefer a whitespace boundary for Latin text and fall back to a Unicode
+        codepoint boundary for unspaced CJK text.  Boundary whitespace is not
+        spoken, so stripping it does not remove content.
+        """
+        bounded = []
+        remaining = value
+        while len(remaining) > body_budget:
+            cut = remaining.rfind(" ", 0, body_budget + 1)
+            if cut <= 0:
+                cut = body_budget
+            piece = remaining[:cut].rstrip()
+            if piece:
+                bounded.append(piece)
+            remaining = remaining[cut:].lstrip()
+        if remaining:
+            bounded.append(remaining)
+        return bounded
+
     pieces, cur = [], ""
     for sent in _SENTENCE_RE.findall(body):
-        if cur and len(cur) + len(sent) > budget:
+        if len(sent) > body_budget:
+            if cur:
+                pieces.append(prefix + cur)
+                cur = ""
+            pieces.extend(prefix + piece for piece in hard_split(sent))
+            continue
+        if cur and len(cur) + len(sent) > body_budget:
             pieces.append(prefix + cur)
             cur = ""
         cur += sent
@@ -1765,6 +1873,13 @@ def catalog_models():
         entry["incomplete"] = bool(entry["missing_files"])
         entry["installed"] = package_complete or legacy_complete
         entry["download_installed"] = package_complete
+        entry["gguf_path"] = (_existing_gguf_path(entry)
+                              if entry.get("family") in GGUF_NATIVE_FAMILIES else None)
+        entry["gguf_ready"] = bool(entry["gguf_path"])
+        entry["gguf_only"] = entry["gguf_ready"] and not (package_complete or legacy_complete)
+        if entry["gguf_ready"]:
+            entry["installed"] = True
+            entry["incomplete"] = False
         entry["label"] = m.get("display_name") or m.get("id", "?")
         out.append(entry)
     return out
@@ -1792,6 +1907,8 @@ def choices_for_tasks(tasks, language=None):
             label = _t(label, label, language)
         if m["incomplete"]:
             label += _t(" · 目录不完整", " · incomplete", language)
+        elif m.get("gguf_only"):
+            label += _t(" · 仅 GGUF", " · GGUF only", language)
         elif not m["installed"]:
             label += _t(" · 未安装", " · not installed", language)
             short = _vram_shortfall(m)
@@ -2111,7 +2228,8 @@ def _declared_package_gguf_path(entry):
 
 def _server_model_path(entry):
     gguf = _existing_gguf_path(entry)
-    if gguf is not None and _is_downloaded_gguf_package(entry):
+    if gguf is not None and (_is_downloaded_gguf_package(entry)
+                             or entry.get("family") in GGUF_WEBUI_CONVERTIBLE_FAMILIES):
         return gguf
     return entry["abs_path"]
 
@@ -2695,8 +2813,8 @@ def model_update_note(entry):
         package = SPEC_PACKAGE_BY_ID.get(entry.get("download_id") or "")
         if package is not None and package.get("format") == "gguf":
             return _t(
-                "\n\nℹ️ 当前从已有本地模型加载。点击『⬇️ (Re) 下载』可安装默认 GGUF 包并启用包更新检查。",
-                "\n\nℹ️ Loaded from existing local model files. Click ⬇️ (Re) Download to install the default GGUF package and enable package update checks.")
+                "\n\nℹ️ 当前从已有本地模型加载。点击『⬇️ 下载模型』可安装默认 GGUF 包并启用包更新检查。",
+                "\n\nℹ️ Loaded from existing local model files. Click ⬇️ Download Model to install the default GGUF package and enable package update checks.")
     package, files = _installed_package_files(entry)
     if package is None or not files:
         return ""
@@ -2730,8 +2848,8 @@ def model_update_note(entry):
     if updated:
         shown = ", ".join(updated[:3]) + (f", +{len(updated) - 3}" if len(updated) > 3 else "")
         note = _t(
-            "\n\n🔄 远端模型包有更新：{files}。点击『⬇️ (Re) 下载』可更新。",
-            "\n\n🔄 Model package update available: {files}. Click ⬇️ (Re) Download to update.",
+            "\n\n🔄 远端模型包有更新：{files}。点击『⬇️ 下载模型』可更新。",
+            "\n\n🔄 Model package update available: {files}. Click ⬇️ Download Model to update.",
             files=shown)
     elif checked == 0:
         note = ""
@@ -3051,90 +3169,10 @@ def _download_running(model_id):
     return rec is not None and rec["proc"].poll() is None
 
 
-def _download_blockers(entry, model_id):
-    """Why this entry cannot be downloaded right now, or "" if it can."""
-    if entry.get("download_installed", entry["installed"]):
-        return _t("✅ {label} 的下载包已安装，无需重新下载",
-                  "✅ {label}'s download package is already installed.",
-                  label=entry["label"])
-    if not entry.get("download_id"):
-        return _t("⚠️ {label} 没有 download_id，请手动安装。",
-                  "⚠️ {label} has no download_id; install it manually.", label=entry["label"])
-    if entry.get("download_id") not in SPEC_PACKAGE_BY_ID:
-        return _t("⚠️ {label} 没有 model_specs GGUF 下载包，请手动安装。",
-                  "⚠️ {label} has no model_specs GGUF download package; install it manually.",
-                  label=entry["label"])
-    if SPEC_MODEL_MANAGER is None:
-        return _t("❌ 找不到 webui/model_manager_webui.py",
-                  "❌ webui/model_manager_webui.py was not found.")
-    if _download_running(model_id):
-        return _t("⏳ {label} 已在后台下载中…", "⏳ {label} is already downloading…",
-                  label=entry["label"])
-    return ""
-
-
-def download_proposal(model_id):
-    """(message, can_confirm) for the Download button — the decision, not its rendering.
-
-    Weights run to 17 GB and a download cannot be undone once the bytes are on the disk,
-    so the button that used to commit now only proposes. `can_confirm` is False whenever
-    there is nothing to confirm: already installed, already running, or provably out of
-    disk. Kept free of Gradio types so the decision is testable on its own."""
-    if not model_id:
-        return _t("❌ 请先选择一个模型", "❌ Select a model first."), False
-    entry = catalog_by_id(model_id)
-    if entry is None:
-        return _t("❌ catalog 里没有模型 id：{model}", "❌ Model id not found: {model}",
-                  model=model_id), False
-    stop = _download_blockers(entry, model_id)
-    if stop:
-        return stop, False
-
-    requirements, blocker = download_requirements(entry)
-    if blocker:
-        return requirements + blocker, False
-
-    # The disk and memory alarms are already in `requirements`; these are the rest.
-    warnings = ""
-    if entry["incomplete"]:
-        warnings += _t("⚠️ {path} 不完整（缺 {count} 个文件），将覆盖重装。\n\n",
-                       "⚠️ {path} is incomplete ({count} files missing); it will be reinstalled.\n\n",
-                       path=entry["abs_path"], count=len(entry["missing_files"]))
-    if not hf_token_present():
-        warnings += _t("⚠️ 未检测到 HF token，受限模型可能返回 401。\n\n",
-                       "⚠️ No HF token detected; gated models may return 401.\n\n")
-    alarmed = "🚨" in requirements
-    ask = _t("🚨 **有告警**（见上）。确定仍要下载 **{label}**？确定就点『✅ 确认下载』，"
-             "否则点『✖️ 取消』。",
-             "🚨 **Alarms raised** (above). Download **{label}** anyway? Click ✅ Confirm if you "
-             "really want it, otherwise ✖️ Cancel.", label=entry["label"]) if alarmed else _t(
-             "❓ 确认下载 **{label}**？点『✅ 确认下载』开始，或点『✖️ 取消』放弃。",
-             "❓ Download **{label}**? Click ✅ Confirm to start, or ✖️ Cancel to abandon it.",
-             label=entry["label"])
-    return warnings + requirements + ask, True
-
-
-def download_preview(model_id):
-    """Click handler: the proposal, plus visibility for the confirm/cancel pair."""
-    message, can_confirm = download_proposal(model_id)
-    return message, gr.update(visible=can_confirm), gr.update(visible=can_confirm)
-
-
-def download_cancel(model_id):
-    """Cancel button: nothing was started, so this only clears the prompt."""
-    entry = catalog_by_id(model_id) if model_id else None
-    label = entry["label"] if entry else model_id
-    _ui_log(_t("已取消下载：{label}", "download cancelled: {label}", label=label))
-    return (_t("✖️ 已取消，未下载 {label}。", "✖️ Cancelled; {label} was not downloaded.",
-               label=label),
-            gr.update(visible=False), gr.update(visible=False))
-
-
 def download_start(model_id, hf_token="", proxy=""):
-    """Confirm button: kick off the download and arm the auto-refresh timer."""
+    """Click handler: kick off the download and arm the auto-refresh timer."""
     msg = download_model(model_id, hf_token, proxy)
-    return (msg, gr.Timer(active=_download_running(model_id)),
-            gr.update(visible=False), gr.update(visible=False))
+    return msg, gr.Timer(active=_download_running(model_id))
 
 
 def _model_choice_updates():
@@ -3194,19 +3232,89 @@ def _existing_gguf_path(entry):
     return os.path.join(model_path, found[0]) if len(found) == 1 else None
 
 
+def _gguf_output_path(entry):
+    """Existing loadable GGUF, or the model.gguf path used for a new conversion."""
+    existing = _existing_gguf_path(entry)
+    if existing is not None:
+        return existing
+    model_path = entry["abs_path"]
+    if os.path.isfile(model_path) and model_path.lower().endswith(".gguf"):
+        return model_path
+    root = model_path if os.path.isdir(model_path) else os.path.dirname(model_path)
+    return os.path.join(root, "model.gguf")
+
+
+def _gguf_tensor_entrypoint(model_dir):
+    """Return a single-file or sharded safetensors entry point in model_dir."""
+    for name in ("model.safetensors.index.json", "model.safetensors"):
+        candidate = os.path.join(model_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _gguf_conversion_inputs(entry):
+    """Build the converter's ordered (namespace, weights) input list."""
+    if entry["family"] not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
+        return []
+
+    model_path = entry["abs_path"]
+    if os.path.isfile(model_path):
+        lower = model_path.lower()
+        if lower.endswith(".safetensors") or lower.endswith(".safetensors.index.json"):
+            return [("", model_path)]
+        return []
+
+    # Qwen3-TTS is a composite package whose spec requires both exact namespaces.
+    if entry["family"] == "qwen3_tts":
+        model_weights = _gguf_tensor_entrypoint(model_path)
+        speech_weights = _gguf_tensor_entrypoint(os.path.join(model_path, "speech_tokenizer"))
+        if model_weights and speech_weights:
+            return [
+                ("model_weights", model_weights),
+                ("speech_tokenizer_weights", speech_weights),
+            ]
+        return []
+
+    source = _gguf_tensor_entrypoint(model_path)
+    return [("", source)] if source else []
+
+
+def _gguf_conversion_unavailable(entry):
+    family = entry["family"]
+    if family not in GGUF_NATIVE_FAMILIES:
+        return _t("当前模型后端暂不支持原生 GGUF。",
+                  "This model backend does not currently support native GGUF.")
+    if family not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
+        return _t("当前复合模型暂不能在 WebUI 自动转换。",
+                  "This composite model cannot yet be converted automatically in the WebUI.")
+    return ""
+
+
 def gguf_status(model_id):
     entry, error = _gguf_entry(model_id, require_installed=False)
     if entry is None:
         return f"⚪ {error}"
     existing = _existing_gguf_path(entry)
     if existing is not None:
-        return _t("🧊 已有GGUF（`{name}`），将优先加载该模型。",
+        return _t("🧊 已有 GGUF（`{name}`），将优先加载该模型。",
                   "🧊 GGUF is available (`{name}`) and will be loaded first.",
                   name=os.path.basename(existing))
-    if entry.get("download_id") in SPEC_PACKAGE_BY_ID:
-        return _t("🧊 下载将安装 model_specs 中声明的 GGUF 包。",
-                  "🧊 Download will install the GGUF package declared in model_specs.")
-    return _t("⚠️ 暂无 GGUF；请手动安装。", "⚠️ No GGUF yet; install it manually.")
+    unavailable = _gguf_conversion_unavailable(entry)
+    if unavailable:
+        if entry.get("download_id") in SPEC_PACKAGE_BY_ID:
+            return _t("⚠️ {reason} 可使用『下载模型』安装预制 GGUF。",
+                      "⚠️ {reason} Use Download Model to install a ready-made GGUF.",
+                      reason=unavailable)
+        return f"⚠️ {unavailable}"
+    if not entry["installed"]:
+        return _t("🧊 可转换，但原始模型未完整安装。",
+                  "🧊 Convertible, but the original model is not fully installed.")
+    if _find_gguf_exe() is None:
+        return _t("⚠️ 找不到 GGUF 转换器。", "⚠️ GGUF converter not found.")
+    if not _gguf_conversion_inputs(entry):
+        return _t("⚠️ 未找到可转换的模型权重。", "⚠️ No convertible model weights found.")
+    return _t("🧊 可转换。", "🧊 Ready to convert.")
 
 
 def _gguf_inspection_summary(output, text):
@@ -3262,6 +3370,114 @@ def inspect_gguf(model_id):
         return _t("❌ 检查失败（exit {code}）。", "❌ Inspection failed (exit {code}).", code=result.returncode)
     _ui_log(_t("检查 GGUF：{output}", "checking GGUF: {output}", output=output))
     return _gguf_inspection_summary(output, result.stdout)
+
+
+def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
+    entry, error = _gguf_entry(model_id)
+    if entry is None:
+        return f"❌ {error}"
+    unavailable = _gguf_conversion_unavailable(entry)
+    if unavailable:
+        return f"❌ {unavailable}"
+    output = _gguf_output_path(entry)
+    if os.path.isfile(output):
+        return _t("⚠️ GGUF 已存在；请先检查或删除。",
+                  "⚠️ GGUF already exists; inspect or delete it first.")
+    converter = _find_gguf_exe()
+    if converter is None:
+        return _t("❌ 找不到 `{name}`；已检查开发构建和 portable 的 gpu/cpu 目录。",
+                  "❌ {name} was not found in development or portable gpu/cpu paths.",
+                  name=GGUF_EXE_NAME)
+    inputs = _gguf_conversion_inputs(entry)
+    if not inputs:
+        return _t("❌ 未找到可自动转换的模型权重。",
+                  "❌ No convertible model weights found.")
+    if weight_type not in GGUF_TYPES:
+        return _t("❌ 不支持的 GGUF 类型：{type}",
+                  "❌ Unsupported GGUF type: {type}", type=weight_type)
+
+    root = (entry["abs_path"] if os.path.isdir(entry["abs_path"])
+            else os.path.dirname(inputs[0][1]))
+    cmd = [converter]
+    for namespace, source in inputs:
+        cmd.extend(["--input", f"{namespace}={source}" if namespace else source])
+    cmd.extend(["--root", root, "--output", output,
+                "--type", weight_type, "--family", entry["family"]])
+    progress(0, desc=_t("正在转换 GGUF…", "Converting GGUF…"))
+    _ui_log(_t("开始转换 GGUF：{label}（{type}）",
+               "starting GGUF conversion: {label} ({type})",
+               label=entry["label"], type=weight_type))
+    try:
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=7200)
+    except subprocess.TimeoutExpired:
+        return _t("❌ GGUF 转换超过 2 小时，已停止。",
+                  "❌ GGUF conversion exceeded two hours and was stopped.")
+    except Exception as exc:
+        return _t("❌ 无法启动 GGUF 转换：{error}",
+                  "❌ Could not start GGUF conversion: {error}", error=exc)
+
+    if result.returncode != 0 or not os.path.isfile(output):
+        _ui_log(_t("GGUF 转换失败：{label}（exit {code}）",
+                   "GGUF conversion failed: {label} (exit {code})",
+                   label=entry["label"], code=result.returncode))
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        details = []
+        if stdout:
+            details.append(f"stdout:\n{stdout}")
+        if stderr:
+            details.append(f"stderr:\n{stderr}")
+        process_output = "\n\n".join(details) or _t(
+            "（转换器没有输出）", "(The converter produced no output.)")
+        return _t(
+            "❌ 转换失败（exit {code}）。\n\n命令：\n```text\n{command}\n```\n\n详细信息：\n```text\n{output}\n```",
+            "❌ Conversion failed (exit {code}).\n\nCommand:\n```text\n{command}\n```\n\nDetails:\n```text\n{output}\n```",
+            code=result.returncode, command=subprocess.list2cmdline(cmd), output=process_output)
+
+    stopped = False
+    with _proc_lock:
+        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
+            _stop_server()
+            stopped = True
+    progress(1, desc=_t("GGUF 转换完成", "GGUF conversion complete"))
+    _ui_log(_t("GGUF 转换完成：{label} → {output}",
+               "GGUF conversion complete: {label} → {output}",
+               label=entry["label"], output=output))
+    note = (_t("请重新点击『加载模型』。", "Click Load again.") if stopped else
+            _t("点击『加载模型』即可使用。", "Click Load to use it."))
+    return _t("✅ 转换成功。{note}", "✅ Conversion complete. {note}", note=note)
+
+
+def delete_gguf(model_id):
+    entry, error = _gguf_entry(model_id)
+    if entry is None:
+        return f"❌ {error}", server_status()
+    output = _existing_gguf_path(entry)
+    if output is None:
+        return _t("⚠️ 暂无 GGUF。", "⚠️ No GGUF to delete."), server_status()
+    with _proc_lock:
+        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
+            _stop_server()
+        elif server_alive() and model_id in loaded_ids():
+            return (_t("⚠️ 外部 server 正在使用该 GGUF；请先关闭它再删除。",
+                       "⚠️ An external server is using this GGUF. Stop it before deleting."),
+                    server_status())
+    temporary = output + ".tmp"
+    try:
+        os.remove(output)
+        if os.path.isfile(temporary):
+            os.remove(temporary)
+    except OSError as exc:
+        return (_t("❌ 删除 GGUF 失败：{error}",
+                   "❌ Could not delete GGUF: {error}", error=exc), server_status())
+    _ui_log(_t("删除 GGUF：{output}", "deleted GGUF: {output}", output=output))
+    if entry.get("gguf_only"):
+        return (_t(
+            "✅ 已删除：`{path}`\n\n⚠️ 原始模型文件不完整或已清理，模型现在无法加载。",
+            "✅ Deleted: `{path}`\n\n⚠️ The original model files are incomplete or were removed, so the model can no longer load.",
+            path=output), server_status())
+    return _t("✅ 已删除：`{path}`", "✅ Deleted: `{path}`", path=output), server_status()
 
 
 # --- task handlers ---------------------------------------------------------
@@ -3754,13 +3970,28 @@ def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR"):
     return text, dur, len(chunks)
 
 
+def _prepare_asr_input(audio_path, prof, stream=False):
+    """Normalize an uploaded ASR file for the selected request route.
+
+    Most ASR sessions accept the WAV's native layout. Parakeet's buffered
+    streaming contract is stricter: mono 16 kHz. Keep that requirement in its
+    model profile so other streaming families retain their existing input path.
+    """
+    wav_path = _ensure_wav(audio_path)
+    if stream and prof.get("stream_input_16k_mono"):
+        return _to_16k_mono_wav(wav_path)
+    return wav_path
+
+
 def do_asr(model, audio_path, language="", context="", dialogue=False, stream=False):
     """生成器：非流式路径只 yield 一次最终结果（行为与旧版 return 完全一致——
     Gradio 对生成器处理器逐次刷新输出）；流式路径边收 SSE 增量边 yield。"""
     try:
         if not audio_path:
             raise gr.Error(_t("请上传或录制音频", "Upload or record audio."))
-        audio_path = _ensure_wav(audio_path)
+        entry = catalog_by_id(model)
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        audio_path = _prepare_asr_input(audio_path, prof, stream=stream and not dialogue)
         # 可选转写参数：留空不发，请求体和原来完全一致（qwen3_asr 从 text_input
         # 读 context/language，其它族忽略；server 端 build_openai_transcription_request
         # 只在字段存在时才设置 text_input）。
@@ -3773,9 +4004,6 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
             # 对话模式走 Sortformer 切段 + 逐段离线转写，与流式互斥（勾了也忽略）。
             yield _asr_dialogue(model, audio_path, extras)
             return
-        entry = catalog_by_id(model)
-        prof = profile_for(entry) if entry else DEFAULT_PROFILE
-
         if stream and prof.get("supports_streaming"):
             yield "", _t("⏳ 转写中…模型切换时可能需要重新加载。",
                           "⏳ Transcribing… model switches may require a reload.")
@@ -4373,13 +4601,6 @@ def do_analyze(model, audio_path, transcript, language):
         return "", None, _t("❌ 分析失败：{error}", "❌ Analysis failed: {error}", error=e)
 
 
-def _align_fields_visibility(model_id):
-    """音频分析页：只有 align 任务的模型才显示『对齐文本/语言』输入。"""
-    entry = catalog_by_id(model_id) if model_id else None
-    show = bool(entry) and entry.get("task") == "align"
-    return gr.update(visible=show), gr.update(visible=show)
-
-
 def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
     """声音设计（vdes）：文字 + 音色描述走 /v1/audio/speech（instructions 字段
     映射到模型的 instruct 选项），响应是 WAV 音频。"""
@@ -4684,8 +4905,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Button("🔄 刷新列表", variant="primary", size="lg", min_width=100),
                     value=("🔄 刷新列表", "🔄 Refresh"))
                 dl_btn = _localized(
-                    gr.Button("⬇️ (Re) 下载", variant="primary", size="lg", min_width=100),
-                    value=("⬇️ (Re) 下载", "⬇️\u00a0(Re) Download"))
+                    gr.Button("⬇️ 下载模型", variant="primary", size="lg", min_width=100),
+                    value=("⬇️ 下载模型", "⬇️\u00a0Download Model"))
                 dl_stat_btn = _localized(
                     gr.Button("📊 下载进度", variant="primary", size="lg", min_width=100),
                     value=("📊 下载进度", "📊 Progress"))
@@ -4694,52 +4915,46 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     value=("🧹 释放显存", "🧹 Unload"))
             load_status = gr.Markdown("")
             dl_status = gr.Markdown("")
-            # Hidden until "⬇️ (Re) Download" has stated what the download costs; a
-            # multi-GB fetch is not something a single click should commit to.
-            with gr.Row(elem_classes="mm-btn-row"):
-                dl_confirm_btn = _localized(
-                    gr.Button("✅ 确认 (Re) 下载", variant="primary", size="lg",
-                              min_width=100, visible=False),
-                    value=("✅ 确认 (Re) 下载", "✅ Confirm (Re) Download"))
-                dl_cancel_btn = _localized(
-                    gr.Button("✖️ 取消", variant="secondary", size="lg",
-                              min_width=100, visible=False),
-                    value=("✖️ 取消", "✖️ Cancel"))
-            with _localized(gr.Accordion("🧊 GGUF 检查", open=False),
-                            label=("🧊 GGUF 检查", "🧊 GGUF inspect")):
+            with _localized(gr.Accordion("🧊 GGUF 工具（转换 / 检查 / 删除）", open=False),
+                            label=("🧊 GGUF 工具（转换 / 检查 / 删除）",
+                                   "🧊 GGUF tools (convert / inspect / delete)")):
                 with gr.Row(elem_classes="mm-btn-row gguf-btn-row"):
+                    gguf_type = _localized(gr.Dropdown(
+                        label="类型", show_label=False, choices=list(GGUF_TYPES),
+                        value="q8_0", scale=1, min_width=80),
+                        label=("类型", "Type"))
+                    gguf_convert_btn = _localized(
+                        gr.Button("🧊 转换", variant="secondary", scale=1, min_width=90),
+                        value=("🧊 转换", "🧊 Convert"))
                     gguf_inspect_btn = _localized(
                         gr.Button("🔎 检查", variant="secondary", scale=1, min_width=90),
                         value=("🔎 检查", "🔎 Inspect"))
+                    gguf_delete_btn = _localized(
+                        gr.Button("🗑️ 删除", variant="stop", scale=1, min_width=90),
+                        value=("🗑️ 删除", "🗑️ Delete"))
                 gguf_message = gr.Markdown(gguf_status(model.value))
             timer = gr.Timer(3, active=False)
         return {"model": model, "load_btn": load_btn, "refresh_btn": refresh_btn,
                 "dl_btn": dl_btn, "dl_stat_btn": dl_stat_btn, "unload_btn": unload_btn,
-                "dl_confirm_btn": dl_confirm_btn, "dl_cancel_btn": dl_cancel_btn,
                 "load_status": load_status, "dl_status": dl_status, "timer": timer,
-                "gguf_inspect_btn": gguf_inspect_btn,
+                "gguf_type": gguf_type, "gguf_convert_btn": gguf_convert_btn,
+                "gguf_inspect_btn": gguf_inspect_btn, "gguf_delete_btn": gguf_delete_btn,
                 "gguf_status": gguf_message}
 
     def _wire_model_manager(mm, tasks, hint):
         mm["load_btn"].click(_make_load_handler(tasks), mm["model"],
                              [mm["load_status"], status])
-        # Download only proposes; the confirm button is what actually commits.
-        mm["dl_btn"].click(download_preview, mm["model"],
-                           [mm["dl_status"], mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
-        mm["dl_confirm_btn"].click(
-            download_start, [mm["model"], hf_token, proxy],
-            [mm["dl_status"], mm["timer"], mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
-        mm["dl_cancel_btn"].click(download_cancel, mm["model"],
-                                  [mm["dl_status"], mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
-        # Switching model mid-prompt would otherwise leave a confirm button armed for
-        # whatever was selected when it appeared.
-        mm["model"].change(lambda: (gr.update(visible=False), gr.update(visible=False)),
-                           None, [mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
+        mm["dl_btn"].click(download_start, [mm["model"], hf_token, proxy],
+                           [mm["dl_status"], mm["timer"]])
         # The timer tick is wired further down, where the per-tab dropdowns it has to
         # refresh on completion are all in scope.
         mm["dl_stat_btn"].click(download_status, mm["model"], mm["dl_status"])
         mm["unload_btn"].click(unload_model, None, [mm["load_status"], status])
+        mm["gguf_convert_btn"].click(convert_model_to_gguf,
+                                     [mm["model"], mm["gguf_type"]], mm["gguf_status"])
         mm["gguf_inspect_btn"].click(inspect_gguf, mm["model"], mm["gguf_status"])
+        mm["gguf_delete_btn"].click(delete_gguf, mm["model"],
+                                    [mm["gguf_status"], status])
         mm["model"].change(model_hint_for, mm["model"], hint)
         mm["model"].change(gguf_status, mm["model"], mm["gguf_status"])
 
@@ -5229,19 +5444,17 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         gr.Markdown("*输入自动转 16 kHz 单声道。*", elem_classes="hint-small"),
                         value=("*输入自动转 16 kHz 单声道。*",
                                "*Input is converted to 16 kHz mono.*"))
-                    _ana_is_align = bool(
-                        ana_model.value and
-                        (catalog_by_id(ana_model.value) or {}).get("task") == "align")
                     ana_text = _localized(gr.Textbox(
                         label="对齐文本（align 必填：音频原文）", lines=3,
-                        visible=_ana_is_align),
+                        placeholder="粘贴音频中实际说出的完整原文；仅强制对齐使用"),
                         label=("对齐文本（align 必填：音频原文）",
-                               "Transcript (required for align)"))
+                               "Transcript (required for align)"),
+                        placeholder=("粘贴音频中实际说出的完整原文；仅强制对齐使用",
+                                     "Paste the complete source transcript; used only for alignment"))
                     ana_lang = _localized(gr.Textbox(
-                        label="语言（可选，如 English / Chinese）",
-                        visible=_ana_is_align),
-                        label=("语言（可选，如 English / Chinese）",
-                               "Language (optional; e.g. English)"))
+                        label="语言（仅 align 可选，如 English / Chinese）"),
+                        label=("语言（仅 align 可选，如 English / Chinese）",
+                               "Language (optional for align; e.g. English)"))
                 ana_hint = gr.Markdown(model_hint_for(ana_model.value))
                 ana_btn = _localized(
                     gr.Button("🔎 开始分析", variant="primary", size="lg"),
@@ -5263,7 +5476,6 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     ana_msg = gr.Markdown("")
 
         _wire_model_manager(ana_mm, ANALYZE_TASKS, ana_hint)
-        ana_model.change(_align_fields_visibility, ana_model, [ana_text, ana_lang])
         ana_btn.click(lambda: ("", None, ""), None, [ana_out, ana_json, ana_msg]).then(
             do_analyze, [ana_model, ana_audio, ana_text, ana_lang],
             [ana_out, ana_json, ana_msg])
@@ -5378,12 +5590,12 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
     demo.load(None, None, None, js=_RESET_AUDIO_SEEK_JS)
     _localized(
         gr.Markdown(
-            "---\n<center><small>audio.cpp WebUI · 按需加载，同一时刻只驻留一个模型 · "
+            f"---\n<center><small>audio.cpp WebUI{APP_VERSION_SUFFIX} · 按需加载，同一时刻只驻留一个模型 · "
             "详细说明见 webui/README.zh.md</small></center>"),
         value=(
-            "---\n<center><small>audio.cpp WebUI · 按需加载，同一时刻只驻留一个模型 · "
+            f"---\n<center><small>audio.cpp WebUI{APP_VERSION_SUFFIX} · 按需加载，同一时刻只驻留一个模型 · "
             "详细说明见 webui/README.zh.md</small></center>",
-            "---\n<center><small>audio.cpp WebUI · On-demand loading · One model at a time · "
+            f"---\n<center><small>audio.cpp WebUI{APP_VERSION_SUFFIX} · On-demand loading · One model at a time · "
             "See webui/README.md</small></center>"))
 
     def _language_updates(language, *values):

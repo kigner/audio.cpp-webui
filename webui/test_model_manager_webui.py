@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,25 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import model_manager_webui as mmw  # noqa: E402
+
+
+class _Response:
+    def __init__(self, body, headers, status):
+        self._body = BytesIO(body)
+        self.headers = headers
+        self.status = status
+
+    def read(self, size=-1):
+        return self._body.read(size)
+
+    def getcode(self):
+        return self.status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
 
 
 def _package(**overrides):
@@ -113,6 +133,81 @@ class InstallPlacementTests(unittest.TestCase):
             self._install(_package(), overwrite=False)
         self._install(_package(), overwrite=True)
         self.assertTrue(os.path.isfile(os.path.join(self.root, "Demo-GGUF", "model-q8_0.gguf")))
+
+
+class ResumableDownloadTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="audiocpp_webui_download_resume_test_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.output = Path(self.root) / "model.gguf"
+        self.original_urlopen = mmw.urlopen
+        self.original_delay = mmw.DOWNLOAD_RETRY_DELAY_SECONDS
+        self.addCleanup(setattr, mmw, "urlopen", self.original_urlopen)
+        self.addCleanup(setattr, mmw, "DOWNLOAD_RETRY_DELAY_SECONDS", self.original_delay)
+        mmw.DOWNLOAD_RETRY_DELAY_SECONDS = 0
+
+    def test_truncated_response_resumes_with_range(self):
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_header("Range"), timeout))
+            if len(calls) == 1:
+                return _Response(b"abcd", {"Content-Length": "10"}, 200)
+            self.assertEqual(request.get_header("Range"), "bytes=4-")
+            return _Response(
+                b"efghij",
+                {"Content-Length": "6", "Content-Range": "bytes 4-9/10"},
+                206,
+            )
+
+        mmw.urlopen = fake_urlopen
+
+        mmw.download_file(_package(), "Demo-GGUF/model.gguf", self.output)
+
+        self.assertEqual(self.output.read_bytes(), b"abcdefghij")
+        self.assertEqual(len(calls), 2)
+
+    def test_ignored_range_restarts_without_appending(self):
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.get_header("Range"))
+            if len(calls) == 1:
+                return _Response(b"abcd", {"Content-Length": "10"}, 200)
+            self.assertEqual(request.get_header("Range"), "bytes=4-")
+            return _Response(b"abcdefghij", {"Content-Length": "10"}, 200)
+
+        mmw.urlopen = fake_urlopen
+
+        mmw.download_file(_package(), "Demo-GGUF/model.gguf", self.output)
+
+        self.assertEqual(self.output.read_bytes(), b"abcdefghij")
+        self.assertEqual(len(calls), 2)
+
+    def test_initial_partial_response_uses_content_range_total(self):
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.get_header("Range"))
+            if len(calls) == 1:
+                return _Response(
+                    b"abcd",
+                    {"Content-Length": "4", "Content-Range": "bytes 0-3/10"},
+                    206,
+                )
+            self.assertEqual(request.get_header("Range"), "bytes=4-")
+            return _Response(
+                b"efghij",
+                {"Content-Length": "6", "Content-Range": "bytes 4-9/10"},
+                206,
+            )
+
+        mmw.urlopen = fake_urlopen
+
+        mmw.download_file(_package(), "Demo-GGUF/model.gguf", self.output)
+
+        self.assertEqual(self.output.read_bytes(), b"abcdefghij")
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

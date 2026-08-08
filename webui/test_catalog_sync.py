@@ -145,6 +145,7 @@ class CatalogSyncTests(unittest.TestCase):
         # The no-model_specs fallback may lag behind, but it must never claim
         # GGUF support for a family the runtime has no package spec for.
         self.assertLessEqual(app.GGUF_NATIVE_FAMILIES_FALLBACK, specs)
+        self.assertLessEqual(app.GGUF_WEBUI_CONVERTIBLE_FAMILIES, specs)
 
     def test_every_registered_family_is_reachable_from_the_ui(self):
         with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
@@ -158,6 +159,18 @@ class CatalogSyncTests(unittest.TestCase):
                          "families the server can load but the WebUI never offers: "
                          f"{missing}. Add a catalog entry, or record why not in "
                          "UNLISTED_FAMILIES.")
+
+    def test_forced_aligner_transcript_input_is_always_reachable(self):
+        matches = [
+            component
+            for component, props in app._I18N_COMPONENTS
+            if (props.get("label") or ("", ""))[0].startswith("对齐文本")
+        ]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(
+            matches[0].visible,
+            "the required forced-aligner transcript must not depend on a model-change event",
+        )
 
 
 if __name__ == "__main__":

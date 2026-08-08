@@ -1763,6 +1763,7 @@ public:
                 break;
             }
             if (step + 1 >= max_new_tokens) {
+                out.hit_max_new_tokens = true;
                 break;
             }
             generated_first_codes.push_back(first_code);

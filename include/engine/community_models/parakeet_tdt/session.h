@@ -115,6 +115,7 @@ private:
     std::vector<int32_t> token_ids_;
     std::vector<int32_t> token_frame_indices_;
     std::vector<int32_t> token_durations_;
+    std::string emitted_text_;
     runtime::StreamEventCallback stream_event_sink_;
     bool stream_started_ = false;
     bool finalized_ = false;

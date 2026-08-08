@@ -35,6 +35,7 @@ struct Qwen3TalkerPrefill {
 struct Qwen3TalkerCodes {
     Qwen3SpeechCodes generated_codes;
     Qwen3SpeechCodes decoder_input_codes;
+    bool hit_max_new_tokens = false;
 };
 
 class Qwen3TalkerWeightsRuntime;

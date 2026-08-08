@@ -484,7 +484,7 @@ function Test-UpdaterSelfUpdate {
 }
 
 function Test-UpgradeMatrixFromSupportedVersions {
-    $targetVersion = "0.4.2"
+    $targetVersion = "0.5.0"
     $cases = @(
         [pscustomobject]@{
             Version = "0.2.0"
@@ -521,6 +521,12 @@ function Test-UpgradeMatrixFromSupportedVersions {
             App = "0.4.1"
             CoreCpu = "0.4.1"
             CoreCuda = "0.4.1"
+        },
+        [pscustomobject]@{
+            Version = "0.4.2"
+            App = "0.4.2"
+            CoreCpu = "0.4.2"
+            CoreCuda = "0.4.2"
         }
     )
 

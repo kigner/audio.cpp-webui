@@ -565,6 +565,7 @@ void ParakeetTDTStreamingSession::reset() {
     token_ids_.clear();
     token_frame_indices_.clear();
     token_durations_.clear();
+    emitted_text_.clear();
     decoder_->reset_state();
     stream_started_ = true;
     finalized_ = false;
@@ -688,7 +689,15 @@ runtime::StreamEvent ParakeetTDTStreamingSession::process_ready_windows(bool flu
     runtime::StreamEvent event;
     if (changed && !token_ids_.empty()) {
         auto decoded = merged_decode();
-        event.partial_text = runtime::Transcript{decoded.text, ""};
+        if (decoded.text.compare(0, emitted_text_.size(), emitted_text_) != 0) {
+            throw std::runtime_error(
+                "Parakeet TDT buffered streaming transcript is not append-only");
+        }
+        const auto delta = decoded.text.substr(emitted_text_.size());
+        emitted_text_ = decoded.text;
+        if (!delta.empty()) {
+            event.partial_text = runtime::Transcript{delta, ""};
+        }
         event.word_timestamps = std::move(decoded.word_timestamps);
         // The last word has no following word boundary yet, so it remains
         // provisional and is withheld from the finalized timestamp list.

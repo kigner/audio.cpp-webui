@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -135,6 +136,91 @@ class ServerConfigGgufPathTests(unittest.TestCase):
         cfg = self._read_temp_config(entry)
 
         self.assertEqual(cfg["models"][0]["path"], self.root)
+
+    def test_webui_converted_model_gguf_is_loaded_for_supported_family(self):
+        target = os.path.join(self.root, "model.gguf")
+        open(target, "w").close()
+        entry = _entry(self.root, download_id="qwen3_tts_1_7b_base_safetensors")
+        entry["family"] = "qwen3_tts"
+        app.REQUIRED_FILES = {
+            "qwen3_tts_1_7b_base_safetensors": ["model.safetensors"]
+        }
+
+        cfg = self._read_temp_config(entry)
+
+        self.assertEqual(cfg["models"][0]["path"], target)
+
+
+class GgufConversionTests(unittest.TestCase):
+    def setUp(self):
+        previous_language = app.get_language()
+        app.set_language("en")
+        self.addCleanup(app.set_language, previous_language)
+        self.root = tempfile.mkdtemp(prefix="audiocpp_webui_gguf_convert_test_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        speech_dir = os.path.join(self.root, "speech_tokenizer")
+        os.makedirs(speech_dir)
+        self.model_weights = os.path.join(self.root, "model.safetensors")
+        self.speech_weights = os.path.join(speech_dir, "model.safetensors")
+        open(self.model_weights, "w").close()
+        open(self.speech_weights, "w").close()
+        self.entry = {
+            "id": "qwen3-tts", "label": "Qwen3-TTS", "family": "qwen3_tts",
+            "abs_path": self.root, "download_id": "qwen3_tts_0_6b_base_safetensors",
+            "installed": True, "download_installed": False, "incomplete": False,
+            "missing_files": [], "gguf_only": False,
+        }
+        self._patch("catalog_by_id", lambda _model_id: self.entry)
+        self._patch("_find_gguf_exe", lambda: "audiocpp_gguf.exe")
+        self._patch("_loaded_id", None)
+        self._patch("_server_proc", None)
+
+    def _patch(self, name, value):
+        original = getattr(app, name)
+        setattr(app, name, value)
+        self.addCleanup(setattr, app, name, original)
+
+    def test_qwen3_tts_uses_both_required_namespaces(self):
+        self.assertEqual(app._gguf_conversion_inputs(self.entry), [
+            ("model_weights", self.model_weights),
+            ("speech_tokenizer_weights", self.speech_weights),
+        ])
+
+    def test_convert_builds_gguf_and_reports_success(self):
+        commands = []
+
+        def fake_run(cmd, **_kwargs):
+            commands.append(cmd)
+            output = cmd[cmd.index("--output") + 1]
+            open(output, "w").close()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self._patch("subprocess", SimpleNamespace(
+            run=fake_run,
+            TimeoutExpired=app.subprocess.TimeoutExpired,
+            list2cmdline=app.subprocess.list2cmdline,
+        ))
+
+        message = app.convert_model_to_gguf(
+            "qwen3-tts", "q8_0", progress=lambda *_args, **_kwargs: None)
+
+        self.assertIn("Conversion complete", message)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "model.gguf")))
+        self.assertIn(f"model_weights={self.model_weights}", commands[0])
+        self.assertIn(f"speech_tokenizer_weights={self.speech_weights}", commands[0])
+        self.assertIn("q8_0", commands[0])
+
+    def test_delete_removes_the_existing_gguf(self):
+        output = os.path.join(self.root, "model.gguf")
+        open(output, "w").close()
+        self._patch("server_alive", lambda: False)
+        self._patch("server_status", lambda: "idle")
+
+        message, status = app.delete_gguf("qwen3-tts")
+
+        self.assertIn("Deleted", message)
+        self.assertEqual(status, "idle")
+        self.assertFalse(os.path.exists(output))
 
 
 if __name__ == "__main__":

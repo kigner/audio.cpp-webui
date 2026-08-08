@@ -17,7 +17,26 @@ namespace engine::models::qwen3_tts {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-constexpr int64_t kDefaultTextChunkSize = 8192;
+constexpr int64_t kMaxDefaultTextChunkSize = 512;
+constexpr int64_t kAcousticTokensPerTextCodepoint = 6;
+
+constexpr int64_t default_text_chunk_size(int64_t max_new_tokens) {
+    return std::min<int64_t>(
+        kMaxDefaultTextChunkSize,
+        std::max<int64_t>(1, max_new_tokens / kAcousticTokensPerTextCodepoint));
+}
+
+static_assert(default_text_chunk_size(1200) == 200);
+static_assert(default_text_chunk_size(2048) == 341);
+static_assert(default_text_chunk_size(4096) == 512);
+
+void require_complete_generation(const Qwen3TalkerCodes & codes) {
+    if (codes.hit_max_new_tokens) {
+        throw std::runtime_error(
+            "Qwen3 TTS chunk reached max_tokens before EOS; reduce text_chunk_size "
+            "or increase max_tokens");
+    }
+}
 
 std::shared_ptr<const Qwen3TTSAssets> require_assets(std::shared_ptr<const Qwen3TTSAssets> assets) {
     if (assets == nullptr) {
@@ -346,9 +365,19 @@ runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
             debug::timing_log_scalar("qwen3_tts.talker.cached_step_released_steps", released_steps);
         }
     };
-    const int64_t text_chunk_size =
-        engine::text::parse_text_chunk_size_override(request.options).value_or(kDefaultTextChunkSize);
-    const auto chunk_requests = runtime::chunk_text_request(request, text_chunk_size);
+    const auto request_generation = generation_options_from_request(request, assets_->config);
+    const int64_t text_chunk_size = engine::text::parse_text_chunk_size_override(request.options)
+        .value_or(default_text_chunk_size(request_generation.max_new_tokens));
+    // This splitter is language-neutral despite its historical name: unlike the
+    // whitespace-oriented default mode it also hard-splits unspaced CJK text at
+    // Unicode codepoint boundaries while still preferring sentence punctuation.
+    const auto text_chunk_mode = engine::text::parse_text_chunk_mode_override(request.options)
+        .value_or(engine::text::TextChunkMode::Japanese);
+    const auto chunk_requests = runtime::chunk_text_request(request, text_chunk_size, text_chunk_mode);
+    debug::trace_log_scalar("qwen3_tts.text_chunk_size", text_chunk_size);
+    debug::trace_log_scalar(
+        "qwen3_tts.text_chunk_count",
+        static_cast<int64_t>(chunk_requests.size()));
     if (assets_->config.variant == Qwen3TTSVariant::VoiceDesign) {
         Qwen3TTSVoiceDesignPromptBuilder prompt_builder(
             text_tokenizer_,
@@ -368,6 +397,7 @@ runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
                 prefill,
                 qwen_request.generation,
                 qwen_request.generation.repetition_penalty);
+            require_complete_generation(codes);
             talker_ms += engine::debug::elapsed_ms(talker_start, Clock::now());
             const auto decoder_start = Clock::now();
             runtime::append_audio_buffer(
@@ -403,6 +433,7 @@ runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
                 prefill,
                 qwen_request.generation,
                 qwen_request.generation.repetition_penalty);
+            require_complete_generation(codes);
             talker_ms += engine::debug::elapsed_ms(talker_start, Clock::now());
             const auto decoder_start = Clock::now();
             runtime::append_audio_buffer(
@@ -452,6 +483,7 @@ runtime::TaskResult Qwen3TTSSession::run(const runtime::TaskRequest & request) {
             prefill,
             qwen_request.generation,
             qwen_request.generation.repetition_penalty);
+        require_complete_generation(codes);
         talker_ms += engine::debug::elapsed_ms(talker_start, Clock::now());
         const auto decoder_start = Clock::now();
         runtime::append_audio_buffer(

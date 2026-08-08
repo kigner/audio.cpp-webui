@@ -274,9 +274,8 @@ class WarningsSurviveTheProgressRefreshTests(_AppPatch):
         self.assertIn("VRAM", status)
 
 
-class ConfirmBeforeDownloadTests(_AppPatch):
-    """The Download button proposes; only Confirm commits. A multi-GB fetch cannot be
-    undone once the bytes are written, so one stray click must not start one."""
+class OneClickDownloadTests(_AppPatch):
+    """The Download Model button starts immediately while hard disk blockers remain."""
 
     def setUp(self):
         super().setUp()
@@ -298,78 +297,19 @@ class ConfirmBeforeDownloadTests(_AppPatch):
         app.subprocess.Popen = fake_popen
         self.addCleanup(app._downloads.pop, "m", None)
 
-    def test_clicking_download_starts_nothing(self):
-        message, can_confirm = app.download_proposal("m")
-        self.assertEqual(self.spawned, [], "the Download button started a download by itself")
-        self.assertNotIn("m", app._downloads)
-        self.assertTrue(can_confirm)
+    def test_clicking_download_starts_immediately(self):
+        self.patch(_read_tail=lambda *a, **k: "")
+        message, _timer = app.download_start("m")
+        self.assertEqual(len(self.spawned), 1, "Download Model did not start the download")
         self.assertIn("17.00 GB", message)
         self.assertIn("VRAM", message)
 
-    def test_an_alarm_changes_the_question(self):
-        message, can_confirm = app.download_proposal("m")   # 20 GB on an 8 GB card
-        self.assertIn("Alarms raised", message)
-        self.assertIn("really want it", message)
-        self.assertTrue(can_confirm, "an alarm must still leave the choice with the user")
-
-    def test_a_quiet_download_asks_plainly(self):
-        self.entry["min_vram_gb"] = 2
-        self.stub_size(1 * GB)
-        message, can_confirm = app.download_proposal("m")
-        self.assertNotIn("Alarms raised", message)
-        self.assertTrue(can_confirm)
-
-    def test_an_incomplete_directory_is_called_out_as_a_reinstall(self):
-        self.entry.update(incomplete=True, missing_files=["a", "b"])
-        message, can_confirm = app.download_proposal("m")
-        self.assertIn("reinstalled", message)
-        self.assertTrue(can_confirm)
-
-    def test_cancelling_starts_nothing(self):
-        app.download_proposal("m")
-        message, *_hide = app.download_cancel("m")
+    def test_insufficient_disk_starts_nothing(self):
+        self.stub_disk(1 * GB)
+        message, _timer = app.download_start("m")
+        self.assertIn("Not enough disk space", message)
         self.assertEqual(self.spawned, [])
         self.assertNotIn("m", app._downloads)
-        self.assertIn("Cancelled", message)
-
-    def test_nothing_to_confirm_when_it_cannot_fit(self):
-        self.stub_disk(1 * GB)
-        message, can_confirm = app.download_proposal("m")
-        self.assertIn("Not enough disk space", message)
-        self.assertFalse(can_confirm, "a download that cannot fit offered a Confirm")
-
-    def test_nothing_to_confirm_when_download_package_is_already_installed(self):
-        self.entry.update(installed=True, download_installed=True)
-        _message, can_confirm = app.download_proposal("m")
-        self.assertFalse(can_confirm)
-
-    def test_existing_legacy_install_can_still_download_the_gguf_package(self):
-        self.entry.update(installed=True, download_installed=False)
-        _message, can_confirm = app.download_proposal("m")
-        self.assertTrue(can_confirm)
-
-    def test_nothing_to_confirm_without_a_selection(self):
-        _message, can_confirm = app.download_proposal("")
-        self.assertFalse(can_confirm)
-
-    def test_nothing_to_confirm_while_a_download_runs(self):
-        app._downloads["m"] = {"proc": type("P", (), {"poll": lambda s: None})(), "log": os.devnull}
-        message, can_confirm = app.download_proposal("m")
-        self.assertIn("already downloading", message)
-        self.assertFalse(can_confirm)
-
-    def test_confirming_starts_the_download(self):
-        self.patch(_read_tail=lambda *a, **k: "")
-        message, *_rest = app.download_start("m")
-        self.assertEqual(len(self.spawned), 1, "Confirm did not start the download")
-        self.assertIn("Download started", message)
-
-    def test_the_click_handler_mirrors_the_decision(self):
-        # download_preview only wraps download_proposal in Gradio visibility updates.
-        message, confirm, cancel = app.download_preview("m")
-        self.assertEqual(message, app.download_proposal("m")[0])
-        self.assertIsNotNone(confirm)
-        self.assertIsNotNone(cancel)
 
 
 class SizeProbeTests(unittest.TestCase):

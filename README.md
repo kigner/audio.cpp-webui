@@ -45,6 +45,8 @@ audio.cpp would not be moving this quickly without generous contributors bringin
 ## News
 
 > [!IMPORTANT]
+> **2026-08-08 - Windows WebUI v0.5.0:** The stable Windows portable release now combines audio.cpp 0.5 with the local WebUI, including resilient resumable model downloads, one-click model installation, in-WebUI GGUF conversion and cleanup, safer Qwen3-TTS long-text chunking, append-only Parakeet-TDT streaming transcript deltas, and automatic 16 kHz mono preparation for Parakeet streaming ASR. Existing updater-enabled portable installs can upgrade directly from v0.2.0 through v0.4.2. [Download or update to v0.5.0](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.5.0-windows-prebuilt).
+>
 > **2026-08-03 - Irodori-TTS v4 Small:** Irodori-TTS v4 Small is now available as the preferred Japanese TTS package, with GGUF Q8/F16 builds covering no-reference TTS, voice cloning, and caption-based voice design in one checkpoint.
 >
 > **2026-07-31 - Release 0.5:** audio.cpp grows to **44 model families** with **9 new additions**: DramaBox, Confucius4-TTS, RVC, BS-RoFormer, GLM-TTS, Kroko ASR, Parakeet-TDT, Inflect v2, and Fun-ASR-Nano.

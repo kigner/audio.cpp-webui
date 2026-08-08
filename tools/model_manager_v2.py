@@ -4,19 +4,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SPECS_DIR = REPO_ROOT / "model_specs"
+DOWNLOAD_ATTEMPTS = 32
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_RETRY_DELAY_SECONDS = 1
 
 
 class ManagerError(RuntimeError):
@@ -168,27 +174,90 @@ def check_remote_file(package: PackageRecord, remote_path: str) -> int | None:
 def download_file(package: PackageRecord, remote_path: str, output_path: Path) -> None:
     repo = package.download["repo"]
     revision = package.download.get("revision", "main")
-    request = Request(hf_url(repo, revision, remote_path), headers=http_headers())
-    try:
-        with urlopen(request, timeout=300) as response:
-            expected = response.headers.get("Content-Length")
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            total = 0
-            with output_path.open("wb") as handle:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    total += len(chunk)
-            if expected is not None and total != int(expected):
-                raise ManagerError(f"downloaded size mismatch for {output_path}: {total} != {expected}")
-    except HTTPError as error:
-        if package.download.get("gated") is True and error.code in (401, 403):
-            raise ManagerError(
-                f"{repo}/{remote_path} requires accepted Hugging Face access and a valid HF token"
-            ) from error
-        raise ManagerError(f"failed to download {repo}/{remote_path}: HTTP {error.code}") from error
+    url = hf_url(repo, revision, remote_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_total: int | None = None
+    last_error = "download ended before the advertised size"
+
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        offset = output_path.stat().st_size if output_path.is_file() else 0
+        headers = http_headers()
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        request = Request(url, headers=headers)
+        try:
+            with urlopen(request, timeout=300) as response:
+                status = getattr(response, "status", None) or response.getcode()
+                content_length = response.headers.get("Content-Length")
+                content_range = response.headers.get("Content-Range", "")
+                append = offset > 0 and status == 206
+
+                if status == 206:
+                    match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", content_range.strip())
+                    expected_start = offset if append else 0
+                    if not match or int(match.group(1)) != expected_start:
+                        raise ManagerError(
+                            f"invalid resume response for {output_path}: {content_range or 'missing Content-Range'}"
+                        )
+                    if match.group(3) != "*":
+                        expected_total = int(match.group(3))
+                    elif content_length:
+                        expected_total = offset + int(content_length)
+                else:
+                    # A proxy/CDN may ignore Range and return 200. Restart this attempt
+                    # instead of appending a second full copy to the partial file.
+                    offset = 0
+                    expected_total = int(content_length) if content_length else None
+
+                with output_path.open("ab" if append else "wb") as handle:
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+
+            total = output_path.stat().st_size
+            if expected_total is None or total == expected_total:
+                return
+            if total > expected_total:
+                output_path.unlink(missing_ok=True)
+            last_error = f"downloaded size mismatch: {total} != {expected_total}"
+        except HTTPError as error:
+            if package.download.get("gated") is True and error.code in (401, 403):
+                raise ManagerError(
+                    f"{repo}/{remote_path} requires accepted Hugging Face access and a valid HF token"
+                ) from error
+            if error.code == 416 and output_path.is_file():
+                match = re.fullmatch(r"bytes\s+\*/(\d+)", error.headers.get("Content-Range", "").strip())
+                if match and output_path.stat().st_size == int(match.group(1)):
+                    return
+                output_path.unlink(missing_ok=True)
+                last_error = "server rejected the resume range; restarting"
+            elif error.code not in (408, 429, 500, 502, 503, 504):
+                raise ManagerError(f"failed to download {repo}/{remote_path}: HTTP {error.code}") from error
+            else:
+                last_error = f"HTTP {error.code}"
+        except ManagerError:
+            raise
+        except (URLError, TimeoutError, HTTPException, OSError) as error:
+            last_error = str(error) or error.__class__.__name__
+
+        if attempt < DOWNLOAD_ATTEMPTS:
+            resume = output_path.stat().st_size if output_path.is_file() else 0
+            expected = f"/{expected_total}" if expected_total is not None else ""
+            print(
+                f"retry {attempt}/{DOWNLOAD_ATTEMPTS - 1} resume={resume}{expected} reason={last_error}",
+                flush=True,
+            )
+            if DOWNLOAD_RETRY_DELAY_SECONDS:
+                time.sleep(DOWNLOAD_RETRY_DELAY_SECONDS)
+
+    total = output_path.stat().st_size if output_path.is_file() else 0
+    expected = f" != {expected_total}" if expected_total is not None else ""
+    raise ManagerError(
+        f"download failed after {DOWNLOAD_ATTEMPTS} attempts for {output_path}: "
+        f"{total}{expected} ({last_error})"
+    )
 
 
 def ensure_hf_package(package: PackageRecord) -> None:
