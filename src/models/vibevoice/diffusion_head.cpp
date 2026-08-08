@@ -2,7 +2,6 @@
 
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/debug/profiler.h"
-#include "engine/framework/debug/trace.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
@@ -274,9 +273,6 @@ public:
         if (buffer_ == nullptr) {
             throw std::runtime_error("failed to allocate VibeVoice diffusion head graph");
         }
-        engine::debug::timing_log_scalar(
-            "vibevoice.diffusion_head.buffer_bytes",
-            static_cast<uint64_t>(ggml_backend_buffer_get_size(buffer_)));
     }
 
     ~VibeVoiceDiffusionHeadGraph() {

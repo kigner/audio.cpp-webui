@@ -1,5 +1,61 @@
 {
   "family": "vietneu_tts",
+  "display_name": "VieNeu-TTS v3 Turbo",
+  "description": "On-device Vietnamese TTS model with instant voice cloning from 3-5 seconds of reference audio, English-Vietnamese code-switching, streaming playback, batched generation, and conversation mode.",
+  "category": "tts",
+  "status": "community",
+  "tasks": [
+    "tts",
+    "clone"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "vi",
+    "en"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "vietneu_tts_v3_turbo_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/community_models/vietneu_tts.md",
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
+  "packages": [
+    {
+      "id": "vietneu_tts_v3_turbo_q8_0",
+      "display_name": "VieNeu-TTS v3 Turbo GGUF",
+      "default": true,
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "VieNeu-TTS-v3-Turbo-GGUF",
+      "files": [
+        "model.gguf"
+      ],
+      "strip_prefix": ".",
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "phuocnguyen90/VieNeu-TTS-v3-Turbo-GGUF"
+      }
+    }
+  ],
   "sources": [
     {
       "format": "gguf",

@@ -2,6 +2,7 @@
 #include "engine/framework/modules/primitive_modules.h"
 #include "tensor_layout_utils.h"
 
+#include <cmath>
 #include <stdexcept>
 
 namespace engine::modules {
@@ -56,6 +57,21 @@ const core::ModuleSchema kPixelNormSchema = {
     kNormOutputs,
     1,
     "Normalizes an input by RMS energy along one logical axis.",
+};
+
+const core::ModulePortSpec kBiasNormInputs[] = {
+    {"input", core::PortKind::Activation, false},
+    {"bias", core::PortKind::Parameter, false},
+};
+
+const core::ModuleSchema kBiasNormSchema = {
+    "BiasNorm",
+    "nn.normalization",
+    kBiasNormInputs,
+    2,
+    kNormOutputs,
+    1,
+    "Applies Zipformer BiasNorm using bias-centered variance and the original input numerator.",
 };
 
 const core::ModulePortSpec kAdaptiveInstanceNorm1dInputs[] = {
@@ -157,8 +173,10 @@ core::TensorValue build_norm(
     }
     core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
     core::validate_last_dim(input, config.hidden_size, "input");
-    const auto input_contiguous = tensor_layout::ensure_contiguous_layout_if_needed(ctx, input);
-    core::TensorValue normalized = core::wrap_tensor(fn(ctx.ggml, input_contiguous.tensor, config.eps), input.shape, GGML_TYPE_F32);
+    const auto norm_input = config.preserve_input_layout
+        ? input
+        : tensor_layout::ensure_contiguous_layout_if_needed(ctx, input);
+    core::TensorValue normalized = core::wrap_tensor(fn(ctx.ggml, norm_input.tensor, config.eps), input.shape, GGML_TYPE_F32);
     return apply_affine(ctx, normalized, config, weights);
 }
 
@@ -169,6 +187,16 @@ core::TensorShape make_channel_broadcast_shape(const core::TensorShape & input, 
         shape.dims[i] = 1;
     }
     shape.dims[shape.rank - 2] = hidden_size;
+    return shape;
+}
+
+core::TensorShape make_last_dim_broadcast_shape(const core::TensorShape & input, int64_t hidden_size) {
+    core::TensorShape shape = {};
+    shape.rank = input.rank;
+    for (size_t i = 0; i < shape.rank; ++i) {
+        shape.dims[i] = 1;
+    }
+    shape.dims[shape.rank - 1] = hidden_size;
     return shape;
 }
 
@@ -298,19 +326,61 @@ core::TensorValue PixelNormModule::build(core::ModuleBuildContext & ctx, const c
         throw std::runtime_error("ModuleBuildContext.ggml is null");
     }
     core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
-    const auto input_f32 = ensure_f32(ctx, tensor_layout::ensure_contiguous_layout_if_needed(ctx, input));
-    auto squared = core::wrap_tensor(ggml_sqr(ctx.ggml, input_f32.tensor), input.shape, GGML_TYPE_F32);
+    const auto x = core::ensure_backend_addressable_layout(ctx, input);
+    auto squared = core::wrap_tensor(ggml_sqr(ctx.ggml, x.tensor), x.shape, GGML_TYPE_F32);
     auto mean = ReduceMeanModule({config_.axis}).build(ctx, squared);
     auto denom = core::wrap_tensor(
-        ggml_sqrt(ctx.ggml, ggml_scale_bias(ctx.ggml, mean.tensor, 1.0F, config_.eps)),
+        ggml_sqrt(ctx.ggml, ggml_scale_bias(ctx.ggml, core::ensure_backend_addressable_layout(ctx, mean).tensor, 1.0F, config_.eps)),
         mean.shape,
         GGML_TYPE_F32);
-    auto denom_full = core::wrap_tensor(ggml_repeat(ctx.ggml, denom.tensor, input_f32.tensor), input.shape, GGML_TYPE_F32);
-    return core::wrap_tensor(ggml_div(ctx.ggml, input_f32.tensor, denom_full.tensor), input.shape, GGML_TYPE_F32);
+    auto denom_full = core::wrap_tensor(ggml_repeat(ctx.ggml, denom.tensor, x.tensor), x.shape, GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_div(ctx.ggml, x.tensor, denom_full.tensor), x.shape, GGML_TYPE_F32);
 }
 
 const core::ModuleSchema & PixelNormModule::static_schema() noexcept {
     return kPixelNormSchema;
+}
+
+BiasNormModule::BiasNormModule(BiasNormConfig config) : config_(config) {
+    if (config_.hidden_size <= 0) {
+        throw std::runtime_error("BiasNormConfig.hidden_size must be positive");
+    }
+}
+
+const core::ModuleSchema & BiasNormModule::schema() const noexcept {
+    return static_schema();
+}
+
+const BiasNormConfig & BiasNormModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue BiasNormModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const BiasNormWeights & weights) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    core::validate_last_dim(input, config_.hidden_size, "input");
+    core::validate_shape(weights.bias, core::TensorShape::from_dims({config_.hidden_size}), "bias");
+
+    const auto bias_view = core::reshape_tensor(ctx, ensure_f32(ctx, weights.bias), make_last_dim_broadcast_shape(input.shape, config_.hidden_size));
+    const auto bias_repeated = RepeatModule({input.shape}).build(ctx, bias_view);
+    const auto input_contiguous = core::ensure_backend_addressable_layout(ctx, input);
+    const auto bias_contiguous = core::ensure_backend_addressable_layout(ctx, bias_repeated);
+    const auto centered = core::wrap_tensor(ggml_sub(ctx.ggml, input_contiguous.tensor, bias_contiguous.tensor), input.shape, GGML_TYPE_F32);
+    const auto squared = core::wrap_tensor(ggml_sqr(ctx.ggml, centered.tensor), input.shape, GGML_TYPE_F32);
+    const auto mean = ReduceMeanModule({static_cast<int>(input.shape.rank - 1)}).build(ctx, squared);
+    const auto denominator = core::wrap_tensor(ggml_sqrt(ctx.ggml, mean.tensor), mean.shape, GGML_TYPE_F32);
+    const auto denominator_repeated = RepeatModule({input.shape}).build(ctx, denominator);
+    const auto normalized = core::wrap_tensor(ggml_div(ctx.ggml, input.tensor, denominator_repeated.tensor), input.shape, GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_scale(ctx.ggml, normalized.tensor, std::exp(weights.log_scale)), input.shape, GGML_TYPE_F32);
+}
+
+const core::ModuleSchema & BiasNormModule::static_schema() noexcept {
+    return kBiasNormSchema;
 }
 
 AdaptiveInstanceNorm1dModule::AdaptiveInstanceNorm1dModule(AdaptiveInstanceNorm1dConfig config) : config_(config) {

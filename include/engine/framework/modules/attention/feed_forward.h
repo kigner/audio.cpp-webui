@@ -2,6 +2,7 @@
 
 #include "engine/framework/core/module.h"
 #include "engine/framework/modules/activation_modules.h"
+#include "engine/framework/modules/linear_module.h"
 
 #include <optional>
 
@@ -12,6 +13,7 @@ struct FeedForwardConfig {
     int64_t intermediate_size = 0;
     bool use_bias = true;
     GeluApproximation gelu_approximation = GeluApproximation::ExactErf;
+    ggml_prec projection_precision = GGML_PREC_DEFAULT;
 };
 
 struct FeedForwardWeights {
@@ -19,6 +21,28 @@ struct FeedForwardWeights {
     std::optional<core::TensorValue> fc1_bias;
     core::TensorValue fc2_weight;
     std::optional<core::TensorValue> fc2_bias;
+};
+
+enum class GatedFeedForwardActivation {
+    Gelu,
+    Silu,
+};
+
+struct GatedFeedForwardConfig {
+    int64_t hidden_size = 0;
+    int64_t intermediate_size = 0;
+    bool use_bias = false;
+    GatedFeedForwardActivation activation = GatedFeedForwardActivation::Gelu;
+    GeluApproximation gelu_approximation = GeluApproximation::Tanh;
+    ggml_prec projection_precision = GGML_PREC_DEFAULT;
+    bool use_weight_type_projection_precision = false;
+    bool use_fast_cuda_projection = false;
+};
+
+struct GatedFeedForwardWeights {
+    LinearWeights gate_proj;
+    LinearWeights up_proj;
+    LinearWeights down_proj;
 };
 
 class FeedForwardModule {
@@ -55,6 +79,24 @@ public:
 
 private:
     FeedForwardConfig config_;
+};
+
+class GatedFeedForwardModule {
+public:
+    explicit GatedFeedForwardModule(GatedFeedForwardConfig config);
+
+    const GatedFeedForwardConfig & config() const noexcept;
+    const core::ModuleSchema & schema() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const GatedFeedForwardWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    GatedFeedForwardConfig config_;
 };
 
 }  // namespace engine::modules

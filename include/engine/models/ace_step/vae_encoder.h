@@ -21,11 +21,7 @@ public:
         size_t weight_context_bytes = 64ull * 1024ull * 1024ull);
     ~AceStepVAEEncoderRuntime();
 
-    AceStepLatents encode(
-        const runtime::AudioBuffer & audio,
-        uint32_t seed,
-        const std::string & noise_file = {},
-        bool posterior_mean = false);
+    AceStepLatents encode(const runtime::AudioBuffer & audio, uint32_t seed, const std::string & noise_file = {});
     void release_runtime_graphs() const;
 
 private:

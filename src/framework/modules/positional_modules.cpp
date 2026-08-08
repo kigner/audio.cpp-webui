@@ -138,4 +138,31 @@ core::TensorValue SplitRoPEModule::build(
     return ConcatModule({last_axis}).build(ctx, first, second);
 }
 
+SplitRoPEAttentionModule::SplitRoPEAttentionModule(SplitRoPEAttentionConfig config) : config_(config) {
+    require_positive(config_.heads, "SplitRoPEAttentionConfig.heads");
+    require_positive(config_.head_dim, "SplitRoPEAttentionConfig.head_dim");
+    if (config_.head_dim % 2 != 0) {
+        throw std::runtime_error("SplitRoPEAttentionConfig.head_dim must be even");
+    }
+}
+
+const SplitRoPEAttentionConfig & SplitRoPEAttentionModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue SplitRoPEAttentionModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const core::TensorValue & cos,
+    const core::TensorValue & sin) const {
+    core::validate_rank_between(input, 3, 3, "input");
+    core::validate_last_dim(input, config_.heads * config_.head_dim, "input");
+    auto x = core::reshape_tensor(
+        ctx,
+        core::ensure_backend_addressable_layout(ctx, input),
+        core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], config_.heads, config_.head_dim}));
+    x = TransposeModule({{0, 2, 1, 3}, x.shape.rank}).build(ctx, x);
+    return SplitRoPEModule({config_.head_dim}).build(ctx, x, cos, sin);
+}
+
 }  // namespace engine::modules

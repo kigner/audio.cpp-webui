@@ -10,7 +10,7 @@ default-versus-`mem_saver` memory behavior.
 Install the safetensors model, IBM DAC, and Qwen3 Forced Aligner resources:
 
 ```bash
-python tools/model_manager.py install outetts_1_0_1b --models-dir models
+python tools/model_manager_deprecated.py install outetts_1_0_1b --models-dir models
 ```
 
 The model-manager package id is `outetts_1_0_1b`. It creates these model
@@ -73,7 +73,7 @@ Run the committed official-reference driver after creating the alignment JSON:
 
 ```powershell
 build\reference\venv\Scripts\python.exe `
-  tools\audiocpp_cli\outetts_reference.py `
+  tools\community_models\outetts_reference.py `
   --model ..\models\Llama-OuteTTS-1.0-1B `
   --dac ..\models\DAC.speech.v1.0\weights_24khz_1.5kbps_v1.0.pth `
   --alignment-json build\reference\b_words.json `
@@ -216,7 +216,7 @@ build\windows-cuda-release\bin\outetts_warm_bench.exe `
   --backend cuda --threads 8 `
   --request-file tests\outetts\warm_bench_requests.json `
   --session-option outetts.weight_type=f32 `
-  --session-option outetts.aligner_model_path=..\models\Qwen3-ForcedAligner-0.6B `
+  --session-option outetts.aligner_path=..\models\Qwen3-ForcedAligner-0.6B `
   --audio-out-dir build\reference\cpp_f32_final_explicit `
   --log-file build\reference\cpp_f32_final_explicit.log
 ```

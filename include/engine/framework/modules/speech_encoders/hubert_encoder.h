@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/core/execution_context.h"
@@ -12,11 +13,17 @@
 #include <unordered_map>
 #include <vector>
 
-namespace engine::assets {
-class TensorSource;
-}
-
 namespace engine::modules {
+
+enum class HubertFeatureExtractorNorm {
+    LayerNormEveryLayer,
+    FirstLayerGroupNorm,
+};
+
+enum class HubertEncoderLayerNormOrder {
+    PreNorm,
+    PostNorm,
+};
 
 struct HubertEncoderConfig {
     int64_t hidden_size = 1024;
@@ -32,7 +39,40 @@ struct HubertEncoderConfig {
     std::vector<int64_t> conv_stride{5, 2, 2, 2, 2, 2, 2};
     float layer_norm_eps = 1.0e-5F;
     bool apply_positional_embedding = true;
+    bool apply_encoder_input_layer_norm = false;
     bool apply_final_layer_norm = true;
+    bool pad_odd_tokens_with_attention_mask = false;
+    int64_t final_projection_size = 0;
+    HubertFeatureExtractorNorm feature_extractor_norm = HubertFeatureExtractorNorm::LayerNormEveryLayer;
+    HubertEncoderLayerNormOrder encoder_layer_norm_order = HubertEncoderLayerNormOrder::PreNorm;
+};
+
+struct HubertEncoderLayerWeightNames {
+    std::string pre_attention_layer_norm = "layer_norm";
+    std::string attention = "attention";
+    std::string post_attention_layer_norm = "self_attn_layer_norm";
+    std::string feed_forward_intermediate = "feed_forward.intermediate_dense";
+    std::string feed_forward_output = "feed_forward.output_dense";
+    std::string final_layer_norm = "final_layer_norm";
+};
+
+struct HubertEncoderWeightBinding {
+    std::string feature_extractor_layers = "feature_extractor.conv_layers";
+    std::string feature_extractor_conv = "conv";
+    std::string feature_extractor_layer_norm = "layer_norm";
+    std::string feature_projection_layer_norm = "feature_projection.layer_norm";
+    std::string feature_projection_projection = "feature_projection.projection";
+    std::string positional_conv = "encoder.pos_conv_embed.conv";
+    std::string encoder_layer_norm = "encoder.layer_norm";
+    std::string encoder_layers = "encoder.layers";
+    std::string final_projection = "final_proj";
+    HubertEncoderLayerWeightNames layer;
+    assets::TensorStorageType conv_storage_type = assets::TensorStorageType::F32;
+    assets::TensorStorageType positional_conv_storage_type = assets::TensorStorageType::F32;
+    assets::TensorStorageType projection_storage_type = assets::TensorStorageType::F32;
+    assets::TensorStorageType attention_storage_type = assets::TensorStorageType::F32;
+    assets::TensorStorageType feed_forward_storage_type = assets::TensorStorageType::F32;
+    assets::TensorStorageType final_projection_storage_type = assets::TensorStorageType::F32;
 };
 
 struct HubertEncoderOutput {
@@ -40,6 +80,11 @@ struct HubertEncoderOutput {
     int64_t batch = 0;
     int64_t tokens = 0;
     int64_t hidden_size = 0;
+};
+
+struct HubertEncoderRunConfig {
+    int64_t output_hidden_layer = -1;
+    bool apply_final_projection = false;
 };
 
 struct HubertEncoderWeights {
@@ -62,6 +107,11 @@ public:
         std::shared_ptr<const assets::TensorSource> source,
         core::BackendConfig backend,
         HubertEncoderConfig config = {});
+    static HubertEncoderComponent load_from_tensor_source(
+        std::shared_ptr<const assets::TensorSource> source,
+        core::BackendConfig backend,
+        HubertEncoderConfig config,
+        HubertEncoderWeightBinding binding);
 
     HubertEncoderComponent() = default;
     HubertEncoderComponent(
@@ -77,6 +127,11 @@ public:
         const std::vector<float> & input_values,
         int64_t batch,
         int64_t samples) const;
+    HubertEncoderOutput encode(
+        const std::vector<float> & input_values,
+        int64_t batch,
+        int64_t samples,
+        HubertEncoderRunConfig run_config) const;
     void release_runtime_graph();
 
 private:

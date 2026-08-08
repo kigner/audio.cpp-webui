@@ -8,12 +8,24 @@ Common CLI shape:
 audiocpp_cli --task <task> --family vevo2 --model models/Vevo2 --backend cuda --task-route <route> ...
 ```
 
+## Install
+
+Two packages produce a runnable VeVo2, and either directory can be passed as `--model`:
+
+```bash
+python3 tools/model_manager_v2.py install vevo2_q8_0   # models/Vevo2-GGUF, Q8_0, ~3.2 GB
+python3 tools/model_manager_v2.py install vevo2_orig   # models/Vevo2-GGUF, original dtype
+```
+
+The GGUF package is self-contained: it embeds every config the runtime reads, including
+`whisper-medium/config.json` and the whisper encoder weights, so nothing else has to be downloaded.
+
 ## Model
 
 | Field | Value |
 |---|---|
 | Family | `vevo2` |
-| Model directory | `models/Vevo2` |
+| Model directory | `models/Vevo2` (safetensors) or `models/Vevo2-GGUF` (GGUF) |
 | Tasks | `tts`, `vc`, `s2s`, `svc` |
 | Modes | `offline` |
 | Voice input | Target timbre WAV through `--voice-ref` or `--target-voice` |

@@ -48,7 +48,7 @@ void print_help() {
         << "                [--model-spec-override <json-or-directory>]\n"
         << "                [--log] [--log-file <path>]\n"
         << "                [--cors-origins <origins>]\n"
-        << "  --backend cpu|cuda|vulkan|metal  default cuda\n"
+        << "  --backend cpu|cuda|hip|rocm|vulkan|metal  default cuda (rocm is an alias for hip)\n"
         << "  --busy-timeout-ms <ms>           fail a request with 503 when the model has been\n"
         << "                                   busy this long; default 300000, 0 disables\n"
         << "  --cors-origins \"*\"              experimental; disabled by default. Allows browser\n"
@@ -61,6 +61,8 @@ void print_help() {
         << "  POST /v1/audio/speech\n"
         << "  POST /v1/audio/transcriptions\n"
         << "       OpenAI-style streaming: speech stream_format=sse|audio, transcription stream=true\n"
+        << "  POST /v1/audio/transcriptions/live?model=<id>\n"
+        << "       raw PCM in a chunked body, transcript deltas as SSE on the same connection\n"
         << "  POST /v1/tasks/run\n";
 }
 
@@ -128,7 +130,7 @@ int main(int argc, char ** argv) {
         }
 
         minitts::server::ServerState state(config, std::filesystem::current_path());
-        minitts::server::serve_http(config.host, config.port, state, shutdown_requested);
+        minitts::server::serve_http(config.host, config.port, state, shutdown_requested, config.max_request_body_bytes);
         return 0;
     } catch (const std::exception & ex) {
         std::cerr << "audiocpp_server failed: " << ex.what() << "\n";

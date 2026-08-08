@@ -51,4 +51,25 @@ private:
     SplitRoPEConfig config_;
 };
 
+struct SplitRoPEAttentionConfig {
+    int64_t heads = 0;
+    int64_t head_dim = 0;
+};
+
+class SplitRoPEAttentionModule {
+public:
+    explicit SplitRoPEAttentionModule(SplitRoPEAttentionConfig config);
+
+    const SplitRoPEAttentionConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const core::TensorValue & cos,
+        const core::TensorValue & sin) const;
+
+private:
+    SplitRoPEAttentionConfig config_;
+};
+
 }  // namespace engine::modules

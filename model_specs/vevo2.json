@@ -1,5 +1,106 @@
 {
   "family": "vevo2",
+  "display_name": "Vevo2",
+  "description": "Unified controllable framework for English and Chinese speech and singing voice generation, voice conversion, and editing, with tokenizers that disentangle content, prosody, melody, style, and timbre.",
+  "category": "voice_conversion",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "music",
+    "vc",
+    "edit",
+    "svc",
+    "s2s"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "en",
+    "zh"
+  ],
+  "capabilities": {
+    "music": [
+      "lyrics"
+    ],
+    "vc": [
+      "speaker_reference"
+    ],
+    "svc": [
+      "speaker_reference",
+      "singing"
+    ],
+    "s2s": [
+      "speaker_reference"
+    ],
+    "edit": [
+      "prompt_editing"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "vevo2_q8_0",
+    "tags": [
+      "TTS",
+      "Music",
+      "VC",
+      "Edit",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/vevo2.md",
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
+  "packages": [
+    {
+      "id": "vevo2_q8_0",
+      "display_name": "Vevo2 Q8_0 GGUF",
+      "default": true,
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "Vevo2-GGUF",
+      "files": [
+        "Vevo2-GGUF/vevo2-q8_0.gguf"
+      ],
+      "strip_prefix": "Vevo2-GGUF"
+    },
+    {
+      "id": "vevo2_f16",
+      "display_name": "Vevo2 F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "Vevo2-GGUF",
+      "files": [
+        "Vevo2-GGUF/vevo2-f16.gguf"
+      ],
+      "strip_prefix": "Vevo2-GGUF"
+    },
+    {
+      "id": "vevo2_orig",
+      "display_name": "Vevo2 Original-Dtype GGUF",
+      "format": "gguf",
+      "precision": "orig",
+      "target_directory": "Vevo2-GGUF",
+      "files": [
+        "Vevo2-GGUF/vevo2-orig.gguf"
+      ],
+      "strip_prefix": "Vevo2-GGUF"
+    }
+  ],
   "sources": [
     {
       "format": "gguf",

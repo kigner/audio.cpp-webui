@@ -838,6 +838,8 @@ public:
         if (max_new_tokens <= 0) {
             throw std::runtime_error("Fish Audio prompt leaves no room for generated tokens");
         }
+        // Prefill writes into the reusable step KV cache; rebuild the copy graph for each request.
+        prefill_graph_.reset();
         ensure_step_graph(prompt.steps + max_new_tokens, profile);
         ensure_prefill_graph(prompt.steps, profile);
         ensure_fast_graph(profile);

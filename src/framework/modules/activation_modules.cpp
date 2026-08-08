@@ -74,6 +74,26 @@ const core::ModuleSchema kSiluSchema = {
     "Applies SiLU activation elementwise.",
 };
 
+const core::ModuleSchema kSwooshLSchema = {
+    "SwooshL",
+    "nn.activation",
+    kActivationInputs,
+    1,
+    kActivationOutputs,
+    1,
+    "Applies Zipformer SwooshL activation elementwise.",
+};
+
+const core::ModuleSchema kSwooshRSchema = {
+    "SwooshR",
+    "nn.activation",
+    kActivationInputs,
+    1,
+    kActivationOutputs,
+    1,
+    "Applies Zipformer SwooshR activation elementwise.",
+};
+
 const core::ModuleSchema kEluSchema = {
     "ELU",
     "nn.activation",
@@ -161,6 +181,26 @@ bool same_shape(const core::TensorShape & lhs, const core::TensorShape & rhs) {
         }
     }
     return true;
+}
+
+core::TensorValue build_swoosh(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    float offset,
+    float constant) {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    const auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
+    auto shifted = core::wrap_tensor(
+        ggml_scale_bias(ctx.ggml, contiguous.tensor, 1.0F, -offset),
+        input.shape,
+        GGML_TYPE_F32);
+    auto activated = core::wrap_tensor(ggml_softplus(ctx.ggml, shifted.tensor), input.shape, GGML_TYPE_F32);
+    auto residual = core::wrap_tensor(ggml_scale(ctx.ggml, contiguous.tensor, -0.08F), input.shape, GGML_TYPE_F32);
+    auto summed = core::wrap_tensor(ggml_add(ctx.ggml, activated.tensor, residual.tensor), input.shape, GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_scale_bias(ctx.ggml, summed.tensor, 1.0F, constant), input.shape, GGML_TYPE_F32);
 }
 
 }  // namespace
@@ -251,6 +291,30 @@ core::TensorValue SiluModule::build(core::ModuleBuildContext & ctx, const core::
 
 const core::ModuleSchema & SiluModule::static_schema() noexcept {
     return kSiluSchema;
+}
+
+const core::ModuleSchema & SwooshLModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue SwooshLModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    return build_swoosh(ctx, input, 4.0F, -0.035F);
+}
+
+const core::ModuleSchema & SwooshLModule::static_schema() noexcept {
+    return kSwooshLSchema;
+}
+
+const core::ModuleSchema & SwooshRModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue SwooshRModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    return build_swoosh(ctx, input, 1.0F, -0.313261687F);
+}
+
+const core::ModuleSchema & SwooshRModule::static_schema() noexcept {
+    return kSwooshRSchema;
 }
 
 const core::ModuleSchema & EluModule::schema() const noexcept {

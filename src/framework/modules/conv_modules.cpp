@@ -1,6 +1,9 @@
 #include "engine/framework/modules/conv_modules.h"
 #include "tensor_layout_utils.h"
 #include "engine/framework/core/backend.h"
+#include "engine/framework/modules/activation_modules.h"
+#include "engine/framework/modules/norm_modules.h"
+#include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
 
 #include <stdexcept>
@@ -18,6 +21,16 @@ const core::ModulePortSpec kConvInputs[] = {
 
 const core::ModulePortSpec kSingleOutput[] = {
     {"output", core::PortKind::Activation, false},
+};
+
+const core::ModulePortSpec kCausalResBlockInputs[] = {
+    {"input", core::PortKind::Activation, false},
+    {"conv1.weight", core::PortKind::Parameter, false},
+    {"conv1.bias", core::PortKind::Parameter, false},
+    {"conv2.weight", core::PortKind::Parameter, false},
+    {"conv2.bias", core::PortKind::Parameter, false},
+    {"shortcut.weight", core::PortKind::Parameter, true},
+    {"shortcut.bias", core::PortKind::Parameter, true},
 };
 
 const core::ModuleSchema kConv1dSchema = {
@@ -48,6 +61,36 @@ const core::ModuleSchema kCausalConv2dSchema = {
     kSingleOutput,
     1,
     "Applies explicit asymmetric 2D padding followed by Conv2d.",
+};
+
+const core::ModuleSchema kSameWidthCausalConv2dSchema = {
+    "SameWidthCausalConv2d",
+    "nn.conv",
+    kConvInputs,
+    3,
+    kSingleOutput,
+    1,
+    "Applies causal-height and same-width 2D padding followed by Conv2d.",
+};
+
+const core::ModuleSchema kPixelNormCausalConv2dResBlockSchema = {
+    "PixelNormCausalConv2dResBlock",
+    "nn.conv",
+    kCausalResBlockInputs,
+    7,
+    kSingleOutput,
+    1,
+    "Applies a PixelNorm/Silu causal Conv2d residual block.",
+};
+
+const core::ModuleSchema kCausalConv2dUpsampleSchema = {
+    "CausalConv2dUpsample",
+    "nn.conv",
+    kConvInputs,
+    3,
+    kSingleOutput,
+    1,
+    "Applies nearest 2D upsampling followed by causal Conv2d and temporal crop.",
 };
 
 const core::ModuleSchema kDepthwiseConv2dSchema = {
@@ -261,7 +304,10 @@ core::TensorValue view_batch_matrix(
 bool is_conv_transpose1d_col2im_fast_path_eligible(
     const core::ModuleBuildContext & ctx,
     const ConvTranspose1dConfig & config) noexcept {
-    return ctx.backend_type == core::BackendType::Cuda && config.dilation == 1;
+    return (ctx.backend_type == core::BackendType::Cuda ||
+            ctx.backend_type == core::BackendType::Hip ||
+            ctx.backend_type == core::BackendType::Metal) &&
+           config.dilation == 1;
 }
 
 Conv1dModule::Conv1dModule(Conv1dConfig config) : config_(config) {
@@ -460,6 +506,141 @@ core::TensorValue CausalConv2dModule::build(
 
 const core::ModuleSchema & CausalConv2dModule::static_schema() noexcept {
     return kCausalConv2dSchema;
+}
+
+SameWidthCausalConv2dModule::SameWidthCausalConv2dModule(SameWidthCausalConv2dConfig config) : config_(config) {
+    if (config_.in_channels <= 0 || config_.out_channels <= 0 || config_.kernel_size <= 0) {
+        throw std::runtime_error("SameWidthCausalConv2dConfig dimensions must be positive");
+    }
+    if (config_.kernel_size % 2 == 0) {
+        throw std::runtime_error("SameWidthCausalConv2dConfig.kernel_size must be odd");
+    }
+}
+
+const SameWidthCausalConv2dConfig & SameWidthCausalConv2dModule::config() const noexcept {
+    return config_;
+}
+
+const core::ModuleSchema & SameWidthCausalConv2dModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue SameWidthCausalConv2dModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const Conv2dWeights & weights) const {
+    const int64_t pad_h = config_.kernel_size - 1;
+    const int64_t pad_w = config_.kernel_size - 1;
+    return CausalConv2dModule({
+        {
+            config_.in_channels,
+            config_.out_channels,
+            config_.kernel_size,
+            config_.kernel_size,
+            1,
+            1,
+            0,
+            0,
+            1,
+            1,
+            config_.use_bias,
+        },
+        pad_w / 2,
+        pad_w - pad_w / 2,
+        pad_h,
+        0,
+    }).build(ctx, input, weights);
+}
+
+const core::ModuleSchema & SameWidthCausalConv2dModule::static_schema() noexcept {
+    return kSameWidthCausalConv2dSchema;
+}
+
+PixelNormCausalConv2dResBlockModule::PixelNormCausalConv2dResBlockModule(
+    PixelNormCausalConv2dResBlockConfig config) : config_(config) {
+    if (config_.in_channels <= 0 || config_.out_channels <= 0 || config_.kernel_size <= 0) {
+        throw std::runtime_error("PixelNormCausalConv2dResBlockConfig dimensions must be positive");
+    }
+    if (config_.kernel_size % 2 == 0) {
+        throw std::runtime_error("PixelNormCausalConv2dResBlockConfig.kernel_size must be odd");
+    }
+    if (config_.pixel_norm_eps <= 0.0F) {
+        throw std::runtime_error("PixelNormCausalConv2dResBlockConfig.pixel_norm_eps must be positive");
+    }
+}
+
+const PixelNormCausalConv2dResBlockConfig & PixelNormCausalConv2dResBlockModule::config() const noexcept {
+    return config_;
+}
+
+const core::ModuleSchema & PixelNormCausalConv2dResBlockModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue PixelNormCausalConv2dResBlockModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const PixelNormCausalConv2dResBlockWeights & weights) const {
+    auto h = PixelNormModule({config_.pixel_norm_axis, config_.pixel_norm_eps}).build(ctx, input);
+    h = SiluModule{}.build(ctx, h);
+    h = SameWidthCausalConv2dModule({config_.in_channels, config_.out_channels, config_.kernel_size, true})
+            .build(ctx, h, weights.conv1);
+    h = PixelNormModule({config_.pixel_norm_axis, config_.pixel_norm_eps}).build(ctx, h);
+    h = SiluModule{}.build(ctx, h);
+    h = SameWidthCausalConv2dModule({config_.out_channels, config_.out_channels, config_.kernel_size, true})
+            .build(ctx, h, weights.conv2);
+    auto residual = core::ensure_backend_addressable_layout(ctx, input);
+    if (weights.shortcut.has_value()) {
+        residual = SameWidthCausalConv2dModule({config_.in_channels, config_.out_channels, 1, true})
+                       .build(ctx, residual, *weights.shortcut);
+    }
+    return AddModule{}.build(ctx, residual, h);
+}
+
+const core::ModuleSchema & PixelNormCausalConv2dResBlockModule::static_schema() noexcept {
+    return kPixelNormCausalConv2dResBlockSchema;
+}
+
+CausalConv2dUpsampleModule::CausalConv2dUpsampleModule(CausalConv2dUpsampleConfig config) : config_(config) {
+    if (config_.channels <= 0 || config_.kernel_size <= 0 || config_.scale_height <= 0 || config_.scale_width <= 0) {
+        throw std::runtime_error("CausalConv2dUpsampleConfig dimensions must be positive");
+    }
+    if (config_.kernel_size % 2 == 0) {
+        throw std::runtime_error("CausalConv2dUpsampleConfig.kernel_size must be odd");
+    }
+    if (config_.crop_top < 0 || config_.crop_bottom < 0) {
+        throw std::runtime_error("CausalConv2dUpsampleConfig crop must be non-negative");
+    }
+}
+
+const CausalConv2dUpsampleConfig & CausalConv2dUpsampleModule::config() const noexcept {
+    return config_;
+}
+
+const core::ModuleSchema & CausalConv2dUpsampleModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue CausalConv2dUpsampleModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const Conv2dWeights & weights) const {
+    auto x = NearestUpsample2dModule({
+        input.shape.dims[2] * config_.scale_height,
+        input.shape.dims[3] * config_.scale_width,
+    }).build(ctx, input);
+    x = SameWidthCausalConv2dModule({config_.channels, config_.channels, config_.kernel_size, true}).build(ctx, x, weights);
+    const int64_t height = x.shape.dims[2] - config_.crop_top - config_.crop_bottom;
+    if (height <= 0) {
+        throw std::runtime_error("CausalConv2dUpsample crop removes all rows");
+    }
+    return core::ensure_backend_addressable_layout(
+        ctx,
+        SliceModule({2, config_.crop_top, height}).build(ctx, x));
+}
+
+const core::ModuleSchema & CausalConv2dUpsampleModule::static_schema() noexcept {
+    return kCausalConv2dUpsampleSchema;
 }
 
 DepthwiseConv2dModule::DepthwiseConv2dModule(DepthwiseConv2dConfig config) : config_(config) {

@@ -103,6 +103,90 @@ private:
     CausalConv2dConfig config_;
 };
 
+struct SameWidthCausalConv2dConfig {
+    int64_t in_channels = 0;
+    int64_t out_channels = 0;
+    int64_t kernel_size = 0;
+    bool use_bias = true;
+};
+
+class SameWidthCausalConv2dModule {
+public:
+    explicit SameWidthCausalConv2dModule(SameWidthCausalConv2dConfig config);
+
+    const SameWidthCausalConv2dConfig & config() const noexcept;
+    const core::ModuleSchema & schema() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const Conv2dWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    SameWidthCausalConv2dConfig config_;
+};
+
+struct PixelNormCausalConv2dResBlockConfig {
+    int64_t in_channels = 0;
+    int64_t out_channels = 0;
+    int64_t kernel_size = 3;
+    int pixel_norm_axis = 1;
+    float pixel_norm_eps = 1e-6f;
+};
+
+struct PixelNormCausalConv2dResBlockWeights {
+    Conv2dWeights conv1;
+    Conv2dWeights conv2;
+    std::optional<Conv2dWeights> shortcut;
+};
+
+class PixelNormCausalConv2dResBlockModule {
+public:
+    explicit PixelNormCausalConv2dResBlockModule(PixelNormCausalConv2dResBlockConfig config);
+
+    const PixelNormCausalConv2dResBlockConfig & config() const noexcept;
+    const core::ModuleSchema & schema() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const PixelNormCausalConv2dResBlockWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    PixelNormCausalConv2dResBlockConfig config_;
+};
+
+struct CausalConv2dUpsampleConfig {
+    int64_t channels = 0;
+    int64_t kernel_size = 3;
+    int64_t scale_height = 2;
+    int64_t scale_width = 2;
+    int64_t crop_top = 1;
+    int64_t crop_bottom = 0;
+};
+
+class CausalConv2dUpsampleModule {
+public:
+    explicit CausalConv2dUpsampleModule(CausalConv2dUpsampleConfig config);
+
+    const CausalConv2dUpsampleConfig & config() const noexcept;
+    const core::ModuleSchema & schema() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const Conv2dWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    CausalConv2dUpsampleConfig config_;
+};
+
 struct DepthwiseConv2dConfig {
     int64_t channels = 0;
     int64_t kernel_height = 0;

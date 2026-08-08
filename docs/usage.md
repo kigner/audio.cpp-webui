@@ -20,13 +20,17 @@ audiocpp_cli --task <task> --family <family> --model <model-dir> --backend <back
 | `--threads` | integer | `4` | Backend/OpenMP worker threads. |
 | `--log` | flag | off | Print progress and timing logs to stdout. |
 | `--log-file` | path | not set | Stream progress and timing logs to a file. |
+| `--metrics` | flag | off | Print compact offline wall time, audio duration, RTF, realtime speed, sample rate, and channel metrics. |
 
 ## Common Inputs And Outputs
 
 | Option | Used by | Meaning |
 |---|---|---|
 | `--text` | generation, TTS, ASR context, alignment transcript | Input text. |
-| `--audio` | generation/editing, ASR, VAD, diarization, separation, conversion, alignment | Input WAV. |
+| `--audio` | generation/editing, ASR, VAD, diarization, separation, conversion, alignment | Input WAV, or `-` to stream raw PCM from stdin (requires `--mode streaming`). |
+| `--input-format` | streaming ASR with `--audio -` | Raw PCM sample format, `s16le` or `f32le`. Default `s16le`. |
+| `--input-rate` | streaming ASR with `--audio -` | Raw PCM sample rate in Hz. Default `16000`. |
+| `--input-channels` | streaming ASR with `--audio -` | Raw PCM channel count. Default `1`. |
 | `--voice-ref` | voice clone / voice design / some VC paths | Reference voice WAV. |
 | `--language` | language-aware models | Language code. |
 | `--out` | audio-producing models | Output WAV path. |
@@ -61,6 +65,7 @@ Omit these unless you need explicit control. If `--seed` is omitted, models that
 
 | Option | Meaning |
 |---|---|
+| `--request-sequence <json>` | Run multiple JSON requests through one offline model session. |
 | `--batch-text-file <txt>` | One request per non-empty text line. |
 | `--batch-text-dir <dir>` | One request per `.txt`, `.md`, or `.json` file; each file is normalized into a single paragraph. |
 | `--batch-audio-dir <dir>` | One request per `.wav` file. |
@@ -69,6 +74,19 @@ Omit these unless you need explicit control. If `--seed` is omitted, models that
 | `--batch-manifest-out <json>` | Write a batch output manifest. |
 
 `--batch-text-dir` reads `.txt` and `.md` files as plain text. For `.json`, use either a JSON string root or an object with a string `input` or `text` field.
+
+Use `--request-sequence` when you want to send multiple requests in one long-lived offline session:
+
+```bash
+audiocpp_cli --task tts --family pocket_tts \
+  --model models/PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf \
+  --backend cuda \
+  --request-sequence requests.json \
+  --out-dir outputs \
+  --metrics
+```
+
+For each request id, `--metrics` prints `metrics[<id>].wall_ms`, `audio_duration_ms`, `rtf`, `x_realtime`, `sample_rate`, and `channels`.
 
 ## Model Docs
 

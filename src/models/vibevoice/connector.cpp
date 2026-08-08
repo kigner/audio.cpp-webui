@@ -2,7 +2,6 @@
 
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/debug/profiler.h"
-#include "engine/framework/debug/trace.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/weight_binding.h"
 #include "engine/models/vibevoice/tokenizer_audio.h"
@@ -119,9 +118,6 @@ public:
         if (buffer_ == nullptr) {
             throw std::runtime_error("failed to allocate VibeVoice connector graph");
         }
-        engine::debug::timing_log_scalar(
-            "vibevoice.connector.buffer_bytes",
-            static_cast<uint64_t>(ggml_backend_buffer_get_size(buffer_)));
     }
 
     ~VibeVoiceConnectorGraph() {

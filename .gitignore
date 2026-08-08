@@ -14,6 +14,8 @@ compile_commands.json
 *.exe
 __pycache__/
 *.pyc
+/venv/
+/.venv/
 /tests/assets/**/*.safetensors
 /unittests/
 /models/

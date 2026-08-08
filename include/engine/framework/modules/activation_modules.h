@@ -62,6 +62,20 @@ public:
     static const core::ModuleSchema & static_schema() noexcept;
 };
 
+class SwooshLModule {
+public:
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
+    static const core::ModuleSchema & static_schema() noexcept;
+};
+
+class SwooshRModule {
+public:
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
+    static const core::ModuleSchema & static_schema() noexcept;
+};
+
 class EluModule {
 public:
     const core::ModuleSchema & schema() const noexcept;

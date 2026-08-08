@@ -57,4 +57,30 @@ const core::ModuleSchema & FeedForwardGeluModule::static_schema() noexcept {
     return kFeedForwardGeluSchema;
 }
 
+GatedFeedForwardModule::GatedFeedForwardModule(GatedFeedForwardConfig config) : config_(config) {
+    validate_hidden_positive(config_.hidden_size, "GatedFeedForwardConfig.hidden_size");
+    validate_hidden_positive(config_.intermediate_size, "GatedFeedForwardConfig.intermediate_size");
+}
+
+const GatedFeedForwardConfig & GatedFeedForwardModule::config() const noexcept {
+    return config_;
+}
+
+const core::ModuleSchema & GatedFeedForwardModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue GatedFeedForwardModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const GatedFeedForwardWeights & weights) const {
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    core::validate_last_dim(input, config_.hidden_size, "input");
+    return build_gated_feed_forward_impl(ctx, input, config_, require_gated_feed_forward_weights(weights, config_.use_bias));
+}
+
+const core::ModuleSchema & GatedFeedForwardModule::static_schema() noexcept {
+    return kGatedFeedForwardSchema;
+}
+
 }  // namespace engine::modules

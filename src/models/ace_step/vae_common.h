@@ -164,8 +164,7 @@ public:
         const runtime::AudioBuffer & audio,
         uint64_t seed,
         uint64_t & noise_offset,
-        const std::vector<float> * noise_override = nullptr,
-        bool posterior_mean = false) const;
+        const std::vector<float> * noise_override = nullptr) const;
 
 private:
     void build(size_t graph_arena_bytes);
@@ -197,11 +196,7 @@ public:
         std::shared_ptr<const VAEEncoderWeights> weights,
         size_t graph_arena_bytes);
 
-    AceStepLatents encode(
-        const runtime::AudioBuffer & audio,
-        uint32_t seed,
-        const std::string & noise_file,
-        bool posterior_mean = false);
+    AceStepLatents encode(const runtime::AudioBuffer & audio, uint32_t seed, const std::string & noise_file);
     void release_runtime_graphs();
 
 private:

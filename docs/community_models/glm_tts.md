@@ -6,6 +6,11 @@ encoder, Flow/DiT mel generator, CAMPPlus speaker encoder, and HiFT vocoder.
 Both advertised routes are reference-conditioned: provide a clean WAV and the
 exact words spoken in it.
 
+GLM-TTS is v1-native. `model_specs/glm_tts.json` is the single source of truth
+for metadata, packages, normalized options, and GGUF/safetensors resources.
+The runtime uses the generic spec-backed loader; the legacy request aliases
+listed below remain an internal compatibility layer for existing users.
+
 | Field | Value |
 |---|---|
 | Family | `glm_tts` |
@@ -16,13 +21,22 @@ exact words spoken in it.
 | Voice input | Required reference WAV plus its exact transcript |
 | Output | mono 24 kHz WAV |
 
-Install and prepare the official checkpoint:
+Install the default package:
 
 ```bash
-python tools/model_manager.py install glm_tts --models-dir models
+python tools/model_manager_v2.py install glm_tts --models-root models
 ```
 
-The installer downloads `zai-org/GLM-TTS`, converts the official Flow and HiFT
+The default install is the standalone Q8 GGUF package.
+
+The original safetensors preparation path remains available through the
+deprecated manager:
+
+```bash
+python tools/model_manager_deprecated.py install glm_tts --models-dir models
+```
+
+That installer downloads `zai-org/GLM-TTS`, converts the official Flow and HiFT
 PyTorch checkpoints to safetensors, prepares the ChatGLM tokenizer resources,
 and installs the matching CAMPPlus safetensors weights. The latter are sourced
 from `mlx-community/index-tts2-mlx` because the GLM-TTS repository publishes
@@ -89,11 +103,15 @@ audiocpp_cli --task clon --family glm_tts \
 | `--top-k` | integer | `25` | Speech-token top-k limit. |
 | `--top-p` | float | `0.8` | Speech-token nucleus threshold. |
 | `--seed` | integer | `0` | Seed used by token sampling, Flow noise, and HiFT. |
-| `--request-option flow_steps=<n>` | integer | `10` | Flow Euler integration steps. |
-| `--request-option cfg_rate=<float>` | float | `0.7` | Flow classifier-free guidance rate. |
-| `--request-option flow_noise_file=<path>` | raw F32 path | none | Optional exact initial Flow noise for parity tests. |
-| `--request-option hift_source_random_file=<path>` | raw F32 path | none | Optional exact HiFT phase-uniform and Gaussian values for parity tests. |
-| `--request-option hift_prior_noise_values=<n>` | integer | `0` | Torch RNG offset before normal HiFT source generation. |
+| `--request-option num_inference_steps=<n>` | integer | `10` | Flow Euler integration steps. |
+| `--request-option flow_guidance_scale=<float>` | float | `0.7` | Flow classifier-free guidance rate. |
+| `--request-option flow_noise_path=<path>` | raw F32 path | none | Optional exact initial Flow noise for parity tests. |
+| `--request-option hift_source_random_path=<path>` | raw F32 path | none | Optional exact HiFT phase-uniform and Gaussian values for parity tests. |
+| `--request-option hift_prior_noise_count=<n>` | integer | `0` | Torch RNG offset before normal HiFT source generation. |
+
+The legacy GLM-TTS request keys `flow_steps`, `cfg_rate`, `flow_noise_file`,
+`hift_source_random_file`, and `hift_prior_noise_values` remain accepted for
+backward compatibility.
 | `--session-option glm_tts.weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Requested component weight storage type. |
 | `--session-option glm_tts.mem_saver=true|false` | bool | `false` | Release the reference-only Whisper-VQ and CAMPPlus runtimes after caching the voice, while keeping Llama, Flow, and HiFT warm. |
 | `--session-option glm_tts.aggressive_mem_saver=true|false` | bool | `false` | Also release Llama, Flow, and HiFT after each stage. This minimizes VRAM but reloads the generation path on every request. |

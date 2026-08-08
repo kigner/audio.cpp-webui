@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fail when installable catalog packages reference unregistered loaders.
+"""Check sync between runtime loaders, model_specs packages, and model_manager_v2.
 
-``model_manager list --json`` family fields and ``audiocpp_cli --list-loaders``
-must stay aligned. Installable standalone packages cannot advertise a family
-that is missing or commented out in ``src/framework/runtime/registry.cpp``.
+Schema correctness is owned by the typed model-spec validator. This script only
+checks cross-system drift:
 
+- registered loader families vs model_specs families
+- model_specs packages vs model_manager_v2 package output
 See docs/maintainers/loader_and_catalog.md.
 """
 
@@ -15,354 +16,244 @@ import json
 import re
 import sys
 import unittest
-from pathlib import Path, PurePosixPath
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CMAKE_PATH = REPO_ROOT / "CMakeLists.txt"
 REGISTRY_PATH = REPO_ROOT / "src" / "framework" / "runtime" / "registry.cpp"
-MODEL_MANAGER_PATH = REPO_ROOT / "tools" / "model_manager.py"
-WEBUI_CATALOG_PATH = REPO_ROOT / "webui" / "configs" / "models_catalog.json"
-PACKAGE_TABLE_PATH = REPO_ROOT / "docs" / "model_manager.md"
+SPECS_DIR = REPO_ROOT / "model_specs"
 
-_LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader\s*\(\s*\)")
+_LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader(?:\s*\(\s*\))?")
 
-# Optional: catalog family strings that map to a differently named parked stub.
-PARKED_FAMILY_ALIASES: dict[str, set[str]] = {
-    "higgs_tts": {"higgs_audio_tts"},
-}
-
-# Registered loaders that intentionally have no installable ModelPackage.
-BUNDLED_LOADERS_WITHOUT_PACKAGE: set[str] = {
+BUNDLED_LOADERS_WITHOUT_SPEC = {
     "marblenet_vad",
     "silero_vad",
 }
 
 
-def parse_registry_loaders(registry_text: str) -> tuple[set[str], set[str]]:
-    """Return (active_families, commented_families) from registry.cpp."""
+@dataclass(frozen=True)
+class SpecPackage:
+    family: str
+    id: str
+    format: str
+    target_directory: str
+    default: bool
+
+
+def rel(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def parse_loader_declarations(text: str, comment_prefix: str) -> tuple[set[str], set[str]]:
     active: set[str] = set()
     commented: set[str] = set()
-    for raw_line in registry_text.splitlines():
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         match = _LOADER_CALL_RE.search(line)
         if not match:
             continue
         family = match.group(1)
-        if line.startswith("//"):
+        if line.startswith(comment_prefix):
             commented.add(family)
         else:
             active.add(family)
     return active, commented
 
 
-def family_is_registered(family: str, active: set[str]) -> bool:
-    return family in active
+def parse_declared_loaders(cmake_text: str, registry_text: str) -> tuple[set[str], set[str]]:
+    cmake_active, cmake_commented = parse_loader_declarations(cmake_text, "#")
+    registry_active, registry_commented = parse_loader_declarations(registry_text, "//")
+    return cmake_active | registry_active, cmake_commented | registry_commented
 
 
-def family_is_parked(family: str, commented: set[str]) -> bool:
-    if family in commented:
-        return True
-    for stub, aliases in PARKED_FAMILY_ALIASES.items():
-        if stub in commented and family in aliases:
-            return True
-    return False
+def loader_families_from_json(payload: Any) -> set[str]:
+    if isinstance(payload, dict):
+        loaders = payload.get("loaders")
+        if not isinstance(loaders, dict):
+            raise ValueError("loader JSON object must contain a loaders object")
+        families: set[str] = set()
+        for family, row in loaders.items():
+            if not isinstance(family, str) or not family or not isinstance(row, dict):
+                raise ValueError("loader JSON loaders must map non-empty family names to objects")
+            families.add(family)
+        return families
+    if not isinstance(payload, list):
+        raise ValueError("loader JSON must be a list or schema object")
+    families: set[str] = set()
+    for index, row in enumerate(payload):
+        if not isinstance(row, dict) or not isinstance(row.get("family"), str):
+            raise ValueError(f"loader JSON row {index} must contain string family")
+        families.add(row["family"])
+    return families
 
 
-def parked_hint(family: str, commented: set[str]) -> str:
-    if family in commented:
-        return " (commented out in registry.cpp)"
-    for stub, aliases in PARKED_FAMILY_ALIASES.items():
-        if stub in commented and family in aliases:
-            return (
-                f" (parked registry stub is '{stub}'; catalog family '{family}' "
-                "must stay UnsupportedSource until one id is registered)"
-            )
-    return ""
+def load_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
-def parse_package_table(table_text: str) -> dict[str, str]:
-    """Map package id -> status cell from the recommended install table."""
-    match = re.search(
-        r"\| Package id \| Model \| HF ready-to-use repo \|\n\|[^\n]+\n((?:\|.*\n)+)",
-        table_text,
-    )
-    if not match:
-        return {}
-    rows: dict[str, str] = {}
-    for line in match.group(1).splitlines():
-        cols = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cols) < 3 or not cols[0].startswith("`"):
-            continue
-        package_id = cols[0].strip("`")
-        rows[package_id] = cols[2]
-    return rows
-
-
-def check_catalog(
-    *,
-    active: set[str],
-    commented: set[str],
-    packages: list,
-    package_payload,
-    default_family_from_package_id,
-) -> tuple[list[str], list[str]]:
+def load_spec_packages(specs_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, SpecPackage], list[str]]:
+    specs_by_family: dict[str, dict[str, Any]] = {}
+    packages_by_id: dict[str, SpecPackage] = {}
     errors: list[str] = []
-    warnings: list[str] = []
-    installable_families: set[str] = set()
-
-    for package in packages:
-        payload = package_payload(package)
-        package_id = str(payload.get("id") or "")
-        family = str(payload.get("family") or "").strip()
-        installable = bool(payload.get("installable"))
-        standalone = bool(payload.get("standalone", True))
-        source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
-        source_kind = str(source.get("kind") or "")
-        inferred = default_family_from_package_id(package_id)
-        explicit = getattr(package, "family", None)
-
-        if not family:
-            errors.append(
-                f"{package_id}: missing family (set ModelPackage.family or fix id)"
-            )
+    for path in sorted(specs_dir.glob("*.json")):
+        try:
+            spec = load_json(path)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{rel(path)}: invalid JSON: {exc}")
             continue
+        if not isinstance(spec, dict):
+            errors.append(f"{rel(path)}: top-level JSON must be an object")
+            continue
+        family = spec.get("family")
+        if not isinstance(family, str) or not family:
+            errors.append(f"{rel(path)}: missing family")
+            continue
+        if family != path.stem:
+            errors.append(f"{rel(path)}: family '{family}' does not match filename stem '{path.stem}'")
+        if family in specs_by_family:
+            errors.append(f"{rel(path)}: duplicate spec family '{family}'")
+        specs_by_family[family] = spec
 
-        if not installable or source_kind == "unsupported":
-            if family_is_registered(family, active):
-                warnings.append(
-                    f"{package_id}: UnsupportedSource but family '{family}' is already "
-                    "registered — restore a real SnapshotSource/Composite/Converter"
+        packages = spec.get("packages", [])
+        if packages is None:
+            packages = []
+        if not isinstance(packages, list):
+            errors.append(f"{rel(path)}: packages must be a list for model_manager_v2")
+            continue
+        for index, package in enumerate(packages):
+            if not isinstance(package, dict):
+                errors.append(f"{rel(path)}: packages[{index}] must be an object for model_manager_v2")
+                continue
+            package_id = package.get("id")
+            if not isinstance(package_id, str) or not package_id:
+                errors.append(f"{rel(path)}: packages[{index}] missing id")
+                continue
+            if package_id in packages_by_id:
+                errors.append(
+                    f"{rel(path)}: duplicate package id '{package_id}' already declared by "
+                    f"model_specs/{packages_by_id[package_id].family}.json"
                 )
-            elif not family_is_parked(family, commented):
-                warnings.append(
-                    f"{package_id}: UnsupportedSource family '{family}' is neither "
-                    "registered nor a parked registry stub/alias"
-                )
-            continue
-
-        if not standalone:
-            continue
-
-        installable_families.add(family)
-
-        if explicit is None and inferred != family:
-            errors.append(
-                f"{package_id}: resolved family '{family}' != id inference "
-                f"'{inferred}' without ModelPackage.family set"
+                continue
+            packages_by_id[package_id] = SpecPackage(
+                family=family,
+                id=package_id,
+                format=str(package.get("format") or ""),
+                target_directory=str(package.get("target_directory") or ""),
+                default=package.get("default") is True,
             )
-
-        if explicit is None and inferred not in active and family in active:
-            errors.append(
-                f"{package_id}: set ModelPackage.family explicitly "
-                f"(id inference '{inferred}' is not a registered loader)"
-            )
-
-        if not family_is_registered(family, active):
-            errors.append(
-                f"{package_id}: installable standalone package family '{family}' "
-                f"is not registered in registry.cpp{parked_hint(family, commented)}"
-            )
-        elif family_is_parked(family, commented):
-            errors.append(
-                f"{package_id}: family '{family}' is both active and commented in registry.cpp"
-            )
-
-    for stub in sorted(commented):
-        aliases = {stub} | PARKED_FAMILY_ALIASES.get(stub, set())
-        leaked = sorted(fam for fam in aliases if fam in installable_families)
-        if leaked:
-            errors.append(
-                f"parked loader '{stub}' still has installable catalog families: "
-                + ", ".join(leaked)
-            )
-
-    for family in sorted(active):
-        if family in BUNDLED_LOADERS_WITHOUT_PACKAGE:
-            continue
-        if family not in installable_families:
-            warnings.append(
-                f"registered loader '{family}' has no installable standalone "
-                "ModelPackage (add a package or list it in "
-                "BUNDLED_LOADERS_WITHOUT_PACKAGE if intentional)"
-            )
-
-    return errors, warnings
+    return specs_by_family, packages_by_id, errors
 
 
-def check_package_table_doc(
-    *,
-    table_text: str,
-    packages: list,
-    package_payload,
-) -> tuple[list[str], list[str]]:
+def load_manager_packages(specs_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    import model_manager_v2  # noqa: E402
+
     errors: list[str] = []
-    warnings: list[str] = []
-    table = parse_package_table(table_text)
-    if not table:
-        errors.append("docs/model_manager.md: could not parse recommended package table")
-        return errors, warnings
-
-    catalog_by_id = {}
-    for package in packages:
-        payload = package_payload(package)
-        catalog_by_id[str(payload["id"])] = payload
-
-    for package_id, status in sorted(table.items()):
-        payload = catalog_by_id.get(package_id)
-        if payload is None:
-            errors.append(f"docs/model_manager.md: package `{package_id}` not in model_manager CATALOG")
-            continue
-        installable = bool(payload.get("installable"))
-        unavailable = "unavailable" in status.lower()
-        if unavailable and installable:
-            errors.append(
-                f"docs/model_manager.md: `{package_id}` marked Unavailable but catalog is installable"
-            )
-        if not unavailable and not installable:
-            errors.append(
-                f"docs/model_manager.md: `{package_id}` looks installable in the table but catalog "
-                "is UnsupportedSource — mark Unavailable or restore a source"
-            )
-
-    for package_id, payload in sorted(catalog_by_id.items()):
-        if not payload.get("installable") or not payload.get("standalone", True):
-            continue
-        if package_id not in table:
-            errors.append(
-                f"docs/model_manager.md: installable standalone package `{package_id}` missing "
-                "from recommended package table"
-            )
-
-    return errors, warnings
+    try:
+        records = model_manager_v2.flatten_packages(model_manager_v2.load_specs(specs_dir))
+    except Exception as exc:
+        return {}, [f"model_manager_v2 failed to load {rel(specs_dir)}: {exc}"]
+    packages: dict[str, Any] = {}
+    for record in records:
+        if record.id in packages:
+            errors.append(f"model_manager_v2 produced duplicate package id '{record.id}'")
+        packages[record.id] = record
+    return packages, errors
 
 
-def check_webui_model_paths(
-    *,
-    catalog: dict,
-    packages_by_id: dict[str, dict],
-) -> list[str]:
-    """Require named standalone GGUF packages to pass the file, not its directory.
-
-    The model-spec loader recognizes a directory as GGUF only when it contains
-    ``model.gguf``. Model-manager packages commonly preserve descriptive GGUF
-    filenames, so their WebUI entries must point at that file explicitly.
-    """
+def check_loader_spec_sync(active_loaders: set[str], specs_by_family: dict[str, dict[str, Any]]) -> list[str]:
     errors: list[str] = []
-    for model in catalog.get("models", []):
-        package_id = str(model.get("download_id") or "")
-        payload = packages_by_id.get(package_id)
-        if payload is None:
-            continue
-        required = [
-            str(path).replace("\\", "/")
-            for path in payload.get("required_files", [])
-        ]
-        if len(required) != 1 or not required[0].lower().endswith(".gguf"):
-            continue
-        gguf_name = PurePosixPath(required[0]).name
-        if gguf_name.lower() == "model.gguf":
-            continue
-        catalog_path = str(model.get("path") or "").replace("\\", "/")
-        if PurePosixPath(catalog_path).name != gguf_name:
-            errors.append(
-                f"webui model '{model.get('id')}' points to '{catalog_path}', but "
-                f"standalone GGUF package '{package_id}' installs '{gguf_name}'; "
-                "point the catalog path at the GGUF file"
-            )
+    spec_families = set(specs_by_family)
+    for family in sorted(spec_families - active_loaders):
+        errors.append(f"model_specs/{family}.json has no registered loader family")
+    for family in sorted(active_loaders - spec_families - BUNDLED_LOADERS_WITHOUT_SPEC):
+        errors.append(f"registered loader '{family}' has no model_specs/{family}.json")
     return errors
 
 
+def check_manager_sync(spec_packages: dict[str, SpecPackage], manager_packages: dict[str, Any]) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    spec_ids = set(spec_packages)
+    manager_ids = set(manager_packages)
+    for package_id in sorted(spec_ids - manager_ids):
+        errors.append(f"model_specs package '{package_id}' is missing from model_manager_v2 output")
+    for package_id in sorted(manager_ids - spec_ids):
+        errors.append(f"model_manager_v2 package '{package_id}' is not declared in model_specs")
+
+    defaults_by_family: dict[str, list[str]] = {}
+    for package in spec_packages.values():
+        if package.default:
+            defaults_by_family.setdefault(package.family, []).append(package.id)
+        if package.format != "gguf":
+            warnings.append(f"model_specs/{package.family}.json package '{package.id}' is format={package.format}")
+
+    for family in sorted({package.family for package in spec_packages.values()}):
+        defaults = defaults_by_family.get(family, [])
+        if len(defaults) != 1:
+            errors.append(f"model_specs/{family}.json must expose exactly one default package for v2 family installs")
+            continue
+        default_id = defaults[0]
+        if spec_packages[default_id].format != "gguf":
+            errors.append(f"model_specs/{family}.json default package '{default_id}' must be GGUF")
+
+    for package_id, spec_package in spec_packages.items():
+        manager_package = manager_packages.get(package_id)
+        if manager_package is None:
+            continue
+        if manager_package.family != spec_package.family:
+            errors.append(
+                f"model_manager_v2 package '{package_id}' family '{manager_package.family}' "
+                f"does not match model_specs family '{spec_package.family}'"
+            )
+        if manager_package.target_directory != spec_package.target_directory:
+            errors.append(
+                f"model_manager_v2 package '{package_id}' target_directory '{manager_package.target_directory}' "
+                f"does not match model_specs target_directory '{spec_package.target_directory}'"
+            )
+    return errors, warnings
+
+
 class _SyncCheckSelfTests(unittest.TestCase):
-    def test_parse_active_and_commented(self) -> None:
+    def test_parse_loader_declarations(self) -> None:
         text = """
-        // make_family_a_loader(),
-        make_family_b_loader(),
-        make_family_c_loader(), // trailing comment still active
+        # engine::models::old::make_old_loader
+        engine::models::new_family::make_new_family_loader
+        engine::models::other::make_other_loader # active trailing comment
         """
-        active, commented = parse_registry_loaders(text)
-        self.assertEqual(active, {"family_b", "family_c"})
-        self.assertEqual(commented, {"family_a"})
+        active, commented = parse_loader_declarations(text, "#")
+        self.assertEqual(active, {"new_family", "other"})
+        self.assertEqual(commented, {"old"})
 
-    def test_parked_alias_blocks_installable(self) -> None:
-        class Pkg:
-            def __init__(self, family=None):
-                self.family = family
+    def test_loader_json_family_parse(self) -> None:
+        families = loader_families_from_json([{"family": "a"}, {"family": "b"}])
+        self.assertEqual(families, {"a", "b"})
 
-        stub = next(iter(PARKED_FAMILY_ALIASES))
-        alias = next(iter(PARKED_FAMILY_ALIASES[stub]))
-
-        def payload(package):
-            return {
-                "id": "pkg_alias",
-                "family": alias,
-                "installable": True,
-                "standalone": True,
-                "source": {"kind": "huggingface_snapshot"},
-            }
-
-        errors, _ = check_catalog(
-            active={"family_b"},
-            commented={stub},
-            packages=[Pkg(family=alias)],
-            package_payload=payload,
-            default_family_from_package_id=lambda _pid: "pkg_alias",
-        )
-        self.assertTrue(any(alias in e for e in errors))
-        self.assertTrue(any(f"parked loader '{stub}'" in e for e in errors))
-
-    def test_named_standalone_gguf_requires_file_path(self) -> None:
-        packages = {
-            "named_gguf": {
-                "required_files": ["Example/model-q8_0.gguf"],
-            },
-            "default_gguf": {
-                "required_files": ["model.gguf"],
-            },
-        }
-        catalog = {
-            "models": [
-                {
-                    "id": "bad",
-                    "download_id": "named_gguf",
-                    "path": "models/Example",
-                },
-                {
-                    "id": "good",
-                    "download_id": "named_gguf",
-                    "path": "models/Example/model-q8_0.gguf",
-                },
-                {
-                    "id": "directory-compatible",
-                    "download_id": "default_gguf",
-                    "path": "models/Default",
-                },
-            ],
-        }
-        errors = check_webui_model_paths(
-            catalog=catalog,
-            packages_by_id=packages,
-        )
-        self.assertEqual(len(errors), 1)
-        self.assertIn("webui model 'bad'", errors[0])
+        families = loader_families_from_json({
+            "schema_version": 1,
+            "loaders": {"a": {"tasks": {}}, "b": {"tasks": {}}},
+        })
+        self.assertEqual(families, {"a", "b"})
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cmake", type=Path, default=CMAKE_PATH, help="Path to top-level CMakeLists.txt")
+    parser.add_argument("--registry", type=Path, default=REGISTRY_PATH, help="Path to registry.cpp")
+    parser.add_argument("--specs-dir", type=Path, default=SPECS_DIR, help="Directory containing model spec JSON files")
     parser.add_argument(
-        "--registry",
+        "--loader-json",
         type=Path,
-        default=REGISTRY_PATH,
-        help="Path to registry.cpp",
+        default=None,
+        help="Optional audiocpp_cli --list-loaders --json output. Use '-' to read stdin.",
     )
-    parser.add_argument(
-        "--skip-readme",
-        action="store_true",
-        help="Skip package-table cross-check",
-    )
-    parser.add_argument(
-        "--self-test",
-        action="store_true",
-        help="Run built-in unit tests and exit",
-    )
+    parser.add_argument("--self-test", action="store_true", help="Run built-in unit tests and exit")
     args = parser.parse_args()
 
     if args.self_test:
@@ -370,79 +261,60 @@ def main() -> int:
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if result.wasSuccessful() else 1
 
-    if not args.registry.is_file():
-        print(f"error: registry not found: {args.registry}", file=sys.stderr)
-        return 2
-    if not MODEL_MANAGER_PATH.is_file():
-        print(f"error: model manager not found: {MODEL_MANAGER_PATH}", file=sys.stderr)
-        return 2
-
-    sys.path.insert(0, str(MODEL_MANAGER_PATH.parent))
-    import model_manager as mm  # noqa: E402
-
-    active, commented = parse_registry_loaders(args.registry.read_text(encoding="utf-8"))
-    if not active:
-        print("error: no active loaders parsed from registry.cpp", file=sys.stderr)
-        return 2
-
-    errors, warnings = check_catalog(
-        active=active,
-        commented=commented,
-        packages=list(mm.CATALOG),
-        package_payload=mm.package_payload,
-        default_family_from_package_id=mm._default_family_from_package_id,
-    )
-    package_payloads = {
-        str(payload["id"]): payload
-        for package in mm.CATALOG
-        for payload in (mm.package_payload(package),)
-    }
-    if not WEBUI_CATALOG_PATH.is_file():
-        errors.append(f"WebUI catalog not found: {WEBUI_CATALOG_PATH}")
-    else:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if args.loader_json is not None:
         try:
-            webui_catalog = json.loads(WEBUI_CATALOG_PATH.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            errors.append(f"failed to read WebUI catalog: {error}")
-        else:
-            errors.extend(
-                check_webui_model_paths(
-                    catalog=webui_catalog,
-                    packages_by_id=package_payloads,
-                )
-            )
+            loader_text = sys.stdin.read() if str(args.loader_json) == "-" else args.loader_json.read_text(encoding="utf-8")
+            active_loaders = loader_families_from_json(json.loads(loader_text))
+            commented_loaders: set[str] = set()
+        except Exception as exc:
+            print(f"error: failed to read loader JSON: {exc}", file=sys.stderr)
+            return 2
+    else:
+        if not args.cmake.is_file():
+            print(f"error: CMakeLists.txt not found: {args.cmake}", file=sys.stderr)
+            return 2
+        if not args.registry.is_file():
+            print(f"error: registry not found: {args.registry}", file=sys.stderr)
+            return 2
+        active_loaders, commented_loaders = parse_declared_loaders(
+            args.cmake.read_text(encoding="utf-8"),
+            args.registry.read_text(encoding="utf-8"),
+        )
+    if not active_loaders:
+        print("error: no active loaders found", file=sys.stderr)
+        return 2
 
-    if not args.skip_readme:
-        if not PACKAGE_TABLE_PATH.is_file():
-            errors.append(f"package table doc not found: {PACKAGE_TABLE_PATH}")
-        else:
-            table_errors, table_warnings = check_package_table_doc(
-                table_text=PACKAGE_TABLE_PATH.read_text(encoding="utf-8"),
-                packages=list(mm.CATALOG),
-                package_payload=mm.package_payload,
-            )
-            errors.extend(table_errors)
-            warnings.extend(table_warnings)
+    specs_by_family, spec_packages, spec_errors = load_spec_packages(args.specs_dir)
+    manager_packages, manager_errors = load_manager_packages(args.specs_dir)
+    errors.extend(spec_errors)
+    errors.extend(manager_errors)
+    errors.extend(check_loader_spec_sync(active_loaders, specs_by_family))
+    manager_sync_errors, manager_sync_warnings = check_manager_sync(spec_packages, manager_packages)
+    errors.extend(manager_sync_errors)
+    warnings.extend(manager_sync_warnings)
 
     print(
-        f"active_loaders={len(active)} commented_loaders={len(commented)} "
-        f"catalog_packages={len(mm.CATALOG)}"
+        f"active_loaders={len(active_loaders)} commented_loaders={len(commented_loaders)} "
+        f"specs={len(specs_by_family)} packages={len(spec_packages)} "
+        f"manager_packages={len(manager_packages)}"
     )
     for warning in warnings:
         print(f"warning: {warning}")
     if errors:
-        print("loader/catalog sync failed:", file=sys.stderr)
+        print("loader/spec sync failed:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         print(
-            "\nFix: register the loader in registry.cpp (with sources in-tree), "
-            "or mark the package UnsupportedSource / update docs/model_manager.md. See "
-            "docs/maintainers/loader_and_catalog.md",
+            "\nFix: keep model_specs/*.json, model_manager_v2.py, registered loaders, "
+            "and published default GGUF packages aligned. Schema-level validation "
+            "belongs to the typed model-spec validator, and WebUI placement is checked separately.",
             file=sys.stderr,
         )
         return 1
 
-    print("ok: installable catalog families match registered loaders")
+    print("ok: runtime loaders, model_specs, and model_manager_v2 are in sync")
     return 0
 
 

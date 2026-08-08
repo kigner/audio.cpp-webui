@@ -8,9 +8,11 @@
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/streaming_conv_modules.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace engine::modules::binding {
@@ -290,6 +292,34 @@ LinearWeights linear_from_source(
     bool use_bias) {
     LinearWeights weights;
     weights.weight = store.load_tensor(source, prefix + ".weight", storage_type, {out_features, in_features});
+    if (use_bias) {
+        weights.bias = store.load_f32_tensor(source, prefix + ".bias", {out_features});
+    }
+    return weights;
+}
+
+template <typename Store>
+LinearWeights hf_conv1d_linear_from_source(
+    Store & store,
+    const assets::TensorSource & source,
+    const std::string & prefix,
+    assets::TensorStorageType storage_type,
+    int64_t in_features,
+    int64_t out_features,
+    bool use_bias) {
+    const auto source_weight = source.require_f32(prefix + ".weight", {in_features, out_features});
+    std::vector<float> transposed(static_cast<std::size_t>(out_features * in_features));
+    for (int64_t in = 0; in < in_features; ++in) {
+        for (int64_t out = 0; out < out_features; ++out) {
+            transposed[static_cast<std::size_t>(out * in_features + in)] =
+                source_weight[static_cast<std::size_t>(in * out_features + out)];
+        }
+    }
+    LinearWeights weights;
+    weights.weight = store.make_from_f32(
+        core::TensorShape::from_dims({out_features, in_features}),
+        storage_type,
+        std::move(transposed));
     if (use_bias) {
         weights.bias = store.load_f32_tensor(source, prefix + ".bias", {out_features});
     }

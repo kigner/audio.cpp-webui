@@ -7,6 +7,7 @@ namespace engine::text {
 
 enum class ChineseTextNormalizationTarget {
     IndexTTS,
+    Confucius4TTS,
 };
 
 class ChineseTextNormalizer {

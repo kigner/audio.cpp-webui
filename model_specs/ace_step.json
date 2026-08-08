@@ -1,5 +1,100 @@
 {
   "family": "ace_step",
+  "display_name": "ACE-Step",
+  "description": "Open-source ACE-Step 1.5 music generation model for text-to-music and lyrics-to-song workflows across 50+ languages, with editing routes such as cover generation, repainting, continuation, stem extraction, and vocal-to-BGM conversion.",
+  "category": "audio_generation",
+  "status": "supported",
+  "tasks": [
+    "music",
+    "edit"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "50+ languages"
+  ],
+  "capabilities": {
+    "music": [
+      "lyrics"
+    ],
+    "edit": [
+      "prompt_editing"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "ace_step_turbo_bf16",
+    "tags": [
+      "Music",
+      "Edit",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/ace_step.md",
+      "docs/music_generation.md",
+      "docs/gguf.md"
+    ]
+  },
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
+  "packages": [
+    {
+      "id": "ace_step_turbo_q8_0",
+      "display_name": "ACE-Step 1.5 Turbo Q8_0 GGUF",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF"
+    },
+    {
+      "id": "ace_step_turbo_bf16",
+      "display_name": "ACE-Step 1.5 Turbo BF16 GGUF",
+      "default": true,
+      "format": "gguf",
+      "precision": "bf16",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-bf16.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF"
+    },
+    {
+      "id": "ace_step_base_q8_0",
+      "display_name": "ACE-Step 1.5 Base Q8_0 GGUF",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/base/ace-step-1.5-base-q8_0.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF"
+    },
+    {
+      "id": "ace_step_base_bf16",
+      "display_name": "ACE-Step 1.5 Base BF16 GGUF",
+      "format": "gguf",
+      "precision": "bf16",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/base/ace-step-1.5-base-bf16.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF"
+    }
+  ],
   "sources": [
     {
       "format": "gguf",

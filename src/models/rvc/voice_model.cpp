@@ -653,7 +653,10 @@ public:
         }
         PickleReader reader(bytes_.data() + pickle->offset, pickle->size);
         auto root = reader.parse();
-        version_ = require_string_metadata(root, "version");
+        if (const auto * version = dict_find(root, "version");
+            version != nullptr && version->kind == PickleValue::Kind::Str) {
+            version_ = version->text;
+        }
         has_f0_ = require_int_metadata(root, "f0") != 0;
         sample_rate_ = sample_rate_from_checkpoint(root);
         PickleValue * weights = dict_find(root, "weight");
@@ -686,6 +689,20 @@ public:
             }
             record.byte_offset = storage->second.offset + storage_offset;
             records_.emplace(std::move(key.text), std::move(record));
+        }
+        if (version_.empty()) {
+            const auto phone = records_.find("enc_p.emb_phone.weight");
+            if (phone == records_.end() || phone->second.shape.size() != 2) {
+                throw std::runtime_error("RVC voice checkpoint cannot infer version from enc_p.emb_phone.weight");
+            }
+            if (phone->second.shape[1] == 256) {
+                version_ = "v1";
+            } else if (phone->second.shape[1] == 768) {
+                version_ = "v2";
+            } else {
+                throw std::runtime_error("RVC voice checkpoint has unsupported phone embedding width: " +
+                                         path_.string());
+            }
         }
     }
 

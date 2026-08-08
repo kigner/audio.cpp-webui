@@ -21,9 +21,6 @@ public:
     AceStepLatents generate_latents(
         const AceStepDiffusionConditioning & conditioning,
         const AceStepGenerationOptions & options) const;
-    AceStepLatents generate_latents_flow_edit(
-        const AceStepDiffusionConditioning & conditioning,
-        const AceStepGenerationOptions & options) const;
     void release_graph_workspace() const;
 
 private:

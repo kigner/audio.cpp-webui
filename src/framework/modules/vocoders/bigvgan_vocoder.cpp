@@ -2,6 +2,8 @@
 
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
+#include "engine/framework/modules/conv_modules.h"
+#include "engine/framework/modules/streaming_conv_modules.h"
 
 #include <algorithm>
 #include <cmath>
@@ -159,6 +161,33 @@ Conv1dWeights load_weight_norm_conv1d(
     return out;
 }
 
+Conv1dWeights load_direct_conv1d(
+    core::BackendWeightStore & store,
+    const assets::TensorSource & source,
+    const std::string & prefix,
+    int64_t out_channels,
+    int64_t in_channels,
+    int64_t kernel,
+    int64_t stride,
+    int64_t padding,
+    int64_t dilation,
+    bool use_bias,
+    assets::TensorStorageType storage_type) {
+    Conv1dWeights out;
+    out.in_channels = in_channels;
+    out.out_channels = out_channels;
+    out.kernel = kernel;
+    out.stride = stride;
+    out.padding = padding;
+    out.dilation = dilation;
+    out.use_bias = use_bias;
+    out.weight = store.load_tensor(source, prefix + ".weight", storage_type, {out_channels, in_channels, kernel});
+    if (use_bias) {
+        out.bias = store.load_tensor(source, prefix + ".bias", assets::TensorStorageType::F32, {out_channels});
+    }
+    return out;
+}
+
 ConvTranspose1dWeights load_weight_norm_conv_transpose1d(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
@@ -194,6 +223,35 @@ ConvTranspose1dWeights load_weight_norm_conv_transpose1d(
     return out;
 }
 
+ConvTranspose1dWeights load_direct_conv_transpose1d(
+    core::BackendWeightStore & store,
+    const assets::TensorSource & source,
+    const std::string & prefix,
+    int64_t in_channels,
+    int64_t out_channels,
+    int64_t kernel,
+    int64_t stride,
+    int64_t padding,
+    bool use_bias) {
+    ConvTranspose1dWeights out;
+    out.in_channels = in_channels;
+    out.out_channels = out_channels;
+    out.kernel = kernel;
+    out.stride = stride;
+    out.padding = padding;
+    out.use_bias = use_bias;
+    out.transpose_weight = store.load_tensor(
+        source,
+        prefix + ".weight",
+        assets::TensorStorageType::F32,
+        {in_channels, out_channels, kernel});
+    out.conv1d_weight = *out.transpose_weight;
+    if (use_bias) {
+        out.bias = store.load_tensor(source, prefix + ".bias", assets::TensorStorageType::F32, {out_channels});
+    }
+    return out;
+}
+
 ActivationWeights load_activation(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
@@ -226,6 +284,18 @@ ActivationWeights load_activation(
         assets::TensorStorageType::F32,
         expand_activation_filter_2d(down_filter, channels));
     return out;
+}
+
+std::string activation_prefix(
+    const std::string & prefix,
+    int activation,
+    BigVganActivationLayout layout) {
+    if (layout == BigVganActivationLayout::InterleavedPairs) {
+        return prefix + ".activations." + std::to_string(activation);
+    }
+    const char * group = activation < 3 ? "acts1" : "acts2";
+    const int layer = activation < 3 ? activation : activation - 3;
+    return prefix + "." + group + "." + std::to_string(layer);
 }
 
 ResBlockWeights load_resblock(
@@ -274,7 +344,60 @@ ResBlockWeights load_resblock(
         out.activations.push_back(load_activation(
             store,
             source,
-            prefix + ".activations." + std::to_string(activation),
+            activation_prefix(prefix, activation, BigVganActivationLayout::InterleavedPairs),
+            channels,
+            storage_type));
+    }
+    return out;
+}
+
+ResBlockWeights load_direct_resblock(
+    core::BackendWeightStore & store,
+    const assets::TensorSource & source,
+    const std::string & prefix,
+    int64_t channels,
+    int64_t kernel,
+    assets::TensorStorageType storage_type,
+    BigVganActivationLayout activation_layout) {
+    ResBlockWeights out;
+    out.convs1.reserve(3);
+    out.convs2.reserve(3);
+    out.activations.reserve(6);
+    const int dilations[3] = {1, 3, 5};
+    for (int layer = 0; layer < 3; ++layer) {
+        const int dilation = dilations[layer];
+        out.convs1.push_back(load_direct_conv1d(
+            store,
+            source,
+            prefix + ".convs1." + std::to_string(layer),
+            channels,
+            channels,
+            kernel,
+            1,
+            static_cast<int>((kernel * dilation - dilation) / 2),
+            dilation,
+            true,
+            storage_type));
+    }
+    for (int layer = 0; layer < 3; ++layer) {
+        out.convs2.push_back(load_direct_conv1d(
+            store,
+            source,
+            prefix + ".convs2." + std::to_string(layer),
+            channels,
+            channels,
+            kernel,
+            1,
+            static_cast<int>((kernel - 1) / 2),
+            1,
+            true,
+            storage_type));
+    }
+    for (int activation = 0; activation < 6; ++activation) {
+        out.activations.push_back(load_activation(
+            store,
+            source,
+            activation_prefix(prefix, activation, activation_layout),
             channels,
             storage_type));
     }
@@ -369,9 +492,26 @@ ggml_tensor * conv1d(
 
 ggml_tensor * conv_transpose1d(
     ggml_context * ctx,
+    core::BackendType backend_type,
     ggml_tensor * x,
     const ConvTranspose1dWeights & conv,
     const std::string & name) {
+    if (conv.transpose_weight.has_value()) {
+        core::ModuleBuildContext build_ctx{ctx, name.c_str(), backend_type};
+        auto * input = ggml_reshape_3d(ctx, contiguous_if_needed(ctx, x), x->ne[0], x->ne[1], 1);
+        const auto input_value =
+            core::wrap_tensor(input, core::TensorShape::from_dims({1, conv.in_channels, x->ne[0]}), GGML_TYPE_F32);
+        const auto module = ConvTranspose1dModule({
+            conv.in_channels,
+            conv.out_channels,
+            conv.kernel,
+            static_cast<int>(conv.stride),
+            static_cast<int>(conv.padding),
+            1,
+            conv.use_bias});
+        const auto output = module.build(build_ctx, input_value, {*conv.transpose_weight, conv.bias});
+        return named(ggml_reshape_2d(ctx, output.tensor, output.shape.dims[2], output.shape.dims[1]), name.c_str());
+    }
     ggml_tensor * x3 = ggml_reshape_3d(ctx, contiguous_if_needed(ctx, x), 1, x->ne[0], x->ne[1]);
     ggml_tensor * zero3 = ggml_scale(ctx, x3, 0.0F);
     ggml_tensor * interleaved3 = x3;
@@ -449,16 +589,32 @@ ggml_tensor * depthwise_conv_filter(
 
 ggml_tensor * activation1d(
     ggml_context * ctx,
+    core::BackendType backend_type,
     ggml_tensor * x,
     const ActivationWeights & weights,
-    const std::string & name) {
+    const std::string & name,
+    bool use_depthwise_transpose_module) {
     const int64_t pad = kBigVganActivationKernel / kBigVganActivationRatio - 1;
     const int64_t pad_left =
         pad * kBigVganActivationRatio + (kBigVganActivationKernel - kBigVganActivationRatio) / 2;
     const int64_t pad_right =
         pad * kBigVganActivationRatio + (kBigVganActivationKernel - kBigVganActivationRatio + 1) / 2;
     ggml_tensor * up = replicate_pad(ctx, x, pad, pad);
-    up = depthwise_conv_transpose_filter(ctx, up, weights.up_filter, kBigVganActivationRatio);
+    if (use_depthwise_transpose_module) {
+        core::ModuleBuildContext build_ctx{ctx, name.c_str(), backend_type};
+        const auto up_input = core::wrap_tensor(
+            up,
+            core::TensorShape::from_dims({up->ne[1], up->ne[0]}),
+            GGML_TYPE_F32);
+        up = DepthwiseConvTranspose1dModule({
+            up->ne[1],
+            weights.up_filter.shape.dims[3],
+            static_cast<int>(kBigVganActivationRatio),
+            false,
+        }).build(build_ctx, up_input, {weights.up_filter, std::nullopt}).tensor;
+    } else {
+        up = depthwise_conv_transpose_filter(ctx, up, weights.up_filter, kBigVganActivationRatio);
+    }
     up = ggml_scale(ctx, up, static_cast<float>(kBigVganActivationRatio));
     up = slice_frames(ctx, up, pad_left, up->ne[0] - pad_left - pad_right);
 
@@ -476,37 +632,57 @@ ggml_tensor * activation1d(
 
 ggml_tensor * amp_block(
     ggml_context * ctx,
+    core::BackendType backend_type,
     ggml_tensor * x,
     const ResBlockWeights & block,
-    const std::string & name) {
+    const std::string & name,
+    BigVganActivationLayout activation_layout,
+    bool use_depthwise_transpose_module) {
     for (int layer = 0; layer < 3; ++layer) {
-        ggml_tensor * xt = activation1d(ctx, x, block.activations[static_cast<size_t>(2 * layer)], name + ".act1." + std::to_string(layer));
+        const int act1_index = activation_layout == BigVganActivationLayout::InterleavedPairs ? 2 * layer : layer;
+        const int act2_index = activation_layout == BigVganActivationLayout::InterleavedPairs ? 2 * layer + 1 : layer + 3;
+        ggml_tensor * xt = activation1d(ctx, backend_type, x, block.activations[static_cast<size_t>(act1_index)], name + ".act1." + std::to_string(layer), use_depthwise_transpose_module);
         xt = conv1d(ctx, xt, block.convs1[static_cast<size_t>(layer)], name + ".convs1." + std::to_string(layer));
-        xt = activation1d(ctx, xt, block.activations[static_cast<size_t>(2 * layer + 1)], name + ".act2." + std::to_string(layer));
+        xt = activation1d(ctx, backend_type, xt, block.activations[static_cast<size_t>(act2_index)], name + ".act2." + std::to_string(layer), use_depthwise_transpose_module);
         xt = conv1d(ctx, xt, block.convs2[static_cast<size_t>(layer)], name + ".convs2." + std::to_string(layer));
         x = named(ggml_add(ctx, x, xt), (name + ".residual." + std::to_string(layer)).c_str());
     }
     return x;
 }
 
-ggml_tensor * build_bigvgan_graph(
+ggml_tensor * build_bigvgan_graph_impl(
     ggml_context * ctx,
+    core::BackendType backend_type,
     const BigVganVocoderWeights & weights,
-    ggml_tensor * mel) {
+    ggml_tensor * mel,
+    const BigVganGraphOptions & options) {
     ggml_tensor * x = conv1d(ctx, mel, weights.conv_pre, "conv_pre");
     for (size_t up_index = 0; up_index < weights.ups.size(); ++up_index) {
-        x = conv_transpose1d(ctx, x, weights.ups[up_index], "ups." + std::to_string(up_index) + ".0");
+        const std::string upsample_name = weights.ups[up_index].transpose_weight.has_value()
+            ? "ups." + std::to_string(up_index)
+            : "ups." + std::to_string(up_index) + ".0";
+        x = conv_transpose1d(ctx, backend_type, x, weights.ups[up_index], upsample_name);
         ggml_tensor * sum = nullptr;
         for (int64_t kernel_index = 0; kernel_index < kBigVganNumKernels; ++kernel_index) {
             const size_t block_index = up_index * static_cast<size_t>(kBigVganNumKernels) + static_cast<size_t>(kernel_index);
-            ggml_tensor * block = amp_block(ctx, x, weights.resblocks[block_index], "resblocks." + std::to_string(block_index));
+            ggml_tensor * block = amp_block(
+                ctx,
+                backend_type,
+                x,
+                weights.resblocks[block_index],
+                "resblocks." + std::to_string(block_index),
+                options.activation_layout,
+                options.use_depthwise_transpose_module);
             sum = sum == nullptr ? block : ggml_add(ctx, sum, block);
         }
         x = named(ggml_scale(ctx, sum, 1.0F / static_cast<float>(kBigVganNumKernels)), ("upsample." + std::to_string(up_index)).c_str());
     }
-    x = activation1d(ctx, x, weights.activation_post, "activation_post");
+    x = activation1d(ctx, backend_type, x, weights.activation_post, "activation_post", options.use_depthwise_transpose_module);
     x = conv1d(ctx, x, weights.conv_post, "conv_post");
-    return named(ggml_clamp(ctx, x, -1.0F, 1.0F), "waveform");
+    if (!options.apply_final_activation) {
+        return named(x, "waveform");
+    }
+    return named(options.use_tanh_at_final ? ggml_tanh(ctx, x) : ggml_clamp(ctx, x, -1.0F, 1.0F), "waveform");
 }
 
 class BigVganRunner {
@@ -576,7 +752,7 @@ private:
             throw std::runtime_error("failed to initialize BigVGAN graph context");
         }
         mel_ = named(ggml_new_tensor_2d(ggml_, GGML_TYPE_F32, frames, weights_.config.num_mels), "mel");
-        output_ = build_bigvgan_graph(ggml_, weights_, mel_);
+        output_ = build_bigvgan_graph_impl(ggml_, weights_.execution_context->backend_type(), weights_, mel_, {});
         graph_ = ggml_new_graph_custom(ggml_, 262144, false);
         ggml_build_forward_expand(graph_, output_);
         gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(weights_.execution_context->backend()));
@@ -601,6 +777,85 @@ private:
 };
 
 }  // namespace
+
+BigVganVocoderWeights load_direct_bigvgan_from_tensor_source(
+    core::BackendWeightStore & store,
+    const assets::TensorSource & source,
+    const std::string & prefix,
+    BigVganVocoderConfig config,
+    BigVganActivationLayout activation_layout) {
+    validate_config(config);
+    BigVganVocoderWeights weights;
+    weights.config = std::move(config);
+    weights.source_path = source.source_path();
+    weights.conv_pre = load_direct_conv1d(
+        store,
+        source,
+        prefix + ".conv_pre",
+        weights.config.upsample_initial_channel,
+        weights.config.num_mels,
+        7,
+        1,
+        3,
+        1,
+        true,
+        weights.config.weight_storage_type);
+    const int64_t upsample_count = static_cast<int64_t>(weights.config.upsample_rates.size());
+    weights.ups.reserve(static_cast<size_t>(upsample_count));
+    weights.resblocks.reserve(static_cast<size_t>(upsample_count * kBigVganNumKernels));
+    for (int64_t up_index = 0; up_index < upsample_count; ++up_index) {
+        const int64_t in_channels = weights.config.upsample_initial_channel / (int64_t{1} << up_index);
+        const int64_t out_channels = weights.config.upsample_initial_channel / (int64_t{1} << (up_index + 1));
+        const int64_t kernel = weights.config.upsample_kernel_sizes[static_cast<size_t>(up_index)];
+        const int64_t stride = weights.config.upsample_rates[static_cast<size_t>(up_index)];
+        weights.ups.push_back(load_direct_conv_transpose1d(
+            store,
+            source,
+            prefix + ".ups." + std::to_string(up_index),
+            in_channels,
+            out_channels,
+            kernel,
+            stride,
+            (kernel - stride) / 2,
+            true));
+        for (int64_t kernel_index = 0; kernel_index < kBigVganNumKernels; ++kernel_index) {
+            const int64_t block_index = up_index * kBigVganNumKernels + kernel_index;
+            weights.resblocks.push_back(load_direct_resblock(
+                store,
+                source,
+                prefix + ".resblocks." + std::to_string(block_index),
+                out_channels,
+                weights.config.resblock_kernel_sizes[static_cast<size_t>(kernel_index)],
+                weights.config.weight_storage_type,
+                activation_layout));
+        }
+    }
+    const int64_t post_channels = weights.config.upsample_initial_channel / (int64_t{1} << upsample_count);
+    weights.activation_post =
+        load_activation(store, source, prefix + ".act_post", post_channels, weights.config.weight_storage_type);
+    weights.conv_post = load_direct_conv1d(
+        store,
+        source,
+        prefix + ".conv_post",
+        2,
+        post_channels,
+        7,
+        1,
+        3,
+        1,
+        false,
+        weights.config.weight_storage_type);
+    return weights;
+}
+
+ggml_tensor * build_bigvgan_graph(
+    ggml_context * ctx,
+    core::BackendType backend_type,
+    const BigVganVocoderWeights & weights,
+    ggml_tensor * mel,
+    const BigVganGraphOptions & options) {
+    return build_bigvgan_graph_impl(ctx, backend_type, weights, mel, options);
+}
 
 struct BigVganVocoderComponent::State {
     std::unique_ptr<BigVganRunner> runner;

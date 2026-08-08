@@ -1,10 +1,10 @@
 #include "engine/models/index_tts2/tokenizer_text.h"
 
 #include "engine/framework/text/chinese_normalization.h"
+#include "engine/framework/text/text_normalization.h"
 
 #include <algorithm>
 #include <cctype>
-#include <regex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -12,18 +12,6 @@
 
 namespace engine::models::index_tts2 {
 namespace {
-
-std::string replace_all(std::string text, const std::string & from, const std::string & to) {
-    if (from.empty()) {
-        return text;
-    }
-    size_t pos = 0;
-    while ((pos = text.find(from, pos)) != std::string::npos) {
-        text.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-    return text;
-}
 
 bool contains_token(
     const std::vector<std::string> & values,
@@ -234,54 +222,11 @@ IndexTTS2TextTokenizer::IndexTTS2TextTokenizer(std::shared_ptr<const IndexTTS2As
 }
 
 std::string IndexTTS2TextTokenizer::normalize_english(const std::string & text) const {
-    std::string out = std::regex_replace(
-        text,
-        std::regex(R"((what|where|who|which|how|t?here|it|s?he|that|this)'s)", std::regex_constants::icase),
-        "$1 is");
-    const std::vector<std::pair<std::string, std::string>> replacements = {
-        {"：", ","},
-        {"；", ","},
-        {";", ","},
-        {"，", ","},
-        {"。", "."},
-        {"！", "!"},
-        {"？", "?"},
-        {"\n", " "},
-        {"·", "-"},
-        {"、", ","},
-        {"...", "…"},
-        {",,,", "…"},
-        {"，，，", "…"},
-        {"……", "…"},
-        {"“", "'"},
-        {"”", "'"},
-        {"\"", "'"},
-        {"‘", "'"},
-        {"’", "'"},
-        {"（", "'"},
-        {"）", "'"},
-        {"(", "'"},
-        {")", "'"},
-        {"《", "'"},
-        {"》", "'"},
-        {"【", "'"},
-        {"】", "'"},
-        {"[", "'"},
-        {"]", "'"},
-        {"—", "-"},
-        {"～", "-"},
-        {"~", "-"},
-        {"「", "'"},
-        {"」", "'"},
-        {":", ","},
-    };
-    for (const auto & [from, to] : replacements) {
-        out = replace_all(std::move(out), from, to);
-    }
-    for (char & ch : out) {
-        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-    }
-    return out;
+    engine::text::EnglishTextNormalizationOptions options;
+    options.expand_common_contractions = true;
+    options.index_tts_punctuation = true;
+    options.uppercase_ascii = true;
+    return engine::text::normalize_english_text(text, options);
 }
 
 std::string IndexTTS2TextTokenizer::normalize_chinese(const std::string & text) const {

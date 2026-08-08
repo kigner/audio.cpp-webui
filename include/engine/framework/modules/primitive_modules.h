@@ -59,6 +59,18 @@ public:
     static const core::ModuleSchema & static_schema() noexcept;
 };
 
+class ScaledBypassModule {
+public:
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & original,
+        const core::TensorValue & transformed,
+        const core::TensorValue & channel_scale) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+};
+
 struct ReduceConfig {
     int axis = -1;
 };

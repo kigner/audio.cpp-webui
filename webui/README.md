@@ -1,381 +1,372 @@
-# audio.cpp WebUI 启动脚本说明
+# audio.cpp WebUI Launcher Guide
 
-仓库根目录下的一组 `.bat` 脚本，覆盖 audio.cpp 的三种本地运行方式：命令行单句合成、
-HTTP API 服务、图形界面。所有脚本都可以**双击运行**，也可以在命令行/PowerShell
-里带参数调用。
+> **语言 / Language:** **English** · [中文](README.zh.md)
 
-| 脚本 | 作用 | 典型命令 |
+The `webui/` directory holds the Python dependencies, launch scripts, and model-download wrappers needed to run the WebUI.
+The launch scripts can be **double-clicked** or invoked from a command line / PowerShell.
+
+| Script | Purpose | Typical command |
 |---|---|---|
-| `run_cli_tts.bat` | 单句/单次命令行 TTS | `run_cli_tts.bat qwen3-tts "你好世界"` |
-| `run_server.bat` | OpenAI 兼容 HTTP API 服务 | `run_server.bat qwen3-tts 8088` |
-| `run_server_asr.bat` | Qwen3-ASR 服务（`run_server.bat` 的 ASR 预设） | `run_server_asr.bat`（默认 :8081） |
-| `run_webui.bat` | Gradio 网页界面（按需起服务） | `run_webui.bat` |
-| `_env.bat` | 共享环境探测（**不直接运行**） | 被其它脚本 `call` |
+| `webui/run_webui.bat` | Gradio web interface (starts the server on demand) | `webui\run_webui.bat` |
+| `webui/run_webui.sh` | Linux / macOS WebUI launcher | `./webui/run_webui.sh` |
+| `webui/_env.bat` | WebUI environment detection (**do not run directly**) | `call`ed by `run_webui.bat` |
 
-> 长文本合成不再需要单独脚本（原 `run_tts_long.bat` 已移除）：WebUI 的 TTS 标签页会自动
-> 把长文本分段（VibeVoice 600 字/段，其它模型 1000 字/段），逐段合成后拼接成一个 wav。
-> 命令行等价物是 `audiocpp_cli` 的 `--batch-text-file <txt> --batch-merge-audio concat`。
+## Windows
+
+From the repository root, create a Python environment, install the WebUI dependencies, then launch the WebUI:
+
+```bat
+python -m venv venv && .\venv\Scripts\python.exe -m pip install -r webui\requirements.txt
+webui\run_webui.bat                REM UI -> http://127.0.0.1:7860
+```
+
+## Linux / macOS
+
+On Linux / macOS, use `webui/run_webui.sh`:
+
+```bash
+python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
+./webui/run_webui.sh                # UI -> http://127.0.0.1:7860
+```
+
+- The Python interpreter is probed in order: `$AUDIOCPP_PYTHON`, `venv/bin/python`, `.venv/bin/python`,
+  `webui/venv/bin/python`, `webui/.venv/bin/python`, `python3`, `python`.
+- The backend (cuda/cpu) is auto-detected: Windows checks `nvcuda.dll`, other platforms check `nvidia-smi`,
+  then confirms that the matching server build exists; override with `AUDIOCPP_BACKEND=gpu|cpu|metal`.
+- The binaries can come from a portable bundle's `gpu/`, `metal/`, or `cpu/` directories, or from a source build's
+  `build/<os>-<backend>-<type>/bin` (such as `build/linux-cuda-release/bin` or `build/macos-metal-release/bin`).
+  A plain `cmake -B build` producing `build/bin` is also recognized — when the directory name carries no
+  backend information, the backend is inferred from `ENGINE_ENABLE_METAL`, `GGML_METAL`, or `GGML_CUDA` in
+  `CMakeCache.txt`.
+- The Windows-only packages in `webui/requirements.txt` (pywin32, plus the pythonnet/pywebview used by
+  SpeakType) are marked with `sys_platform`, so they install cleanly on Linux too.
+
+## UI language / 界面语言
+
+The interface supports **English / 中文 / 中文繁體**, defaulting to English, and the language dropdown in the
+top-right corner can switch at any time.
+The choice is saved to `webui/configs/ui_language.json` and reused on the next launch.
+
+The environment variable `AUDIOCPP_LANG` (`en` | `zh` | `zh-Hant`, and forms like `zh_TW`, `zh-CN` are also
+accepted) only sets the default language **when no choice has been saved yet** — otherwise it would silently
+override the user's explicit in-UI selection.
+To hand control back to the environment variable, just delete `webui/configs/ui_language.json`.
+
+> Traditional Chinese is a **glyph-level** conversion from Simplified performed by OpenCC
+> (`opencc-python-reimplemented`); it does not substitute Taiwan/Hong Kong vocabulary
+> (e.g. `软件` → `軟件`, not `軟體`).
+
+> Long-text synthesis no longer needs a separate script (the old `run_tts_long.bat` has been removed): the
+> WebUI's TTS tab automatically splits long text into chunks (600 chars/chunk for VibeVoice, 1000 chars/chunk
+> for other models), synthesizes each chunk, and concatenates them into a single wav.
+> The command-line equivalent is `audiocpp_cli`'s `--batch-text-file <txt> --batch-merge-audio concat`.
 >
-> 反过来，**VibeVoice 对过短文本（约 <40 个汉字）会整段胡言乱语**——模型特性，与音色/
-> 参数/seed 无关，WebUI 会直接拦截并提示加长文本或改用其它模型；分段后的过短尾段也会
-> 自动并回前一段。短句测试请用 `qwen3-tts` / `voxcpm2` / `pocket-tts`。
+> Conversely, **VibeVoice produces garbled output for very short text (roughly <40 Chinese characters)** — a
+> model characteristic, independent of voice / parameters / seed. The WebUI intercepts this directly and prompts
+> you to lengthen the text or switch models; an over-short trailing chunk left by splitting is also merged back
+> into the previous chunk automatically. For short-sentence tests, use `qwen3-tts` / `voxcpm2` / `pocket-tts`.
 
 ---
 
-## 通用约定
+## General conventions
 
-- **模型用 catalog id 指定。** 两个合成脚本（cli / server）都用 `configs\models_catalog.json`
-  里的 **id** 来指定模型，脚本会自动查出它的 `family` / `task` / 绝对路径，你不用再手写这些。
-  当前已安装的 id：`qwen3-tts`、`qwen3-asr`、`vibevoice`、`omnivoice`、`pocket-tts`。
-  未安装的 id 会提示 “not installed”，可在 WebUI 里下载，或用
-  `python tools/model_manager.py install <download_id>` 安装（见 `models_catalog.json`）。
-- **后端自动选择：** 检测到 CUDA（NVIDIA 驱动）就用 GPU，否则回退 CPU。
-  想强制某个后端，设环境变量 `AUDIOCPP_BACKEND=gpu`（=cuda）或 `AUDIOCPP_BACKEND=cpu`。
-  CLI、server、WebUI 都遵循这一检测（无 N 卡的机器自动落到 CPU 版，速度较慢、部分大模型不实用）。
-- **路径基准：** 脚本内相对路径（如 `voice\demo_01_man.wav`、`output\xxx.wav`）都相对 `webui\` 目录。
-- **可执行文件来源：** 自动定位整合包 `..\audiocpp-portable`（内含 `cpu\ gpu\ models\`），
-  脚本被拷进整合包时也能自识别。
-
----
-
-## `_env.bat`（内部共享，不要直接运行）
-
-被其它脚本 `call`，负责一次性设置好公共变量（故意不用 `setlocal`，这样变量能带回调用方）：
-
-- `BUNDLE` — 整合包根目录（含 `cpu\ gpu\ models\`）
-- `HAS_CUDA` — 是否检测到 CUDA（`nvcuda.dll` 或 `nvidia-smi`）
-- `BACKEND` / `CLI_EXE` — 选定的后端（`cuda`/`cpu`）与对应的 `audiocpp_cli.exe`
-- `SERVER_EXE` — 按 `BACKEND` 选 `gpu\` 或 `cpu\` 的 `audiocpp_server.exe`（cpu 版缺失时回退 gpu 版）
-- `PY` — 带依赖的 Python（供 `run_webui.bat` 用）
-
-改动探测逻辑只需改这一个文件。
+- **Models are specified by catalog id.** The WebUI uses the **id** from `webui/configs/models_catalog.json`
+  to select a model, and automatically resolves its `family` / `task` / absolute path, so you never have to
+  write those by hand.
+  Currently installed ids: `qwen3-tts`, `qwen3-asr`, `vibevoice`, `omnivoice`, `pocket-tts`.
+  An uninstalled id shows "not installed"; you can download it in the WebUI, or install it with
+  `python webui/model_manager_webui.py install <download_id>` (the package comes from `model_specs/`).
+- **Automatic backend selection:** if CUDA (an NVIDIA driver) is detected, GPU is used; otherwise it falls back
+  to CPU. To force a backend, set `AUDIOCPP_BACKEND=gpu` (= cuda), `AUDIOCPP_BACKEND=cpu`, or
+  `AUDIOCPP_BACKEND=metal`.
+  The CLI, server, and WebUI all follow this detection (a machine without an NVIDIA GPU automatically drops to
+  the CPU build, which is slower and impractical for some large models).
+- **Path base:** relative paths inside the scripts (such as `voice\demo_01_man.wav`, `output\xxx.wav`) are all
+  relative to the `webui\` directory.
+- **Executable source:** the bundle `..\audiocpp-portable` (containing `cpu\ gpu\ models\`) is located
+  automatically, and the scripts self-locate even when copied into the bundle.
 
 ---
 
-## 1. `run_cli_tts.bat` — 命令行单次 TTS
+## `webui/_env.bat` (internal shared helper, do not run directly)
 
-一次加载模型、合成一句、输出一个 wav。适合快速测试或脚本化单次生成。
+`call`ed by the other scripts; it sets up the common variables once (deliberately not using `setlocal` so the
+variables carry back to the caller):
 
-```
-用法: run_cli_tts.bat [model_id] ["合成文本"] [voice_ref] [ref_text]
-```
+- `BUNDLE` — bundle root directory (contains `cpu\ gpu\ models\`)
+- `HAS_CUDA` — whether CUDA was detected (`nvcuda.dll` or `nvidia-smi`)
+- `BACKEND` / `CLI_EXE` — the selected backend (`cuda`/`cpu`) and its matching `audiocpp_cli.exe`
+- `SERVER_EXE` — `audiocpp_server.exe` from `gpu\` or `cpu\` per `BACKEND` (falls back to the gpu build when the cpu one is missing)
+- `PY` — the Python with dependencies (used by `webui/run_webui.bat`)
 
-| 位置参数 | 含义 | 默认 |
-|---|---|---|
-| 1 `model_id` | catalog 里的模型 id | `qwen3-tts` |
-| 2 `"文本"` | 要合成的文本（含空格务必加引号） | 一句英文示例 |
-| 3 `voice_ref` | 参考音色 wav（声音克隆用） | `voice\demo_01_man.wav` |
-| 4 `ref_text` | 参考音频对应的文本 | 示例台词 |
-
-- 输出固定到 `output\out_cli.wav`（可在脚本顶部改 `OUT`）。
-- 语言、`max-tokens`、`seed` 等也在脚本顶部可改。
-- 非声音克隆的模型可把 `VOICE_REF` 留空（脚本会自动不带 `--voice-ref`）。
-
-**示例**
-
-```bat
-run_cli_tts.bat qwen3-tts "Hello, this is audio dot cpp."
-run_cli_tts.bat qwen3-tts "换个音色" voice\demo_02_woman.wav "her reference line."
-set AUDIOCPP_BACKEND=cpu & run_cli_tts.bat qwen3-tts "强制用 CPU 跑"
-```
+To change the detection logic, you only need to edit this one file.
 
 ---
 
-## 2. `run_server.bat` — HTTP API 服务
+## `webui/run_webui.bat` — graphical interface
 
-启动一个 OpenAI 兼容的 HTTP 服务，供**其它应用**调用。后端自动检测：有 CUDA 用 GPU，
-否则用 CPU 版 server（CPU 下默认按物理核心数分配 ggml 线程，4 核以上再留 1 核给系统；
-速度较慢，部分大模型不实用）。
+Starts the Gradio web interface (`webui.py`); open **http://127.0.0.1:7860** in a browser.
 
-```
-用法: run_server.bat <model_id> [port] [device]
-```
+- **On-demand loading:** you do not need to start `audiocpp_server` first — when you select a model and click
+  "load" / "generate" in the UI, the WebUI automatically starts/switches the underlying `audiocpp_server`
+  (one model in VRAM at a time; switching models restarts it).
+- The UI lets you upload a reference voice, download uninstalled models, enter an HF token / proxy, and so on.
+- **"⬇️ Download" asks before it downloads.** It does not start anything: it reports what the download will cost —
+  size (read live from the Hugging Face repo listing, so it never goes stale), free space on `models/`, the
+  estimated VRAM, and any warnings — then shows **✅ Confirm download** / **✖️ Cancel**. Nothing is fetched until
+  you confirm, and changing the selected model withdraws the prompt. "📊 Progress" shows the same figures for a
+  model that has not been downloaded yet, if you want to check without arming anything.
+  The VRAM estimate is reported on the CPU backend too (labelled as such — the CPU backend runs in system RAM);
+  only the low-VRAM *warning* stays CPU-quiet, since there is no VRAM to fall short of. A download the `models/`
+  volume cannot hold is refused outright — no Confirm button is offered — and a fit that leaves under 20 GB free is
+  flagged but still allowed.
+  Sizes are unavailable for gated repos without a token; those download as before.
+- **While it runs**, progress is shown against the package total ("Downloaded 5.00 GB of 17.00 GB (29%)"), and the
+  low-VRAM and low-disk warnings are repeated on every refresh rather than scrolling away after the first one.
+  Disk is judged against the bytes still to fetch, so a healthy download does not drift into a false alarm as free
+  space drops. The VRAM warning stays on screen after the download finishes — it decides whether the model can be
+  run at all, not whether it can be fetched.
+- Backend is auto-detected (as above: GPU if CUDA is present, otherwise CPU); `AUDIOCPP_BACKEND=gpu|cpu|metal` forces it.
+  In CPU mode, the ggml thread count is set automatically from the **physical** core count — SMT/Hyper-Threading
+  siblings are not counted, and one core is left free above 4 — so a long run leaves the rest of the machine
+  usable. Filling every logical CPU is faster (~1.4x in a short CPU TTS run on an 8-core/16-thread 5800H); set
+  `AUDIOCPP_THREADS=N` if you want that. The VRAM warning is not shown in CPU mode.
 
-| 位置参数 | 含义 | 默认 |
-|---|---|---|
-| 1 `model_id` | catalog 里的模型 id | （必填） |
-| 2 `port` | 监听端口 | `8088` |
-| 3 `device` | GPU 设备号 | `0` |
-
-- 脚本会用该 id 生成一份**单模型、绝对路径**的临时配置
-  `%TEMP%\audiocpp_server_<port>.json`（按端口命名，两个实例互不冲突），再启动 server。
-- **同时起两个服务**：在两个窗口分别运行不同 id + 不同端口，例如一个做 TTS、一个做 ASR：
-
-  ```bat
-  run_server.bat qwen3-tts 8088     :: 窗口 A：TTS
-  run_server_asr.bat                :: 窗口 B：ASR（= run_server.bat qwen3-asr 8081）
-  ```
-
-  ⚠️ 两个模型要同时装进显存（8GB 下 0.6B + 0.6B 没问题；两个 1.7B 装不下）。
-- **`run_server_asr.bat`**：`run_server.bat` 的 ASR 预设包装，双击即用。
-  参数为 `[port] [device] [model_id]`，默认 `8081` / `0` / `qwen3-asr`。
-- **局域网访问**：设 `AUDIOCPP_HOST=0.0.0.0` 让其它机器能连（**无鉴权**，仅在可信内网使用）。
-
-### API 端点
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/health` | 就绪状态 + 已配置模型数 |
-| GET | `/v1/models` | 列出该实例加载的模型 |
-| POST | `/v1/audio/speech` | 文本转语音，默认返回 `audio/wav` |
-| POST | `/v1/audio/transcriptions` | 语音转文本（ASR） |
-| POST | `/v1/tasks/run` | 通用任务入口（字段同 CLI 请求格式） |
-
-> **参考音色是每次请求带的**（server 端不预存音色）。声音克隆 TTS 每个请求要带
-> `voice_ref` + `reference_text`。请求里的 `voice_ref` / `audio` 路径是**服务器本机路径**，
-> 相对路径以 server 的工作目录（用本脚本启动时即 `webui\`）为基准，也可用绝对路径。
-
-### 调用示例
-
-TTS（用现成模板 `configs\req_speech.json`，其中含 `input`/`voice_ref`/`reference_text`）：
-
-```bat
-curl http://127.0.0.1:8088/v1/audio/speech -H "Content-Type: application/json" -o output\out_server.wav -d @configs\req_speech.json
-```
-
-ASR（音频用服务器本机路径）：
-
-```bat
-curl http://127.0.0.1:8081/v1/audio/transcriptions -H "Content-Type: application/json" -d "{\"model\":\"qwen3-asr\",\"audio\":\"D:/path/to/input.wav\"}"
-```
-
-查看状态：
-
-```bat
-curl http://127.0.0.1:8088/health
-curl http://127.0.0.1:8088/v1/models
-```
+> The web interface (7860) is for humans; to use it as an **API for other programs**, start `audiocpp_server`
+> directly, or once the WebUI is up, hit the port 8080 it manages directly.
 
 ---
 
-## 3. `run_webui.bat` — 图形界面
+## WebUI advanced parameters (widgets auto-generated per model)
 
-启动 Gradio 网页界面（`webui.py`），浏览器访问 **http://127.0.0.1:7860**。
+The widgets under the TTS tab's "Synthesis settings → Advanced parameters" are driven by
+**`configs/model_params.json`**: once you select a model, the WebUI **dynamically generates the matching
+sliders / number boxes / toggles / text boxes** for its `family` (via `gr.render`), so you don't have to hand-write
+JSON. Below the widgets there is also a collapsible "Other parameters (JSON)" fallback box for passing keys not
+listed as widgets. General rules:
 
-- **按需加载**：不需要先跑 `run_server.bat`——在界面里选模型点“加载”/“生成”时，WebUI 会自动
-  起/切换底层的 `audiocpp_server`（一次一个模型在显存里，换模型即重启）。
-- 界面里可上传参考音色、下载未安装的模型、填 HF token / 代理等。
-- 后端自动检测（同上：有 CUDA 用 GPU，否则 CPU）；`AUDIOCPP_BACKEND=gpu|cpu` 可强制。
-  CPU 模式下按物理核心数分配 ggml 线程（不计 SMT/超线程，4 核以上留 1 核给系统），
-  可用 `AUDIOCPP_THREADS=N` 覆盖；CPU 模式下不显示显存警告。
+- **Only widget values you have changed are sent with the request** (untouched ones use the model's own defaults);
+  the `options` merge order is: family defaults → generated widgets → JSON box (JSON overrides widgets).
+- `seed` and `max_tokens` already have dedicated input boxes (synthesis settings) and are not duplicated here.
+- The reference voice comes from "upload/record" or a "built-in reference voice"; the original transcript of the
+  reference audio goes in the "reference text" box (equivalent to `reference_text`).
+- Invalid values are usually ignored, or the server reports an error — errors are shown **below the output audio**
+  (no popup card).
+- **Chatterbox** cloning parameters are fixed at model-load time: after changing them you must click
+  '📥 Load model' again for them to take effect (otherwise it reports "session config is fixed").
 
-> 网页界面（7860）是给人用的；要给**其它程序**当 API，请用 `run_server.bat` 起的 **8088** 那个服务，
-> 或让 WebUI 起来后直接打它的 8088 端口（见 `run_server.bat` 的端点表）。
+### Custom widgets (edit `configs/model_params.json`)
 
----
-
-## WebUI 高级参数（按模型自动生成控件）
-
-TTS 标签页「合成设置 → 高级参数」里的控件由 **`configs/model_params.json`** 驱动：选中某个模型后，WebUI 按其 `family` **动态生成对应的滑块/数字框/开关/文本框**（`gr.render`），不用再手写 JSON。控件下方还留了一个可折叠的「其它参数（JSON）」兜底框，用于传配置里没列出的键。通用规则：
-
-- **只有你改动过的控件值才会随请求发送**（未动的用模型自身默认值）；`options` 合并顺序：家族默认 → 生成的控件 → JSON 框（JSON 覆盖控件）。
-- `seed`、`max_tokens` 已有专用输入框（合成设置），不在此重复。
-- 参考音色用「上传/录制」或「内置参考音色」；参考音频对应的原话用「参考文本」框（等价 `reference_text`）。
-- 填错的值通常被忽略，或由 server 报错——错误显示在**输出音频下方**（不弹卡片）。
-- **Chatterbox** 的克隆参数在模型加载时固定：改动后需重新点『📥 加载模型』才生效（否则会报 “session config is fixed”）。
-
-### 自定义控件（编辑 `configs/model_params.json`）
-
-按 `family` 分组，每项一个控件规格：
+Grouped by `family`, one widget spec per entry:
 
 ```json
 {"name": "guidance_scale", "type": "slider", "label": "guidance_scale",
- "default": 1.3, "minimum": 0.0, "maximum": 5.0, "step": 0.1, "info": "CFG 引导强度"}
+ "default": 1.3, "minimum": 0.0, "maximum": 5.0, "step": 0.1, "info": "CFG guidance strength"}
 ```
 
-- `name`：透传给请求 `options` 的键名。`type`：`slider` / `number`（`precision:0` 表整数）/ `bool` / `text` / `choice`（配 `choices:[...]`）。
-- `default` 应等于模型默认值（已按各 `src/models/<family>/*.cpp` 校对）。
-- 改完点界面上的『🔄 刷新列表』即可重新加载本文件，无需重启。
-- 文件路径 / parity 类少见参数（如 `*_noise_file`）未纳入控件，可用「其它参数（JSON）」框传。量化键（如 `vibevoice.weight_type`）见项目根 `README.md`。
+- `name`: the key passed through to the request `options`. `type`: `slider` / `number` (`precision:0` for
+  integers) / `bool` / `text` / `choice` (with `choices:[...]`).
+- `default` should equal the model default (already checked against each `src/models/<family>/*.cpp`).
+- After editing, click '🔄 Refresh list' in the UI to reload this file — no restart needed.
+- File-path / parity-style rare parameters (such as `*_noise_file`) are not exposed as widgets; pass them through
+  the "Other parameters (JSON)" box. Quantization keys (such as `vibevoice.weight_type`) are in the project-root
+  `README.md`.
 
-下表是每个模型 `session.cpp` **实际读取**的完整可用键（控件是其中精选的常用子集；其余键仍可用 JSON 框传）：
+The table below lists the full set of usable keys each model's `session.cpp` **actually reads** (the widgets are a
+curated common subset; other keys can still be passed via the JSON box):
 
-| 模型（family） | 可用键（JSON 框也可传） | 示例 |
+| Model (family) | Usable keys (also passable via JSON box) | Example |
 |---|---|---|
-| **Qwen3-TTS**（qwen3_tts）0.6B / 1.7B / CustomVoice | `do_sample` `temperature` `top_k` `top_p`；CustomVoice 版另有 `speaker` | `{"do_sample": true, "temperature": 0.8, "top_k": 40, "top_p": 0.9}`<br>CustomVoice 选内置音色：`{"speaker": "<CustomVoice 音色名>"}` |
-| **VibeVoice**（vibevoice）1.5B 长文/多说话人 | `num_inference_steps` `guidance_scale` `max_length_times` `do_sample` `temperature` `top_k` `top_p`；多说话人 `voice_samples`（逗号分隔 wav，最多 4，**不能**与参考音色同用） | `{"num_inference_steps": 10, "guidance_scale": 1.3, "max_length_times": 2.0}`<br>多说话人：`{"voice_samples": "D:/a.wav,D:/b.wav"}` |
-| **VoxCPM2**（voxcpm2） | `num_inference_steps` `guidance_scale` `min_tokens` `retry_badcase` `retry_badcase_max_times` `retry_badcase_ratio_threshold`；参考原话 `prompt_text` | `{"num_inference_steps": 10, "guidance_scale": 2.0, "retry_badcase": true}` |
-| **MioTTS**（miotts，需 MioCodec） | `temperature` `top_k` `top_p` `repetition_penalty` `presence_penalty` `frequency_penalty` `do_sample` `best_of_n` `best_of_n_enabled` `best_of_n_language` | `{"temperature": 0.9, "top_p": 0.9, "repetition_penalty": 1.1, "best_of_n": 3}` |
-| **Chatterbox**（chatterbox，声音克隆） | `exaggeration` `guidance_scale` `temperature` `repetition_penalty` `min_p` `top_p` `s3gen_cfg_rate` `max_new_tokens` `do_sample` `greedy` `stop_on_eos` | `{"exaggeration": 0.5, "guidance_scale": 0.5, "temperature": 0.8, "repetition_penalty": 1.2}` |
-| **OmniVoice**（omnivoice） | `instruct`（风格/指令文本）；`reference_text`（一般用「参考文本」框即可） | `{"instruct": "以轻快的语气朗读"}` |
-| **Pocket TTS**（pocket_tts） | 无专用高级参数（只需参考音色 + 语言） | — |
+| **Qwen3-TTS** (qwen3_tts) 0.6B / 1.7B / CustomVoice | `do_sample` `temperature` `top_k` `top_p`; the CustomVoice variant also has `speaker` | `{"do_sample": true, "temperature": 0.8, "top_k": 40, "top_p": 0.9}`<br>CustomVoice built-in voice: `{"speaker": "<CustomVoice voice name>"}` |
+| **VibeVoice** (vibevoice) 1.5B long-form/multi-speaker | `num_inference_steps` `guidance_scale` `max_length_times` `do_sample` `temperature` `top_k` `top_p`; multi-speaker `voice_samples` (comma-separated wavs, max 4, **cannot** be combined with a reference voice) | `{"num_inference_steps": 10, "guidance_scale": 1.3, "max_length_times": 2.0}`<br>Multi-speaker: `{"voice_samples": "D:/a.wav,D:/b.wav"}` |
+| **VoxCPM2** (voxcpm2) | `num_inference_steps` `guidance_scale` `min_tokens` `retry_badcase` `retry_badcase_max_times` `retry_badcase_ratio_threshold`; reference transcript `prompt_text` | `{"num_inference_steps": 10, "guidance_scale": 2.0, "retry_badcase": true}` |
+| **MioTTS** (miotts, needs MioCodec) | `temperature` `top_k` `top_p` `repetition_penalty` `presence_penalty` `frequency_penalty` `do_sample` `best_of_n` `best_of_n_enabled` `best_of_n_language` | `{"temperature": 0.9, "top_p": 0.9, "repetition_penalty": 1.1, "best_of_n": 3}` |
+| **Chatterbox** (chatterbox, voice cloning) | `exaggeration` `guidance_scale` `temperature` `repetition_penalty` `min_p` `top_p` `s3gen_cfg_rate` `max_new_tokens` `do_sample` `greedy` `stop_on_eos` | `{"exaggeration": 0.5, "guidance_scale": 0.5, "temperature": 0.8, "repetition_penalty": 1.2}` |
+| **OmniVoice** (omnivoice) | `instruct` (style/instruction text); `reference_text` (usually the "reference text" box is enough) | `{"instruct": "Read in a light, upbeat tone"}` |
+| **Pocket TTS** (pocket_tts) | No dedicated advanced parameters (just a reference voice + language) | — |
 
-> 键名取自各模型 `src/models/<family>/session.cpp` 实际读取的选项；同一键在不同模型里的取值范围/含义可能不同。量化相关键（如 `vibevoice.weight_type`、`voxcpm2.*_weight_type`）见项目根 `README.md` 的量化章节，不是通用默认项。
+> The key names come from the options each model's `src/models/<family>/session.cpp` actually reads; the same key
+> may have a different range/meaning across models. Quantization-related keys (such as `vibevoice.weight_type`,
+> `voxcpm2.*_weight_type`) are in the project-root `README.md` quantization section and are not universal defaults.
 
-### 音乐生成 / 声音转换参数详解
+### Music generation / voice conversion parameters in detail
 
-页面上的提示已精简，完整说明集中在这里。
+The hints on the page are condensed; the full explanation is collected here.
 
-**ACE-Step（音乐生成/编辑）**
+**ACE-Step (music generation/editing)**
 
-- 提示词写风格/乐器/情绪（英文效果最好），可选填歌词；时长填 `-1` 表示自动。
-- `task_route` 操作类型：`text2music`＝纯文生曲（默认，不需要源音频）；`cover`＝换词翻唱
-  （原版 Remix 主路线，配合下面两个 cover 滑条）；`cover-nofsq`＝cover 变体（不过 FSQ 量化）；
-  `remix`＝flow-edit 精细换词；`complete` / `lego` / `extract` / `repaint` 为其它编辑路线。
-  **除 text2music 外都需要上传源音频。**
-- 上传源音频后建议先点『🔍 分析源音频』：反推源曲描述/歌词/BPM/调性并自动填入高级参数
-  （remix/cover 换词前尤其建议；首次需先『📥 加载模型』，1 分钟音频约需几十秒）。
-  分析结果可复现：同一音频每次分析一致（VAE 均值编码；seed=-1 时分析固定用 1234，
-  想重抽歌词转写可换一个具体 seed）。
-- 扩散参数：`num_inference_steps` turbo 上限 20，remix 路由不填时默认 16、其他路由默认 8；
-  `shift`（时间步弯曲）默认 3.0 对齐原版 turbo UI——调回 1.0 会明显劣化 remix 换词咬字。
-- cover 路线两个滑条：
-  - `audio_cover_strength`（Remix 强度）：多少比例的去噪步参考源曲结构，1=贴近原曲、
-    0=自由发挥；原版 Remix 建议 0.5。仅 cover/cover-nofsq 生效。
-  - `cover_noise_strength`（旋律保持）：从源曲部分加噪的起点开始去噪，0=不保旋律、
-    0.1~0.25=推荐区间（保旋律又能换词换风格）、越高越贴原曲。仅 cover 生效。
-- remix（flow-edit）参数：
-  - `source_caption` / `source_lyrics`：源侧文本条件（源歌曲本来的风格描述 / 原歌词，
-    带 `[Verse]` `[Chorus]` 标签）；留空 caption 用主提示词；『🔍 分析』可自动填。
-    **新歌词写在主界面『歌词』框。**
-  - `flow_edit_n_min`（编辑起点）：跳过前面高噪声步的比例，0=从头编辑；调大更保源曲但换词更弱。
-  - `flow_edit_n_max`（编辑终点）：1=全程配对编辑；调低到 0.7~0.9 时收尾只朝新歌词去噪——
-    **歌词唱不出来时优先调这个**。
-  - `flow_edit_n_avg`：每步多次采样取平均（remix 默认 2，更稳），1=最快。
-    注意 remix 默认 16 步 × n_avg 2 ≈ 旧默认（8 步 ×1）4 倍耗时，求快可手动调回。
-- 曲谱参数 `bpm` / `keyscale`（如 `F major`、`c# minor`）/ `timesignature`（如 `4`）：
-  0/留空=不指定；『🔍 分析』后自动填。
+- The prompt describes style/instruments/mood (English works best); lyrics are optional; a duration of `-1` means auto.
+- `task_route` operation type: `text2music` = pure text-to-music (default, needs no source audio); `cover` = re-lyric
+  cover (the main Remix route, used with the two cover sliders below); `cover-nofsq` = a cover variant (skips FSQ
+  quantization); `remix` = fine flow-edit re-lyric; `complete` / `lego` / `extract` / `repaint` are other editing routes.
+  **All except text2music require uploading source audio.**
+- After uploading source audio, it is recommended to click '🔍 Analyze source audio' first: it back-infers the source
+  song's description/lyrics/BPM/key and auto-fills the advanced parameters (especially recommended before remix/cover
+  re-lyric; the first run needs '📥 Load model' first; ~1 minute of audio takes tens of seconds).
+  The analysis is reproducible: analyzing the same audio yields the same result each time (VAE mean encoding; with
+  seed=-1 the analysis always uses 1234 — pass a specific seed to re-sample the lyric transcription).
+- Diffusion parameters: `num_inference_steps` caps at 20 for turbo, defaults to 16 for the remix route when unset and
+  8 for other routes; `shift` (timestep warping) defaults to 3.0 to match the original turbo UI — dropping it back to
+  1.0 noticeably degrades remix re-lyric articulation.
+- The two cover-route sliders:
+  - `audio_cover_strength` (Remix strength): what fraction of denoising steps reference the source structure; 1 = close
+    to the original, 0 = free improvisation; the original Remix recommends 0.5. Only effective for cover/cover-nofsq.
+  - `cover_noise_strength` (melody preservation): starts denoising from the noised point of the source; 0 = don't keep
+    the melody, 0.1–0.25 = recommended range (keep the melody while changing lyrics/style), higher hugs the original
+    more closely. Only effective for cover.
+- remix (flow-edit) parameters:
+  - `source_caption` / `source_lyrics`: source-side text conditions (the source song's own style description / original
+    lyrics, with `[Verse]` `[Chorus]` tags); an empty caption uses the main prompt; '🔍 Analyze' can auto-fill them.
+    **New lyrics go in the main 'Lyrics' box.**
+  - `flow_edit_n_min` (edit start): the fraction of leading high-noise steps to skip; 0 = edit from the start; larger
+    keeps more of the source but weakens re-lyric.
+  - `flow_edit_n_max` (edit end): 1 = paired editing throughout; lowering it to 0.7–0.9 makes the tail denoise only
+    toward the new lyrics — **tune this first when lyrics won't come out**.
+  - `flow_edit_n_avg`: multiple samples averaged per step (remix defaults to 2, more stable), 1 = fastest.
+    Note that the remix default of 16 steps × n_avg 2 ≈ 4× the old default's time (8 steps × 1); lower it manually for speed.
+- Score parameters `bpm` / `keyscale` (such as `F major`, `c# minor`) / `timesignature` (such as `4`):
+  0/blank = unspecified; auto-filled after '🔍 Analyze'.
 
-**Stable Audio（音乐/音效）**：提示词**仅支持英文**，不使用歌词；music 版生成音乐、sfx 版生成音效。
-上传源音频可做续写/修补：`audio_input_kind` 选 `init_audio`（配 `init_noise_level` 强度）或
-`inpaint_audio`。
+**Stable Audio (music/SFX):** the prompt is **English only** and uses no lyrics; the music build generates music, the
+sfx build generates sound effects.
+Uploading source audio enables continuation/inpainting: `audio_input_kind` selects `init_audio` (with `init_noise_level`
+strength) or `inpaint_audio`.
 
-**HeartMuLa（歌词+标签生成歌曲）**：高级参数 `tags` 必填（逗号分隔，如
-`pop,bright,drums,female vocals`），『歌词』填唱词。3B 模型，官方 120 秒长歌实测峰值显存
-~25G（docs/memory_saver.md），8G 显卡跑不动；已默认开 mem_saver，长歌曲可开 `infinite_mode`。
+**HeartMuLa (lyrics+tags song generation):** the advanced parameter `tags` is required (comma-separated, e.g.
+`pop,bright,drums,female vocals`), and 'Lyrics' holds the sung words. It is a 3B model; the official 120-second long song
+measured a peak VRAM of ~25G (docs/memory_saver.md), so an 8G GPU can't run it; mem_saver is on by default, and long songs
+can enable `infinite_mode`.
 
-**Chatterbox VC（语音转换）**：源语音提供内容，目标音色参考提供说话人身份，输出 24kHz
-单声道语音。`s3gen_cfg_rate` 控制音色引导强度，`num_inference_steps` 控制生成步数；默认分别为
-0.7 和 10。该入口与 TTS 页的 Chatterbox 声音克隆共用同一套模型文件。
+**Chatterbox VC (voice conversion):** the source speech provides content, the target voice reference provides speaker
+identity, and the output is 24 kHz mono speech. `s3gen_cfg_rate` controls voice guidance strength, `num_inference_steps`
+controls the number of generation steps; defaults are 0.7 and 10 respectively. This entry shares the same model files as
+the Chatterbox voice cloning on the TTS page.
 
-**Seed-VC（语音转换）**：源语音 + 目标音色参考（几秒到几十秒干净人声）。`route` 留空按任务默认
-（vc 条目→`v2_vc`，svc 条目→`v1_svc`）；`v1_whisper_bigvgan_vc` / `v1_xlsr_hift_vc` 为 v1 旧路线；
-`v1_svc` 只能配 svc 条目。`intelligibility_cfg_rate` / `similarity_cfg_rate` 仅 v2 生效，
-`inference_cfg_rate` 仅 v1 生效。
+**Seed-VC (voice conversion):** source speech + target voice reference (a few seconds to tens of seconds of clean voice).
+An empty `route` follows the task default (a vc entry → `v2_vc`, an svc entry → `v1_svc`); `v1_whisper_bigvgan_vc` /
+`v1_xlsr_hift_vc` are the older v1 routes; `v1_svc` only pairs with an svc entry. `intelligibility_cfg_rate` /
+`similarity_cfg_rate` are v2-only, `inference_cfg_rate` is v1-only.
 
-**Vevo2（语音转换）**：默认 `route=style_preserved_vc`（保留源语音的说话风格，只换音色）。
-`route` 留空按条目任务默认（vc→style_preserved_vc，svc→style_preserved_svc，s2s→editing），
-且须与所选条目任务匹配；`style_converted_*` / `editing` 需在「其它参数(JSON)」里补
-`style_ref`（服务器本地 wav 路径）/ `style_ref_text` / `target_text`。
-`use_pitch_shift`（按源/目标中位音高差整体移调）留空按路线默认：style_preserved_* 及
-singing 路线默认开，style_converted_vc / editing 默认关。
-长音频按『目标音色时长 + 每段源时长 ≤ 显存预算』自适应分段后拼接，参考音色超过约 10s
-自动截短（8G 显存限制）。
+**Vevo2 (voice conversion):** the three Vevo2 entries install the self-contained Q8_0 GGUF package
+(`vevo2_gguf` → `models/Vevo2-GGUF`, ~3.2 GB), which needs no sibling `whisper-medium` download. An earlier
+safetensors install in `models/Vevo2` is no longer what these entries point at; it still works from the CLI with
+`--model models/Vevo2`. The WebUI download installs the GGUF package instead.
+Vevo2 defaults to `route=style_preserved_vc` (preserves the source speech's speaking style,
+changing only the voice). An empty `route` follows the entry's task default (vc → style_preserved_vc, svc →
+style_preserved_svc, s2s → editing) and must match the selected entry's task; `style_converted_*` / `editing` need
+`style_ref` (a server-local wav path) / `style_ref_text` / `target_text` added in the "Other parameters (JSON)" box.
+`use_pitch_shift` (global transposition by the source/target median-pitch difference) follows the route default when
+blank: on for style_preserved_* and singing routes, off for style_converted_vc / editing.
+Long audio is adaptively chunked and concatenated by 'target voice duration + per-chunk source duration ≤ VRAM budget',
+and a reference voice longer than ~10s is auto-truncated (an 8G VRAM limit).
 
-### 各任务页输入要求详解
+### Input requirements per task page, in detail
 
-- **VibeVoice**：多说话人脚本每行 `Speaker N: 内容`（N 从 0 起），只填普通文字会自动包成
-  `Speaker 0: ...`。多角色不同音色用高级参数 `voice_samples`（逗号分隔服务器本地 wav，≤4 个），
-  此时**不要**再上传参考音色。
-- **VoxCPM2 / Qwen3-TTS**：上传/选一段干净的单人参考音色并在『参考文本』填该音频的原话，
-  否则可能提前截断。长文本自动分段合成后拼接；VoxCPM2 在 8G 显卡默认 q8_0 量化。
-- **Chatterbox**：语言只支持 english / spanish / french / german / italian / portuguese / korean
-  （无中文/日文/俄文，也没有自动检测）；『留空』=英语。
-- **Qwen3-ASR**：长音频自动在静音处按 ≤60 秒分段转写后拼接。『上下文提示』填人名/术语/背景
-  （如：会议讨论 ggml 量化，参会人：张伟、李娜）帮助认出专有名词。对话模式（限 120s）先用
-  Sortformer 说话人分离（≤4 人）再逐段转写成带说话人和时间戳的对话稿，需已安装 Sortformer 模型。
-- **音频分析（VAD/分离/对齐）**：WAV 输入自动转 16 kHz 单声道后送模型，结果时间轴按 16 kHz 换算。
-  Qwen3 强制对齐单次音频上限约 115 秒。
-- **音源分离**：HTDemucs 输出 drums/bass/other/vocals 四轨（长音频耗时较长）；
-  Mel-Band RoFormer 输出人声轨 + 伴奏轨（mixture − vocals）。
-- **IndexTTS2**（0.3 新增）：中/英声音克隆，**必须**提供参考音色。情感控制在高级参数：
-  `emotion_text` 填情感描述（填了会自动开启 `use_emotion_text`）+ `emotion_alpha` 调强度；
-  或勾 `use_emotion_text` 从朗读文本自动推断；`emotion_vector`（8 个浮点）走 JSON 兜底框。
-- **Irodori-TTS**（0.3 新增，日语）：500M 默认无参考直接生成，上传参考音色自动切克隆
-  （界面替你发 `no_ref=false`）；600M VoiceDesign 在『声音设计』页用日语 caption 描述音色。
-  语言下拉只认 japanese/留空。
-- **MOSS-TTS**（0.3 新增）：Local v1.5 纯文本可生成，克隆时建议配『参考文本』，输出 48kHz
-  立体声；Nano 100M 轻量，无参考=续写式生成（音色随机），有参考=克隆。
-- **Supertonic 3**（0.3 新增）：预置音色多语种 TTS（英/日/韩/欧洲语种，**无中文**），
-  高级参数选 `voice`（M1-M5 男 / F1-F5 女）和 `speaking_rate`；不支持参考音频克隆。
-- **Fish Audio S2 Pro / Higgs Audio v3 TTS 4B**：均支持直接 TTS 和参考音色克隆；
-  Fish Audio 使用参考音频时必须填写逐字匹配的参考文本。
-- **OuteTTS 1.0 1B**：多语种 TTS；克隆必须提供参考音频和逐字匹配的参考文本，
-  建议约 10 秒、最长 20 秒。
-- **VieNeu-TTS v3 Turbo**：越南语/英语 TTS，上传参考音色可进行即时声音克隆。
-- **模型下载**在后台进行，进度自动刷新，也可点「📊 下载进度」手动查看。
+- **VibeVoice:** each line of the multi-speaker script is `Speaker N: content` (N starts at 0); plain text is
+  auto-wrapped as `Speaker 0: ...`. For different voices per role, use the advanced parameter `voice_samples`
+  (comma-separated server-local wavs, ≤4); in that case, **do not** also upload a reference voice.
+- **VoxCPM2 / Qwen3-TTS:** upload/select a clean single-speaker reference voice and put that audio's transcript in the
+  'reference text' box, or output may be truncated early. Long text is auto-chunked, synthesized, and concatenated;
+  VoxCPM2 defaults to q8_0 quantization on an 8G GPU.
+- **Chatterbox:** language is limited to english / spanish / french / german / italian / portuguese / korean (no
+  Chinese/Japanese/Russian, and no auto-detection); 'blank' = English.
+- **Qwen3-ASR:** long audio is auto-split at silences into ≤60-second chunks, transcribed, and concatenated. The
+  'context hint' takes names/terms/background (e.g.: a meeting discussing ggml quantization, attendees: Zhang Wei, Li Na)
+  to help recognize proper nouns. Conversation mode (limited to 120s) first runs Sortformer speaker separation (≤4 people),
+  then transcribes each segment into a conversation transcript with speakers and timestamps; the Sortformer model must be installed.
+- **Audio analysis (VAD/separation/alignment):** WAV input is auto-converted to 16 kHz mono before going to the model,
+  and result timelines are computed at 16 kHz. Qwen3 forced alignment caps a single audio at ~115 seconds.
+- **Source separation:** HTDemucs outputs four tracks — drums/bass/other/vocals (long audio takes a while);
+  BS-RoFormer outputs vocals + accompaniment;
+  Mel-Band RoFormer outputs a vocals track + an accompaniment track (mixture − vocals).
+- **IndexTTS2** (new in 0.3): Chinese/English voice cloning; a reference voice is **required**. Emotion control is in the
+  advanced parameters: `emotion_text` holds an emotion description (setting it auto-enables `use_emotion_text`) +
+  `emotion_alpha` adjusts strength; or check `use_emotion_text` to infer it automatically from the read text;
+  `emotion_vector` (8 floats) goes through the JSON fallback box.
+- **Irodori-TTS** (Japanese): v4 Small GGUF generates directly without a reference by default; uploading a
+  reference voice auto-switches to cloning (the UI sends `no_ref=false` for you); v4 Small VoiceDesign describes the
+  voice with a Japanese caption on the 'Voice design' page. The language dropdown only accepts japanese/blank.
+- **MOSS-TTS** (new in 0.3): Local v1.5 generates from plain text; for cloning, a 'reference text' is recommended, and it
+  outputs 48 kHz stereo; Nano 100M is lightweight — no reference = continuation-style generation (random voice), with a
+  reference = cloning.
+- **Supertonic 3** (new in 0.3): preset-voice multilingual TTS (English/Japanese/Korean/European languages, **no Chinese**);
+  in the advanced parameters, choose `voice` (M1-M5 male / F1-F5 female) and `speaking_rate`; reference-audio cloning is not supported.
+- **Model downloads** run in the background with auto-refreshing progress; you can also click "📊 Download progress" to check manually.
 
-### GGUF 转换、检查与加载
+### GGUF inspection and loading
 
-每个任务页的「模型管理」卡片都提供同一组 GGUF 操作：选择类型（默认 `q8_0`）后点「🧊 转换 GGUF」，
-会把结果写为所选模型目录下的 `model.gguf`；已有文件不会被覆盖。点「🔎 检查 GGUF」会在页面上执行
-`audiocpp_gguf.exe --inspect` 并显示包的元数据。对已接入原生 GGUF 的模型，目录存在 `model.gguf` 时，普通
-「📥 加载模型」会自动优先使用 GGUF；点「🗑️ 删除 GGUF」会删除该文件（以及同名残留 `.tmp`），下次普通加载
-即恢复原始权重。
-
-- 转换器按顺序查找开发构建的 `build\windows-cuda-release\bin` / `build\windows-cpu-release\bin`，以及整合包的
-  `audiocpp-portable\gpu` / `audiocpp-portable\cpu`；也可用 `AUDIOCPP_GGUF` 指向自定义 `audiocpp_gguf.exe`。
-- 页面只会把已接入原生 GGUF 模型规格、且能明确整理转换输入的模型标为「可转换」；存在 `.safetensors` 不代表对应
-  C++ 后端已支持 GGUF。支持转换但尚未完整安装的模型会提前显示「可转换，但模型未完整安装」，便于下载前判断；
-  Stable Audio 当前仍使用原始权重，不会标为可转换。
-- 页面自动处理受支持的单个 `model.safetensors`、分片索引和 Qwen3-TTS 复合权重。其他需要多个命名
-  `--input namespace=...` 的复合模型仍应使用命令行，避免 UI 猜错权重命名空间。
-- 仅 audio.cpp-native GGUF 可加载；量化兼容性因模型和推理路线而异。转换成功也应先用短样本检查输出质量。
+Every task page's "Model management" card can inspect the selected GGUF package. Clicking "🔎 Inspect GGUF" runs
+`audiocpp_gguf.exe --inspect` and shows the package metadata on the page.
+For models with native GGUF support, a normal "📥 Load model" automatically prefers the GGUF in the model directory —
+`model.gguf` if it is there, otherwise the single `*.gguf` in the directory, so a downloaded package keeps its release
+name (`vevo2-q8_0.gguf`). A directory holding several GGUFs and no `model.gguf` is ambiguous and neither the page nor the
+server picks one. The WebUI no longer converts safetensors; downloads install the default GGUF package declared in
+`model_specs/`. Already-installed legacy/safetensors model directories can still be loaded from the catalog path.
 
 ---
 
-## 模型 id 速查
+## Model id quick reference
 
-完整清单见 `configs\models_catalog.json`（每条含 `id` / `family` / `path` / `task` / `download_id`）。
-常用：
+The full list is in `configs\models_catalog.json` (each entry has `id` / `family` / `path` / `task` / `download_id`).
+Common ones:
 
-| id | 家族 | 任务 | 说明 |
+| id | family | task | Notes |
 |---|---|---|---|
-| `qwen3-tts` | qwen3_tts | tts | Qwen3-TTS 0.6B（声音克隆） |
+| `qwen3-tts` | qwen3_tts | tts | Qwen3-TTS 0.6B (voice cloning) |
 | `qwen3-asr` | qwen3_asr | asr | Qwen3-ASR 0.6B |
-| `vibevoice` | vibevoice | tts | VibeVoice 1.5B（长文/多说话人，`Speaker N:` 脚本） |
+| `vibevoice` | vibevoice | tts | VibeVoice 1.5B (long-form/multi-speaker, `Speaker N:` script) |
 | `omnivoice` | omnivoice | tts | OmniVoice |
-| `pocket-tts` | pocket_tts | tts | Pocket TTS（需参考音色） |
-| `index-tts2` | index_tts2 | tts | IndexTTS2（中英克隆+情感，需参考音色） |
-| `irodori-tts` | irodori_tts | tts | Irodori-TTS 500M（日语） |
-| `irodori-tts-vdesign` | irodori_tts | vdes | Irodori-TTS 600M VoiceDesign（日语 caption） |
-| `moss-tts-local` | moss_tts_local | tts | MOSS-TTS-Local v1.5（48kHz 立体声） |
-| `moss-tts-nano` | moss_tts_nano | tts | MOSS-TTS-Nano 100M（轻量） |
-| `supertonic` | supertonic | tts | Supertonic 3（预置音色，无中文） |
-| `fish-audio-s2-pro` | fish_audio | tts | Fish Audio S2 Pro（中英 TTS/克隆） |
-| `higgs-audio-tts` | higgs_audio_tts | tts | Higgs Audio v3 TTS 4B（TTS/克隆） |
-| `outetts` | outetts | tts | OuteTTS 1.0 1B（多语种 TTS/克隆） |
-| `vietneu-tts` | vietneu_tts | tts | VieNeu-TTS v3 Turbo（越英 TTS/克隆） |
+| `pocket-tts` | pocket_tts | tts | Pocket TTS (needs a reference voice) |
+| `index-tts2` | index_tts2 | tts | IndexTTS2 (Chinese/English cloning + emotion, needs a reference voice) |
+| `irodori-tts` | irodori_tts | tts | Irodori-TTS v4 Small (Japanese, GGUF Q8) |
+| `irodori-tts-vdesign` | irodori_tts | vdes | Irodori-TTS v4 Small VoiceDesign (Japanese caption, GGUF Q8) |
+| `irodori-tts-v3-500m` | irodori_tts | tts | Irodori-TTS 500M v3 (Japanese, GGUF Q8) |
+| `irodori-tts-v3-vdesign` | irodori_tts | vdes | Irodori-TTS 600M v3 VoiceDesign (Japanese caption, GGUF Q8) |
+| `moss-tts-local` | moss_tts_local | tts | MOSS-TTS-Local v1.5 (48 kHz stereo) |
+| `moss-tts-nano` | moss_tts_nano | tts | MOSS-TTS-Nano 100M (lightweight) |
+| `supertonic` | supertonic | tts | Supertonic 3 (preset voices, no Chinese) |
 
-未安装的 id 运行时会提示，可在 WebUI 里点“下载”，或
-`python tools\model_manager.py install <download_id> --models-root <bundle>\models`。
+An uninstalled id prompts at runtime; you can click "download" in the WebUI, or run
+`python webui\model_manager_webui.py install <download_id> --models-root <bundle>\models`.
 
 ---
 
-## 环境变量
+## Environment variables
 
-| 变量 | 作用 | 适用 |
+| Variable | Purpose | Applies to |
 |---|---|---|
-| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` 强制后端 | cli / server / webui |
-| `AUDIOCPP_HOST` | server 绑定地址（`0.0.0.0` 开放局域网） | server |
-| `AUDIOCPP_BUNDLE` | 手动指定整合包根目录 | 全部 |
-| `AUDIOCPP_SERVER` | 让 WebUI 连一个已在跑的外部 server | webui |
-| `AUDIOCPP_LOAD_TIMEOUT` | WebUI 等待模型加载的秒数（默认 300） | webui |
+| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` / `metal` to force the backend | cli / server / webui |
+| `AUDIOCPP_HOST` | server bind address (`0.0.0.0` opens it to the LAN) | server |
+| `AUDIOCPP_BUNDLE` | manually specify the bundle root directory | all |
+| `AUDIOCPP_SERVER` | make the WebUI connect to an already-running external server | webui |
+| `AUDIOCPP_LOAD_TIMEOUT` | seconds the WebUI waits for a model to load (default 300) | webui |
 
 ---
 
-## 常见问题
+## Troubleshooting
 
-- **`.bat` 双击闪退 / 命令语法错误**：这些脚本必须是 **CRLF** 行尾（LF 会让 cmd 解析出错），
-  编辑后请保持 CRLF。
-- **端口被占用**：`run_server.bat` 和 WebUI 默认都用 8088。要同时用，就给 server 换端口，
-  或设 `AUDIOCPP_SERVER` 让 WebUI 复用外部 server。
-- **`model path does not exist` / not installed**：模型没装。用上面的 model_manager 命令或 WebUI 下载。
-- **显存不足**：8GB 下同时跑两个 server 时，两个模型都要装得下；1.7B 建议单开。
-- **声音克隆生成过短（~0.4s 就结束）**：`voice_ref` 音色不干净或缺 `reference_text`；换单一说话人的
-  干净参考音频并配上对应文本。
+- **`.bat` flashes and closes on double-click / command syntax error:** these scripts must use **CRLF** line endings
+  (LF makes cmd misparse them); keep CRLF after editing.
+- **Port already in use:** the WebUI-managed `audiocpp_server` defaults to 8080. To also run an external server, change
+  the port on one of them, or set `AUDIOCPP_SERVER` so the WebUI reuses the external server.
+- **`model path does not exist` / not installed:** the model isn't installed. Use the model_manager command above or
+  download it in the WebUI.
+- **Out of VRAM:** on 8GB, when running two servers at once both models must fit; for 1.7B, running just one is recommended.
+- **Voice cloning output is too short (ends at ~0.4s):** the `voice_ref` voice isn't clean or `reference_text` is missing;
+  switch to a clean single-speaker reference audio with its matching text.
 
 ---
 
-## API 方式 vs 命令行的性能
+## API vs command-line performance
 
-同一套引擎、同一后端 → **推理本身完全一样**。差别主要在**模型加载的摊销**：
+Same engine, same backend → **inference itself is identical**. The difference is mainly the **amortization of model
+loading**:
 
-- `run_cli_tts.bat` **每次调用都要把模型重新装进显存**（每次固定几秒开销）。
-- `run_server.bat` 的服务**只加载一次、常驻**，之后每个请求只花“推理 + 极小的传输”。
-  本机 HTTP + 几 MB 的 wav 传输 ≈ 毫秒级，相对多秒的推理可忽略（建议用默认二进制 wav，
-  别用 `response_format:"json"` 的 base64，会大约 +33%）。
-- 网页界面（7860）比直连 8088 多一跳代理；其它程序直接打 8088 就没有这一跳。
+- Calling `audiocpp_cli` directly **reloads the model into VRAM on every call** (a fixed few-second overhead each time).
+- The `audiocpp_server` service **loads once and stays resident**, so each subsequent request only spends "inference + a
+  tiny transfer". Local HTTP + a few-MB wav transfer ≈ milliseconds, negligible against multi-second inference (use the
+  default binary wav; avoid the base64 of `response_format:"json"`, which adds about +33%).
+- The web interface (7860) is one proxy hop further than hitting 8080 directly; other programs hitting 8080 directly skip that hop.
 
-**结论**：走 API 每次生成几乎没有额外成本，只有一次性的预热被服务端摊掉了——除了“只生成一次”的
-场景，API 方式通常比反复调 CLI **更快**。
+**Conclusion:** going through the API adds almost no per-generation cost — the one-time warmup is amortized by the
+server. Except for "generate exactly once" cases, the API approach is usually **faster** than repeatedly calling the CLI.

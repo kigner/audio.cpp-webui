@@ -6,6 +6,8 @@
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/core/module.h"
 
+#include <ggml.h>
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -30,6 +32,18 @@ struct BigVganVocoderConfig {
     assets::TensorStorageType weight_storage_type = assets::TensorStorageType::Native;
 };
 
+enum class BigVganActivationLayout {
+    InterleavedPairs,
+    GroupedByStage,
+};
+
+struct BigVganGraphOptions {
+    bool apply_final_activation = true;
+    bool use_tanh_at_final = false;
+    BigVganActivationLayout activation_layout = BigVganActivationLayout::InterleavedPairs;
+    bool use_depthwise_transpose_module = false;
+};
+
 struct BigVganVocoderWeights {
     struct Conv1dWeights {
         core::TensorValue weight;
@@ -45,6 +59,7 @@ struct BigVganVocoderWeights {
 
     struct ConvTranspose1dWeights {
         core::TensorValue conv1d_weight;
+        std::optional<core::TensorValue> transpose_weight;
         std::optional<core::TensorValue> bias;
         int64_t in_channels = 0;
         int64_t out_channels = 0;
@@ -79,6 +94,20 @@ struct BigVganVocoderWeights {
     int64_t loaded_tensor_count = 0;
     int64_t parameter_count = 0;
 };
+
+BigVganVocoderWeights load_direct_bigvgan_from_tensor_source(
+    core::BackendWeightStore & store,
+    const assets::TensorSource & source,
+    const std::string & prefix,
+    BigVganVocoderConfig config,
+    BigVganActivationLayout activation_layout = BigVganActivationLayout::GroupedByStage);
+
+ggml_tensor * build_bigvgan_graph(
+    ggml_context * ctx,
+    core::BackendType backend_type,
+    const BigVganVocoderWeights & weights,
+    ggml_tensor * mel,
+    const BigVganGraphOptions & options = {});
 
 struct BigVganVocoderOutput {
     std::vector<float> waveform;

@@ -591,7 +591,7 @@ PromptEmbeddingState build_prompt_state(
         const int32_t style_token_id = 16;
         const int32_t tps = static_cast<int32_t>(root_config.text_prompt_start_token_id);
         const int32_t tpe = static_cast<int32_t>(root_config.text_prompt_end_token_id);
-
+        
         std::vector<int32_t> text_token_ids;
         text_token_ids.push_back(style_token_id);
         text_token_ids.push_back(tps);

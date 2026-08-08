@@ -26,7 +26,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check loader/catalog sync
+      - name: Check loader/spec sync
         run: |
           python3 tools/check_loader_catalog_sync.py --self-test
           python3 tools/check_loader_catalog_sync.py

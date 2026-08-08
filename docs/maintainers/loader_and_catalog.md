@@ -1,106 +1,75 @@
-# Maintaining Loaders and the Package Catalog
+# Maintaining Loaders and Model-Spec Packages
 
-Integrators (CLI users, servers, and UIs such as Studio) treat two exports as
-**authoritative**:
+For release model downloads, `model_specs/*.json` is the source of truth and
+`tools/model_manager_v2.py` is the only supported manager path.
+
+Integrators treat two surfaces as authoritative:
 
 1. **Runtime loaders** — `audiocpp_cli --list-loaders --json`
-2. **Install packages** — `python tools/model_manager.py list --json`
+2. **Install packages** — `python3 tools/model_manager_v2.py list --json`
 
-Those surfaces must stay in sync. A package that is installable in the catalog
-but whose `family` is missing from `--list-loaders` looks available to users and
-then fails at runtime or in search/install UIs.
+Those surfaces must stay in sync. A package that is installable from
+`model_specs/*.json` but whose `family` is missing from `--list-loaders` looks
+available to users and then fails at runtime or in search/install UIs.
 
-## The rule
+## The Rule
 
-For every **installable, standalone** `ModelPackage`:
+For every installable release package:
 
 | Field | Must match |
 |---|---|
-| `ModelPackage.family` | The loader family string advertised by the C++ loader |
-| `model_specs/<family>.json` | Present when the family uses package-spec loading |
-| `registry.cpp` entry | Uncommented `make_<family>_loader()` (or the family's actual factory name) |
-| `docs/model_manager.md` package table | Lists the package; use **Unavailable** when not installable |
+| `model_specs/<family>.json` `family` | The family id emitted by the runtime loader registry |
+| `model_specs/<family>.json` `packages[]` | Ready-to-use GGUF package entries installable by `model_manager_v2.py` |
+| `CMakeLists.txt` `LOADERS` entry | `make_<family>_loader` or the family's actual factory name so the generated registry includes it |
+| README supported-model table | Lists the released family and its tested runtime format |
 
-Dependency / subcomponent packages (`standalone=False`, with
-`parent_package_id`) do **not** need their own loader.
+New release packages should be standalone GGUF downloads. If a model is not
+available as a ready-to-run GGUF package, keep it out of the release download
+surface until that package exists.
 
-Registered loaders that ship as bundled assets (no downloadable package) are
-allowed. List them in `BUNDLED_LOADERS_WITHOUT_PACKAGE` inside
-`tools/check_loader_catalog_sync.py`.
+## Adding A Model Family
 
-If a loader is not ready for this release tree:
-
-1. Keep it **commented out** in `src/framework/runtime/registry.cpp`, and
-2. Mark matching catalog packages as `UnsupportedSource(reason=...)`, **or**
-   remove them from `CATALOG`, and
-3. Mark the `docs/model_manager.md` package row **Unavailable**.
-
-Do **not** leave a live `SnapshotSource` for a commented-out loader.
-
-Optional catalog↔registry family renames for parked stubs go in
-`PARKED_FAMILY_ALIASES` in the sync check (collapse to one id when re-enabling).
-
-## Checklist: adding a model family
-
-1. Implement `include/engine/models/<family>/` (or `community_models/`) with a
-   loader that overrides `advertised_capabilities()` so tasks/endpoints are
-   explicit.
-2. Register it in `src/framework/runtime/registry.cpp` (include +
-   `available_loaders` entry). Prefer the factory name
-   `make_<family>_loader()` so the id matches the advertised family.
-3. Add `model_specs/<family>.json` when the family needs package-spec discovery.
-4. Add one or more `ModelPackage` entries in `tools/model_manager.py`:
-   - Set `family="<family>"` explicitly when the package id does not strip cleanly
-     to the loader id.
-   - Set `tasks=(...)` when defaults would be ambiguous.
-   - Use `standalone=False` + `parent_package_id` for tokenizers / subcomponents.
-5. Update README supported-model / package tables.
-6. Run:
+1. Implement the family under `src/models/<family>/` or
+   `src/community_models/<family>/`.
+2. Register it in `CMakeLists.txt` with `audiocpp_add_model(... INCLUDES ...
+   LOADERS ...)`.
+3. Add or update `model_specs/<family>.json` with the release metadata,
+   normalized runtime options, sources, and GGUF `packages[]`.
+4. Make one GGUF package the default package unless there is a specific reason
+   to require users to choose a variant.
+5. Update the model guide and README supported-model table.
+6. Check the install and runtime surfaces:
 
 ```bash
-python3 tools/check_loader_catalog_sync.py --self-test
-python3 tools/check_loader_catalog_sync.py
-# after building:
-build/.../bin/audiocpp_cli --list-loaders --json
-python3 tools/model_manager.py list --json
+python3 tools/model_manager_v2.py list --json
+python3 tools/model_manager_v2.py info <family-or-package-id>
+build/debug/bin/audiocpp_cli --list-loaders --json
 ```
 
-Confirm the new family appears in `--list-loaders` and that installable packages
-for that family set `"family"` to the same string.
+Confirm the family appears in both the loader list and the v2 package list.
 
-## Checklist: parking or removing a family
+## Parking Or Removing A Family
 
-1. Comment out the include and `make_*_loader()` entry in `registry.cpp`.
-2. Convert related **standalone** packages to `UnsupportedSource` with a reason
-   that names the missing loader and points at this doc (or delete them).
-3. Leave `family=` / `tasks=` on unsupported entries if useful for history.
-4. Update README so the package row says **Unavailable**.
-5. Run `python3 tools/check_loader_catalog_sync.py`.
+If a loader is not ready for the release tree:
 
-## Family id consistency
+1. Do not include it in an enabled `audiocpp_add_model(... LOADERS ...)` entry.
+2. Do not publish it as a default installable package in `model_specs/*.json`.
+3. Update README and model docs so the family is not advertised as released.
 
-Pick **one** family string and use it everywhere:
+Do not leave a visible GGUF package entry for a family that is not emitted into
+the runtime registry.
 
-- C++ loader / `advertised_capabilities()`
-- `make_<family>_loader()` naming (when practical)
-- `model_specs/<family>.json`
-- `ModelPackage.family`
-- README “Supported Models” family column
+## Family Id Consistency
 
-Integrators match on the string; aliases are not implied unless listed in
-`PARKED_FAMILY_ALIASES` for currently parked stubs.
+Pick one runtime family id and keep it consistent across the surfaces that users
+and tooling match:
 
-## CI
+- `IVoiceModelLoader::family()`, which is what `--list-loaders` emits
+- `model_specs/<family>.json` `family`
+- `CMakeLists.txt` `LOADERS` entry
+- README supported-model family column
 
-`tools/check_loader_catalog_sync.py` runs in GitHub Actions on Linux/macOS/Windows
-builds. It:
-
-- Parses active vs commented `make_*_loader()` calls in `registry.cpp`
-- Compares them to installable standalone packages from `model_manager.py`
-- Cross-checks the `docs/model_manager.md` recommended package table
-- Does **not** require a compiled binary
-
-```bash
-python3 tools/check_loader_catalog_sync.py --self-test
-python3 tools/check_loader_catalog_sync.py
-```
+The factory name in CMake is a registration symbol, not the family id itself.
+Use `make_<family>_loader()` when practical because it is easier to audit, but
+the runtime contract comes from `loader->family()` matching the spec `family`.
+Integrators match on that family string; aliases are not implied.

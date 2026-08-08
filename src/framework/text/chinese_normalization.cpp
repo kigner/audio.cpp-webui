@@ -1,5 +1,8 @@
 #include "engine/framework/text/chinese_normalization.h"
 
+#include "engine/framework/text/text_normalization.h"
+#include "engine/framework/text/utf8.h"
+
 #include <algorithm>
 #include <cctype>
 #include <regex>
@@ -11,18 +14,6 @@
 
 namespace engine::text {
 namespace {
-
-std::string replace_all(std::string text, const std::string & from, const std::string & to) {
-    if (from.empty()) {
-        return text;
-    }
-    size_t pos = 0;
-    while ((pos = text.find(from, pos)) != std::string::npos) {
-        text.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-    return text;
-}
 
 bool is_ascii_digit(char ch) {
     return ch >= '0' && ch <= '9';
@@ -270,6 +261,28 @@ std::string normalize_date_separators(std::string text) {
     return std::regex_replace(text, date_pattern, "$1年$2月$3日");
 }
 
+std::string normalize_percentages(std::string text) {
+    const std::regex percent_pattern(R"((\d+(?:\.\d+)?)%)");
+    for (std::smatch match; std::regex_search(text, match, percent_pattern);) {
+        text.replace(
+            static_cast<size_t>(match.position()),
+            static_cast<size_t>(match.length()),
+            "百分之" + normalize_chinese_numbers(match[1].str()));
+    }
+    return text;
+}
+
+std::string normalize_fractions(std::string text) {
+    const std::regex fraction_pattern(R"((\d+)/(\d+))");
+    for (std::smatch match; std::regex_search(text, match, fraction_pattern);) {
+        text.replace(
+            static_cast<size_t>(match.position()),
+            static_cast<size_t>(match.length()),
+            chinese_cardinal_from_digits(match[2].str()) + "分之" + chinese_cardinal_from_digits(match[1].str()));
+    }
+    return text;
+}
+
 std::string normalize_time_zero_minutes(std::string text) {
     const std::regex time_pattern(R"((\d{1,2}):00)");
     return std::regex_replace(text, time_pattern, "$1点");
@@ -314,12 +327,95 @@ std::string normalize_index_tts_chinese_text(std::string_view text) {
     out = normalize_telephone_runs(std::move(out));
     out = normalize_date_separators(std::move(out));
     out = normalize_time_zero_minutes(std::move(out));
+    out = normalize_percentages(std::move(out));
+    out = normalize_fractions(std::move(out));
     out = normalize_chinese_numbers(out);
 
     restore_saved(out, names);
     restore_saved(out, pinyin_tones);
     out = std::regex_replace(out, std::regex(R"(\s*<H>\s*)"), "-");
     return apply_index_tts_punctuation_map(std::move(out));
+}
+
+struct CodepointSpan {
+    size_t start = 0;
+    size_t end = 0;
+    std::string_view text;
+};
+
+std::vector<CodepointSpan> split_codepoints(std::string_view text, std::string_view label) {
+    std::vector<CodepointSpan> spans;
+    spans.reserve(engine::text::utf8_codepoint_count(text, label));
+    for (size_t pos = 0; pos < text.size();) {
+        const auto ch = static_cast<unsigned char>(text[pos]);
+        size_t width = 0;
+        if (ch <= 0x7FU) {
+            width = 1;
+        } else if ((ch & 0xE0U) == 0xC0U) {
+            width = 2;
+        } else if ((ch & 0xF0U) == 0xE0U) {
+            width = 3;
+        } else if ((ch & 0xF8U) == 0xF0U) {
+            width = 4;
+        } else {
+            throw std::runtime_error(std::string(label) + " contains invalid UTF-8");
+        }
+        spans.push_back({pos, pos + width, text.substr(pos, width)});
+        pos += width;
+    }
+    return spans;
+}
+
+std::string substring_codepoints(const std::string & text, const std::vector<CodepointSpan> & spans, size_t start, size_t end) {
+    if (start >= end) {
+        return {};
+    }
+    return text.substr(spans[start].start, spans[end - 1].end - spans[start].start);
+}
+
+bool is_ascii_non_space(std::string_view ch) noexcept {
+    return ch.size() == 1 && static_cast<unsigned char>(ch.front()) <= 0x7FU && ch.front() != ' ';
+}
+
+std::string remove_blank_between_chinese(const std::string & text) {
+    const auto spans = split_codepoints(text, "Confucius4-TTS text");
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < spans.size(); ++i) {
+        if (spans[i].text == " " && i > 0 && i + 1 < spans.size()) {
+            if (is_ascii_non_space(spans[i - 1].text) && is_ascii_non_space(spans[i + 1].text)) {
+                out.push_back(' ');
+            }
+            continue;
+        }
+        out.append(spans[i].text);
+    }
+    return out;
+}
+
+std::string normalize_confucius4_chinese_text(std::string_view text) {
+    std::string out = remove_blank_between_chinese(std::string(text));
+    out = replace_all(std::move(out), "²", "平方");
+    out = replace_all(std::move(out), "³", "立方");
+    out = replace_all(std::move(out), ".", "。");
+    out = replace_all(std::move(out), " - ", "，");
+    out = replace_all(std::move(out), "（", "");
+    out = replace_all(std::move(out), "）", "");
+    out = replace_all(std::move(out), "【", "");
+    out = replace_all(std::move(out), "】", "");
+    out = replace_all(std::move(out), "`", "");
+    out = replace_all(std::move(out), "——", " ");
+
+    const auto spans = split_codepoints(out, "Confucius4-TTS Chinese text");
+    size_t trim_pos = spans.size();
+    while (trim_pos > 0 &&
+           (spans[trim_pos - 1].text == "，" || spans[trim_pos - 1].text == "," || spans[trim_pos - 1].text == "、")) {
+        --trim_pos;
+    }
+    if (trim_pos != spans.size()) {
+        return substring_codepoints(out, spans, 0, trim_pos) + "。";
+    }
+    return out;
 }
 
 }  // namespace
@@ -331,6 +427,8 @@ std::string ChineseTextNormalizer::normalize(std::string_view text) const {
     switch (target_) {
     case ChineseTextNormalizationTarget::IndexTTS:
         return normalize_index_tts_chinese_text(text);
+    case ChineseTextNormalizationTarget::Confucius4TTS:
+        return normalize_confucius4_chinese_text(text);
     }
     throw std::runtime_error("unsupported Chinese text normalization target");
 }

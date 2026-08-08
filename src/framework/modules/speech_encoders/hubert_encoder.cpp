@@ -43,6 +43,9 @@ void validate_config(const HubertEncoderConfig & config) {
     if (config.output_hidden_layer > config.num_hidden_layers) {
         throw std::runtime_error("HuBERT output layer cannot exceed hidden layer count");
     }
+    if (config.final_projection_size < 0) {
+        throw std::runtime_error("HuBERT final projection size cannot be negative");
+    }
     if (config.hidden_size % config.num_attention_heads != 0 ||
         config.hidden_size % config.num_conv_pos_embedding_groups != 0) {
         throw std::runtime_error("HuBERT hidden size must be divisible by head and positional-conv group counts");
@@ -88,10 +91,16 @@ LinearWeights linear_weights(const HubertEncoderWeights & weights, const std::st
         require_tensor(weights, prefix + ".bias")};
 }
 
-Conv1dWeights conv1d_weights(const HubertEncoderWeights & weights, const std::string & prefix) {
-    return Conv1dWeights{
-        require_tensor(weights, prefix + ".weight"),
-        require_tensor(weights, prefix + ".bias")};
+Conv1dWeights conv1d_weights(
+    const HubertEncoderWeights & weights,
+    const std::string & prefix,
+    bool use_bias = true) {
+    Conv1dWeights out;
+    out.weight = require_tensor(weights, prefix + ".weight");
+    if (use_bias) {
+        out.bias = require_tensor(weights, prefix + ".bias");
+    }
+    return out;
 }
 
 core::TensorValue contiguous(core::ModuleBuildContext & ctx, const core::TensorValue & value) {
@@ -114,6 +123,36 @@ core::TensorValue scale(
     const core::TensorValue & value,
     float factor) {
     return core::wrap_tensor(ggml_scale(ctx.ggml, contiguous(ctx, value).tensor, factor), value.shape, GGML_TYPE_F32);
+}
+
+core::TensorValue group_norm_affine(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const NormWeights & weights,
+    float eps) {
+    auto input_f32 = input.type == GGML_TYPE_F32
+        ? input
+        : core::wrap_tensor(ggml_cast(ctx.ggml, contiguous(ctx, input).tensor, GGML_TYPE_F32), input.shape, GGML_TYPE_F32);
+    auto mean = ReduceMeanModule({2}).build(ctx, input_f32);
+    auto mean_rep = core::wrap_tensor(ggml_repeat(ctx.ggml, mean.tensor, input_f32.tensor), input_f32.shape, GGML_TYPE_F32);
+    auto centered = core::wrap_tensor(ggml_sub(ctx.ggml, input_f32.tensor, mean_rep.tensor), input_f32.shape, GGML_TYPE_F32);
+    auto variance = ReduceMeanModule({2}).build(ctx, MulModule().build(ctx, centered, centered));
+    auto stddev = core::wrap_tensor(
+        ggml_sqrt(ctx.ggml, ggml_scale_bias(ctx.ggml, variance.tensor, 1.0F, eps)),
+        variance.shape,
+        GGML_TYPE_F32);
+    auto stddev_rep = core::wrap_tensor(ggml_repeat(ctx.ggml, stddev.tensor, input_f32.tensor), input_f32.shape, GGML_TYPE_F32);
+    auto out = core::wrap_tensor(ggml_div(ctx.ggml, centered.tensor, stddev_rep.tensor), input_f32.shape, GGML_TYPE_F32);
+    auto gamma = core::reshape_tensor(ctx, *weights.weight, core::TensorShape::from_dims({1, input.shape.dims[1], 1}));
+    auto beta = core::reshape_tensor(ctx, *weights.bias, core::TensorShape::from_dims({1, input.shape.dims[1], 1}));
+    out = core::wrap_tensor(
+        ggml_mul(ctx.ggml, out.tensor, ggml_repeat(ctx.ggml, gamma.tensor, out.tensor)),
+        out.shape,
+        GGML_TYPE_F32);
+    return core::wrap_tensor(
+        ggml_add(ctx.ggml, out.tensor, ggml_repeat(ctx.ggml, beta.tensor, out.tensor)),
+        out.shape,
+        GGML_TYPE_F32);
 }
 
 int64_t conv1d_output_frames(int64_t input_frames, int64_t kernel, int64_t stride, int64_t padding) {
@@ -152,6 +191,54 @@ std::vector<float> effective_weight_norm_conv1d(
     return weight;
 }
 
+std::string join_name(const std::string & lhs, const std::string & rhs) {
+    if (lhs.empty()) {
+        return rhs;
+    }
+    if (rhs.empty()) {
+        return lhs;
+    }
+    return lhs + "." + rhs;
+}
+
+std::string indexed_prefix(const std::string & prefix, int64_t index) {
+    return join_name(prefix, std::to_string(index));
+}
+
+core::TensorValue load_tensor_alias(
+    HubertEncoderWeights & weights,
+    const engine::assets::TensorSource & source,
+    const std::string & source_name,
+    engine::assets::TensorStorageType storage_type,
+    const std::vector<int64_t> & shape) {
+    weights.parameter_count += tensor_elements(shape);
+    ++weights.loaded_tensor_count;
+    return storage_type == engine::assets::TensorStorageType::F32
+        ? weights.store->load_f32_tensor(source, source_name, shape)
+        : weights.store->load_tensor(source, source_name, storage_type, shape);
+}
+
+void put_tensor_alias(
+    HubertEncoderWeights & weights,
+    const engine::assets::TensorSource & source,
+    const std::string & logical_name,
+    const std::string & source_name,
+    engine::assets::TensorStorageType storage_type,
+    const std::vector<int64_t> & shape) {
+    weights.tensors.emplace(
+        logical_name,
+        load_tensor_alias(weights, source, source_name, storage_type, shape));
+}
+
+void put_f32_tensor_alias(
+    HubertEncoderWeights & weights,
+    const engine::assets::TensorSource & source,
+    const std::string & logical_name,
+    const std::string & source_name,
+    const std::vector<int64_t> & shape) {
+    put_tensor_alias(weights, source, logical_name, source_name, engine::assets::TensorStorageType::F32, shape);
+}
+
 core::TensorValue grouped_pos_conv(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input_bct,
@@ -188,7 +275,8 @@ core::TensorValue build_self_attention(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & hidden_btc,
     const HubertEncoderWeights & weights,
-    int64_t layer_index) {
+    int64_t layer_index,
+    const core::TensorValue * attention_mask) {
     const auto & config = weights.config;
     const int64_t head_dim = config.hidden_size / config.num_attention_heads;
     const std::string prefix = "encoder.layers." + std::to_string(layer_index) + ".attention";
@@ -216,6 +304,13 @@ core::TensorValue build_self_attention(
     const auto k_t = TransposeModule({{0, 1, 3, 2}, 4}).build(ctx, k);
     auto scores = MatMulModule().build(ctx, q, k_t);
     scores = scale(ctx, scores, static_cast<float>(1.0 / std::sqrt(static_cast<double>(head_dim))));
+    if (attention_mask != nullptr) {
+        auto repeated_mask = core::wrap_tensor(
+            ggml_repeat(ctx.ggml, attention_mask->tensor, scores.tensor),
+            scores.shape,
+            GGML_TYPE_F32);
+        scores = AddModule{}.build(ctx, scores, repeated_mask);
+    }
     auto attn = core::wrap_tensor(ggml_soft_max(ctx.ggml, contiguous(ctx, scores).tensor), scores.shape, GGML_TYPE_F32);
     auto context = MatMulModule().build(ctx, attn, v);
     context = TransposeModule({{0, 2, 1, 3}, 4}).build(ctx, context);
@@ -244,8 +339,22 @@ core::TensorValue build_feed_forward(
 core::TensorValue build_hubert_graph(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input_values,
-    const HubertEncoderWeights & weights) {
+    const HubertEncoderWeights & weights,
+    const HubertEncoderRunConfig & run_config,
+    std::vector<std::pair<core::TensorValue, std::vector<float>>> & graph_inputs) {
     const auto & config = weights.config;
+    const int64_t output_hidden_layer = run_config.output_hidden_layer >= 0
+        ? run_config.output_hidden_layer
+        : config.output_hidden_layer;
+    if (output_hidden_layer < 0) {
+        throw std::runtime_error("HuBERT run output layer cannot be negative");
+    }
+    if (output_hidden_layer > config.num_hidden_layers) {
+        throw std::runtime_error("HuBERT run output layer cannot exceed hidden layer count");
+    }
+    if (run_config.apply_final_projection && config.final_projection_size <= 0) {
+        throw std::runtime_error("HuBERT run requested final projection but no projection is configured");
+    }
     auto hidden = core::reshape_tensor(
         ctx,
         input_values,
@@ -254,6 +363,7 @@ core::TensorValue build_hubert_graph(
     int64_t frames = input_values.shape.dims[1];
     for (size_t index = 0; index < config.conv_dim.size(); ++index) {
         const std::string prefix = "feature_extractor.conv_layers." + std::to_string(index);
+        const bool use_conv_bias = config.feature_extractor_norm == HubertFeatureExtractorNorm::LayerNormEveryLayer;
         hidden = Conv1dModule({
             in_channels,
             config.conv_dim[index],
@@ -261,11 +371,15 @@ core::TensorValue build_hubert_graph(
             static_cast<int>(config.conv_stride[index]),
             0,
             1,
-            true}).build(ctx, hidden, conv1d_weights(weights, prefix + ".conv"));
-        hidden = transpose_bct_btc(ctx, hidden);
-        hidden = LayerNormModule({config.conv_dim[index], config.layer_norm_eps, true, true})
-                     .build(ctx, hidden, norm_weights(weights, prefix + ".layer_norm"));
-        hidden = transpose_bct_btc(ctx, hidden);
+            use_conv_bias}).build(ctx, hidden, conv1d_weights(weights, prefix + ".conv", use_conv_bias));
+        if (config.feature_extractor_norm == HubertFeatureExtractorNorm::LayerNormEveryLayer) {
+            hidden = transpose_bct_btc(ctx, hidden);
+            hidden = LayerNormModule({config.conv_dim[index], config.layer_norm_eps, true, true})
+                         .build(ctx, hidden, norm_weights(weights, prefix + ".layer_norm"));
+            hidden = transpose_bct_btc(ctx, hidden);
+        } else if (index == 0) {
+            hidden = group_norm_affine(ctx, hidden, norm_weights(weights, prefix + ".layer_norm"), config.layer_norm_eps);
+        }
         hidden = GeluModule({GeluApproximation::ExactErf}).build(ctx, hidden);
         frames = conv1d_output_frames(frames, config.conv_kernel[index], config.conv_stride[index], 0);
         in_channels = config.conv_dim[index];
@@ -286,20 +400,56 @@ core::TensorValue build_hubert_graph(
         hidden = add_same(ctx, hidden, pos);
     }
 
-    for (int64_t layer = 0; layer < config.output_hidden_layer; ++layer) {
-        const std::string prefix = "encoder.layers." + std::to_string(layer);
-        const auto attn_residual = hidden;
+    if (config.apply_encoder_input_layer_norm) {
         hidden = LayerNormModule({config.hidden_size, config.layer_norm_eps, true, true})
-                     .build(ctx, hidden, norm_weights(weights, prefix + ".layer_norm"));
-        hidden = build_self_attention(ctx, hidden, weights, layer);
-        hidden = add_same(ctx, attn_residual, hidden);
-        const auto ff_in = LayerNormModule({config.hidden_size, config.layer_norm_eps, true, true})
-                               .build(ctx, hidden, norm_weights(weights, prefix + ".final_layer_norm"));
-        hidden = add_same(ctx, hidden, build_feed_forward(ctx, ff_in, weights, layer));
+                     .build(ctx, hidden, norm_weights(weights, "encoder.layer_norm"));
+    }
+
+    const int64_t raw_tokens = hidden.shape.dims[1];
+    core::TensorValue attention_mask;
+    if (config.pad_odd_tokens_with_attention_mask && raw_tokens % 2 != 0) {
+        hidden = PaddingModule({raw_tokens + 1}).build(ctx, hidden);
+        attention_mask = core::make_tensor(
+            ctx,
+            GGML_TYPE_F32,
+            core::TensorShape::from_dims({1, 1, 1, hidden.shape.dims[1]}));
+        std::vector<float> mask(static_cast<size_t>(hidden.shape.dims[1]), 0.0F);
+        mask.back() = -1.0e4F;
+        graph_inputs.push_back({attention_mask, std::move(mask)});
+    }
+
+    for (int64_t layer = 0; layer < output_hidden_layer; ++layer) {
+        const std::string prefix = "encoder.layers." + std::to_string(layer);
+        if (config.encoder_layer_norm_order == HubertEncoderLayerNormOrder::PreNorm) {
+            const auto attn_residual = hidden;
+            hidden = LayerNormModule({config.hidden_size, config.layer_norm_eps, true, true})
+                         .build(ctx, hidden, norm_weights(weights, prefix + ".layer_norm"));
+            hidden = build_self_attention(ctx, hidden, weights, layer, attention_mask.valid() ? &attention_mask : nullptr);
+            hidden = add_same(ctx, attn_residual, hidden);
+            const auto ff_in = LayerNormModule({config.hidden_size, config.layer_norm_eps, true, true})
+                                   .build(ctx, hidden, norm_weights(weights, prefix + ".final_layer_norm"));
+            hidden = add_same(ctx, hidden, build_feed_forward(ctx, ff_in, weights, layer));
+        } else {
+            auto attn = build_self_attention(ctx, hidden, weights, layer, attention_mask.valid() ? &attention_mask : nullptr);
+            hidden = add_same(ctx, hidden, attn);
+            hidden = LayerNormModule({config.hidden_size, config.layer_norm_eps, true, true})
+                         .build(ctx, hidden, norm_weights(weights, prefix + ".self_attn_layer_norm"));
+            auto ff = build_feed_forward(ctx, hidden, weights, layer);
+            hidden = add_same(ctx, hidden, ff);
+            hidden = LayerNormModule({config.hidden_size, config.layer_norm_eps, true, true})
+                         .build(ctx, hidden, norm_weights(weights, prefix + ".final_layer_norm"));
+        }
+    }
+    if (hidden.shape.dims[1] != raw_tokens) {
+        hidden = SliceModule({1, 0, raw_tokens}).build(ctx, hidden);
     }
     if (config.apply_final_layer_norm) {
         hidden = LayerNormModule({config.hidden_size, config.layer_norm_eps, true, true})
                      .build(ctx, hidden, norm_weights(weights, "encoder.layer_norm"));
+    }
+    if (run_config.apply_final_projection) {
+        hidden = LinearModule({config.hidden_size, config.final_projection_size, true, GGML_PREC_F32})
+                     .build(ctx, hidden, linear_weights(weights, "final_proj"));
     }
     return hidden;
 }
@@ -317,7 +467,11 @@ public:
         release_graph();
     }
 
-    HubertEncoderOutput encode(const std::vector<float> & input_values, int64_t batch, int64_t samples) {
+    HubertEncoderOutput encode(
+        const std::vector<float> & input_values,
+        int64_t batch,
+        int64_t samples,
+        HubertEncoderRunConfig run_config) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (batch != 1) {
             throw std::runtime_error("HuBERT encoder currently requires batch size 1");
@@ -325,8 +479,11 @@ public:
         if (samples <= 0 || static_cast<int64_t>(input_values.size()) != batch * samples) {
             throw std::runtime_error("HuBERT encoder input size mismatch");
         }
-        ensure_graph(batch, samples);
+        ensure_graph(batch, samples, run_config);
         core::write_tensor_f32(input_, input_values);
+        for (const auto & graph_input : graph_inputs_) {
+            core::write_tensor_f32(graph_input.first, graph_input.second);
+        }
         if (engine::core::compute_backend_graph(weights_->execution_context->backend(), graph_) != GGML_STATUS_SUCCESS) {
             throw std::runtime_error("ggml_backend_graph_compute failed for HuBERT encoder");
         }
@@ -356,12 +513,22 @@ private:
         graph_ = nullptr;
         input_ = {};
         output_ = {};
+        graph_inputs_.clear();
         batch_ = 0;
         samples_ = 0;
+        output_hidden_layer_ = -1;
+        apply_final_projection_ = false;
     }
 
-    void ensure_graph(int64_t batch, int64_t samples) {
-        if (ggml_ != nullptr && batch_ == batch && samples_ == samples) {
+    void ensure_graph(int64_t batch, int64_t samples, const HubertEncoderRunConfig & run_config) {
+        const int64_t output_hidden_layer = run_config.output_hidden_layer >= 0
+            ? run_config.output_hidden_layer
+            : weights_->config.output_hidden_layer;
+        if (ggml_ != nullptr &&
+            batch_ == batch &&
+            samples_ == samples &&
+            output_hidden_layer_ == output_hidden_layer &&
+            apply_final_projection_ == run_config.apply_final_projection) {
             return;
         }
         release_graph();
@@ -379,8 +546,9 @@ private:
             "framework.hubert.encode",
             weights_->execution_context->config().type};
         input_ = core::make_tensor(ctx, GGML_TYPE_F32, core::TensorShape::from_dims({batch, samples}));
-        output_ = build_hubert_graph(ctx, input_, *weights_);
+        output_ = build_hubert_graph(ctx, input_, *weights_, run_config, graph_inputs_);
         graph_ = ggml_new_graph_custom(ggml_, 131072, false);
+        ggml_set_output(output_.tensor);
         ggml_build_forward_expand(graph_, output_.tensor);
         gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(weights_->execution_context->backend()));
         if (gallocr_ == nullptr ||
@@ -391,6 +559,8 @@ private:
         }
         batch_ = batch;
         samples_ = samples;
+        output_hidden_layer_ = output_hidden_layer;
+        apply_final_projection_ = run_config.apply_final_projection;
     }
 
     std::shared_ptr<const HubertEncoderWeights> weights_;
@@ -400,8 +570,11 @@ private:
     ggml_cgraph * graph_ = nullptr;
     core::TensorValue input_;
     core::TensorValue output_;
+    std::vector<std::pair<core::TensorValue, std::vector<float>>> graph_inputs_;
     int64_t batch_ = 0;
     int64_t samples_ = 0;
+    int64_t output_hidden_layer_ = -1;
+    bool apply_final_projection_ = false;
 };
 
 }  // namespace
@@ -418,6 +591,18 @@ HubertEncoderComponent HubertEncoderComponent::load_from_tensor_source(
     std::shared_ptr<const engine::assets::TensorSource> source,
     core::BackendConfig backend,
     HubertEncoderConfig config) {
+    return load_from_tensor_source(
+        std::move(source),
+        std::move(backend),
+        std::move(config),
+        HubertEncoderWeightBinding{});
+}
+
+HubertEncoderComponent HubertEncoderComponent::load_from_tensor_source(
+    std::shared_ptr<const engine::assets::TensorSource> source,
+    core::BackendConfig backend,
+    HubertEncoderConfig config,
+    HubertEncoderWeightBinding binding) {
     if (source == nullptr) {
         throw std::runtime_error("HuBERT tensor source is missing");
     }
@@ -432,41 +617,209 @@ HubertEncoderComponent HubertEncoderComponent::load_from_tensor_source(
         "framework.hubert.weights",
         1024ull * 1024ull * 1024ull);
 
-    const auto tensors = source->tensors();
-    weights->tensors.reserve(tensors.size());
-    for (const auto & tensor : tensors) {
-        try {
-            (void) engine::assets::tensor_storage_type_for_dtype(tensor.dtype);
-        } catch (const std::exception &) {
-            throw std::runtime_error("HuBERT contains unsupported tensor dtype for " + tensor.name + ": " + tensor.dtype);
+    const auto & config_ref = weights->config;
+    weights->tensors.reserve(static_cast<size_t>(config_ref.num_hidden_layers * 12 + config_ref.conv_dim.size() * 3 + 8));
+    for (int64_t index = 0; index < static_cast<int64_t>(config_ref.conv_dim.size()); ++index) {
+        const auto logical_layer = indexed_prefix("feature_extractor.conv_layers", index);
+        const auto source_layer = indexed_prefix(binding.feature_extractor_layers, index);
+        const int64_t in_channels = index == 0 ? config_ref.conv_in_channels : config_ref.conv_dim[static_cast<size_t>(index - 1)];
+        put_tensor_alias(
+            *weights,
+            *source,
+            join_name(logical_layer, "conv.weight"),
+            join_name(join_name(source_layer, binding.feature_extractor_conv), "weight"),
+            binding.conv_storage_type,
+            {config_ref.conv_dim[static_cast<size_t>(index)], in_channels, config_ref.conv_kernel[static_cast<size_t>(index)]});
+        if (config_ref.feature_extractor_norm == HubertFeatureExtractorNorm::LayerNormEveryLayer) {
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(logical_layer, "conv.bias"),
+                join_name(join_name(source_layer, binding.feature_extractor_conv), "bias"),
+                {config_ref.conv_dim[static_cast<size_t>(index)]});
         }
-        if (tensor.name == "encoder.pos_conv_embed.conv.weight_g" ||
-            tensor.name == "encoder.pos_conv_embed.conv.weight_v" ||
-            tensor.name == "masked_spec_embed") {
-            continue;
+        if (config_ref.feature_extractor_norm == HubertFeatureExtractorNorm::LayerNormEveryLayer ||
+            index == 0) {
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(logical_layer, "layer_norm.weight"),
+                join_name(join_name(source_layer, binding.feature_extractor_layer_norm), "weight"),
+                {config_ref.conv_dim[static_cast<size_t>(index)]});
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(logical_layer, "layer_norm.bias"),
+                join_name(join_name(source_layer, binding.feature_extractor_layer_norm), "bias"),
+                {config_ref.conv_dim[static_cast<size_t>(index)]});
         }
-        weights->parameter_count += tensor_elements(tensor.shape);
-        weights->tensors.emplace(
-            tensor.name,
-            weights->store->load_f32_tensor(*source, tensor.name, tensor.shape));
-        ++weights->loaded_tensor_count;
     }
+    put_f32_tensor_alias(
+        *weights,
+        *source,
+        "feature_projection.layer_norm.weight",
+        join_name(binding.feature_projection_layer_norm, "weight"),
+        {config_ref.conv_dim.back()});
+    put_f32_tensor_alias(
+        *weights,
+        *source,
+        "feature_projection.layer_norm.bias",
+        join_name(binding.feature_projection_layer_norm, "bias"),
+        {config_ref.conv_dim.back()});
+    put_tensor_alias(
+        *weights,
+        *source,
+        "feature_projection.projection.weight",
+        join_name(binding.feature_projection_projection, "weight"),
+        binding.projection_storage_type,
+        {config_ref.hidden_size, config_ref.conv_dim.back()});
+    put_f32_tensor_alias(
+        *weights,
+        *source,
+        "feature_projection.projection.bias",
+        join_name(binding.feature_projection_projection, "bias"),
+        {config_ref.hidden_size});
     weights->tensors.emplace(
         "encoder.pos_conv_embed.conv.weight",
-        weights->store->make_f32(
+        weights->store->make_from_f32(
             core::TensorShape::from_dims({
-                weights->config.hidden_size,
-                weights->config.hidden_size / weights->config.num_conv_pos_embedding_groups,
-                weights->config.num_conv_pos_embeddings}),
+                config_ref.hidden_size,
+                config_ref.hidden_size / config_ref.num_conv_pos_embedding_groups,
+                config_ref.num_conv_pos_embeddings}),
+            binding.positional_conv_storage_type,
             effective_weight_norm_conv1d(
                 *source,
-                "encoder.pos_conv_embed.conv",
-                weights->config.hidden_size,
-                weights->config.hidden_size / weights->config.num_conv_pos_embedding_groups,
-                weights->config.num_conv_pos_embeddings)));
+                binding.positional_conv,
+                config_ref.hidden_size,
+                config_ref.hidden_size / config_ref.num_conv_pos_embedding_groups,
+                config_ref.num_conv_pos_embeddings)));
+    weights->parameter_count += config_ref.hidden_size *
+        (config_ref.hidden_size / config_ref.num_conv_pos_embedding_groups) *
+        config_ref.num_conv_pos_embeddings;
     ++weights->loaded_tensor_count;
+    put_f32_tensor_alias(
+        *weights,
+        *source,
+        "encoder.pos_conv_embed.conv.bias",
+        join_name(binding.positional_conv, "bias"),
+        {config_ref.hidden_size});
+    if (config_ref.apply_encoder_input_layer_norm || config_ref.apply_final_layer_norm) {
+        put_f32_tensor_alias(
+            *weights,
+            *source,
+            "encoder.layer_norm.weight",
+            join_name(binding.encoder_layer_norm, "weight"),
+            {config_ref.hidden_size});
+        put_f32_tensor_alias(
+            *weights,
+            *source,
+            "encoder.layer_norm.bias",
+            join_name(binding.encoder_layer_norm, "bias"),
+            {config_ref.hidden_size});
+    }
+    for (int64_t layer = 0; layer < config_ref.num_hidden_layers; ++layer) {
+        const auto logical_layer = indexed_prefix("encoder.layers", layer);
+        const auto source_layer = indexed_prefix(binding.encoder_layers, layer);
+        const auto logical_attention = join_name(logical_layer, "attention");
+        const auto source_attention = join_name(source_layer, binding.layer.attention);
+        for (const std::string proj : {"q_proj", "k_proj", "v_proj", "out_proj"}) {
+            put_tensor_alias(
+                *weights,
+                *source,
+                join_name(join_name(logical_attention, proj), "weight"),
+                join_name(join_name(source_attention, proj), "weight"),
+                binding.attention_storage_type,
+                {config_ref.hidden_size, config_ref.hidden_size});
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(join_name(logical_attention, proj), "bias"),
+                join_name(join_name(source_attention, proj), "bias"),
+                {config_ref.hidden_size});
+        }
+        if (config_ref.encoder_layer_norm_order == HubertEncoderLayerNormOrder::PreNorm) {
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(logical_layer, "layer_norm.weight"),
+                join_name(join_name(source_layer, binding.layer.pre_attention_layer_norm), "weight"),
+                {config_ref.hidden_size});
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(logical_layer, "layer_norm.bias"),
+                join_name(join_name(source_layer, binding.layer.pre_attention_layer_norm), "bias"),
+                {config_ref.hidden_size});
+        } else {
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(logical_layer, "self_attn_layer_norm.weight"),
+                join_name(join_name(source_layer, binding.layer.post_attention_layer_norm), "weight"),
+                {config_ref.hidden_size});
+            put_f32_tensor_alias(
+                *weights,
+                *source,
+                join_name(logical_layer, "self_attn_layer_norm.bias"),
+                join_name(join_name(source_layer, binding.layer.post_attention_layer_norm), "bias"),
+                {config_ref.hidden_size});
+        }
+        put_tensor_alias(
+            *weights,
+            *source,
+            join_name(logical_layer, "feed_forward.intermediate_dense.weight"),
+            join_name(join_name(source_layer, binding.layer.feed_forward_intermediate), "weight"),
+            binding.feed_forward_storage_type,
+            {config_ref.intermediate_size, config_ref.hidden_size});
+        put_f32_tensor_alias(
+            *weights,
+            *source,
+            join_name(logical_layer, "feed_forward.intermediate_dense.bias"),
+            join_name(join_name(source_layer, binding.layer.feed_forward_intermediate), "bias"),
+            {config_ref.intermediate_size});
+        put_tensor_alias(
+            *weights,
+            *source,
+            join_name(logical_layer, "feed_forward.output_dense.weight"),
+            join_name(join_name(source_layer, binding.layer.feed_forward_output), "weight"),
+            binding.feed_forward_storage_type,
+            {config_ref.hidden_size, config_ref.intermediate_size});
+        put_f32_tensor_alias(
+            *weights,
+            *source,
+            join_name(logical_layer, "feed_forward.output_dense.bias"),
+            join_name(join_name(source_layer, binding.layer.feed_forward_output), "bias"),
+            {config_ref.hidden_size});
+        put_f32_tensor_alias(
+            *weights,
+            *source,
+            join_name(logical_layer, "final_layer_norm.weight"),
+            join_name(join_name(source_layer, binding.layer.final_layer_norm), "weight"),
+            {config_ref.hidden_size});
+        put_f32_tensor_alias(
+            *weights,
+            *source,
+            join_name(logical_layer, "final_layer_norm.bias"),
+            join_name(join_name(source_layer, binding.layer.final_layer_norm), "bias"),
+            {config_ref.hidden_size});
+    }
+    if (config_ref.final_projection_size > 0) {
+        put_tensor_alias(
+            *weights,
+            *source,
+            "final_proj.weight",
+            join_name(binding.final_projection, "weight"),
+            binding.final_projection_storage_type,
+            {config_ref.final_projection_size, config_ref.hidden_size});
+        put_f32_tensor_alias(
+            *weights,
+            *source,
+            "final_proj.bias",
+            join_name(binding.final_projection, "bias"),
+            {config_ref.final_projection_size});
+    }
     if (weights->loaded_tensor_count <= 0) {
-        throw std::runtime_error("HuBERT safetensors file contains no tensors");
+        throw std::runtime_error("HuBERT tensor source contains no loaded tensors");
     }
     weights->store->upload();
     source->release_storage();
@@ -513,10 +866,18 @@ HubertEncoderOutput HubertEncoderComponent::encode(
     const std::vector<float> & input_values,
     int64_t batch,
     int64_t samples) const {
+    return encode(input_values, batch, samples, {});
+}
+
+HubertEncoderOutput HubertEncoderComponent::encode(
+    const std::vector<float> & input_values,
+    int64_t batch,
+    int64_t samples,
+    HubertEncoderRunConfig run_config) const {
     if (state_ == nullptr || state_->runner == nullptr) {
         throw std::runtime_error("HuBERT component is not initialized");
     }
-    return state_->runner->encode(input_values, batch, samples);
+    return state_->runner->encode(input_values, batch, samples, run_config);
 }
 
 void HubertEncoderComponent::release_runtime_graph() {

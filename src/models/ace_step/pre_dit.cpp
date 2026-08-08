@@ -687,73 +687,8 @@ AceStepPreDitInputs AceStepPreDitRuntime::prepare(
         out.context_latents_non_cover = build_context_latents(silence_latents, out.chunk_mask);
     }
     engine::debug::timing_log_scalar("ace_step.pre_dit.context_latents_ms", engine::debug::elapsed_ms(context_start, Clock::now()));
-
-    // Flow-edit remix: build source-side conditioning (different text/lyrics, shared audio context)
-    if (route.task == AceStepTaskType::Remix) {
-        out.is_flow_edit = true;
-        const std::string src_caption =
-            request.source_caption.empty() ? request.prompt : request.source_caption;
-        out.src_text_prompt = trim_to_valid_tokens(tokenizer_.tokenize_text(
-            ace_step_build_dit_caption_prompt(
-                dit_instruction, src_caption, metadata,
-                request.generation.duration_seconds),
-            256));
-        out.src_lyrics_prompt = trim_to_valid_tokens(tokenizer_.tokenize_text(
-            ace_step_format_lyrics(request.source_lyrics, lyric_language),
-            2048));
-        out.src_text_hidden_states = text_encoder_->encode(out.src_text_prompt);
-        out.src_lyric_token_embeddings = text_encoder_->embed_tokens(out.src_lyrics_prompt);
-        out.src_encoder_hidden_states = condition_encoder_->encode(
-            out.src_text_hidden_states,
-            out.src_lyric_token_embeddings,
-            refer_audio_acoustic_hidden_states_packed,
-            1,
-            assets_->config.diffusion.timbre_fix_frame,
-            {0});
-        out.src_context_latents = out.context_latents;
-        engine::debug::trace_log_scalar("ace_step.pre_dit.flow_edit_src_tokens",
-            static_cast<int64_t>(out.src_encoder_hidden_states.tokens));
-    }
-
     engine::debug::timing_log_scalar("ace_step.pre_dit.total_ms", engine::debug::elapsed_ms(total_start, Clock::now()));
     return out;
-}
-
-std::vector<int32_t> AceStepPreDitRuntime::encode_source_audio_codes(
-    const runtime::AudioBuffer & audio,
-    uint32_t seed) const {
-    const auto total_start = Clock::now();
-    const runtime::AudioBuffer normalized = normalize_audio_to_stereo_48k(audio);
-    if (is_silent_audio(normalized)) {
-        throw std::runtime_error("ACE-Step analyze source audio appears to be silent");
-    }
-    ensure_vae_encoder();
-    // Analyze is an understanding task: use the posterior mean instead of a
-    // sampled latent so the FSQ codes (and thus caption/metas) are stable
-    // across runs regardless of seed.
-    AceStepLatents latents = vae_encoder_->encode(
-        normalized, seed, std::string(), /*posterior_mean=*/true);
-    if (execution_->backend_type() == core::BackendType::Metal) {
-        release_vae_encoder();
-    }
-    const int64_t max_latent_length = std::max<int64_t>(128, latents.frames);
-    latents = align_latents_to_length(
-        latents,
-        silence_latent_,
-        silence_latent_frames_,
-        silence_latent_channels_,
-        max_latent_length);
-    ensure_cover_tokenizer();
-    std::vector<int32_t> codes = cover_tokenizer_->encode_audio_codes(
-        latents,
-        silence_latent_,
-        silence_latent_frames_,
-        silence_latent_channels_);
-    engine::debug::trace_log_scalar("ace_step.pre_dit.analyze_codes", static_cast<int64_t>(codes.size()));
-    engine::debug::timing_log_scalar(
-        "ace_step.pre_dit.analyze_codes_ms",
-        engine::debug::elapsed_ms(total_start, Clock::now()));
-    return codes;
 }
 
 void AceStepPreDitRuntime::ensure_text_encoder() const {

@@ -99,6 +99,7 @@ struct DepthwiseConvTranspose1dWeights {
 class DepthwiseConvTranspose1dModule {
 public:
     explicit DepthwiseConvTranspose1dModule(DepthwiseConvTranspose1dConfig config);
+    // Accepts [channels, frames] or [1, channels, frames] input with a [channels, 1, 1, kernel] FIR weight.
     core::TensorValue build(
         core::ModuleBuildContext & ctx,
         const core::TensorValue & input,

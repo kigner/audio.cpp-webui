@@ -4,7 +4,6 @@
 
 #include <cmath>
 #include <stdexcept>
-#include <vector>
 
 namespace engine::modules {
 namespace {
@@ -59,35 +58,22 @@ core::TensorValue repeat_kv_heads(core::ModuleBuildContext & ctx, const core::Te
     if (repeats == 1) {
         return input;
     }
+    auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
+    const int64_t batch = contiguous.shape.dims[0];
+    const int64_t kv_heads = contiguous.shape.dims[1];
+    const int64_t steps = contiguous.shape.dims[2];
+    const int64_t dim = contiguous.shape.dims[3];
     auto expanded = core::reshape_tensor(
         ctx,
-        input,
-        core::TensorShape::from_dims({
-            input.shape.dims[0],
-            input.shape.dims[1],
-            1,
-            input.shape.dims[2],
-            input.shape.dims[3],
-        }));
-    std::vector<core::TensorValue> heads;
-    heads.reserve(static_cast<size_t>(repeats));
-    for (int64_t repeat = 0; repeat < repeats; ++repeat) {
-        heads.push_back(expanded);
-    }
-    auto repeated = heads.front();
-    for (size_t index = 1; index < heads.size(); ++index) {
-        repeated = ConcatModule({2}).build(ctx, repeated, heads[index]);
-    }
-    repeated = core::ensure_backend_addressable_layout(ctx, repeated);
+        contiguous,
+        core::TensorShape::from_dims({batch, kv_heads, 1, steps * dim}));
+    expanded = RepeatModule({core::TensorShape::from_dims({batch, kv_heads, repeats, steps * dim})})
+                   .build(ctx, expanded);
+    expanded = core::ensure_backend_addressable_layout(ctx, expanded);
     return core::reshape_tensor(
         ctx,
-        repeated,
-        core::TensorShape::from_dims({
-            input.shape.dims[0],
-            input.shape.dims[1] * repeats,
-            input.shape.dims[2],
-            input.shape.dims[3],
-        }));
+        expanded,
+        core::TensorShape::from_dims({batch, kv_heads * repeats, steps, dim}));
 }
 
 core::TensorValue build_flash_grouped(

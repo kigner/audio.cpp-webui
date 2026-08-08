@@ -4,7 +4,10 @@
 
 #include "engine/framework/audio/wav_reader.h"
 
+#include <cmath>
 #include <filesystem>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -34,6 +37,10 @@ void set_option_from_json_field(
 }
 
 }  // namespace
+
+bool is_stdin_audio_source(std::string_view audio_arg) {
+    return audio_arg == "-";
+}
 
 engine::runtime::AudioBuffer read_audio_buffer(const std::filesystem::path & path) {
     const auto wav = engine::audio::read_wav_f32(path);
@@ -70,7 +77,14 @@ std::string json_option_string(const engine::io::json::Value & value) {
         return value.as_bool() ? "true" : "false";
     }
     if (value.is_number()) {
-        return engine::io::json::stringify_number(value.as_number());
+        const double number = value.as_number();
+        constexpr double kMaxExactJsonInteger = 9007199254740992.0;  // 2^53
+        if (std::isfinite(number) && std::trunc(number) == number && std::fabs(number) < kMaxExactJsonInteger) {
+            std::ostringstream out;
+            out << std::fixed << std::setprecision(0) << number;
+            return out.str();
+        }
+        return engine::io::json::stringify_number(number);
     }
     return engine::io::json::stringify(value);
 }
@@ -259,7 +273,17 @@ engine::runtime::TaskRequest build_request_from_cli(int argc, char ** argv) {
         request.text_input = engine::runtime::Transcript{*text, language};
     }
     if (const auto audio_path = find_arg(argc, argv, "--audio")) {
-        request.audio_input = read_audio_buffer(std::filesystem::path(*audio_path));
+        if (is_stdin_audio_source(*audio_path)) {
+            // Live PCM arrives chunk by chunk, so only the format contract is known up front.
+            // The samples stay empty; the streaming driver pulls them from stdin instead.
+            request.audio_input = engine::runtime::AudioBuffer{
+                parse_int_arg(argc, argv, "--input-rate", 16000),
+                parse_int_arg(argc, argv, "--input-channels", 1),
+                {},
+            };
+        } else {
+            request.audio_input = read_audio_buffer(std::filesystem::path(*audio_path));
+        }
     }
     engine::runtime::VoiceCondition voice;
     bool has_voice = false;

@@ -9,7 +9,7 @@
 namespace engine::models::ace_step {
 namespace {
 
-constexpr std::array<AceStepTaskRoute, 9> kRoutes = {{
+constexpr std::array<AceStepTaskRoute, 7> kRoutes = {{
     // task, name, planner, source policy, source duration lock,
     // repaint window, preserve repaint source, cover conditioning, DiT
     // instruction, missing component.
@@ -95,36 +95,6 @@ constexpr std::array<AceStepTaskRoute, 9> kRoutes = {{
         false,
         false,
         "Complete the input track:",
-        "",
-    },
-    {
-        AceStepTaskType::Remix,
-        "remix",
-        false,
-        AceStepSourceAudioPolicy::Required,
-        true,
-        false,
-        false,
-        true,
-        // Python's Remix mode is the cover task + flow-edit overlay; the DiT was
-        // trained on the cover instruction. An invented "Remix ..." instruction is
-        // OOD text conditioning and collapses the latents to near-silence.
-        "Generate audio semantic tokens based on the given conditions:",
-        "",
-    },
-    {
-        // Understanding-only route: source audio -> semantic codes -> 5Hz LM
-        // reverse inference (caption/lyrics/bpm/keyscale/...). No diffusion,
-        // returns text; handled early in AceStepSession::run.
-        AceStepTaskType::Analyze,
-        "analyze",
-        false,
-        AceStepSourceAudioPolicy::Required,
-        true,
-        false,
-        false,
-        false,
-        "",
         "",
     },
 }};
@@ -227,8 +197,7 @@ bool ace_step_route_has_missing_component(const AceStepTaskRoute & route) {
 }
 
 bool ace_step_request_uses_flow_edit_morph(const AceStepRequest & request) {
-    return request.task == AceStepTaskType::Remix ||
-           (request.task == AceStepTaskType::TextToMusic && request.generation.flow_edit_morph);
+    return request.task == AceStepTaskType::TextToMusic && request.generation.flow_edit_morph;
 }
 
 }  // namespace engine::models::ace_step

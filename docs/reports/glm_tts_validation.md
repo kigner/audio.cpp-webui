@@ -52,7 +52,7 @@ reference transcript:  If you actually care about security
 Install the package with:
 
 ```powershell
-python tools\model_manager.py install glm_tts --models-dir ..\models
+python tools\model_manager_deprecated.py install glm_tts --models-dir ..\models
 ```
 
 The installer downloads `zai-org/GLM-TTS`, converts Flow and HiFT from the
@@ -286,8 +286,8 @@ continue through the previous pooling graph. The regression probe
 `campplus_shared_default_probe` was compiled once against unmodified main and
 once against this branch; both emitted the same 192 serialized values.
 
-The request options `flow_noise_file`, `hift_source_random_file`, and
-`hift_prior_noise_values` expose stochastic boundaries for targeted parity
+The request options `flow_noise_path`, `hift_source_random_path`, and
+`hift_prior_noise_count` expose stochastic boundaries for targeted parity
 tests without adding normal-request log spam.
 
 ## Normal sampled-path parity

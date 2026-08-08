@@ -1,5 +1,6 @@
 #include "engine/framework/core/backend.h"
 #include "engine/framework/modules/attention/scaled_dot_product_attention.h"
+#include "engine/framework/modules/structural_modules.h"
 
 #include <ggml-backend.h>
 #include <ggml.h>
@@ -33,6 +34,15 @@ struct SdpaCase {
 struct RunResult {
     std::vector<float> values;
     double compute_ms = 0.0;
+};
+
+struct RepeatCase {
+    const char * name;
+    int64_t batch;
+    int64_t kv_heads;
+    int64_t repeats;
+    int64_t steps;
+    int64_t head_dim;
 };
 
 struct DiffStats {
@@ -207,6 +217,153 @@ private:
     engine::core::TensorValue output_;
 };
 
+// The old ManualRepeat path expressed this as a rank-5 reshape, then concatenated
+// repeated slices. ggml tensors are rank-4, so this keeps the same flattened
+// layout and concat semantics in the representable [B, KV, R, T * D] form.
+engine::core::TensorValue legacy_concat_repeat_kv_heads(
+    engine::core::ModuleBuildContext & ctx,
+    const engine::core::TensorValue & input,
+    int64_t repeats) {
+    if (repeats == 1) {
+        return input;
+    }
+    const int64_t batch = input.shape.dims[0];
+    const int64_t kv_heads = input.shape.dims[1];
+    const int64_t steps = input.shape.dims[2];
+    const int64_t dim = input.shape.dims[3];
+    auto expanded = engine::core::reshape_tensor(
+        ctx,
+        input,
+        engine::core::TensorShape::from_dims({batch, kv_heads, 1, steps * dim}));
+    std::vector<engine::core::TensorValue> heads;
+    heads.reserve(static_cast<size_t>(repeats));
+    for (int64_t repeat = 0; repeat < repeats; ++repeat) {
+        heads.push_back(expanded);
+    }
+    auto repeated = heads.front();
+    for (size_t index = 1; index < heads.size(); ++index) {
+        repeated = engine::modules::ConcatModule({2}).build(ctx, repeated, heads[index]);
+    }
+    repeated = engine::core::ensure_backend_addressable_layout(ctx, repeated);
+    return engine::core::reshape_tensor(
+        ctx,
+        repeated,
+        engine::core::TensorShape::from_dims({batch, kv_heads * repeats, steps, dim}));
+}
+
+engine::core::TensorValue current_4d_repeat_kv_heads(
+    engine::core::ModuleBuildContext & ctx,
+    const engine::core::TensorValue & input,
+    int64_t repeats) {
+    if (repeats == 1) {
+        return input;
+    }
+    auto contiguous = engine::core::ensure_backend_addressable_layout(ctx, input);
+    const int64_t batch = contiguous.shape.dims[0];
+    const int64_t kv_heads = contiguous.shape.dims[1];
+    const int64_t steps = contiguous.shape.dims[2];
+    const int64_t dim = contiguous.shape.dims[3];
+    auto expanded = engine::core::reshape_tensor(
+        ctx,
+        contiguous,
+        engine::core::TensorShape::from_dims({batch, kv_heads, 1, steps * dim}));
+    expanded = engine::modules::RepeatModule({engine::core::TensorShape::from_dims({batch, kv_heads, repeats, steps * dim})})
+                   .build(ctx, expanded);
+    expanded = engine::core::ensure_backend_addressable_layout(ctx, expanded);
+    return engine::core::reshape_tensor(
+        ctx,
+        expanded,
+        engine::core::TensorShape::from_dims({batch, kv_heads * repeats, steps, dim}));
+}
+
+void run_manual_repeat_parity_case(const RepeatCase & test_case) {
+    auto backend = engine::core::init_backend({engine::core::BackendType::Cuda, 0, 8});
+    ggml_init_params params{};
+    params.mem_size = kGraphBytes;
+    params.mem_buffer = nullptr;
+    params.no_alloc = true;
+    ggml_context * ggml = ggml_init(params);
+    if (ggml == nullptr) {
+        throw std::runtime_error("failed to initialize manual repeat parity context");
+    }
+
+    engine::core::ModuleBuildContext ctx{};
+    ctx.ggml = ggml;
+    ctx.module_instance_name = "manual_repeat.parity";
+    ctx.backend_type = engine::core::BackendType::Cuda;
+
+    const auto input_shape = engine::core::TensorShape::from_dims({
+        test_case.batch,
+        test_case.kv_heads,
+        test_case.steps,
+        test_case.head_dim,
+    });
+    auto input = engine::core::make_tensor(ctx, GGML_TYPE_F32, input_shape);
+    auto legacy = legacy_concat_repeat_kv_heads(ctx, input, test_case.repeats);
+    auto current = current_4d_repeat_kv_heads(ctx, input, test_case.repeats);
+
+    auto * graph = ggml_new_graph_custom(ggml, kGraphNodes, false);
+    ggml_build_forward_expand(graph, legacy.tensor);
+    ggml_build_forward_expand(graph, current.tensor);
+    auto buffer = ggml_backend_alloc_ctx_tensors(ggml, backend);
+    if (buffer == nullptr) {
+        ggml_free(ggml);
+        ggml_backend_free(backend);
+        throw std::runtime_error("failed to allocate manual repeat parity tensors");
+    }
+
+    const auto input_values = make_patterned_f32(
+        static_cast<size_t>(test_case.batch * test_case.kv_heads * test_case.steps * test_case.head_dim),
+        0.73F,
+        0.21F);
+    engine::core::write_tensor_f32(input, input_values);
+    const ggml_status status = ggml_backend_graph_compute(backend, graph);
+    ggml_backend_synchronize(backend);
+    if (status != GGML_STATUS_SUCCESS) {
+        ggml_backend_buffer_free(buffer);
+        ggml_free(ggml);
+        ggml_backend_free(backend);
+        std::ostringstream oss;
+        oss << "manual repeat parity graph compute failed with status " << static_cast<int>(status);
+        throw std::runtime_error(oss.str());
+    }
+
+    std::vector<float> legacy_values;
+    std::vector<float> current_values;
+    engine::core::read_tensor_f32_into(legacy.tensor, legacy_values);
+    engine::core::read_tensor_f32_into(current.tensor, current_values);
+    const auto stats = diff_stats(legacy_values, current_values);
+    std::cout << test_case.name
+              << " legacy_concat_vs_current_4d_repeat"
+              << " max_abs=" << stats.max_abs
+              << " mean_abs=" << stats.mean_abs
+              << " cosine=" << stats.cosine << "\n";
+    if (stats.max_abs > 0.0F || stats.mean_abs > 0.0) {
+        std::ostringstream oss;
+        oss << test_case.name << " manual repeat parity mismatch: max_abs=" << stats.max_abs
+            << " mean_abs=" << stats.mean_abs << " cosine=" << stats.cosine;
+        ggml_backend_buffer_free(buffer);
+        ggml_free(ggml);
+        ggml_backend_free(backend);
+        throw std::runtime_error(oss.str());
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ggml);
+    ggml_backend_free(backend);
+}
+
+void run_manual_repeat_parity_cases() {
+    const std::vector<RepeatCase> cases = {
+        {"manual_repeat_kv_2x", 1, 2, 2, 5, 7},
+        {"manual_repeat_kv_4x", 2, 1, 4, 3, 8},
+        {"manual_repeat_kv_single", 1, 3, 1, 4, 5},
+    };
+    for (const auto & test_case : cases) {
+        run_manual_repeat_parity_case(test_case);
+    }
+}
+
 void run_case(const SdpaCase & test_case) {
     SdpaRunner explicit_runner(test_case, engine::modules::ScaledDotProductAttentionLowering::Explicit);
     SdpaRunner flash_runner(test_case, engine::modules::ScaledDotProductAttentionLowering::Flash);
@@ -253,6 +410,8 @@ void run_case(const SdpaCase & test_case) {
 }  // namespace
 
 int main() try {
+    run_manual_repeat_parity_cases();
+
     const std::vector<SdpaCase> cases = {
         {"moss_qwen_prefill_128", 1, 32, 128, 128, 128, true},
         {"moss_qwen_prefill_96", 1, 32, 96, 96, 128, true},

@@ -22,6 +22,8 @@ cat > server.json <<'JSON'
   "device": 0,
   "threads": 1,
   "lazy_load": true,
+  "log_request_body": false,
+  "max_request_body_bytes": 2147483648,
   "models": [
     {
       "id": "pocket-tts",
@@ -34,6 +36,9 @@ cat > server.json <<'JSON'
       },
       "session_options": {
         "language": "english"
+      },
+      "default_request_options": {
+        "speaking_rate": 1.0
       },
       "default_voice_preset": {
         "voice_id": "alba"
@@ -74,6 +79,12 @@ Set top-level `"lazy_load": true` to register all configured model ids at startu
 > [!WARNING]
 > Lazy loading does not unload models after a request. Once a model is first used, the server keeps that model and session in memory for reuse until the server exits.
 
+Set per-model `"default_request_options"` to apply request-option defaults to every request for that model. Values supplied by the actual request body override these defaults.
+
+Set top-level `"max_request_body_bytes"` to bound the largest HTTP request body buffered in host RAM before routing. This protects endpoints that accept JSON or audio uploads from unbounded `Content-Length` claims. The default is `2147483648` bytes (2 GiB). Raise or lower it to match the largest upload your deployment intends to accept. Values above `2^53 - 1` are rejected because this config parser stores JSON numbers as doubles.
+
+Set top-level `"log_request_body": true` and start the server with `--log` to print full JSON request bodies for debugging. This is off by default, and both switches are required so prompt text, paths, and request options are not logged accidentally. Audio bodies are not printed; multipart uploads log filename and byte count, while raw or live/chunked audio requests log only route, content type, query, and size/stream metadata.
+
 ### Experimental CORS
 
 CORS is disabled by default. For trusted local browser demos, enable it explicitly:
@@ -99,7 +110,7 @@ The bound is resolved in three layers, since model runtimes differ by orders of 
 
 1. **Server** — top-level `"busy_timeout_ms"` (or `--busy-timeout-ms`) sets the fleet default.
 2. **Model** — `"busy_timeout_ms"` on an entry in `"models"` overrides that default for one model, and becomes the ceiling for requests to it.
-3. **Request** — `"busy_timeout_ms"` in the request body (or as a `busy_timeout_ms` form field on multipart transcription) lets a caller bound its own wait.
+3. **Request** — `"busy_timeout_ms"` in the request body (or as a `busy_timeout_ms` form field on multipart transcription, or a `busy_timeout_ms` query parameter on the live-ingest route, whose body is audio and has nowhere to put JSON) lets a caller bound its own wait.
 
 A request may ask for a **shorter** bound than the model's ceiling but never a longer one — `effective = min(request, ceiling)` — so a client cannot weaken the guard and reintroduce the hang it prevents. Because `0` means "unbounded", it compares as infinity on both sides: a request asking for `0` is still capped by the model ceiling, while under a ceiling of `0` a request's own bound is honored.
 
@@ -178,6 +189,8 @@ For multiple server-side presets, use `voice_presets` and optionally point `defa
 }
 ```
 
+Define `voice_presets` once and put every named preset inside that object. Duplicate JSON keys are rejected so a config cannot silently drop presets.
+
 When a request sends `"voice": "assistant"`, the server uses that configured preset. When `"voice"` does not match a configured preset, it is passed through as the model-native cached voice id, preserving the previous behavior.
 
 ## Start
@@ -217,6 +230,10 @@ curl http://127.0.0.1:8080/v1/audio/speech \
     "seed": 1234
   }'
 ```
+
+For full `uint64` seed values, pass `seed` as a JSON string. JSON numeric seeds
+below `2^53` are accepted, but larger JSON numbers may lose precision before
+option parsing.
 
 If no request voice is provided and the configured model has `default_voice_preset`, the server injects that preset automatically. Request-level `voice`, `voice_ref`, and `reference_text` override the configured default.
 
@@ -276,6 +293,80 @@ curl -N http://127.0.0.1:8080/v1/audio/transcriptions \
 ```
 
 The stream emits `transcript.text.delta` events, one final `transcript.text.done` event containing the full transcript, then `data: [DONE]`.
+
+Note that `stream=true` streams the *output* of an already-uploaded file: the whole recording is sent first, and the deltas describe decoding it. It shortens time-to-first-token on long audio, but nothing can appear while the speaker is still talking. For that, use the live endpoint below.
+
+### `POST /v1/audio/transcriptions/live`
+
+Streams raw PCM **as it is captured** and returns transcript deltas on the same connection, so partial text can appear while the user is still speaking.
+
+The request body is raw interleaved PCM sent with `Transfer-Encoding: chunked`; the response is the same SSE event shape as `stream=true` above, so a client can share one reader. There is no multipart form and no file — the audio never has to exist on disk, and the transport hands each chunk to the model as it arrives rather than assembling the recording first. Whether the *model* then keeps the whole utterance in memory is its own business: `nemotron_asr`, for instance, accumulates internally regardless of how the audio reaches it.
+
+Because the body carries audio rather than JSON, parameters are query parameters:
+
+| parameter | default | meaning |
+| --- | --- | --- |
+| `model` | required | id of a model configured with `mode: "streaming"` |
+| `sample_rate` | `16000` | samples per second of the PCM being sent |
+| `channels` | `1` | interleaved channel count |
+| `sample_format` | `s16le` | `s16le` or `f32le` |
+| `language` | unset | passed through to the model |
+| `busy_timeout_ms` | model policy | how long to wait for the model lock, as elsewhere; clamped by the configured ceiling, so a request can shorten its own wait but never weaken the guard |
+
+```bash
+# Microphone straight into transcription (macOS; -f alsa on Linux, -f dshow on Windows)
+ffmpeg -f avfoundation -i ":0" -ar 16000 -ac 1 -f s16le - \
+  | curl -N -X POST -H 'Expect:' -T - \
+      'http://127.0.0.1:8080/v1/audio/transcriptions/live?model=voxtral-realtime&sample_rate=16000&channels=1&sample_format=s16le'
+```
+
+`-T -` is what makes this live, and it is not interchangeable with `--data-binary @-`: the latter drains stdin to completion before opening the connection, which turns a live capture back into a file upload and defeats the endpoint. `-H 'Expect:'` suppresses curl's `Expect: 100-continue`, which the server does not answer — without it curl waits out its one-second continue timeout before sending any audio. (`-T .` reads stdin non-blocking; measured against this endpoint it behaves the same, so either works.)
+
+A headerless stream carries no format, so the parameters above are a contract the server cannot verify — sending 48 kHz audio while declaring 16 kHz produces a confident, wrong transcript rather than an error.
+
+Whether partial text actually appears *during* capture is a property of the model, not of this endpoint. A model that decodes incrementally (`voxtral_realtime`) emits deltas throughout the utterance; one whose encoder consumes the whole utterance before decoding (`nemotron_asr`) will stream its deltas only after the audio ends. Both work here; only the first feels live.
+
+The request ends when the client sends the terminating chunk. Closing the connection without one is an error, not an end of speech — a truncated transcript that arrives as a normal `transcript.text.done` would be indistinguishable from the speaker stopping, so the endpoint refuses to produce one. The same applies to a stall past the idle timeout, an oversized chunk, or a malformed frame: each surfaces as an SSE `error` event.
+
+Because the model is held for the length of the request, the body is bounded on several axes:
+
+| key | default | meaning |
+| --- | --- | --- |
+| `idle_timeout_ms` | 30 s | longest wait for more data once the reader asks for it |
+| `total_timeout_ms` | 600 s | checked at every point the body advances, so it caps the whole request |
+| `max_body_bytes` | 512 MiB | received body bytes, framing included |
+| `max_chunk_bytes` | 8 MiB | largest single declared chunk |
+| `send_timeout_ms` | 30 s | `SO_SNDTIMEO` on the connection, so a client that stops reading the SSE response cannot hold the model open |
+
+Those defaults suit one dictation at a time. Continuous captioning needs a longer deadline, and a trusted deployment may want a different trade entirely, so they are configurable — server-wide under `live_ingest`, with any subset overridden per model:
+
+```json
+{
+  "live_ingest": { "total_timeout_ms": 600000, "max_chunk_bytes": 8388608 },
+  "models": [
+    {
+      "id": "voxtral-realtime",
+      "family": "voxtral_realtime",
+      "mode": "streaming",
+      "live_ingest": { "total_timeout_ms": 1800000 }
+    }
+  ]
+}
+```
+
+A model entry sets only the values it needs and inherits the rest, so raising one bound for a long-capture model does not mean restating the whole policy and letting it drift. `0` means *disabled*, the same convention as `busy_timeout_ms`; a negative value is rejected at startup rather than silently treated as "no bound". The exception is `max_chunk_bytes`, which must stay positive and is rejected at `0`: a chunk is materialized in memory before it is served, so an unbounded one is not implementable, and the same value backs the overflow check that rejects a declared chunk size of `SIZE_MAX`. The keys are only consulted for this route, since no other one delivers its body incrementally.
+
+`sample_rate` and `channels` are range-checked too (1000–384000 and 1–16), and are not configurable: they size the model's per-chunk buffer, so an absurd value would be an allocation request made while the model lock is held.
+
+**Deployment.** This endpoint streams the request body and the response on one connection at the same time. That is legal HTTP/1.1, but it needs a direct connection or a proxy that does not buffer requests. Behind nginx both of these are required, because `proxy_request_buffering off` still buffers a chunked body unless the upstream connection is HTTP/1.1:
+
+```nginx
+proxy_http_version 1.1;
+proxy_request_buffering off;
+proxy_buffering off;
+```
+
+A browser cannot drive it: `fetch()` request streaming requires HTTP/2 and is half-duplex by specification — the whole request is sent before the response is processed. It is intended for native clients — `curl`, an `ffmpeg` pipe, or a backend service. A WebSocket transport would suit browsers and intermediaries better and could be added alongside this without changing it.
 
 ### `GET /v1/audio/voices?model=<id>`
 

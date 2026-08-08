@@ -23,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check loader/catalog sync
+      - name: Check loader/spec sync
         shell: pwsh
         run: |
           python tools/check_loader_catalog_sync.py --self-test
