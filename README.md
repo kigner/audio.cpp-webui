@@ -45,6 +45,8 @@ audio.cpp would not be moving this quickly without generous contributors bringin
 ## News
 
 > [!IMPORTANT]
+> **2026-08-09 - Windows WebUI v0.5.1:** Model loading now returns to the WebUI immediately after the backend is ready instead of waiting for Hugging Face update checks; package-update information remains available in the download status area. The merged Qwen3 forced-aligner update also accepts punctuation-only transcript fragments and returns them without word timestamps instead of failing. Existing updater-enabled portable installs can upgrade directly from v0.2.0 through v0.5.0. [Download or update to v0.5.1](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.5.1-windows-prebuilt).
+>
 > **2026-08-08 - Windows WebUI v0.5.0:** The stable Windows portable release now combines audio.cpp 0.5 with the local WebUI, including resilient resumable model downloads, one-click model installation, in-WebUI GGUF conversion and cleanup, safer Qwen3-TTS long-text chunking, append-only Parakeet-TDT streaming transcript deltas, and automatic 16 kHz mono preparation for Parakeet streaming ASR. Existing updater-enabled portable installs can upgrade directly from v0.2.0 through v0.4.2. [Download or update to v0.5.0](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.5.0-windows-prebuilt).
 >
 > **2026-08-03 - Irodori-TTS v4 Small:** Irodori-TTS v4 Small is now available as the preferred Japanese TTS package, with GGUF Q8/F16 builds covering no-reference TTS, voice cloning, and caption-based voice design in one checkpoint.
