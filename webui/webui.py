@@ -2456,7 +2456,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
                 and (session_options or {}) == (_loaded_session_options or {})
                 and want_mode == (_loaded_mode or entry.get("mode", "offline"))):
             return _t("✅ 已加载：{label}{mode}", "✅ Loaded: {label}{mode}",
-                      label=entry["label"], mode=mode_note) + model_update_note(entry)
+                      label=entry["label"], mode=mode_note)
 
         if not managed_alive and server_alive():
             # A server we didn't launch is holding the port.
@@ -2472,7 +2472,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
                     host=HOST, port=PORT, mode=mode))
             if model_id in loaded_ids():
                 return _t("✅ 复用外部 server：{label}",
-                          "✅ Using external server: {label}", label=entry["label"]) + model_update_note(entry)
+                          "✅ Using external server: {label}", label=entry["label"])
             raise gr.Error(_t(
                 "检测到外部 server 占用 {host}:{port}，请先关闭或设置 AUDIOCPP_SERVER。",
                 "An external server is using {host}:{port}. Stop it or set AUDIOCPP_SERVER.",
@@ -2502,7 +2502,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
                    "model {label} loaded{mode_note}, elapsed {seconds:.1f}s",
                    label=entry['label'], mode_note=mode_note, seconds=time.time() - t0))
         return _t("✅ 已加载：{label}{mode}", "✅ Loaded: {label}{mode}",
-                  label=entry["label"], mode=mode_note) + model_update_note(entry)
+                  label=entry["label"], mode=mode_note)
 
 
 def unload_model():
