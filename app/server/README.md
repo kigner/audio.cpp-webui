@@ -193,6 +193,43 @@ Define `voice_presets` once and put every named preset inside that object. Dupli
 
 When a request sends `"voice": "assistant"`, the server uses that configured preset. When `"voice"` does not match a configured preset, it is passed through as the model-native cached voice id, preserving the previous behavior.
 
+### Voice library (`voice_dir`)
+
+Set server-level `"voice_dir"` to a directory of built-in voice wav files plus a `prompt_text` mapping file, so a request `"voice": "demo_01_man"` clones `voice_dir/demo_01_man.wav` the same way the WebUI's voice tab does — no `voice_ref` / `reference_text` needed from the caller:
+
+```json
+{
+  "voice_dir": "/absolute/path/to/voice",
+  "models": [
+    {
+      "id": "qwen3-tts",
+      "family": "qwen3_tts",
+      "path": "/absolute/path/to/models/Qwen3-TTS",
+      "task": "tts",
+      "mode": "offline"
+    }
+  ]
+}
+```
+
+The directory holds one `.wav` per built-in voice ('demo_01_man.wav', 'demo_02_woman.wav'...) and a `prompt_text` file with one `<basename-without-extension>|<transcript>` line per voice:
+
+```
+demo_01_man|okay,I'm Cemo and what you just heard wasn't a human voice.
+demo_02_woman|以前我对这句话一知半解，现在好像有点懂了。因为你我开始留意很多以前不曾关心的事，开始对这个世界有了更多的好奇和善意。
+```
+
+Relative `voice_dir` paths resolve against the config file's directory. When a request sends `"voice"` that is not a configured model preset, the server checks `<voice_dir>/<name>.wav`; if the file exists it is loaded as the cloning reference, and the `<name>` transcript from `prompt_text` is injected as `reference_text` unless the request already provides one.
+
+Resolution precedence for a TTS request's voice fields:
+
+1. `voice_ref` — always wins.
+2. `voice` matching a configured model preset — preset wins.
+3. `voice` matching a wav basename in `voice_dir` — voice-library clone.
+4. Otherwise — `voice` is used as the model-native cached voice id (previous behavior).
+
+`GET /v1/audio/voices` also lists the `voice_dir` wav basenames (deduplicated against preset names). If `voice_dir` is unset, behavior is exactly as before.
+
 ## Start
 
 ```bash
@@ -256,7 +293,7 @@ curl -N http://127.0.0.1:8080/v1/audio/speech \
   }'
 ```
 
-The SSE stream emits `speech.audio.delta` events with base64 PCM chunks, then `speech.audio.done`, then `data: [DONE]`. VoxCPM2 streaming requires `retry_badcase=false` because retrying a completed bad case is an offline-only behavior. Set `"stream_format": "audio"` with `"response_format": "pcm"` to receive raw PCM bytes over chunked transfer encoding instead.
+The SSE stream emits `speech.audio.delta` events with base64 mono PCM16 chunks, then `speech.audio.done`, then `data: [DONE]`. The delta payload does not carry a WAV header or sample rate, so PCM clients must use the configured family's output rate: VoxCPM2 and DotTTS 48 kHz, Confucius4-TTS 22.05 kHz, NeuTTS and OmniVoice 24 kHz, and Supertonic 3 44.1 kHz. VoxCPM2 and DotTTS emit intra-generation chunks; Confucius4-TTS, NeuTTS, OmniVoice, and Supertonic emit completed text segments/chunks. VoxCPM2 streaming requires `retry_badcase=false` because retrying a completed bad case is an offline-only behavior. Set `"stream_format": "audio"` with `"response_format": "pcm"` to receive raw PCM bytes over chunked transfer encoding instead.
 
 ### `POST /v1/audio/transcriptions`
 
@@ -370,7 +407,7 @@ A browser cannot drive it: `fetch()` request streaming requires HTTP/2 and is ha
 
 ### `GET /v1/audio/voices?model=<id>`
 
-Lists the cached voice ids and configured server voice preset names available for a TTS model, so a client can populate a voice picker instead of guessing generic names. For families that keep voice presets under `model_root/embeddings/*.safetensors` (`pocket_tts` today), this returns those ids too. If `model` is omitted and the server has exactly one configured model, that model is used; if multiple models are configured, omit `model` only when an empty list is acceptable.
+Lists the cached voice ids, configured server voice preset names, and voice-library (`voice_dir`) wav names available for a TTS model, so a client can populate a voice picker instead of guessing generic names. For families that keep voice presets under `model_root/embeddings/*.safetensors` (`pocket_tts` today), this returns those ids too. If `model` is omitted and the server has exactly one configured model, that model is used; if multiple models are configured, omit `model` only when an empty list is acceptable.
 
 ```bash
 curl 'http://127.0.0.1:8080/v1/audio/voices?model=pocket-tts'
@@ -396,4 +433,43 @@ curl http://127.0.0.1:8080/v1/tasks/run \
       "seed": 1234
     }
   }'
+```
+
+### `POST /v1/tasks/unload_models`
+
+Unload specific models from memory to free resources (e.g. VRAM on GPU backends). Subsequent requests to an unloaded model will trigger a transparent reload. The server waits for any in-flight inference on each target model to complete before unloading it.
+
+The request body must contain a `model_ids` array of strings. Unknown ids are reported in the response rather than causing an error. Models that are not yet loaded (e.g. lazy-loaded models that have not been requested yet) are skipped silently.
+
+```bash
+curl http://127.0.0.1:8080/v1/tasks/unload_models \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model_ids": ["pocket-tts", "qwen3-asr"]
+  }'
+```
+
+Response:
+
+```json
+{
+  "unloaded": ["pocket-tts", "qwen3-asr"],
+  "not_found": []
+}
+```
+
+### `POST /v1/tasks/unload_all_models`
+
+Unload all currently loaded models from memory. No request body is required. As with the selective endpoint, subsequent requests will reload models transparently.
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/tasks/unload_all_models
+```
+
+Response:
+
+```json
+{
+  "unloaded": ["pocket-tts", "qwen3-asr"]
+}
 ```

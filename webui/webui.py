@@ -573,11 +573,15 @@ MODELS_ROOT = os.path.join(BUNDLE_ROOT, "models")
 
 
 def _find_spec_model_manager():
-    for c in (os.environ.get("AUDIOCPP_MODEL_MANAGER_V2"),
+    """Locate the local Python-WebUI manager without crossing into upstream.
+
+    The embedded native UI owns tools/model_manager_v2.py.  Keeping that path
+    out of this resolver prevents either UI from silently inheriting the other
+    manager's CLI and download semantics.
+    """
+    for c in (os.environ.get("AUDIOCPP_WEBUI_MODEL_MANAGER"),
               os.path.join(HERE, "model_manager_webui.py"),
-              os.path.join(BUNDLE_ROOT, "webui", "model_manager_webui.py"),
-              os.path.join(BUNDLE_ROOT, "tools", "model_manager_v2.py"),
-              os.path.join(PROJECT_ROOT, "tools", "model_manager_v2.py")):
+              os.path.join(BUNDLE_ROOT, "webui", "model_manager_webui.py")):
         if c and os.path.isfile(c):
             return c
     return None
@@ -624,7 +628,7 @@ ASR_TASKS = ("asr",)
 GEN_TASKS = ("gen",)   # music/SFX generation, served via the generic /v1/tasks/run route
 VC_TASKS = ("vc", "svc", "s2s")           # 声音转换：源音频 + 目标音色，走 /v1/tasks/run
 SEP_TASKS = ("sep",)                      # 音源分离：多轨 named_audio_outputs
-ANALYZE_TASKS = ("vad", "diar", "align")  # 音频分析：segments / speaker_turns / words
+ANALYZE_TASKS = ("vad", "diar", "align", "midi")  # 音频分析：segments / speaker_turns / words / MIDI
 VDES_TASKS = ("vdes",)                    # 声音设计：文字 + 音色描述，走 /v1/audio/speech
 
 # Per-family behavior for the TTS tab, keyed by catalog `family`. This is how we
@@ -654,7 +658,7 @@ MODEL_PROFILES = {
     "voxcpm2": {
         "input_hint": (
             "**VoxCPM2** 声音克隆：上传干净的单人参考音色并填『参考文本』；长文本自动分段；"
-            "支持⚡流式生成（生成模式选『流式』，边生成边播放）。"),
+            "支持⚡细粒度流式生成（生成模式选『流式』，边生成边播放）。"),
         # 服务端流式（server mode=streaming + /v1/audio/speech stream_format=sse）：
         # delta 事件是 base64 的裸 PCM16，不带采样率——只能客户端自带。取值来自模型
         # config.json 的 audio_vae.out_sample_rate（48000）。流式生成要求显式
@@ -672,6 +676,21 @@ MODEL_PROFILES = {
         #   ~106 字→cap1024→7722MiB（偏紧）。所以每段要短：60 字→cap≤512→~6.4G，
         #   留 ~1.7G 给其它占 GPU 的程序。想少接缝可上调，但注意 8G 边界。
         "chunk_chars": 60,
+    },
+    "dots_tts": {
+        "input_hint": (
+            "**DotTTS SOAR / MeanFlow** 多语种 TTS 与声音克隆：上传参考音色并填写"
+            "『参考文本』可获得更稳定的克隆效果；支持⚡细粒度流式生成。"),
+        # DotTTS AudioVAE package config uses 48 kHz output. Unlike pull-event
+        # families, its FinalResult session emits vocoder chunks through the sink
+        # while the current request is still being synthesized.
+        "supports_streaming": True,
+        "stream_sample_rate": 48000,
+        "lang_map": {
+            "chinese": "zh", "english": "en", "french": "fr", "german": "de",
+            "italian": "it", "japanese": "ja", "korean": "ko", "portuguese": "pt",
+            "russian": "ru", "spanish": "es",
+        },
     },
     "qwen3_tts": {
         "input_hint": (
@@ -700,13 +719,31 @@ MODEL_PROFILES = {
     "confucius4_tts": {
         "input_hint": (
             "**Confucius4-TTS**：必须提供参考音色；当前中文/英语路径更可靠，"
-            "非中英语种仍在验证中。"),
+            "非中英语种仍在验证中；支持按文本段输出的⚡流式生成。"),
         "lang_map": {
             "chinese": "zh", "english": "en", "japanese": "ja", "korean": "ko",
             "french": "fr", "german": "de", "italian": "it", "portuguese": "pt",
             "russian": "ru", "spanish": "es",
         },
         "require_voice": True,
+        "supports_streaming": True,
+        "stream_sample_rate": 22050,
+    },
+    "neutts": {
+        "input_hint": (
+            "**NeuTTS 2E** 英语预置音色 TTS：在『高级参数』选择 voice_id 与 emotion；"
+            "支持按文本段输出的⚡流式生成，不使用参考音频。"),
+        "lang_map": {"english": "en"},
+        "accepts_voice_reference": False,
+        "supports_streaming": True,
+        "stream_sample_rate": 24000,
+    },
+    "omnivoice": {
+        "input_hint": (
+            "**OmniVoice**：支持自动音色、参考音色克隆和 instruct 音色指令；"
+            "流式模式按模型规划的文本块逐段返回音频。"),
+        "supports_streaming": True,
+        "stream_sample_rate": 24000,
     },
     "chatterbox": {
         "input_hint": (
@@ -729,6 +766,13 @@ MODEL_PROFILES = {
         "input_hint": ("**Qwen3-ASR**：长音频自动分段转写；"
                        "语种/上下文/对话模式见『转写选项』。"),
         "max_input_seconds": 60,
+    },
+    "sense_asr": {
+        "input_hint": (
+            "**SenseVoice-Small**（社区模型）：多语种 ASR，事件/情感/语言标签，"
+            "ITN 可开关；支持离线与流式模式。"),
+        "supports_streaming": True,
+        "input_16k_mono": True,
     },
     "voxtral_realtime": {
         "input_hint": (
@@ -866,12 +910,15 @@ MODEL_PROFILES = {
     "supertonic": {
         "input_hint": (
             "**Supertonic 3** 预置音色多语种 TTS：在『高级参数』选 voice（M1-M5 男声 / "
-            "F1-F5 女声）和语速 speaking_rate；支持⚡流式生成；"
+            "F1-F5 女声）和语速 speaking_rate；支持按文本段输出的⚡流式生成；"
             "**不支持**参考音频克隆（**无中文**）。"),
         # Supertonic 的 C++ 会话支持 mode=streaming，并通过 pull events 按文本段
         # 输出音频。SSE delta 是不带采样率的裸 PCM16，客户端需使用模型的 44.1kHz。
         "supports_streaming": True,
         "stream_sample_rate": 44100,
+        # A reference left selected from another model must not suppress the
+        # model-native `voice` preset carried at the top level of the request.
+        "accepts_voice_reference": False,
         # 模型收 ISO 语种码（en/ko/ja/...），共享下拉的友好名在此转换；chinese 不在
         # 支持列表所以不映射（选中会被 resolve_language 拒绝并提示）。
         "lang_map": {
@@ -887,15 +934,24 @@ MODEL_PROFILES = {
 # aligned on narrower screens.
 MODEL_HINTS_EN = {
     "vibevoice": "**VibeVoice**: use one `Speaker N:` line per speaker. Use `voice_samples` for multiple voices.",
-    "voxcpm2": "**VoxCPM2**: upload a clean voice reference and its transcript. Streaming is supported.",
+    "voxcpm2": ("**VoxCPM2**: upload a clean voice reference and its transcript. "
+                "Fine-grained streaming plays audio while synthesis is still running."),
+    "dots_tts": ("**DotTTS SOAR / MeanFlow**: multilingual TTS and voice cloning. "
+                 "A reference voice plus transcript is recommended; fine-grained streaming is supported."),
     "qwen3_tts": ("**Qwen3-TTS**: a voice reference and matching transcript are recommended. "
                   "Long text is split automatically to prevent acoustic-token truncation."),
     "pocket_tts": "**PocketTTS** requires a voice reference.",
     "inflect_v2": "**Inflect Micro v2**: English offline TTS. Micro is the default package; Nano can be selected manually.",
     "dramabox": "**DramaBox**: English TTS and voice clone. Upload a reference voice to clone.",
-    "confucius4_tts": "**Confucius4-TTS** requires a voice reference. Chinese/English are the most reliable paths.",
+    "confucius4_tts": ("**Confucius4-TTS** requires a voice reference. Chinese/English are the most reliable paths; "
+                       "streaming returns one generated text segment at a time."),
+    "neutts": "**NeuTTS 2E** is English preset-voice TTS with emotion control and segment streaming.",
+    "omnivoice": "**OmniVoice** supports auto voice, cloning, voice instructions, and text-chunk streaming.",
+    "supertonic": ("**Supertonic 3** is lightweight preset-voice TTS with segment streaming; "
+                   "it does not clone reference audio."),
     "chatterbox": "**Chatterbox** requires a voice reference and supports en/es/fr/de/it/pt/ko.",
     "qwen3_asr": "**Qwen3-ASR** automatically splits long audio. Language and context are optional.",
+    "sense_asr": "**SenseVoice-Small** is a multilingual community ASR model with event/emotion/language tags, optional ITN, and offline or streaming modes.",
     "voxtral_realtime": "**Voxtral Mini 4B Realtime** auto-detects language and supports streaming transcription. Timestamps are not exposed.",
     "fun_asr_nano": "**Fun-ASR-Nano** is a lightweight offline ASR model for auto/zh/en/ja.",
     "parakeet_tdt": ("**Parakeet-TDT** supports offline, long-form and streaming ASR for many "
@@ -941,6 +997,7 @@ QWEN3_ASR_LANGUAGES = [
 DEFAULT_PROFILE = {"input_hint": "", "input_hint_en": "", "wrap_speaker_script": False,
                    "default_options": {},
                    "model_as_target_voice": False,
+                   "accepts_voice_reference": True,
                    # C++ 会话实现了 IStreamingVoiceTaskSession 的家族（server 需以
                    # mode=streaming 加载才走流式路由）；见 registry 各家族 loader。
                    "supports_streaming": False,
@@ -1660,7 +1717,7 @@ def _default_cpu_threads():
 
 # Fallback catalog if models_catalog.json is missing/unreadable.
 DEFAULT_CATALOG = {
-    "host": "127.0.0.1", "port": 8080, "device": 0, "threads": 1,
+    "host": "127.0.0.1", "port": 8088, "device": 0, "threads": 1,
     "models": [
         {"id": "qwen3-tts", "display_name": "Qwen3-TTS 0.6B (tts)",
          "family": "qwen3_tts", "path": "models/Qwen3-TTS-12Hz-0.6B-Base",
@@ -1805,7 +1862,7 @@ CATALOG = _load_catalog()
 MODEL_PARAMS = _load_model_params()
 REQUIRED_FILES = _load_required_files()
 HOST = CATALOG.get("host", "127.0.0.1")
-PORT = int(CATALOG.get("port", 8080))
+PORT = int(CATALOG.get("port", 8088))
 DEVICE = int(CATALOG.get("device", 0))
 THREADS = int(os.environ.get("AUDIOCPP_THREADS") or CATALOG.get("threads", 1))
 if BACKEND == "cpu" and THREADS <= 1:
@@ -2246,7 +2303,7 @@ def _write_temp_config(entry):
         if entry.get(key) is not None:
             model[key] = entry[key]
     cfg = {"host": HOST, "port": PORT, "backend": SERVER_BACKEND, "device": DEVICE,
-           "threads": THREADS, "models": [model]}
+           "threads": THREADS, "voice_dir": VOICE_DIR, "models": [model]}
     fd, path = tempfile.mkstemp(prefix="audiocpp_webui_cfg_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
@@ -2389,7 +2446,7 @@ def _start_server(entry):
     _open_log_file(truncate=True)
     # --log 会打开 engine 的 [TRACE]/[TIMING] 调试输出，日常太吵，默认关闭；
     # 排查推理问题时设 AUDIOCPP_SERVER_DEBUG=1 再启动 webui。
-    cmd = [SERVER_EXE, "--config", cfg, "--host", HOST, "--port", str(PORT)]
+    cmd = [SERVER_EXE, "--config", cfg, "--no-ui", "--host", HOST, "--port", str(PORT)]
     if os.environ.get("AUDIOCPP_SERVER_DEBUG") == "1":
         cmd.append("--log")
     _server_proc = subprocess.Popen(
@@ -2616,7 +2673,7 @@ def _fmt_bytes(n):
 
 def _staged_bytes(entry):
     """Bytes already on disk for a running download, or None before staging starts.
-    model_manager_v2 stages spec packages as a hidden temp directory directly
+    model_manager_webui stages spec packages as a hidden temp directory directly
     under models/ and renames it into the final target on completion."""
     package = SPEC_PACKAGE_BY_ID.get(entry.get("download_id") or "")
     if package is None:
@@ -3027,7 +3084,7 @@ def download_requirements(entry):
 
 
 def download_model(model_id, hf_token="", proxy=""):
-    """Kick off `model_manager_v2.py install <download_id>` in the background."""
+    """Kick off `model_manager_webui.py install <download_id>` in the background."""
     if not model_id:
         return _t("❌ 请先选择一个模型", "❌ Select a model first.")
     entry = catalog_by_id(model_id)
@@ -3601,7 +3658,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         auto_vibevoice_max_tokens = (
             is_vibevoice and int(max_tokens) == 1200
         )
-        if voice_path:
+        if voice_path and prof.get("accepts_voice_reference", True):
             payload["voice_ref"] = _ensure_wav(voice_path)
         elif voice_preset:
             payload["voice"] = voice_preset
@@ -3686,6 +3743,14 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
         raise gr.Error(_t("模型 {model} 缺少流式采样率配置。",
                           "Model {model} has no streaming sample-rate setting.", model=model))
 
+    # Match the offline path and reject required-reference families before a
+    # potentially slow server reload.
+    if (prof.get("require_voice") and not uploaded_voice
+            and (not builtin_voice or builtin_voice == "(none)")):
+        raise gr.Error(_t(
+            "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
+            "This model requires a voice reference: upload/record one or pick a built-in voice."))
+
     t_load = time.time()
     ensure_model_loaded(model, TTS_TASKS, mode="streaming")
     load_s = time.time() - t_load
@@ -3719,7 +3784,7 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     }
     if prof.get("send_max_tokens", True):
         payload["max_tokens"] = int(max_tokens)
-    if voice_path:
+    if voice_path and prof.get("accepts_voice_reference", True):
         payload["voice_ref"] = _ensure_wav(voice_path)
     elif voice_preset:
         payload["voice"] = voice_preset
@@ -3973,12 +4038,14 @@ def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR"):
 def _prepare_asr_input(audio_path, prof, stream=False):
     """Normalize an uploaded ASR file for the selected request route.
 
-    Most ASR sessions accept the WAV's native layout. Parakeet's buffered
-    streaming contract is stricter: mono 16 kHz. Keep that requirement in its
-    model profile so other streaming families retain their existing input path.
+    Most ASR sessions accept the WAV's native layout. SenseVoice needs mono
+    16 kHz before its offline Silero VAD pass as well as for streaming, while
+    Parakeet only requires it for buffered streaming. Keep both requirements
+    in model profiles so other ASR families retain their existing input path.
     """
     wav_path = _ensure_wav(audio_path)
-    if stream and prof.get("stream_input_16k_mono"):
+    if (prof.get("input_16k_mono") or
+            (stream and prof.get("stream_input_16k_mono"))):
         return _to_16k_mono_wav(wav_path)
     return wav_path
 
@@ -4207,10 +4274,16 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
     try:
         if not (text or "").strip():
             raise gr.Error(_t("请输入音乐/音效提示词", "Enter a music or sound prompt."))
-        ensure_model_loaded(model, GEN_TASKS)
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
+        if entry and entry.get("family") == "minimax_h3" and options.get("return_video"):
+            raise gr.Error(_t(
+                "本地 Python WebUI 当前只接收 MiniMax-H3 的音频输出；请关闭 Decode video，"
+                "需要原始视频帧产物时使用上游内置 WebUI。",
+                "The local Python WebUI currently accepts MiniMax-H3 audio output only. "
+                "Disable Decode video, or use the upstream native UI for raw video-frame artifacts."))
+        ensure_model_loaded(model, GEN_TASKS)
 
         seed, seed_note = _resolve_seed(seed)
         req = {"text": text, "seed": seed}
@@ -4450,7 +4523,7 @@ SEP_SR = 44100
 def do_sep(model, audio_path):
     """音源分离：响应里的 named_audio_outputs 每轨落盘成一个 wav，
     前 MAX_SEP_STEMS 轨直接放进播放器，全部轨放进文件下载列表。"""
-    empty = [gr.update(value=None, visible=False) for _ in range(MAX_SEP_STEMS)]
+    empty = [_clear_audio_output(visible=False) for _ in range(MAX_SEP_STEMS)]
     try:
         if not audio_path:
             raise gr.Error(_t("请上传要分离的音频", "Upload audio to separate."))
@@ -4489,9 +4562,10 @@ def do_sep(model, audio_path):
                 if label:
                     label = _t(label, label, language)
                 updates.append(gr.update(
-                    value=p, visible=True, label=f"{label}（{sid}）" if label else sid))
+                    value=p, visible=True, playback_position=0,
+                    label=f"{label}（{sid}）" if label else sid))
             else:
-                updates.append(gr.update(value=None, visible=False))
+                updates.append(_clear_audio_output(visible=False))
         elapsed = time.time() - t_start
         _ui_log(_t("音源分离完成：{tracks} 轨，用时 {seconds:.1f}s",
                    "source separation done: {tracks} tracks, elapsed {seconds:.1f}s",
@@ -4510,7 +4584,7 @@ def do_sep(model, audio_path):
                                  "❌ Separation failed: {error}", error=e))
 
 
-# VAD/diar/align 输入统一转成 16 kHz 单声道后再发（见 _to_16k_mono_wav），
+# VAD/diar/align/midi 输入统一转成 16 kHz 单声道后再发（见 _to_16k_mono_wav），
 # 所以响应里的 start_sample/end_sample 一律按 16000 换算成秒。
 SR_ANALYZE = 16000
 
@@ -4519,9 +4593,48 @@ def _fmt_ts(samples):
     return f"{samples / SR_ANALYZE:.2f}s"
 
 
+def _save_task_artifact(artifact, prefix):
+    """Decode one generic task artifact into OUTPUT_DIR and return its path."""
+    payload = artifact.get("payload") if isinstance(artifact, dict) else None
+    if not isinstance(payload, str) or not payload:
+        return None
+    meta = artifact.get("meta") if isinstance(artifact.get("meta"), dict) else {}
+    raw_ext = str(meta.get("extension") or meta.get("format") or "bin").lower().lstrip(".")
+    if raw_ext in {"midi", "audio/midi"}:
+        raw_ext = "mid"
+    ext = re.sub(r"[^a-z0-9]", "", raw_ext)[:12] or "bin"
+    artifact_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(artifact.get("id") or "result"))
+    try:
+        blob = base64.b64decode(payload, validate=True)
+    except Exception as error:
+        raise gr.Error(_t("server 返回的产物不是有效 base64：{error}",
+                          "The server artifact is not valid base64: {error}", error=error))
+    if not blob:
+        raise gr.Error(_t("server 返回了空产物。", "The server returned an empty artifact."))
+    out = os.path.join(
+        OUTPUT_DIR, f"{prefix}_{int(time.time()*1000)}_{artifact_id}.{ext}")
+    with open(out, "wb") as f:
+        f.write(blob)
+    return out
+
+
+def _redact_task_artifacts(data):
+    """Keep task metadata downloadable without duplicating large base64 payloads."""
+    safe = dict(data)
+    artifacts = []
+    for artifact in data.get("artifacts") or []:
+        item = dict(artifact)
+        payload = item.get("payload")
+        if isinstance(payload, str):
+            item["payload"] = f"<base64 payload omitted: {len(payload)} characters>"
+        artifacts.append(item)
+    if artifacts:
+        safe["artifacts"] = artifacts
+    return safe
+
+
 def do_analyze(model, audio_path, transcript, language):
-    """音频分析（vad/diar/align）：格式化 segments / speaker_turns / words 为
-    可读文本，原始 JSON 落盘供下载。"""
+    """音频分析（vad/diar/align/midi）：格式化结构化结果，并保存通用产物。"""
     try:
         if not audio_path:
             raise gr.Error(_t("请上传或录制音频", "Upload or record audio."))
@@ -4548,6 +4661,14 @@ def do_analyze(model, audio_path, transcript, language):
         data = _run_task(entry, model, req, timeout=900, log_label="音频分析")
 
         lines = []
+        artifact_path = None
+        for artifact in data.get("artifacts") or []:
+            artifact_path = _save_task_artifact(artifact, "audiocpp_analyze")
+            if artifact_path:
+                break
+        if task == "midi" and not artifact_path:
+            raise gr.Error(_t("server 没有返回 MIDI 产物。",
+                              "The server returned no MIDI artifact."))
         if data.get("segments"):
             segs = data["segments"]
             lines.append(_t("共 {count} 个语音段：", "{count} speech segments:", count=len(segs)))
@@ -4579,26 +4700,48 @@ def do_analyze(model, audio_path, transcript, language):
                 lines.append(f"{_fmt_ts(w['start_sample'])} → {_fmt_ts(w['end_sample'])}"
                              f"　{w.get('word', '')}")
         if data.get("text"):
-            lines.append(_t("文本输出：{text}", "Text: {text}", text=data["text"]))
+            if task == "midi":
+                try:
+                    events = json.loads(data["text"])
+                except (TypeError, ValueError):
+                    events = None
+                if isinstance(events, list):
+                    notes = [event for event in events
+                             if isinstance(event, dict) and event.get("type") == "start"]
+                    instruments = sorted({str(event.get("instrument")) for event in notes
+                                          if event.get("instrument")})
+                    lines.append(_t(
+                        "已生成 MIDI：{events} 个事件，{notes} 个音符。",
+                        "MIDI generated: {events} events and {notes} notes.",
+                        events=len(events), notes=len(notes)))
+                    if instruments:
+                        lines.append(_t("乐器：{instruments}", "Instruments: {instruments}",
+                                        instruments=", ".join(instruments)))
+                else:
+                    lines.append(_t("模型已返回 MIDI 事件数据。",
+                                    "The model returned MIDI event data."))
+            else:
+                lines.append(_t("文本输出：{text}", "Text: {text}", text=data["text"]))
         if not lines:
             lines.append(_t("（模型没有返回可显示的分析结果）",
                             "(The model returned no displayable result.)"))
 
         json_path = os.path.join(OUTPUT_DIR, f"audiocpp_analyze_{int(time.time()*1000)}.json")
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(_redact_task_artifacts(data), f, ensure_ascii=False, indent=2)
         elapsed = time.time() - t_start
         _ui_log(_t("音频分析完成：用时 {seconds:.1f}s",
                    "audio analysis done: elapsed {seconds:.1f}s",
                    seconds=elapsed))
-        return ("\n".join(lines), json_path,
+        return ("\n".join(lines), json_path, artifact_path,
                 _t("✅ 分析完成（音频 {duration}），用时 {elapsed:.1f}s。",
                    "✅ Analysis complete ({duration}) in {elapsed:.1f}s.",
                    duration=dur_note, elapsed=elapsed))
     except gr.Error as e:
-        return "", None, _msg_from_error(e)
+        return "", None, None, _msg_from_error(e)
     except Exception as e:
-        return "", None, _t("❌ 分析失败：{error}", "❌ Analysis failed: {error}", error=e)
+        return "", None, None, _t("❌ 分析失败：{error}",
+                                  "❌ Analysis failed: {error}", error=e)
 
 
 def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
@@ -4790,32 +4933,47 @@ CUSTOM_CSS = """
 }
 """
 
-# Gradio 的 Audio 播放器（WaveSurfer）换音频时复用同一实例，旧的播放进度会
-# 原样带到新音频上（生成完成后进度条停在上一次的位置）。value=None 清空也挡
-# 不住。修法：每个播放器宿主挂一次 loadedmetadata（每次换源触发、用户 seek
-# 不触发），换源后开一个 ~3s 守护窗，暂停状态下把 shadow DOM 里 wavesurfer 的
-# <audio>.currentTime 清回 0；窗口内用户 pointerdown（捕获阶段，躲开内部
-# stopPropagation）立即取消守护，不干扰手动 seek/播放。
+# Gradio 的 Audio 播放器会把 playback_position 双向保存在组件属性里；只把
+# value 清成 None 再换文件，旧位置仍可能写回新建的 WaveSurfer。按钮事件会用
+# _clear_audio_output() 正式清掉这个属性。下面的 JS 只作为浏览器端兜底：新音源
+# 完成 metadata 加载后，把原生 audio 时间及 WaveSurfer 横向滚动位置归零。
+# 仅扫描 audio-output，避免干扰上传/录音播放器；用户一旦主动点击/拖动就停止
+# 本轮守护。
 _RESET_AUDIO_SEEK_JS = """
 () => {
   if (window.__audiocppSeekReset) return;
   window.__audiocppSeekReset = true;
-  const seen = new WeakSet();
+  const seenHosts = new WeakSet();
+  const seenAudio = new WeakSet();
+  const observedRoots = new WeakSet();
   const arm = (host) => {
-    if (seen.has(host)) return;
-    seen.add(host);
+    if (seenHosts.has(host)) return;
+    seenHosts.add(host);
     const attach = () => {
-      const a = host.shadowRoot && host.shadowRoot.querySelector('audio');
-      if (!a) { setTimeout(attach, 250); return; }
+      const root = host.shadowRoot;
+      if (!root) { setTimeout(attach, 250); return; }
+      if (!observedRoots.has(root)) {
+        observedRoots.add(root);
+        new MutationObserver(attach).observe(root, { childList: true, subtree: true });
+      }
+      const a = root.querySelector('audio');
+      if (!a || seenAudio.has(a)) return;
+      seenAudio.add(a);
+      let source = '';
       const guard = () => {
+        const nextSource = a.currentSrc || a.src || '';
+        if (!nextSource || nextSource === source) return;
+        source = nextSource;
         let tries = 0, cancelled = false;
         const cancel = () => { cancelled = true; };
         host.addEventListener('pointerdown', cancel, { once: true, capture: true });
         const tick = () => {
           if (cancelled) return;
           if (a.paused && a.currentTime > 0.05) { try { a.currentTime = 0; } catch (e) {} }
+          const scroll = root.querySelector('[part="scroll"]');
+          if (scroll && scroll.scrollLeft !== 0) scroll.scrollLeft = 0;
           if (++tries < 12) setTimeout(tick, 250);
-          else host.removeEventListener('pointerdown', cancel, { capture: true });
+          else host.removeEventListener('pointerdown', cancel, true);
         };
         setTimeout(tick, 100);
       };
@@ -4824,12 +4982,12 @@ _RESET_AUDIO_SEEK_JS = """
     };
     attach();
   };
-  const scan = (root) => root.querySelectorAll('#waveform > div').forEach(arm);
+  const scan = (root) => root.querySelectorAll('.audio-output #waveform > div').forEach(arm);
   new MutationObserver((muts) => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
         if (n.nodeType !== 1) continue;
-        if (n.matches && n.matches('#waveform > div')) arm(n);
+        if (n.matches && n.matches('.audio-output #waveform > div')) arm(n);
         else if (n.querySelectorAll) scan(n);
       }
     }
@@ -4837,6 +4995,16 @@ _RESET_AUDIO_SEEK_JS = """
   scan(document);
 }
 """
+
+
+def _clear_audio_output(**kwargs):
+    """Clear a Gradio audio output and its two-way playback state together."""
+    return gr.update(value=None, playback_position=0, **kwargs)
+
+
+def _reset_audio_output_position():
+    """Reset playback without replacing the audio value returned by a callback."""
+    return gr.update(playback_position=0)
 
 
 VDES_TEXT_DEFAULT_ZH = "你好，这是 audio.cpp 用文字描述设计出来的声音。"
@@ -5071,7 +5239,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         label="生成模式（流式=边生成边播放）",
                         choices=["离线", "流式"], value="离线",
                         visible=supports_streaming(tts_model.value)),
-                        label=("生成模式（流式=边生成边播放）", "Generation mode"),
+                        label=("生成模式（流式=边生成边播放）",
+                               "Mode (Streaming plays live)"),
                         choices=([("离线", "离线"), ("流式", "流式")],
                                  [("Offline", "离线"), ("Streaming", "流式")]))
 
@@ -5084,17 +5253,21 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     tts_out_stream = _localized(gr.Audio(
                         label="⚡ 流式播放（边生成边播）", streaming=True,
                         autoplay=True, visible=False,
-                        elem_classes="audio-default"),
-                        label=("⚡ 流式播放（边生成边播）", "⚡ Streaming audio"))
+                        playback_position=0,
+                        elem_classes=["audio-default", "audio-output"]),
+                        label=("⚡ 流式播放（边生成边播）",
+                               "⚡ Live stream (plays while generating)"))
                     tts_out = _localized(
                         gr.Audio(label="输出音频", type="filepath",
-                                 elem_classes="audio-default"),
+                                 playback_position=0,
+                                 elem_classes=["audio-default", "audio-output"]),
                         label=("输出音频", "Output audio"))
                     tts_msg = gr.Markdown("")
 
         _wire_model_manager(tts_mm, TTS_TASKS, tts_hint)
         tts_model.change(lambda: {}, None, tts_adv_state)  # reset knobs on model switch
-        # 模型切换：只有支持流式的家族（voxcpm2）显示生成模式选择，并重置回离线。
+        # 模型切换：后端 model spec 声明支持 streaming 的 TTS 家族显示生成模式，
+        # 每次切换仍重置回离线，避免无意中触发耗时的会话模式重载。
         tts_model.change(
             lambda m: gr.update(visible=supports_streaming(m), value="离线"),
             tts_model, tts_gen_mode)
@@ -5119,12 +5292,14 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         # progress indicator (outputs otherwise update only when do_tts returns).
         # 流式播放器同样要清：streaming 组件在新一轮事件开始时不会自动复位，
         # 上一轮的音频会留在播放器里直到新首包到达（模型重载时能有几十秒）。
-        tts_btn.click(lambda: (None, None, ""), None,
+        tts_btn.click(lambda: (_clear_audio_output(), _clear_audio_output(), ""), None,
                       [tts_out_stream, tts_out, tts_msg]).then(
             do_tts_or_stream,
             [tts_model, tts_gen_mode, tts_text, tts_lang, tts_upload, tts_builtin,
              tts_ref_text, tts_seed, tts_maxtok, tts_adv_state, tts_adv],
-            [tts_out_stream, tts_out, tts_msg])
+            [tts_out_stream, tts_out, tts_msg]).then(
+            lambda: (_reset_audio_output_position(), _reset_audio_output_position()),
+            None, [tts_out_stream, tts_out])
 
     # ---------------- ASR / 音频转写 ----------------
     with _localized(gr.Tab("📝 ASR / 音频转写"),
@@ -5263,7 +5438,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                value=("#### 🔊 输出音频", "#### 🔊 Output"))
                     gen_out = _localized(
                         gr.Audio(label="输出音频", type="filepath",
-                                 elem_classes="audio-default"),
+                                 playback_position=0,
+                                 elem_classes=["audio-default", "audio-output"]),
                         label=("输出音频", "Output audio"))
                     gen_msg = gr.Markdown("")
 
@@ -5275,11 +5451,12 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                           None, gen_ana_msg).then(
             do_music_analyze, [gen_model, gen_audio, gen_seed, gen_adv_state],
             [gen_adv_state, gen_prefill, gen_ana_msg])
-        gen_btn.click(lambda: (None, ""), None, [gen_out, gen_msg]).then(
+        gen_btn.click(lambda: (_clear_audio_output(), ""), None, [gen_out, gen_msg]).then(
             do_music_gen,
             [gen_model, gen_text, gen_lyrics, gen_audio, gen_duration, gen_seed,
              gen_adv_state, gen_adv],
-            [gen_out, gen_msg])
+            [gen_out, gen_msg]).then(
+            _reset_audio_output_position, None, gen_out)
 
     # ---------------- 声音转换 (vc / svc / s2s) ----------------
     with _localized(gr.Tab("🎭 声音转换"),
@@ -5361,7 +5538,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                value=("#### 🔊 输出音频", "#### 🔊 Output"))
                     vc_out = _localized(
                         gr.Audio(label="输出音频", type="filepath",
-                                 elem_classes="audio-default"),
+                                 playback_position=0,
+                                 elem_classes=["audio-default", "audio-output"]),
                         label=("输出音频", "Output audio"))
                     vc_msg = gr.Markdown("")
 
@@ -5375,12 +5553,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         vc_builtin.change(lambda n: on_builtin_voice_change(n)[0], vc_builtin, vc_target)
         vc_voice_refresh.click(lambda n: refresh_builtin_voices(n)[:2],
                                vc_builtin, [vc_builtin, vc_target])
-        vc_btn.click(lambda: (None, ""), None, [vc_out, vc_msg]).then(
+        vc_btn.click(lambda: (_clear_audio_output(), ""), None, [vc_out, vc_msg]).then(
             do_vc,
             [vc_model, vc_source, vc_target, vc_builtin,
              vc_rvc_voice_model, vc_rvc_retrieval_index, vc_seed,
              vc_adv_state, vc_adv],
-            [vc_out, vc_msg])
+            [vc_out, vc_msg]).then(
+            _reset_audio_output_position, None, vc_out)
 
     # ---------------- 音源分离 (sep) ----------------
     with _localized(gr.Tab("🎚️ 音源分离"),
@@ -5411,7 +5590,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     sep_stems = [
                         _localized(
                             gr.Audio(label=f"音轨 {i + 1}", type="filepath",
-                                     visible=False, elem_classes="audio-default"),
+                                     visible=False, playback_position=0,
+                                     elem_classes=["audio-default", "audio-output"]),
                             label=(f"音轨 {i + 1}", f"Track {i + 1}"))
                         for i in range(MAX_SEP_STEMS)
                     ]
@@ -5422,15 +5602,18 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
         _wire_model_manager(sep_mm, SEP_TASKS, sep_hint)
         sep_btn.click(
+            lambda: (*[_clear_audio_output(visible=False)
+                       for _ in range(MAX_SEP_STEMS)], None, ""),
+            None, [*sep_stems, sep_files, sep_msg]).then(
             do_sep, [sep_model, sep_audio], [*sep_stems, sep_files, sep_msg])
 
-    # ---------------- 音频分析 (vad / diar / align) ----------------
+    # ---------------- 音频分析 (vad / diar / align / midi) ----------------
     with _localized(gr.Tab("🔎 音频分析"),
                     label=("🔎 音频分析", "🔎 Audio analysis")):
         with gr.Row(equal_height=False):
             # 左列：模型管理 + 音频输入（align 模型多出对齐文本/语言）
             with gr.Column(scale=1):
-                ana_mm = _model_manager_block("vad/diar/align", ANALYZE_TASKS)
+                ana_mm = _model_manager_block("vad/diar/align/midi", ANALYZE_TASKS)
                 ana_model = ana_mm["model"]
 
                 with gr.Group():
@@ -5467,18 +5650,22 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                value=("#### 📄 分析结果", "#### 📄 Results"))
                     ana_out = _localized(gr.Textbox(
                         label="结果（时间单位：秒）", lines=14,
-                        placeholder="语音段 / 说话人 / 逐词时间戳将显示在这里……"),
+                        placeholder="语音段 / 说话人 / 逐词时间戳 / MIDI 摘要将显示在这里……"),
                         label=("结果（时间单位：秒）", "Results (seconds)"),
-                        placeholder=("语音段 / 说话人 / 逐词时间戳将显示在这里……",
-                                     "Segments, speakers or word timestamps appear here…"))
+                        placeholder=("语音段 / 说话人 / 逐词时间戳 / MIDI 摘要将显示在这里……",
+                                     "Segments, speakers, word timestamps or a MIDI summary appear here…"))
                     ana_json = _localized(gr.File(label="原始 JSON 结果", interactive=False),
                                           label=("原始 JSON 结果", "Raw JSON"))
+                    ana_artifact = _localized(
+                        gr.File(label="生成产物（如 MIDI）", interactive=False),
+                        label=("生成产物（如 MIDI）", "Generated artifact (for example MIDI)"))
                     ana_msg = gr.Markdown("")
 
         _wire_model_manager(ana_mm, ANALYZE_TASKS, ana_hint)
-        ana_btn.click(lambda: ("", None, ""), None, [ana_out, ana_json, ana_msg]).then(
+        ana_btn.click(lambda: ("", None, None, ""), None,
+                      [ana_out, ana_json, ana_artifact, ana_msg]).then(
             do_analyze, [ana_model, ana_audio, ana_text, ana_lang],
-            [ana_out, ana_json, ana_msg])
+            [ana_out, ana_json, ana_artifact, ana_msg])
 
     # ---------------- 声音设计 (vdes) ----------------
     with _localized(gr.Tab("🎨 声音设计"),
@@ -5537,17 +5724,19 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                value=("#### 🔊 输出音频", "#### 🔊 Output"))
                     vdes_out = _localized(
                         gr.Audio(label="输出音频", type="filepath",
-                                 elem_classes="audio-default"),
+                                 playback_position=0,
+                                 elem_classes=["audio-default", "audio-output"]),
                         label=("输出音频", "Output audio"))
                     vdes_msg = gr.Markdown("")
 
         _wire_model_manager(vdes_mm, VDES_TASKS, vdes_hint)
         vdes_model.change(lambda: {}, None, vdes_adv_state)  # reset knobs on model switch
-        vdes_btn.click(lambda: (None, ""), None, [vdes_out, vdes_msg]).then(
+        vdes_btn.click(lambda: (_clear_audio_output(), ""), None, [vdes_out, vdes_msg]).then(
             do_vdes,
             [vdes_model, vdes_text, vdes_instruct, vdes_seed, vdes_maxtok,
              vdes_adv_state, vdes_adv],
-            [vdes_out, vdes_msg])
+            [vdes_out, vdes_msg]).then(
+            _reset_audio_output_position, None, vdes_out)
 
     # 上传/录制后把文件换成短 ASCII 临时名，绕过 Gradio 在 Windows 上无法渲染
     # 含中文/超长文件名的声波图（见 _stage_upload）。只接输入类音频控件。

@@ -3,12 +3,25 @@
 > **语言 / Language:** [English](README.md) · **中文**
 
 
-`webui/` 目录包含 WebUI 运行所需的 Python 依赖、启动脚本和模型下载包装器。
+`webui/` 目录包含本地 WebUI 运行所需的 Python 依赖、启动脚本和模型下载包装器。
 启动脚本可以**双击运行**，也可以在命令行/PowerShell 里调用。
+
+## 两套互相独立的 WebUI
+
+- **本地 Python/Gradio WebUI（本仓库主界面）：**运行 `webui\run_webui.bat`，访问
+  `http://127.0.0.1:7860`。它只使用 `webui/model_manager_webui.py`，并以 `--no-ui`
+  启动自己管理的 `audiocpp_server`；界面与下载行为继续由本仓库维护。
+- **上游原生 WebUI：**由 `webui/native/` 编译并嵌入 `audiocpp_server`。运行
+  `audiocpp_server --ui --backend cuda`，访问 `http://127.0.0.1:8080`；其可选模型准备任务
+  只使用上游 `tools/model_manager_v2.py`。
+
+两套前端只共享 C++ server API，不共享 Python 界面或模型管理器代码。默认端口已经可以并行：
+本地 WebUI 管理的后台用 8088，上游原生 WebUI 用 8080。
 
 | 脚本 | 作用 | 典型命令 |
 |---|---|---|
 | `webui/run_webui.bat` | Gradio 网页界面（按需起服务） | `webui\run_webui.bat` |
+| `audiocpp-portable/run_native_webui.bat` | 由 `audiocpp_server` 直接提供的内置原生 WebUI | `audiocpp-portable\run_native_webui.bat` |
 | `webui/run_webui.sh` | Linux / macOS WebUI 启动脚本 | `./webui/run_webui.sh` |
 | `webui/_env.bat` | WebUI 环境探测（**不直接运行**） | 被 `run_webui.bat` `call` |
 
@@ -117,7 +130,25 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
   想要这个速度就设 `AUDIOCPP_THREADS=N`。CPU 模式下不显示显存警告。
 
 > 网页界面（7860）是给人用的；要给**其它程序**当 API，请直接启动 `audiocpp_server`，
-> 或让 WebUI 起来后直接打它管理的 8080 端口。
+> 或让 WebUI 起来后直接打它管理的 8088 端口。
+
+### TTS 流式生成
+
+选择下列模型时，TTS 页会显示「生成模式（离线 / 流式）」。默认仍是离线；切到流式后，WebUI
+会按需把托管的 C++ 服务重载为 `mode=streaming`，通过 `/v1/audio/speech` 的 SSE PCM 事件边收边播，
+结束后同时保留完整 WAV 供下载和重新播放。
+
+| 家族 | WebUI 流式粒度 | 输出采样率 | 说明 |
+|---|---|---:|---|
+| VoxCPM2 | 生成过程中持续推送 | 48 kHz | 流式时自动强制 `retry_badcase=false` |
+| DotTTS SOAR / MeanFlow | 声码器块持续推送 | 48 kHz | `vocoder_merge_steps` 可调流式声码器合并粒度 |
+| Confucius4-TTS | 每个后端文本段完成后推送 | 22.05 kHz | 必须提供参考音色 |
+| NeuTTS 2E | 每个后端文本段完成后推送 | 24 kHz | 使用 `voice_id` 预置音色，不使用参考音频 |
+| OmniVoice | 每个模型规划文本块完成后推送 | 24 kHz | 短文本可能只有一个块；`audio_chunk_duration` / `audio_chunk_threshold` 可调 |
+| Supertonic 3 | 每个后端文本块完成后推送 | 44.1 kHz | 使用 `voice` 预置音色，不支持参考音频 |
+
+“按段/块流式”仍能让长文本在整篇完成前开始播放，但首包要等第一个段/块生成完；DotTTS 和
+VoxCPM2 的首包通常更细。模型切换会把生成模式重置为离线，避免误触发一次额外的服务重载。
 
 ---
 
@@ -152,9 +183,13 @@ TTS 标签页「合成设置 → 高级参数」里的控件由 **`configs/model
 | **Qwen3-TTS**（qwen3_tts）0.6B / 1.7B / CustomVoice | `do_sample` `temperature` `top_k` `top_p`；CustomVoice 版另有 `speaker` | `{"do_sample": true, "temperature": 0.8, "top_k": 40, "top_p": 0.9}`<br>CustomVoice 选内置音色：`{"speaker": "<CustomVoice 音色名>"}` |
 | **VibeVoice**（vibevoice）1.5B 长文/多说话人 | `num_inference_steps` `guidance_scale` `max_length_times` `do_sample` `temperature` `top_k` `top_p`；多说话人 `voice_samples`（逗号分隔 wav，最多 4，**不能**与参考音色同用） | `{"num_inference_steps": 10, "guidance_scale": 1.3, "max_length_times": 2.0}`<br>多说话人：`{"voice_samples": "D:/a.wav,D:/b.wav"}` |
 | **VoxCPM2**（voxcpm2） | `num_inference_steps` `guidance_scale` `min_tokens` `retry_badcase` `retry_badcase_max_times` `retry_badcase_ratio_threshold`；参考原话 `prompt_text` | `{"num_inference_steps": 10, "guidance_scale": 2.0, "retry_badcase": true}` |
+| **DotTTS**（dots_tts，SOAR / MeanFlow） | `template_name` `num_inference_steps` `guidance_scale` `speaker_scale` `sampler_mode` `text_chunk_size` `text_chunk_mode` `vocoder_merge_steps`；参考音频裁剪 `reference_duration_sec` | `{"vocoder_merge_steps": 4, "sampler_mode": "euler"}` |
+| **Confucius4-TTS**（confucius4_tts） | `temperature` `top_p` `top_k` `num_beams` `repetition_penalty` `num_inference_steps` `guidance_scale` `text_chunk_size` `text_chunk_mode` `cross_fade_duration_sec` `edge_fade_duration_sec` `edge_pad_duration_sec` | `{"text_chunk_size": 80, "cross_fade_duration_sec": 0.3}` |
+| **NeuTTS 2E**（neutts） | `voice_id` `emotion` `min_tokens` `temperature` `top_k` `text_chunk_size` `text_chunk_mode` | `{"voice_id": "emily", "emotion": "neutral"}` |
 | **MioTTS**（miotts，需 MioCodec） | `temperature` `top_k` `top_p` `repetition_penalty` `presence_penalty` `frequency_penalty` `do_sample` `best_of_n` `best_of_n_enabled` `best_of_n_language` | `{"temperature": 0.9, "top_p": 0.9, "repetition_penalty": 1.1, "best_of_n": 3}` |
 | **Chatterbox**（chatterbox，声音克隆） | `exaggeration` `guidance_scale` `temperature` `repetition_penalty` `min_p` `top_p` `s3gen_cfg_rate` `max_new_tokens` `do_sample` `greedy` `stop_on_eos` | `{"exaggeration": 0.5, "guidance_scale": 0.5, "temperature": 0.8, "repetition_penalty": 1.2}` |
-| **OmniVoice**（omnivoice） | `instruct`（风格/指令文本）；`reference_text`（一般用「参考文本」框即可） | `{"instruct": "以轻快的语气朗读"}` |
+| **OmniVoice**（omnivoice） | `instruct`（风格/指令文本）`num_inference_steps` `guidance_scale` `speed` `audio_chunk_duration` `audio_chunk_threshold`；`reference_text` 一般用「参考文本」框 | `{"instruct": "以轻快的语气朗读", "audio_chunk_duration": 15}` |
+| **Supertonic 3**（supertonic） | `voice` `speaking_rate` `num_inference_steps` | `{"voice": "F1", "speaking_rate": 1.05}` |
 | **Pocket TTS**（pocket_tts） | 无专用高级参数（只需参考音色 + 语言） | — |
 
 > 键名取自各模型 `src/models/<family>/session.cpp` 实际读取的选项；同一键在不同模型里的取值范围/含义可能不同。量化相关键（如 `vibevoice.weight_type`、`voxcpm2.*_weight_type`）见项目根 `README.md` 的量化章节，不是通用默认项。
@@ -296,6 +331,7 @@ legacy/safetensors 模型目录仍可按 catalog 路径加载。
 | `AUDIOCPP_BUNDLE` | 手动指定整合包根目录 | 全部 |
 | `AUDIOCPP_SERVER` | 让 WebUI 连一个已在跑的外部 server | webui |
 | `AUDIOCPP_LOAD_TIMEOUT` | WebUI 等待模型加载的秒数（默认 300） | webui |
+| `AUDIOCPP_WEBUI_MODEL_MANAGER` | 显式指定本地 `model_manager_webui.py`；绝不回退到 `tools/model_manager_v2.py` | 本地 webui |
 
 ---
 
@@ -303,7 +339,7 @@ legacy/safetensors 模型目录仍可按 catalog 路径加载。
 
 - **`.bat` 双击闪退 / 命令语法错误**：这些脚本必须是 **CRLF** 行尾（LF 会让 cmd 解析出错），
   编辑后请保持 CRLF。
-- **端口被占用**：WebUI 管理的 `audiocpp_server` 默认用 8080。要同时跑外部 server，就给其中一个换端口，
+- **端口被占用**：WebUI 管理的 `audiocpp_server` 默认用 8088。要同时跑外部 server，就给其中一个换端口，
   或设 `AUDIOCPP_SERVER` 让 WebUI 复用外部 server。
 - **`model path does not exist` / not installed**：模型没装。用上面的 model_manager 命令或 WebUI 下载。
 - **显存不足**：8GB 下同时跑两个 server 时，两个模型都要装得下；1.7B 建议单开。
@@ -320,7 +356,7 @@ legacy/safetensors 模型目录仍可按 catalog 路径加载。
 - `audiocpp_server` 的服务**只加载一次、常驻**，之后每个请求只花“推理 + 极小的传输”。
   本机 HTTP + 几 MB 的 wav 传输 ≈ 毫秒级，相对多秒的推理可忽略（建议用默认二进制 wav，
   别用 `response_format:"json"` 的 base64，会大约 +33%）。
-- 网页界面（7860）比直连 8080 多一跳代理；其它程序直接打 8080 就没有这一跳。
+- 网页界面（7860）比直连 8088 多一跳代理；其它程序直接打 8088 就没有这一跳。
 
 **结论**：走 API 每次生成几乎没有额外成本，只有一次性的预热被服务端摊掉了——除了“只生成一次”的
 场景，API 方式通常比反复调 CLI **更快**。

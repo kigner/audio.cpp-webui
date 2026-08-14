@@ -45,6 +45,8 @@ audio.cpp would not be moving this quickly without generous contributors bringin
 ## News
 
 > [!IMPORTANT]
+> **2026-08-13 - Release 0.6:** This release adds **5** new model families - DotTTS, NeuTTS, MuScriptor, MiniMax-H3, and SenseVoice - bringing audio.cpp to **49** total model families and **70+** model variants, alongside the new native WebUI, expanded GGUF packaging, and more shared framework runtime pieces. This downstream keeps its local Python/Gradio WebUI as the primary Windows workflow and ships the upstream native WebUI beside it as an independent entry point.
+>
 > **2026-08-09 - Windows WebUI v0.5.1:** Model loading now returns to the WebUI immediately after the backend is ready instead of waiting for Hugging Face update checks; package-update information remains available in the download status area. The merged Qwen3 forced-aligner update also accepts punctuation-only transcript fragments and returns them without word timestamps instead of failing. Existing updater-enabled portable installs can upgrade directly from v0.2.0 through v0.5.0. [Download or update to v0.5.1](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.5.1-windows-prebuilt).
 >
 > **2026-08-08 - Windows WebUI v0.5.0:** The stable Windows portable release now combines audio.cpp 0.5 with the local WebUI, including resilient resumable model downloads, one-click model installation, in-WebUI GGUF conversion and cleanup, safer Qwen3-TTS long-text chunking, append-only Parakeet-TDT streaming transcript deltas, and automatic 16 kHz mono preparation for Parakeet streaming ASR. Existing updater-enabled portable installs can upgrade directly from v0.2.0 through v0.4.2. [Download or update to v0.5.0](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.5.0-windows-prebuilt).
@@ -67,9 +69,9 @@ audio.cpp would not be moving this quickly without generous contributors bringin
 
 ## Supported Models
 
-Task tags: `TTS` text to speech, `Clone` voice cloning, `VC` voice conversion, `ASR` speech recognition, `Align` forced alignment, `VAD` voice activity detection, `Diar` speaker diarization, `Codec` audio codec, `Sep` source separation, `Music` music/song generation, `SFX` sound effects, `Edit` audio/music editing, `Design` voice design, `Dialogue` multi-speaker dialogue TTS, `Ctrl` TTS/clone voice control such as emotion, style, instruction, caption, or non-verbal tag control.
+Task tags: `TTS` text to speech, `Clone` voice cloning, `VC` voice conversion, `ASR` speech recognition, `Align` forced alignment, `VAD` voice activity detection, `Diar` speaker diarization, `Codec` audio codec, `Sep` source separation, `MIDI` audio-to-symbolic MIDI/events, `Music` music/song generation, `SFX` sound effects, `Video` video generation, `Edit` audio/music editing, `Design` voice design, `Dialogue` multi-speaker dialogue TTS, `Ctrl` TTS/clone voice control such as emotion, style, instruction, caption, or non-verbal tag control.
 
-Runtime tags: safetensors is the default model loading path. `GGUF 16/Q8/Q4` means those GGUF precision or quantization paths are tested; `GGUF Q8` means only `q8_0` is tested; `GGUF F32` means the original-F32 GGUF path is tested. See [docs/gguf.md](docs/gguf.md) for precision/status details. `Bundled` means the tiny runtime asset ships under `assets/framework/models` and needs no separate model download. `Stream` means the family exposes a streaming server/session path.
+Runtime tags: safetensors is the default model loading path. `GGUF 16/Q8/Q4/INT8` means those GGUF precision or quantization paths are tested; `GGUF Q8` means only `q8_0` is tested; `GGUF F32` means the original-F32 GGUF path is tested. See [docs/gguf.md](docs/gguf.md) for precision/status details. `Bundled` means the tiny runtime asset ships under `assets/framework/models` and needs no separate model download. `Stream` means the family exposes a streaming server/session path.
 
 | Family | Task | Lang | Variants | Runtime |
 |---|---|---|---|---|
@@ -78,6 +80,7 @@ Runtime tags: safetensors is the default model loading path. `GGUF 16/Q8/Q4` mea
 | **chatterbox** | TTS, Clone, VC| ar, da, de, el, en, es, fi, fr, hi, it, ko, ms, nl, no, pl, pt, sv, sw, tr | Chatterbox with 0.5B backbone | GGUF 16/Q8 |
 | **confucius4_tts** | Clone | zh, en, ja, ko, de, fr, es, id, it, th, pt, ru, ms, vi | Confucius4-TTS multilingual voice cloning | GGUF F32, Stream |
 | **citrinet_asr** | ASR | en | Citrinet-256 | GGUF Q8 |
+| **dots_tts** | TTS, Clone, Ctrl | multilingual | DotTTS SOAR and MeanFlow | GGUF 16/Q8, Stream |
 | **dramabox** | TTS, Clone | en | DramaBox expressive TTS and voice cloning | GGUF Q8 |
 | **fish_audio** | TTS, Clone, Ctrl | auto, en, zh | Fish Audio S2 Pro | GGUF 16/Q8 |
 | **fun_asr_nano** | ASR | auto, zh, en, ja | Fun-ASR-Nano-2512 | GGUF 16/Q8 |
@@ -88,14 +91,17 @@ Runtime tags: safetensors is the default model loading path. `GGUF 16/Q8/Q4` mea
 | **hviske_asr** | ASR | da | Hviske v5.3 | GGUF Q8 |
 | **marblenet_vad** | VAD | lang agnostic | MarbleNet VAD | Bundled |
 | **mel_band_roformer** | Sep | lang agnostic | Mel-Band RoFormer MLX vocal separation variants | GGUF 16/Q8 |
+| **minimax_h3** | Video, Music, TTS/Dialogue | auto | MiniMax-H3 Q4_K with optional INT8 ConvRot DiT | GGUF Q4/INT8 |
 | **miocodec** | Codec, VC | lang agnostic | MioCodec v2, 25 Hz, 44.1 kHz | GGUF 16/Q8 |
 | **miotts** | TTS, Clone | en, ja | MioTTS-1.7B | GGUF 16/Q8 |
+| **muscriptor** | MIDI | music | MuScriptor Small audio-to-symbolic transcription | GGUF F32, Stream |
 | **omnivoice** | TTS, Clone, Design, Ctrl | 646+ langs | OmniVoice, Qwen3-0.6B based | GGUF 16/Q8, Stream |
 | **pocket_tts** | TTS, Clone | en, de, it, pt, es | PocketTTS-100M | GGUF 16/Q8 |
 | **nemotron_asr** | ASR | 100+ ASR prompt codes incl. auto | Nemotron 3.5 ASR Streaming 0.6B | GGUF 16/Q8, Stream |
 | **qwen3_asr** | ASR | zh, en, yue, ar, de, fr, es, pt, id, it, ko, ru, th, vi, ja, tr, hi, ms, nl, sv, da, fi, pl, cs, fil, fa, el, ro, hu, mk | Qwen3-ASR-0.6B, Qwen3-ASR-1.7B-hf | GGUF 16/Q8, Stream |
 | **qwen3_forced_aligner** | Align | zh, yue, en, de, es, fr, it, pt, ru, ko, ja | Qwen3-ForcedAligner-0.6B | GGUF 16/Q8 |
 | **qwen3_tts** | TTS, Clone, Design, Ctrl | zh, en, fr, de, it, ja, ko, pt, ru, es | Qwen3-TTS-12Hz-0.6B-Base, Qwen3-TTS-12Hz-1.7B-Base, Qwen3-TTS-12Hz-1.7B-CustomVoice, Qwen3-TTS-12Hz-1.7B-VoiceDesign | GGUF 16/Q8 |
+| **neutts** | TTS, Ctrl | en | NeuTTS 2E with built-in speaker prompts and emotion control | GGUF original precision, Stream |
 | **rvc** | VC | lang agnostic | RVC F16 GGUF with packaged v1/v2 voices and optional retrieval blending | GGUF 16 |
 | **seed_vc** | VC | lang agnostic | SeedVC XLS-R + HiFT, SeedVC Whisper-small + BigVGAN | GGUF 16/Q8 |
 | **silero_vad** | VAD | lang agnostic | Silero VAD | Bundled, Stream |
@@ -106,7 +112,7 @@ Runtime tags: safetensors is the default model loading path. `GGUF 16/Q8/Q4` mea
 | **vibevoice_asr** | ASR | auto | VibeVoice ASR | GGUF 16/Q8 |
 | **voxtral_realtime** | ASR | auto | Voxtral-Mini-4B-Realtime-2602 | GGUF 16/Q8/Q4, Stream |
 | **voxcpm2** | TTS, Clone, Design, Ctrl | ar, da, de, el, en, es, fi, fr, he, hi, id, it, ja, km, ko, lo, ms, my, nl, no, pl, pt, ru, sv, sw, th, tl, tr, vi, zh | VoxCPM2-2B, 48 kHz | GGUF 16/Q8, Stream |
-| **index_tts2** | TTS, Clone, Ctrl | zh, en | IndexTTS-2 | GGUF 16/Q8 |
+| **index_tts2** | TTS, Clone, Ctrl | zh, en, ja, es, ar | IndexTTS-2, IndexTTS-2.5 (variant) | GGUF 16/Q8 |
 | **irodori_tts** | TTS, Clone, Design, Ctrl | ja | Irodori-TTS-v4-Small, Irodori-TTS-500M-v3, Irodori-TTS-600M-v3-VoiceDesign | GGUF 16/Q8 |
 | **moss_tts_nano** | TTS, Clone | auto | MOSS-TTS-Nano-100M | GGUF 16/Q8 |
 | **moss_tts_local** | TTS, Clone, Ctrl | auto, optional language hint | MOSS-TTS-Local-Transformer-v1.5 | GGUF 16/Q8 |
@@ -123,9 +129,11 @@ Community model ports live under `community_models` to make the ownership bounda
 | **glm_tts** | TTS, Clone | zh, en | GGUF | Mirek [@mirek190](https://github.com/mirek190) | [GLM-TTS](docs/community_models/glm_tts.md) zero-shot synthesis and voice cloning support |
 | **inflect_v2** | TTS | en | GGUF FP32 | Jan [@JanWerder](https://github.com/JanWerder) | [Inflect Micro v2 and Nano v2](docs/community_models/inflect_v2.md) native offline synthesis |
 | **kroko_asr** | ASR | de, en, es, fr, it, he, nl, pt, sv, tr | Safetensors, GGUF Q8 | Mirek [@mirek190](https://github.com/mirek190) | [Kroko Community ASR](docs/community_models/kroko_asr.md) native offline/streaming Zipformer2/RNN-T transcription with word timestamps |
+| **minimax_h3** | Video, Music, TTS/Dialogue | auto | GGUF Q4/INT8 | [@0xShug0](https://github.com/0xShug0) | [MiniMax-H3](docs/community_models/minimax_h3.md) text-to-audio/video generation with Q4_K and optional INT8 ConvRot DiT |
 | **moss_tts_local** | TTS, Clone, Ctrl | auto, optional language hint | GGUF | [@justinjohn0306](https://github.com/justinjohn0306) | MOSS-TTS-Local Transformer v1.5 support |
 | **outetts** | TTS, Clone | en, ar, zh, nl, fr, de, it, ja, ko, lt, ru, es, pt, be, bn, ka, hu, lv, fa, pl, sw, ta, uk | GGUF | Mirek [@mirek190](https://github.com/mirek190) | Llama-OuteTTS-1.0-1B TTS and voice cloning support |
 | **parakeet_tdt** | ASR | auto, bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk | GGUF F32/16/Q8, Stream | [@dleiferives](https://github.com/dleiferives) | [Parakeet-TDT 0.6B v3](docs/community_models/parakeet_tdt.md) offline, long-form, and buffered-streaming ASR support |
+| **sense_asr** | ASR | auto, zh, en, yue, ja, ko, pt, ru, es, it, fr, de, nl, pl, tr, ar, hi, vi, th, id, ms, fa, nospeech | GGUF Q8, Stream | Jason Chen [@jasonchen31](https://github.com/jasonchen31), [@LauraGPT](https://github.com/LauraGPT) / FunASR | [SenseVoice-Small](docs/community_models/sense_asr.md) offline/streaming SAN-M + CTC transcription with event/emotion/language tags and ITN |
 | **vietneu_tts** | TTS, Clone | vi, en | GGUF | Phuoc [@phuocnguyen90](https://github.com/phuocnguyen90) | [VieNeu-TTS-v3-Turbo](docs/community_models/vietneu_tts.md) TTS and voice cloning support |
 
 ## Docker
@@ -154,9 +162,12 @@ package notes.
 ## WebUI
 ![Maintained by contributors](https://img.shields.io/badge/maintained%20by-contributors-brightgreen)
 
-audio.cpp includes a Gradio WebUI for trying local models from the browser, managing downloads, and running common TTS/ASR/audio workflows without writing CLI commands.
+This downstream ships two independent WebUIs in parallel:
 
-The WebUI lives in [webui/](webui/). See [webui/README.md](webui/README.md) for setup, launch commands, and model-download notes.
+- The local Python/Gradio WebUI remains the primary Windows workflow. Launch `webui\run_webui.bat`, open `http://127.0.0.1:7860`, and use its dedicated `webui/model_manager_webui.py` downloader. It starts a backend with the embedded UI disabled so ownership stays local.
+- The upstream native SvelteKit/TypeScript WebUI is embedded directly in `audiocpp_server`. Launch `audiocpp_server --ui --backend cuda`, open `http://127.0.0.1:8080`, and use upstream `tools/model_manager_v2.py` for its model preparation jobs. Native inference and the embedded frontend do not require Python; only optional download/conversion jobs may invoke it.
+
+The two frontends share the v0.6 C++ API but do not share Python UI code or model-manager behavior. Use separate server ports/processes if running both at once. See [webui/README.md](webui/README.md) for the local WebUI setup and the native entry point.
 
 Huge thanks to [@kigner](https://github.com/kigner) for the original [audio.cpp-webui](https://github.com/kigner/audio.cpp-webui), and to [@patrickjchen](https://github.com/patrickjchen) for porting and integrating it into audio.cpp.
 

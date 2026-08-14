@@ -56,7 +56,7 @@ def huggingface_token() -> str | None:
 
 
 def http_headers() -> dict[str, str]:
-    headers = {"User-Agent": "audio.cpp model_manager_v2.py"}
+    headers = {"User-Agent": "audio.cpp model_manager_webui.py"}
     token = huggingface_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -264,7 +264,7 @@ def ensure_hf_package(package: PackageRecord) -> None:
     kind = package.download.get("kind")
     if kind != "huggingface_snapshot":
         raise ManagerError(
-            f"{package.id} uses download kind '{kind}'. model_manager_v2 only installs huggingface_snapshot packages; "
+            f"{package.id} uses download kind '{kind}'. model_manager_webui only installs huggingface_snapshot packages; "
             "legacy composite and converter installs are not supported by this WebUI manager."
         )
     if not package.download.get("repo"):

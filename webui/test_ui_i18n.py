@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import unittest
 
@@ -119,6 +120,25 @@ class UiI18nTests(unittest.TestCase):
             for spec in specs:
                 with self.subTest(family=family, name=spec.get("name")):
                     self.assertTrue(param_spec(spec, "en").get("label"))
+
+    def test_streaming_tts_explanatory_copy_has_explicit_english(self):
+        path = os.path.join(HERE, "configs", "model_params.json")
+        with open(path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        streaming_families = {
+            "confucius4_tts", "dots_tts", "neutts",
+            "omnivoice", "supertonic", "voxcpm2",
+        }
+        han = re.compile(r"[\u3400-\u9fff]")
+        for family in streaming_families:
+            for spec in config.get(family, []):
+                for field in ("label", "info", "placeholder"):
+                    source = spec.get(field)
+                    if not isinstance(source, str) or not han.search(source):
+                        continue
+                    with self.subTest(family=family, name=spec.get("name"), field=field):
+                        self.assertTrue(spec.get(f"{field}_en"))
+                        self.assertFalse(han.search(param_spec(spec, "en").get(field) or ""))
 
 
 if __name__ == "__main__":

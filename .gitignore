@@ -56,3 +56,9 @@ __pycache__/
 /webui/configs/ui_language.json
 # personal and saved voices — stay local, repo is public
 /webui/voice/
+
+# --- upstream native WebUI build artifacts ---
+/webui/native/node_modules/
+/webui/native/.svelte-kit/
+/webui/native/dist/*
+!/webui/native/dist/index.html

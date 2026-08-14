@@ -65,10 +65,10 @@
   ],
 
   "voxcpm2": [
-    {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 10, "minimum": 1, "step": 1, "precision": 0, "info": "CFM/DiT 步数"},
+    {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 10, "minimum": 1, "step": 1, "precision": 0, "info": "CFM/DiT 步数", "info_en": "CFM/DiT steps"},
     {"name": "guidance_scale", "type": "slider", "label": "guidance_scale", "default": 2.0, "minimum": 0.0, "maximum": 5.0, "step": 0.1},
     {"name": "min_tokens", "type": "number", "label": "min_tokens", "default": 2, "minimum": 0, "step": 1, "precision": 0},
-    {"name": "retry_badcase", "type": "bool", "label": "retry_badcase（自动重试异常输出）", "default": true}
+    {"name": "retry_badcase", "type": "bool", "label": "retry_badcase（自动重试异常输出）", "label_en": "retry_badcase (retry abnormal output)", "default": true}
   ],
 
   "miotts": [
@@ -91,15 +91,45 @@
     {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps（生成步数）", "label_en": "num_inference_steps", "default": 10, "minimum": 1, "maximum": 100, "step": 1, "precision": 0}
   ],
 
+  "dots_tts": [
+    {"name": "template_name", "type": "choice", "label": "template_name（合成模板）", "label_en": "template_name (synthesis template)", "default": "tts", "choices": ["tts", "instruction_tts", "text_to_audio", "tts_interleave"]},
+    {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 10, "minimum": 1, "step": 1, "precision": 0},
+    {"name": "guidance_scale", "type": "slider", "label": "guidance_scale", "default": 1.2, "minimum": 0.0, "maximum": 5.0, "step": 0.1},
+    {"name": "speaker_scale", "type": "slider", "label": "speaker_scale（参考音色强度）", "label_en": "speaker_scale (reference voice strength)", "default": 1.5, "minimum": 0.0, "maximum": 4.0, "step": 0.1},
+    {"name": "sampler_mode", "type": "choice", "label": "sampler_mode（SOAR ODE 求解器）", "label_en": "sampler_mode (SOAR ODE solver)", "default": "euler", "choices": ["euler", "midpoint", "rk4"]},
+    {"name": "text_chunk_size", "type": "number", "label": "text_chunk_size（后端长文本分段）", "label_en": "text_chunk_size (backend long-text chunk)", "default": 320, "minimum": 1, "step": 1, "precision": 0},
+    {"name": "text_chunk_mode", "type": "choice", "label": "text_chunk_mode", "default": "tag_aware", "choices": ["default", "tag_aware", "japanese", "endline"]},
+    {"name": "vocoder_merge_steps", "type": "number", "label": "vocoder_merge_steps（流式声码器合并步数）", "label_en": "vocoder_merge_steps (streaming vocoder merge)", "default": 4, "minimum": 1, "step": 1, "precision": 0, "info": "仅流式生成生效；越小首包越快、推送越频繁", "info_en": "Streaming only; smaller values yield earlier, more frequent audio chunks"}
+  ],
+
   "omnivoice": [
     {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps", "default": 32, "minimum": 1, "step": 1, "precision": 0},
     {"name": "guidance_scale", "type": "slider", "label": "guidance_scale", "default": 2.0, "minimum": 0.0, "maximum": 5.0, "step": 0.1},
     {"name": "speed", "type": "slider", "label": "speed", "default": 1.0, "minimum": 0.5, "maximum": 2.0, "step": 0.05},
-    {"name": "instruct", "type": "text", "label": "instruct（风格/音色指令）", "default": "", "placeholder": "如：以轻快的语气朗读"}
+    {"name": "instruct", "type": "text", "label": "instruct（风格/音色指令）", "label_en": "instruct (style/voice instruction)", "default": "", "placeholder": "如：以轻快的语气朗读", "placeholder_en": "Example: Read in a lively tone"},
+    {"name": "audio_chunk_duration", "type": "number", "label": "audio_chunk_duration（流式目标分块秒数）", "label_en": "audio_chunk_duration (stream target seconds)", "default": 15.0, "minimum": 0.1, "step": 0.5, "info": "流式时每个文本块的目标音频时长", "info_en": "Target audio duration for each streaming text chunk"},
+    {"name": "audio_chunk_threshold", "type": "number", "label": "audio_chunk_threshold（启用自动分块阈值秒数）", "label_en": "audio_chunk_threshold (auto-chunk threshold seconds)", "default": 30.0, "minimum": 0.1, "step": 0.5, "info": "预计音频达到该时长后启用自动分块", "info_en": "Enable automatic chunking when estimated audio reaches this duration"}
+  ],
+
+  "sense_asr": [
+    {"name": "enable_itn", "type": "bool", "label": "enable_itn（逆文本规范化）", "label_en": "enable_itn", "default": true},
+    {"name": "keep_tags", "type": "bool", "label": "keep_tags（保留语言/情绪/事件标签）", "label_en": "keep_tags", "default": false},
+    {"name": "audio_chunk_mode", "type": "choice", "label": "audio_chunk_mode", "default": "auto", "choices": ["auto", "fixed", "none"]},
+    {"name": "audio_chunk_duration_sec", "type": "number", "label": "audio_chunk_duration_sec", "default": 30, "minimum": 0.001, "step": 1}
   ],
 
   "pocket_tts": [
     {"name": "frames_after_eos", "type": "number", "label": "frames_after_eos（-1=自动）", "default": -1, "minimum": -1, "step": 1, "precision": 0}
+  ],
+
+  "neutts": [
+    {"name": "voice_id", "type": "choice", "label": "voice_id（内置音色）", "label_en": "voice_id (built-in voice)", "default": "emily", "choices": ["dave", "emily", "greta", "jo", "juliette", "mateo", "paul", "sophie", "steven"]},
+    {"name": "emotion", "type": "choice", "label": "emotion（情绪）", "label_en": "emotion", "default": "neutral", "choices": ["angry", "disgusted", "sad", "happy", "fearful", "neutral", "surprised"]},
+    {"name": "min_tokens", "type": "number", "label": "min_tokens", "default": 50, "minimum": 0, "step": 1, "precision": 0},
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 1.0, "minimum": 0.01, "maximum": 2.0, "step": 0.05},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 50, "minimum": 1, "step": 1, "precision": 0},
+    {"name": "text_chunk_size", "type": "number", "label": "text_chunk_size（流式文本段字符数）", "label_en": "text_chunk_size (stream text segment chars)", "default": 600, "minimum": 1, "step": 1, "precision": 0, "info": "流式时每段文本的最大字符数", "info_en": "Maximum characters in each streaming text segment"},
+    {"name": "text_chunk_mode", "type": "choice", "label": "text_chunk_mode", "default": "default", "choices": ["default", "tag_aware", "japanese", "endline"]}
   ],
 
   "inflect_v2": [
@@ -152,6 +182,15 @@
     {"name": "bpm", "type": "number", "label": "【曲谱】BPM", "default": 0, "minimum": 0, "step": 1, "precision": 0, "info": "0=不指定"},
     {"name": "keyscale", "type": "text", "label": "【曲谱】keyscale", "default": "", "placeholder": "如 F major"},
     {"name": "timesignature", "type": "text", "label": "【曲谱】timesignature", "default": "", "placeholder": "如 4"}
+  ],
+
+  "minimax_h3": [
+    {"name": "num_inference_steps", "type": "number", "label": "Denoising steps", "default": 12, "minimum": 1, "maximum": 50, "step": 1, "precision": 0, "info": "Twelve denoising steps provide a practical quality and performance balance."},
+    {"name": "num_frames", "type": "number", "label": "Output frames", "default": 241, "minimum": 5, "maximum": 1441, "step": 4, "precision": 0, "info": "Approximately 24 frames per output second; 241 frames produces about 10 seconds of audio."},
+    {"name": "guidance_scale", "type": "slider", "label": "Guidance scale", "default": 1.0, "minimum": 0.0, "maximum": 5.0, "step": 0.1},
+    {"name": "sampler", "type": "choice", "label": "Sampler", "default": "euler", "choices": ["euler", "res_multistep", "dpmpp_2m", "unipc"]},
+    {"name": "dit_acceleration", "type": "choice", "label": "DiT acceleration", "default": "none", "choices": ["none", "spectrum", "first_block_cache"], "info": "None uses the quality-first full-DiT path. Acceleration modes are experimental and may distort some outputs."},
+    {"name": "return_video", "type": "bool", "label": "Decode video", "default": false, "info": "Disabled by default to reduce memory use and return audio only."}
   ],
 
   "stable_audio": [
@@ -207,6 +246,7 @@
   ],
 
   "index_tts2": [
+    {"name": "lang", "type": "choice", "label": "lang（语种提示, 仅 IndexTTS2.5 模型）", "label_en": "lang (language hint, IndexTTS2.5 models only)", "default": "auto", "choices": ["auto", "zh", "en", "ja", "es", "ar"], "info": "仅对 IndexTTS2.5（多语种）模型生效：auto 含汉字按中文，否则按英文；日/西/阿建议显式选择", "info_en": "Only applies to IndexTTS2.5 (multilingual) models: auto picks zh when the text contains Han characters, otherwise en; set ja/es/ar explicitly"},
     {"name": "emotion_text", "type": "text", "label": "emotion_text（情绪参考文本）", "label_en": "emotion_text (emotion reference text)", "default": "", "placeholder": "例：你吓死我了！你是鬼吗？", "placeholder_en": "e.g. You scared me to death!", "info": "填写后自动开启情感条件（use_emotion_text）", "info_en": "Setting this enables emotion conditioning."},
     {"name": "emotion_alpha", "type": "slider", "label": "emotion_alpha（情感强度）", "label_en": "emotion_alpha", "default": 1.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05},
     {"name": "use_emotion_text", "type": "bool", "label": "use_emotion_text（从朗读文本推断情感）", "label_en": "use_emotion_text (infer from text)", "default": false},

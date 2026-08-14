@@ -2,12 +2,25 @@
 
 > **语言 / Language:** **English** · [中文](README.zh.md)
 
-The `webui/` directory holds the Python dependencies, launch scripts, and model-download wrappers needed to run the WebUI.
+The `webui/` directory holds the Python dependencies, launch scripts, and model-download wrappers needed to run the local WebUI.
 The launch scripts can be **double-clicked** or invoked from a command line / PowerShell.
+
+## Two independent WebUIs
+
+- **Local Python/Gradio WebUI (primary here):** launch `webui\run_webui.bat` and open
+  `http://127.0.0.1:7860`. It owns `webui/model_manager_webui.py` and starts its managed
+  `audiocpp_server` with `--no-ui`; its UI and download behavior remain downstream-maintained.
+- **Upstream native WebUI:** built into `audiocpp_server` from `webui/native/`. Launch
+  `audiocpp_server --ui --backend cuda` and open `http://127.0.0.1:8080`. Its optional model
+  preparation jobs own and invoke upstream `tools/model_manager_v2.py`.
+
+The frontends share the same C++ server API but no Python UI/model-manager code. Their defaults
+already coexist: the local WebUI manages its backend on 8088, while the native UI uses 8080.
 
 | Script | Purpose | Typical command |
 |---|---|---|
 | `webui/run_webui.bat` | Gradio web interface (starts the server on demand) | `webui\run_webui.bat` |
+| `audiocpp-portable/run_native_webui.bat` | Embedded native WebUI served directly by `audiocpp_server` | `audiocpp-portable\run_native_webui.bat` |
 | `webui/run_webui.sh` | Linux / macOS WebUI launcher | `./webui/run_webui.sh` |
 | `webui/_env.bat` | WebUI environment detection (**do not run directly**) | `call`ed by `run_webui.bat` |
 
@@ -133,7 +146,26 @@ Starts the Gradio web interface (`webui.py`); open **http://127.0.0.1:7860** in 
   `AUDIOCPP_THREADS=N` if you want that. The VRAM warning is not shown in CPU mode.
 
 > The web interface (7860) is for humans; to use it as an **API for other programs**, start `audiocpp_server`
-> directly, or once the WebUI is up, hit the port 8080 it manages directly.
+> directly, or once the WebUI is up, hit the port 8088 it manages directly.
+
+### TTS streaming
+
+The TTS page shows an Offline / Streaming mode selector for the families below. Offline remains the default.
+When Streaming is selected, the WebUI reloads its managed C++ service with `mode=streaming`, plays PCM events
+from `/v1/audio/speech` as they arrive, and also writes a complete WAV for download and replay.
+
+| Family | WebUI delivery granularity | Output rate | Notes |
+|---|---|---:|---|
+| VoxCPM2 | Continuous events during generation | 48 kHz | Streaming forces `retry_badcase=false` |
+| DotTTS SOAR / MeanFlow | Continuous vocoder chunks | 48 kHz | `vocoder_merge_steps` tunes vocoder merge granularity |
+| Confucius4-TTS | One event per completed backend text segment | 22.05 kHz | A reference voice is required |
+| NeuTTS 2E | One event per completed backend text segment | 24 kHz | Uses preset `voice_id`; reference audio is ignored |
+| OmniVoice | One event per model-planned text chunk | 24 kHz | Short text may be one chunk; tune `audio_chunk_duration` / `audio_chunk_threshold` |
+| Supertonic 3 | One event per completed backend text chunk | 44.1 kHz | Uses preset `voice`; reference audio is unsupported |
+
+Segment/chunk streaming still starts long-form playback before the full request completes, but its first audio
+waits for the first segment. DotTTS and VoxCPM2 usually deliver finer first chunks. Switching models resets the
+selector to Offline so a model change does not unexpectedly trigger another service reload.
 
 ---
 
@@ -180,9 +212,13 @@ curated common subset; other keys can still be passed via the JSON box):
 | **Qwen3-TTS** (qwen3_tts) 0.6B / 1.7B / CustomVoice | `do_sample` `temperature` `top_k` `top_p`; the CustomVoice variant also has `speaker` | `{"do_sample": true, "temperature": 0.8, "top_k": 40, "top_p": 0.9}`<br>CustomVoice built-in voice: `{"speaker": "<CustomVoice voice name>"}` |
 | **VibeVoice** (vibevoice) 1.5B long-form/multi-speaker | `num_inference_steps` `guidance_scale` `max_length_times` `do_sample` `temperature` `top_k` `top_p`; multi-speaker `voice_samples` (comma-separated wavs, max 4, **cannot** be combined with a reference voice) | `{"num_inference_steps": 10, "guidance_scale": 1.3, "max_length_times": 2.0}`<br>Multi-speaker: `{"voice_samples": "D:/a.wav,D:/b.wav"}` |
 | **VoxCPM2** (voxcpm2) | `num_inference_steps` `guidance_scale` `min_tokens` `retry_badcase` `retry_badcase_max_times` `retry_badcase_ratio_threshold`; reference transcript `prompt_text` | `{"num_inference_steps": 10, "guidance_scale": 2.0, "retry_badcase": true}` |
+| **DotTTS** (dots_tts, SOAR / MeanFlow) | `template_name` `num_inference_steps` `guidance_scale` `speaker_scale` `sampler_mode` `text_chunk_size` `text_chunk_mode` `vocoder_merge_steps`; reference trim `reference_duration_sec` | `{"vocoder_merge_steps": 4, "sampler_mode": "euler"}` |
+| **Confucius4-TTS** (confucius4_tts) | `temperature` `top_p` `top_k` `num_beams` `repetition_penalty` `num_inference_steps` `guidance_scale` `text_chunk_size` `text_chunk_mode` `cross_fade_duration_sec` `edge_fade_duration_sec` `edge_pad_duration_sec` | `{"text_chunk_size": 80, "cross_fade_duration_sec": 0.3}` |
+| **NeuTTS 2E** (neutts) | `voice_id` `emotion` `min_tokens` `temperature` `top_k` `text_chunk_size` `text_chunk_mode` | `{"voice_id": "emily", "emotion": "neutral"}` |
 | **MioTTS** (miotts, needs MioCodec) | `temperature` `top_k` `top_p` `repetition_penalty` `presence_penalty` `frequency_penalty` `do_sample` `best_of_n` `best_of_n_enabled` `best_of_n_language` | `{"temperature": 0.9, "top_p": 0.9, "repetition_penalty": 1.1, "best_of_n": 3}` |
 | **Chatterbox** (chatterbox, voice cloning) | `exaggeration` `guidance_scale` `temperature` `repetition_penalty` `min_p` `top_p` `s3gen_cfg_rate` `max_new_tokens` `do_sample` `greedy` `stop_on_eos` | `{"exaggeration": 0.5, "guidance_scale": 0.5, "temperature": 0.8, "repetition_penalty": 1.2}` |
-| **OmniVoice** (omnivoice) | `instruct` (style/instruction text); `reference_text` (usually the "reference text" box is enough) | `{"instruct": "Read in a light, upbeat tone"}` |
+| **OmniVoice** (omnivoice) | `instruct` (style/instruction text), `num_inference_steps` `guidance_scale` `speed` `audio_chunk_duration` `audio_chunk_threshold`; `reference_text` usually uses the dedicated box | `{"instruct": "Read in a light, upbeat tone", "audio_chunk_duration": 15}` |
+| **Supertonic 3** (supertonic) | `voice` `speaking_rate` `num_inference_steps` | `{"voice": "F1", "speaking_rate": 1.05}` |
 | **Pocket TTS** (pocket_tts) | No dedicated advanced parameters (just a reference voice + language) | — |
 
 > The key names come from the options each model's `src/models/<family>/session.cpp` actually reads; the same key
@@ -340,6 +376,7 @@ An uninstalled id prompts at runtime; you can click "download" in the WebUI, or 
 | `AUDIOCPP_BUNDLE` | manually specify the bundle root directory | all |
 | `AUDIOCPP_SERVER` | make the WebUI connect to an already-running external server | webui |
 | `AUDIOCPP_LOAD_TIMEOUT` | seconds the WebUI waits for a model to load (default 300) | webui |
+| `AUDIOCPP_WEBUI_MODEL_MANAGER` | explicitly override the local `model_manager_webui.py` path; never falls back to `tools/model_manager_v2.py` | local webui |
 
 ---
 
@@ -347,7 +384,7 @@ An uninstalled id prompts at runtime; you can click "download" in the WebUI, or 
 
 - **`.bat` flashes and closes on double-click / command syntax error:** these scripts must use **CRLF** line endings
   (LF makes cmd misparse them); keep CRLF after editing.
-- **Port already in use:** the WebUI-managed `audiocpp_server` defaults to 8080. To also run an external server, change
+- **Port already in use:** the WebUI-managed `audiocpp_server` defaults to 8088. To also run an external server, change
   the port on one of them, or set `AUDIOCPP_SERVER` so the WebUI reuses the external server.
 - **`model path does not exist` / not installed:** the model isn't installed. Use the model_manager command above or
   download it in the WebUI.
@@ -366,7 +403,7 @@ loading**:
 - The `audiocpp_server` service **loads once and stays resident**, so each subsequent request only spends "inference + a
   tiny transfer". Local HTTP + a few-MB wav transfer ≈ milliseconds, negligible against multi-second inference (use the
   default binary wav; avoid the base64 of `response_format:"json"`, which adds about +33%).
-- The web interface (7860) is one proxy hop further than hitting 8080 directly; other programs hitting 8080 directly skip that hop.
+- The web interface (7860) is one proxy hop further than hitting 8088 directly; other programs hitting 8088 directly skip that hop.
 
 **Conclusion:** going through the API adds almost no per-generation cost — the one-time warmup is amortized by the
 server. Except for "generate exactly once" cases, the API approach is usually **faster** than repeatedly calling the CLI.

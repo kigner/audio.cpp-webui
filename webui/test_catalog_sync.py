@@ -16,10 +16,10 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
-if os.path.join(REPO_ROOT, "tools") not in sys.path:
-    sys.path.insert(0, os.path.join(REPO_ROOT, "tools"))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
-import model_manager_v2  # noqa: E402
+import model_manager_webui  # noqa: E402
 
 try:
     from webui import webui as app
@@ -40,8 +40,8 @@ UNLISTED_FAMILIES: dict[str, str] = {}
 def _packages():
     return {
         package.id: package
-        for package in model_manager_v2.flatten_packages(
-            model_manager_v2.load_specs(model_manager_v2.DEFAULT_SPECS_DIR))
+        for package in model_manager_webui.flatten_packages(
+            model_manager_webui.load_specs(model_manager_webui.DEFAULT_SPECS_DIR))
     }
 
 
