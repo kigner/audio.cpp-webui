@@ -7,8 +7,8 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http.client import HTTPException
 from pathlib import Path
@@ -23,6 +23,8 @@ DEFAULT_SPECS_DIR = REPO_ROOT / "model_specs"
 DOWNLOAD_ATTEMPTS = 32
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_RETRY_DELAY_SECONDS = 1
+STAGING_ROOT_NAME = ".engine_model_staging"
+STAGING_STATE_NAME = ".package.json"
 
 
 class ManagerError(RuntimeError):
@@ -86,6 +88,146 @@ def stripped_path(remote_path: str, strip_prefix: str) -> Path:
             raise ManagerError(f"file path does not start with strip_prefix '{strip_prefix}': {remote_path}")
         result = result[len(prefix) + 1 :]
     return validate_relative_path(result, "local file path")
+
+
+def package_staging_paths(package: PackageRecord, models_root: Path) -> tuple[Path, Path]:
+    """Stable staging and lock paths for the package's final install target."""
+    target_dir = validate_relative_path(package.target_directory, "target_directory")
+    staging_root = models_root / STAGING_ROOT_NAME
+    staging = staging_root / target_dir
+    lock = staging_root / ".locks" / target_dir.parent / f"{target_dir.name}.lock"
+    return staging, lock
+
+
+def _package_resume_state(package: PackageRecord) -> dict[str, Any]:
+    return {
+        "schema": 1,
+        "package_id": package.id,
+        "target_directory": package.target_directory,
+        "strip_prefix": package.strip_prefix,
+        "files": list(package.files),
+        "download": package.download,
+    }
+
+
+def _read_resume_state(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_resume_state(staging: Path, package: PackageRecord) -> None:
+    path = staging / STAGING_STATE_NAME
+    temporary = staging / f"{STAGING_STATE_NAME}.tmp"
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(_package_resume_state(package), handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    temporary.replace(path)
+
+
+def _planned_bytes(path: Path, package: PackageRecord) -> int:
+    total = 0
+    for remote in package.files:
+        output = path / stripped_path(remote, package.strip_prefix)
+        try:
+            if output.is_file():
+                total += output.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _legacy_staging_candidates(models_root: Path, package: PackageRecord) -> list[Path]:
+    """Find staging directories created by the pre-v0.6 random-name workflow."""
+    if not models_root.is_dir():
+        return []
+    safe_target = package.target_directory.replace("/", "_").replace("\\", "_")
+    prefix = f".{safe_target}."
+    return [path for path in models_root.iterdir()
+            if path.is_dir() and path.name.startswith(prefix)]
+
+
+def _archive_incompatible_staging(staging: Path) -> Path:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for index in range(1000):
+        suffix = "" if index == 0 else f"-{index}"
+        archived = staging.with_name(f"{staging.name}.stale-{stamp}-{os.getpid()}{suffix}")
+        if not archived.exists():
+            staging.rename(archived)
+            return archived
+    raise ManagerError(f"could not preserve incompatible staging directory: {staging}")
+
+
+def prepare_staging(package: PackageRecord, models_root: Path) -> Path:
+    """Reuse a stable partial download, adopting the largest legacy partial once."""
+    staging, _lock = package_staging_paths(package, models_root)
+    desired_state = _package_resume_state(package)
+    if staging.exists() and not staging.is_dir():
+        raise ManagerError(f"staging path is not a directory: {staging}")
+    if staging.is_dir():
+        current_state = _read_resume_state(staging / STAGING_STATE_NAME)
+        if current_state is not None and current_state != desired_state:
+            archived = _archive_incompatible_staging(staging)
+            print(f"preserved incompatible staging at {archived}", flush=True)
+
+    if not staging.exists():
+        candidates = _legacy_staging_candidates(models_root, package)
+        if candidates:
+            legacy = max(candidates, key=lambda path: (_planned_bytes(path, package), path.stat().st_mtime_ns))
+            if _planned_bytes(legacy, package) > 0:
+                staging.parent.mkdir(parents=True, exist_ok=True)
+                legacy.rename(staging)
+                print(f"adopted legacy partial download {legacy} -> {staging}", flush=True)
+
+    staging.mkdir(parents=True, exist_ok=True)
+    _write_resume_state(staging, package)
+    resumed = _planned_bytes(staging, package)
+    if resumed:
+        print(f"resuming {package.id} from {resumed} bytes in {staging}", flush=True)
+    return staging
+
+
+@contextmanager
+def package_install_lock(lock_path: Path, package_id: str):
+    """Non-blocking inter-process lock that the OS releases after a crash."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    locked = False
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except OSError as error:
+            raise ManagerError(f"{package_id} is already being installed by another process") from error
+        yield
+    finally:
+        if locked:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
 
 
 def load_specs(specs_dir: Path) -> list[dict[str, Any]]:
@@ -294,19 +436,23 @@ def install_package(package: PackageRecord, args: argparse.Namespace) -> None:
 
     if args.dry_run or args.check:
         return
-    if final_dir.exists() and not args.overwrite:
-        raise ManagerError(f"target already exists: {final_dir} (use --overwrite)")
     models_root.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{package.target_directory.replace('/', '_')}.", dir=models_root))
-    try:
-        for remote, output in plan:
-            download_file(package, remote, staging / output.relative_to(final_dir))
-        if final_dir.exists():
-            shutil.rmtree(final_dir)
-        staging.rename(final_dir)
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+    _staging, lock_path = package_staging_paths(package, models_root)
+    with package_install_lock(lock_path, package.id):
+        if final_dir.exists() and not args.overwrite:
+            raise ManagerError(f"target already exists: {final_dir} (use --overwrite)")
+        staging = prepare_staging(package, models_root)
+        try:
+            for remote, output in plan:
+                download_file(package, remote, staging / output.relative_to(final_dir))
+            (staging / STAGING_STATE_NAME).unlink(missing_ok=True)
+            if final_dir.exists():
+                shutil.rmtree(final_dir)
+            final_dir.parent.mkdir(parents=True, exist_ok=True)
+            staging.rename(final_dir)
+        except Exception:
+            print(f"partial download kept at {staging}", file=sys.stderr, flush=True)
+            raise
     print(f"installed {package.id} -> {final_dir}")
 
 

@@ -135,6 +135,88 @@ class InstallPlacementTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(self.root, "Demo-GGUF", "model-q8_0.gguf")))
 
 
+class PersistentInstallResumeTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="audiocpp_webui_install_resume_test_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.original_urlopen = mmw.urlopen
+        self.original_attempts = mmw.DOWNLOAD_ATTEMPTS
+        self.original_delay = mmw.DOWNLOAD_RETRY_DELAY_SECONDS
+        self.addCleanup(setattr, mmw, "urlopen", self.original_urlopen)
+        self.addCleanup(setattr, mmw, "DOWNLOAD_ATTEMPTS", self.original_attempts)
+        self.addCleanup(setattr, mmw, "DOWNLOAD_RETRY_DELAY_SECONDS", self.original_delay)
+        mmw.DOWNLOAD_ATTEMPTS = 1
+        mmw.DOWNLOAD_RETRY_DELAY_SECONDS = 0
+        self.package = _package(files=("Demo-GGUF/model.gguf",))
+        self.args = SimpleNamespace(
+            models_root=self.root,
+            overwrite=True,
+            check=False,
+            dry_run=False,
+        )
+
+    def test_failed_install_resumes_the_same_staging_file_next_time(self):
+        ranges = []
+
+        def fake_urlopen(request, timeout):
+            ranges.append(request.get_header("Range"))
+            if len(ranges) == 1:
+                return _Response(b"abcd", {"Content-Length": "10"}, 200)
+            self.assertEqual(request.get_header("Range"), "bytes=4-")
+            return _Response(
+                b"efghij",
+                {"Content-Length": "6", "Content-Range": "bytes 4-9/10"},
+                206,
+            )
+
+        mmw.urlopen = fake_urlopen
+
+        with self.assertRaises(mmw.ManagerError):
+            mmw.install_package(self.package, self.args)
+
+        staging, _lock = mmw.package_staging_paths(self.package, Path(self.root))
+        partial = staging / "model.gguf"
+        self.assertEqual(partial.read_bytes(), b"abcd")
+
+        mmw.install_package(self.package, self.args)
+
+        installed = Path(self.root) / "Demo-GGUF" / "model.gguf"
+        self.assertEqual(installed.read_bytes(), b"abcdefghij")
+        self.assertEqual(ranges, [None, "bytes=4-"])
+        self.assertFalse(staging.exists())
+
+    def test_legacy_random_staging_is_adopted_and_resumed(self):
+        legacy = Path(self.root) / ".Demo-GGUF.previous-attempt"
+        legacy.mkdir()
+        (legacy / "model.gguf").write_bytes(b"abcd")
+        ranges = []
+
+        def fake_urlopen(request, timeout):
+            ranges.append(request.get_header("Range"))
+            return _Response(
+                b"efghij",
+                {"Content-Length": "6", "Content-Range": "bytes 4-9/10"},
+                206,
+            )
+
+        mmw.urlopen = fake_urlopen
+        mmw.install_package(self.package, self.args)
+
+        self.assertEqual(ranges, ["bytes=4-"])
+        self.assertFalse(legacy.exists())
+        self.assertEqual(
+            (Path(self.root) / "Demo-GGUF" / "model.gguf").read_bytes(),
+            b"abcdefghij",
+        )
+
+    def test_package_lock_rejects_a_concurrent_installer(self):
+        _staging, lock = mmw.package_staging_paths(self.package, Path(self.root))
+        with mmw.package_install_lock(lock, self.package.id):
+            with self.assertRaisesRegex(mmw.ManagerError, "already being installed"):
+                with mmw.package_install_lock(lock, self.package.id):
+                    self.fail("a second installer acquired the same package lock")
+
+
 class ResumableDownloadTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="audiocpp_webui_download_resume_test_")

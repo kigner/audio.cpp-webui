@@ -215,7 +215,7 @@ class BlockedDownloadDoesNotStartTests(_AppPatch):
         message = app.download_model("vevo2")
         self.assertIn("100.00 GB", message)
         self.assertEqual(started, [])
-        self.assertNotIn("vevo2", app._downloads)
+        self.assertNotIn("vevo2_q8_0", app._downloads)
 
 
 class WarningsSurviveTheProgressRefreshTests(_AppPatch):
@@ -235,11 +235,13 @@ class WarningsSurviveTheProgressRefreshTests(_AppPatch):
                    _staged_bytes=lambda entry: 5 * GB,
                    catalog_by_id=lambda model_id: self.entry,
                    _read_tail=lambda *a, **k: "")
-        self.addCleanup(app._downloads.pop, "m", None)
+        self.addCleanup(app._downloads.pop, "vevo2_q8_0", None)
 
     def _status(self, poll_result):
-        app._downloads["m"] = {"proc": type("P", (), {"poll": lambda s: poll_result})(),
-                               "log": os.devnull}
+        app._downloads["vevo2_q8_0"] = {
+            "proc": type("P", (), {"poll": lambda s: poll_result})(),
+            "log": os.devnull,
+        }
         return app.download_status("m")
 
     def test_memory_alarm_is_repeated_on_every_running_tick(self):
@@ -287,15 +289,31 @@ class OneClickDownloadTests(_AppPatch):
         self.patch(BACKEND="gpu", LOCAL_VRAM_GB=8.0,
                    catalog_by_id=lambda model_id: self.entry,
                    SPEC_MODEL_MANAGER="/path/to/model_manager_webui.py")
+        self.logs = tempfile.TemporaryDirectory(prefix="audiocpp_download_log_test_")
+        self.addCleanup(self.logs.cleanup)
+        self.patch(LOG_DIR=self.logs.name)
         self.spawned = []
+        self.processes = []
         self.addCleanup(setattr, app.subprocess, "Popen", app.subprocess.Popen)
+
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -1
 
         def fake_popen(*a, **k):
             self.spawned.append(a)
-            return type("P", (), {"poll": lambda s: None, "terminate": lambda s: None})()
+            process = FakeProcess()
+            self.processes.append(process)
+            return process
 
         app.subprocess.Popen = fake_popen
-        self.addCleanup(app._downloads.pop, "m", None)
+        self.addCleanup(app._downloads.pop, "vevo2_q8_0", None)
 
     def test_clicking_download_starts_immediately(self):
         self.patch(_read_tail=lambda *a, **k: "")
@@ -303,13 +321,74 @@ class OneClickDownloadTests(_AppPatch):
         self.assertEqual(len(self.spawned), 1, "Download Model did not start the download")
         self.assertIn("17.00 GB", message)
         self.assertIn("VRAM", message)
+        self.assertIn("vevo2_q8_0", app._downloads)
+
+    def test_clicking_the_same_download_twice_spawns_only_once(self):
+        app.download_model("m")
+        message = app.download_model("m")
+
+        self.assertEqual(len(self.spawned), 1)
+        self.assertIn("already downloading", message)
+
+    def test_aliases_with_the_same_download_id_spawn_only_once(self):
+        alias = dict(self.entry, id="alias", label="Alias Model")
+        entries = {"m": self.entry, "alias": alias}
+        self.patch(catalog_by_id=lambda model_id: entries.get(model_id))
+
+        app.download_model("m")
+        message = app.download_model("alias")
+
+        self.assertEqual(len(self.spawned), 1)
+        self.assertIn("already downloading", message)
+        self.assertTrue(app._download_running("alias"))
+
+    def test_retry_appends_a_new_attempt_to_the_same_package_log(self):
+        app.download_model("m")
+        self.processes[0].returncode = 1
+        app.download_model("m")
+
+        log = app._dl_log_path("vevo2_q8_0")
+        with open(log, "r", encoding="utf-8") as handle:
+            contents = handle.read()
+        self.assertEqual(contents.count("download m (vevo2_q8_0)"), 2)
+        self.assertEqual(len(self.spawned), 2)
 
     def test_insufficient_disk_starts_nothing(self):
         self.stub_disk(1 * GB)
         message, _timer = app.download_start("m")
         self.assertIn("Not enough disk space", message)
         self.assertEqual(self.spawned, [])
-        self.assertNotIn("m", app._downloads)
+        self.assertNotIn("vevo2_q8_0", app._downloads)
+
+
+class StagedBytesTests(_AppPatch):
+    def setUp(self):
+        super().setUp()
+        self.root = tempfile.TemporaryDirectory(prefix="audiocpp_staged_bytes_test_")
+        self.addCleanup(self.root.cleanup)
+        self.entry = {"download_id": "demo_q8_0"}
+        self.package = {"target_directory": "Demo-GGUF"}
+        self.patch(MODELS_ROOT=self.root.name,
+                   SPEC_PACKAGE_BY_ID={"demo_q8_0": self.package})
+
+    def test_stable_staging_directory_is_counted(self):
+        staging = os.path.join(
+            self.root.name, app.MODEL_STAGING_ROOT_NAME, "Demo-GGUF")
+        os.makedirs(staging)
+        with open(os.path.join(staging, "model.gguf"), "wb") as handle:
+            handle.write(b"123456")
+
+        self.assertEqual(app._staged_bytes(self.entry), 6)
+
+    def test_only_the_largest_legacy_partial_is_counted(self):
+        for name, data in ((".Demo-GGUF.first", b"1234"),
+                           (".Demo-GGUF.second", b"123456")):
+            path = os.path.join(self.root.name, name)
+            os.makedirs(path)
+            with open(os.path.join(path, "model.gguf"), "wb") as handle:
+                handle.write(data)
+
+        self.assertEqual(app._staged_bytes(self.entry), 6)
 
 
 class SizeProbeTests(unittest.TestCase):

@@ -2648,11 +2648,12 @@ curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
 
 # --- background model downloads (via model_specs packages) ------------------
 _dl_lock = threading.Lock()
-_downloads = {}  # model_id -> {"proc": Popen, "log": path}
+_downloads = {}  # download_id -> {"proc": Popen, "log": path, "model_id": id}
+MODEL_STAGING_ROOT_NAME = ".engine_model_staging"
 
 
-def _dl_log_path(model_id):
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", model_id)
+def _dl_log_path(download_id):
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", download_id)
     return os.path.join(LOG_DIR, f"download_{safe}.log")
 
 
@@ -2672,17 +2673,37 @@ def _fmt_bytes(n):
 
 
 def _staged_bytes(entry):
-    """Bytes already on disk for a running download, or None before staging starts.
-    model_manager_webui stages spec packages as a hidden temp directory directly
-    under models/ and renames it into the final target on completion."""
+    """Bytes in the one partial directory that the next install will resume."""
     package = SPEC_PACKAGE_BY_ID.get(entry.get("download_id") or "")
     if package is None:
         return None
-    safe_target = package.get("target_directory", "").replace("/", "_").replace("\\", "_")
-    probes = sorted(glob.glob(os.path.join(MODELS_ROOT, f".{safe_target}.*")))
-    if not probes:
+    target = package.get("target_directory", "")
+    if not target:
         return None
-    return sum(_dir_size_bytes(path) for path in probes if os.path.isdir(path))
+    staging_root = os.path.abspath(os.path.join(MODELS_ROOT, MODEL_STAGING_ROOT_NAME))
+    staging = os.path.abspath(os.path.join(staging_root, target))
+    try:
+        safe = os.path.commonpath((staging_root, staging)) == staging_root
+    except ValueError:
+        safe = False
+    if safe and os.path.isdir(staging):
+        return _dir_size_bytes(staging)
+
+    # Upgrade compatibility: the previous manager used a new hidden temp
+    # directory for every attempt. The fixed manager adopts only the largest one,
+    # so report that resumable candidate rather than summing unrelated leftovers.
+    safe_target = target.replace("/", "_").replace("\\", "_")
+    probes = [path for path in glob.glob(os.path.join(MODELS_ROOT, f".{safe_target}.*"))
+              if os.path.isdir(path)]
+    return max((_dir_size_bytes(path) for path in probes), default=None)
+
+
+def _download_record(model_id, entry=None):
+    if not model_id:
+        return None
+    entry = entry if entry is not None else catalog_by_id(model_id)
+    key = entry.get("download_id") if entry else None
+    return _downloads.get(key) if key else None
 
 
 def _download_progress_note(entry):
@@ -3142,13 +3163,15 @@ def download_model(model_id, hf_token="", proxy=""):
         return requirements + blocker
 
     with _dl_lock:
-        rec = _downloads.get(model_id)
+        rec = _downloads.get(dl_id)
         if rec and rec["proc"].poll() is None:
             return _t("⏳ {label} 已在后台下载中…\n```\n{tail}\n```",
                       "⏳ {label} is already downloading…\n```\n{tail}\n```",
                       label=entry["label"], tail=_read_tail(rec["log"]))
-        log = _dl_log_path(model_id)
-        logf = open(log, "w", encoding="utf-8", errors="replace")
+        log = _dl_log_path(dl_id)
+        logf = open(log, "a", encoding="utf-8", errors="replace")
+        logf.write(f"\n=== {_ts()} download {model_id} ({dl_id}) ===\n")
+        logf.flush()
         try:
             proc = subprocess.Popen(
                 [sys.executable, "-u", SPEC_MODEL_MANAGER, "install", dl_id,
@@ -3156,7 +3179,12 @@ def download_model(model_id, hf_token="", proxy=""):
                 cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
         finally:
             logf.close()
-        _downloads[model_id] = {"proc": proc, "log": log}
+        _downloads[dl_id] = {
+            "proc": proc,
+            "log": log,
+            "model_id": model_id,
+            "download_id": dl_id,
+        }
     _ui_log(_t("开始后台下载 {label}（{dl_id}），日志：{log}",
                "started background download {label} ({dl_id}), log: {log}",
                label=entry['label'], dl_id=dl_id, log=log))
@@ -3171,7 +3199,7 @@ def download_status(model_id):
     entry = catalog_by_id(model_id) if model_id else None
     if entry is None:
         return ""
-    rec = _downloads.get(model_id)
+    rec = _download_record(model_id, entry)
     if rec is None:
         if entry.get("download_installed", entry["installed"]):
             return _t("✅ {label} 的下载包已安装",
@@ -3222,7 +3250,7 @@ def download_status(model_id):
 
 
 def _download_running(model_id):
-    rec = _downloads.get(model_id) if model_id else None
+    rec = _download_record(model_id)
     return rec is not None and rec["proc"].poll() is None
 
 
