@@ -45,6 +45,8 @@ audio.cpp would not be moving this quickly without generous contributors bringin
 ## News
 
 > [!IMPORTANT]
+> **2026-08-25:** Five model families planned for release 0.7 are now under testing on the upstream `dev` branch: AudioSR, ControlFoley, FireRedTTS3, FireRedAudio, and MiDashengLM-Gen. They are not included in this merge or declared as supported by the local WebUI yet.
+>
 > **2026-08-13 - Release 0.6:** This release adds **5** new model families - DotTTS, NeuTTS, MuScriptor, MiniMax-H3, and SenseVoice - bringing audio.cpp to **49** total model families and **70+** model variants, alongside the new native WebUI, expanded GGUF packaging, and more shared framework runtime pieces. This downstream keeps its local Python/Gradio WebUI as the primary Windows workflow and ships the upstream native WebUI beside it as an independent entry point.
 >
 > **2026-08-09 - Windows WebUI v0.5.1:** Model loading now returns to the WebUI immediately after the backend is ready instead of waiting for Hugging Face update checks; package-update information remains available in the download status area. The merged Qwen3 forced-aligner update also accepts punctuation-only transcript fragments and returns them without word timestamps instead of failing. Existing updater-enabled portable installs can upgrade directly from v0.2.0 through v0.5.0. [Download or update to v0.5.1](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.5.1-windows-prebuilt).
@@ -165,9 +167,9 @@ package notes.
 This downstream ships two independent WebUIs in parallel:
 
 - The local Python/Gradio WebUI remains the primary Windows workflow. Launch `webui\run_webui.bat`, open `http://127.0.0.1:7860`, and use its dedicated `webui/model_manager_webui.py` downloader. It starts a backend with the embedded UI disabled so ownership stays local.
-- The upstream native SvelteKit/TypeScript WebUI is embedded directly in `audiocpp_server`. Launch `audiocpp_server --ui --backend cuda`, open `http://127.0.0.1:8080`, and use upstream `tools/model_manager_v2.py` for its model preparation jobs. Native inference and the embedded frontend do not require Python; only optional download/conversion jobs may invoke it.
+- The upstream native SvelteKit/TypeScript WebUI is embedded directly in `audiocpp_server`. A config-driven build can launch it with `audiocpp_server --ui --backend cuda`. For native catalog downloads, install/remove, temporary uploads, and dynamic model switching, build with `AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON` and launch with `--ui --ui-management`; those normal package operations use the upstream C++ package manager. Legacy conversion layouts remain an upstream-only compatibility path and do not use the local WebUI manager.
 
-The two frontends share the v0.6 C++ API but do not share Python UI code or model-manager behavior. Use separate server ports/processes if running both at once. See [webui/README.md](webui/README.md) for the local WebUI setup and the native entry point.
+The two frontends share the C++ API, model specs, and model directory, but do not share frontend code or model-manager behavior. Use separate server ports/processes if running both at once. See [webui/README.md](webui/README.md) for the local WebUI setup and the native entry point.
 
 Huge thanks to [@kigner](https://github.com/kigner) for the original [audio.cpp-webui](https://github.com/kigner/audio.cpp-webui), and to [@patrickjchen](https://github.com/patrickjchen) for porting and integrating it into audio.cpp.
 

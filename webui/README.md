@@ -11,11 +11,42 @@ The launch scripts can be **double-clicked** or invoked from a command line / Po
   `http://127.0.0.1:7860`. It owns `webui/model_manager_webui.py` and starts its managed
   `audiocpp_server` with `--no-ui`; its UI and download behavior remain downstream-maintained.
 - **Upstream native WebUI:** built into `audiocpp_server` from `webui/native/`. Launch
-  `audiocpp_server --ui --backend cuda` and open `http://127.0.0.1:8080`. Its optional model
-  preparation jobs own and invoke upstream `tools/model_manager_v2.py`.
+  `audiocpp_server --ui --backend cuda` and open `http://127.0.0.1:8080`. For browser-side
+  catalog downloads, install/remove, temporary uploads, and dynamic model switching, compile the
+  optional native C++ model manager and add `--ui-management` at launch.
 
-The frontends share the same C++ server API but no Python UI/model-manager code. Their defaults
-already coexist: the local WebUI manages its backend on 8088, while the native UI uses 8080.
+The frontends share the same C++ server API, model specs, and model directory, but no frontend or
+model-manager implementation. Normal native package operations use the upstream C++ package manager;
+the local WebUI continues to use only `webui/model_manager_webui.py`. Their defaults already coexist:
+the local WebUI manages its backend on 8088, while the native UI uses 8080.
+
+To enable the native manager in a source build:
+
+```powershell
+.\scripts\build_windows.ps1 -Target audiocpp_server -NativeModelManager -Jobs 16
+.\build\windows-cuda-release\bin\audiocpp_server.exe --ui --ui-management --backend cuda
+```
+
+Without `AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON` (the CMake option selected by
+`-NativeModelManager`), `--ui` still serves the embedded frontend for config-driven use, but
+`--ui-management` is unavailable. This build choice does not alter the local Gradio model manager.
+
+### Upstream models integrated into the local WebUI in this merge
+
+| Local tab | New entry | Local-WebUI contract |
+|---|---|---|
+| TTS / clone | DotTTS Edit | The shared audio control becomes required source audio and is sent as `options.source_audio`; edit options have dedicated widgets |
+| TTS / clone | Habibi / F5-TTS | Requires reference audio plus its matching transcript; Arabic dialect controls are exposed |
+| TTS | MagpieTTS | Uses packaged voices and language codes; reference audio is ignored |
+| Music | MiniMax Music 3 | Requires lyrics; a non-positive duration uses the model default |
+| Voice conversion | MeanVC2 | Requires source speech plus a target-voice reference; this WebUI exposes the offline route |
+| Voice conversion | PersonaPlex | Uses source speech plus a packaged persona or optional target-voice reference; this WebUI exposes the offline route |
+| Audio analysis | MMS Forced Aligner | Requires the exact transcript and `nl/nld` or `en/eng`; request options are exposed in the analysis tab |
+| Voice design | MOSS-VoiceGenerator | Uses text plus a voice description, with English/Chinese and sampling controls |
+
+These entries use `webui/model_manager_webui.py`; they do not call, import, or fall back to the
+native UI's package manager. MMS weights are non-commercial and its default package intentionally
+reports that local conversion is required instead of attempting an unsupported public download.
 
 | Script | Purpose | Typical command |
 |---|---|---|
@@ -157,7 +188,7 @@ from `/v1/audio/speech` as they arrive, and also writes a complete WAV for downl
 | Family | WebUI delivery granularity | Output rate | Notes |
 |---|---|---:|---|
 | VoxCPM2 | Continuous events during generation | 48 kHz | Streaming forces `retry_badcase=false` |
-| DotTTS SOAR / MeanFlow | Continuous vocoder chunks | 48 kHz | `vocoder_merge_steps` tunes vocoder merge granularity |
+| DotTTS SOAR / MeanFlow / Edit | Continuous vocoder chunks | 48 kHz | Edit maps the audio input to `source_audio`; `vocoder_merge_steps` tunes granularity |
 | Confucius4-TTS | One event per completed backend text segment | 22.05 kHz | A reference voice is required |
 | NeuTTS 2E | One event per completed backend text segment | 24 kHz | Uses preset `voice_id`; reference audio is ignored |
 | OmniVoice | One event per model-planned text chunk | 24 kHz | Short text may be one chunk; tune `audio_chunk_duration` / `audio_chunk_threshold` |
@@ -212,7 +243,9 @@ curated common subset; other keys can still be passed via the JSON box):
 | **Qwen3-TTS** (qwen3_tts) 0.6B / 1.7B / CustomVoice | `do_sample` `temperature` `top_k` `top_p`; the CustomVoice variant also has `speaker` | `{"do_sample": true, "temperature": 0.8, "top_k": 40, "top_p": 0.9}`<br>CustomVoice built-in voice: `{"speaker": "<CustomVoice voice name>"}` |
 | **VibeVoice** (vibevoice) 1.5B long-form/multi-speaker | `num_inference_steps` `guidance_scale` `max_length_times` `do_sample` `temperature` `top_k` `top_p`; multi-speaker `voice_samples` (comma-separated wavs, max 4, **cannot** be combined with a reference voice) | `{"num_inference_steps": 10, "guidance_scale": 1.3, "max_length_times": 2.0}`<br>Multi-speaker: `{"voice_samples": "D:/a.wav,D:/b.wav"}` |
 | **VoxCPM2** (voxcpm2) | `num_inference_steps` `guidance_scale` `min_tokens` `retry_badcase` `retry_badcase_max_times` `retry_badcase_ratio_threshold`; reference transcript `prompt_text` | `{"num_inference_steps": 10, "guidance_scale": 2.0, "retry_badcase": true}` |
-| **DotTTS** (dots_tts, SOAR / MeanFlow) | `template_name` `num_inference_steps` `guidance_scale` `speaker_scale` `sampler_mode` `text_chunk_size` `text_chunk_mode` `vocoder_merge_steps`; reference trim `reference_duration_sec` | `{"vocoder_merge_steps": 4, "sampler_mode": "euler"}` |
+| **DotTTS** (dots_tts, SOAR / MeanFlow / Edit) | `template_name` `num_inference_steps` `guidance_scale` `speaker_scale` `sampler_mode` `text_chunk_size` `text_chunk_mode` `vocoder_merge_steps`; Edit also exposes `source_text` `target_text` `use_xvector` and receives source audio from the shared audio control | `{"vocoder_merge_steps": 4, "sampler_mode": "euler"}` |
+| **Habibi / F5-TTS** (f5_tts) | `dialect` `cfg_strength` `sway_sampling_coef` `speed` `num_inference_steps` `strip_diacritics`; reference audio and matching `reference_text` are required | `{"dialect": "MSA", "speed": 1.0}` |
+| **MagpieTTS** (magpie_tts) | `language` `voice_id` `temperature` `top_k` `guidance_scale` `text_chunk_size` `text_chunk_mode`; reference audio is unsupported | `{"language": "en", "voice_id": "Aria"}` |
 | **Confucius4-TTS** (confucius4_tts) | `temperature` `top_p` `top_k` `num_beams` `repetition_penalty` `num_inference_steps` `guidance_scale` `text_chunk_size` `text_chunk_mode` `cross_fade_duration_sec` `edge_fade_duration_sec` `edge_pad_duration_sec` | `{"text_chunk_size": 80, "cross_fade_duration_sec": 0.3}` |
 | **NeuTTS 2E** (neutts) | `voice_id` `emotion` `min_tokens` `temperature` `top_k` `text_chunk_size` `text_chunk_mode` | `{"voice_id": "emily", "emotion": "neutral"}` |
 | **MioTTS** (miotts, needs MioCodec) | `temperature` `top_k` `top_p` `repetition_penalty` `presence_penalty` `frequency_penalty` `do_sample` `best_of_n` `best_of_n_enabled` `best_of_n_language` | `{"temperature": 0.9, "top_p": 0.9, "repetition_penalty": 1.1, "best_of_n": 3}` |

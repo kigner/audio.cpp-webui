@@ -29,8 +29,9 @@ except ImportError:
 CATALOG_PATH = os.path.join(HERE, "configs", "models_catalog.json")
 REQUIRED_FILES_PATH = os.path.join(HERE, "configs", "required_files.json")
 REGISTRY_PATH = os.path.join(REPO_ROOT, "src", "framework", "runtime", "registry.cpp")
+CMAKE_PATH = os.path.join(REPO_ROOT, "CMakeLists.txt")
 
-_LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader\s*\(\s*\)")
+_LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader(?:\s*\(\s*\))?")
 
 # Families the server registers but the WebUI deliberately does not surface,
 # with the reason. Keep this empty unless there is one.
@@ -148,11 +149,18 @@ class CatalogSyncTests(unittest.TestCase):
         self.assertLessEqual(app.GGUF_WEBUI_CONVERTIBLE_FAMILIES, specs)
 
     def test_every_registered_family_is_reachable_from_the_ui(self):
-        with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
-            registry = f.read()
-        registered = {m.group(1) for line in registry.splitlines()
-                      for m in [_LOADER_CALL_RE.search(line.strip())]
-                      if m and not line.strip().startswith("//")}
+        texts = []
+        for path in (REGISTRY_PATH, CMAKE_PATH):
+            with open(path, "r", encoding="utf-8") as f:
+                texts.append(f.read())
+        registered = {
+            match.group(1)
+            for text in texts
+            for line in text.splitlines()
+            if not line.strip().startswith(("//", "#"))
+            for match in [_LOADER_CALL_RE.search(line.strip())]
+            if match
+        }
         listed = {e.get("family") for e in self.entries}
         missing = sorted(registered - listed - set(UNLISTED_FAMILIES))
         self.assertFalse(missing,

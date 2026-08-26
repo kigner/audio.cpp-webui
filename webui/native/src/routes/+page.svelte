@@ -68,6 +68,7 @@
   let maxTokens = 1024;
   let sourceFile: File | null = null;
   let voiceFile: File | null = null;
+  let vibeVoiceSpeakerFiles: Array<File | null> = [null, null, null, null];
   let voiceInput: HTMLInputElement | null = null;
   let referenceTextFile: File | null = null;
   let referenceTextInput: HTMLInputElement | null = null;
@@ -112,6 +113,7 @@
   let packageSizeRefreshInFlight = false;
   let refreshedInstallFinishes: Record<string, number> = {};
   let quickStartVoices: string[] = [];
+  let configuredVoices: string[] = [];
   let bundledVoices: string[] = [];
   let quickStartVoice = '';
   let uiLanguage = 'en';
@@ -129,6 +131,27 @@
     uiLanguage = resolveUiLanguage([code]);
     localStorage.setItem('audiocpp.ui.language', uiLanguage);
     document.documentElement.lang = uiLanguage;
+  }
+
+  async function clearLegacyUiCaches() {
+    // This server commonly reuses localhost:8080. Remove workers and Cache
+    // Storage left by an older application on that origin before Native Studio
+    // starts making requests. Do not clear localStorage or IndexedDB: they hold
+    // saved voices, model-folder selection, and UI preferences.
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.unregister()));
+      }
+      if ('caches' in window) {
+        const cacheNames = await window.caches.keys();
+        await Promise.all(cacheNames.map((name) => window.caches.delete(name)));
+      }
+    } catch (error) {
+      // Cache cleanup must not prevent an offline/local UI from starting when a
+      // browser restricts either API. The no-store response headers still apply.
+      console.warn('Unable to clear legacy WebUI caches:', error);
+    }
   }
 
   function workflowLabel(id: string, fallback: string, translate = tr) {
@@ -182,10 +205,6 @@
     }
   }
 
-  function loadedModelName(model: LoadedModel) {
-    return catalog.find((entry) => entry.id === model.id)?.display_name || model.id;
-  }
-
   const workflowTabs = [
     { id: 'tts', label: 'Text to speech', filterLabel: 'TTS', tasks: ['tts', 'clon'] },
     { id: 'asr', label: 'ASR / Transcription', filterLabel: 'ASR', tasks: ['asr'] },
@@ -211,35 +230,111 @@
     stable_audio: 'Stable Audio 3',
     qwen3_asr: 'Qwen3-ASR',
     vevo2: 'Vevo2',
-    seed_vc: 'Seed-VC'
+    seed_vc: 'Seed-VC',
+    magpie_tts: 'MagpieTTS',
+    meanvc2: 'MeanVC2',
+    personaplex: 'PersonaPlex'
   };
+
+  function pathVariantLabel(path: string) {
+    const normalized = path.replace(/\\/g, '/');
+    const filename = normalized.split('/').filter(Boolean).pop() || '';
+    const match = filename.match(/(?:^|[-_])(\d+(?:\.\d+)?[bm])(?:[-_]|$)/i);
+    return match ? match[1].toUpperCase() : '';
+  }
+
+  function catalogPathMatches(expectedPath: string, actualPath: string) {
+    const actual = comparablePath(actualPath);
+    const expected = comparablePath(resolveCatalogPath(expectedPath));
+    if (actual === expected) return true;
+    const relative = comparablePath(expectedPath).replace(/^models\//, '');
+    return actual === relative || actual.endsWith(`/${relative}`);
+  }
+
+  function catalogEntryMatchesLoadedModel(entry: CatalogEntry, model: LoadedModel) {
+    if (entry.family !== model.family || entry.task !== model.task) return false;
+    if (catalogPathMatches(entry.path, model.path)) return true;
+    return Boolean((entry.install_packages || []).some((choice) =>
+      catalogPathMatches(choice.path, model.path)));
+  }
+
+  function loadedCatalogEntry(model: LoadedModel) {
+    const exact = catalog.find((entry) => entry.id === model.id);
+    if (exact && catalogEntryMatchesLoadedModel(exact, model)) return exact;
+    return catalog.find((entry) => catalogEntryMatchesLoadedModel(entry, model));
+  }
+
+  function inferredLoadedModelName(model: LoadedModel, base?: CatalogEntry) {
+    const variant = pathVariantLabel(model.path);
+    const familyName = familyLabels[model.family] || base?.display_name || model.family;
+    return variant && !familyName.toLowerCase().includes(variant.toLowerCase())
+      ? `${familyName} ${variant}`
+      : familyName;
+  }
+
+  function loadedModelName(model: LoadedModel) {
+    return loadedCatalogEntry(model)?.display_name || inferredLoadedModelName(model);
+  }
 
   function compareModelNames(left: string, right: string) {
     return left.localeCompare(right, 'en', { sensitivity: 'base', numeric: true });
   }
 
-  const modelGroups: ModelGroup[] = Array.from(
-    catalog.reduce((groups, entry) => {
-      const existing = groups.get(entry.family) || [];
-      existing.push(entry);
-      groups.set(entry.family, existing);
-      return groups;
-    }, new Map<string, CatalogEntry[]>())
-  ).map(([family, entries]) => ({
-    family,
-    entries: [...entries].sort((left, right) => compareModelNames(left.display_name, right.display_name)),
-    label: entries.length > 1 ? (familyLabels[family] || entries[0].display_name) : entries[0].display_name
-  })).sort((left, right) => compareModelNames(left.label, right.label));
+  function configuredCatalogEntries() {
+    return loadedModels.map((model) => {
+      const exact = loadedCatalogEntry(model);
+      const familyMatch = catalog.find((entry) =>
+        entry.family === model.family && entry.task === model.task);
+      const base = exact || familyMatch;
+      return {
+        ...(base || {
+          id: model.id,
+          display_name: model.id,
+          family: model.family,
+          path: model.path,
+          task: model.task,
+          mode: model.mode
+        }),
+        id: model.id,
+        display_name: exact ? exact.display_name : inferredLoadedModelName(model, base),
+        display_name_en: exact ? exact.display_name_en : base?.display_name_en,
+        family: model.family,
+        path: model.path,
+        task: model.task,
+        mode: model.mode,
+        install_packages: []
+      } as CatalogEntry;
+    });
+  }
+
+  function groupCatalog(entries: CatalogEntry[]): ModelGroup[] {
+    return Array.from(
+      entries.reduce((groups, entry) => {
+        const existing = groups.get(entry.family) || [];
+        existing.push(entry);
+        groups.set(entry.family, existing);
+        return groups;
+      }, new Map<string, CatalogEntry[]>())
+    ).map(([family, entries]) => ({
+      family,
+      entries: [...entries].sort((left, right) => compareModelNames(left.display_name, right.display_name)),
+      label: entries.length > 1 ? (familyLabels[family] || entries[0].display_name) : entries[0].display_name
+    })).sort((left, right) => compareModelNames(left.label, right.label));
+  }
 
   let activeWorkflow: WorkflowId = 'tts';
   let workflowSelections: Partial<Record<WorkflowId, string>> = {};
   let modelWorkflowFilters: WorkflowId[] = workflowTabs.map((workflow) => workflow.id);
+  let activeCatalog: CatalogEntry[] = catalog;
+  let modelGroups: ModelGroup[] = groupCatalog(catalog);
 
   class StatusWarning extends Error {}
 
-  $: selected = catalog.find((entry) => entry.id === selectedId) || catalog[0];
+  $: activeCatalog = server && !server.ui_management ? configuredCatalogEntries() : catalog;
+  $: modelGroups = groupCatalog(activeCatalog);
+  $: selected = activeCatalog.find((entry) => entry.id === selectedId) || activeCatalog[0] || catalog[0];
   $: activeWorkflowSpec = workflowTabs.find((workflow) => workflow.id === activeWorkflow) || workflowTabs[0];
-  $: workflowModels = catalog.filter((entry) =>
+  $: workflowModels = activeCatalog.filter((entry) =>
     activeWorkflowSpec.tasks.some((task) => task === entry.task));
   $: filteredModelGroups = modelGroups.map((group) => ({
     ...group,
@@ -249,25 +344,33 @@
     })
   })).filter((group) => group.entries.length > 0);
   $: isLoaded = loadedModels.some((model) => model.id === selectedId && model.loaded &&
-    comparablePath(model.path) === comparablePath(modelPath));
+    modelMatchesSelectedPackage(model, selected));
   $: needsSource = ['asr', 'vc', 'svc', 's2s', 'sep', 'vad', 'diar', 'align', 'midi'].includes(selected?.task);
   $: acceptsSource = needsSource || selected?.task === 'gen';
   $: needsVoice = (['clon', 'vc', 'svc'].includes(selected?.task) && selected?.family !== 'rvc') ||
+    (selected?.task === 's2s' && selected?.family === 'personaplex') ||
     (selected?.task === 'tts' && !['supertonic'].includes(selected?.family));
+  $: usesVibeVoiceSpeakerFiles = selected?.family === 'vibevoice';
   $: isQwenBase = selected?.task === 'tts' && selected?.family === 'qwen3_tts' &&
     !selected?.id.includes('custom');
-  $: referenceVoiceRequired = !quickStartVoice && (
+  $: allowsQuickStartVoice = ['tts', 'clon'].includes(selected?.task);
+  $: referenceVoiceRequired = !(allowsQuickStartVoice && quickStartVoice) && (
     (['clon', 'vc', 'svc'].includes(selected?.task) && selected?.family !== 'rvc') || isQwenBase);
-  $: referenceTextRequired = Boolean(voiceFile) && isQwenBase;
-  $: quickStartVoices = Object.entries(demoVoiceSources)
-    .filter(([, source]) => bundledVoices.includes(source))
-    .map(([voice]) => voice);
+  $: lyricsRequired = requiresRequestOption(selected, 'lyrics');
+  $: referenceTextRequired = requiresRequestOption(selected, 'reference_text') ||
+    (Boolean(voiceFile) && isQwenBase);
+  $: quickStartVoices = server && !server.ui_management
+    ? configuredVoices
+    : Object.entries(demoVoiceSources)
+      .filter(([, source]) => bundledVoices.includes(source))
+      .map(([voice]) => voice);
   $: showsText = ['tts', 'clon', 'gen', 's2s', 'align', 'vdes'].includes(selected?.task);
   $: supportsLiveAsr = selected?.task === 'asr' &&
     ['voxtral_realtime', 'nemotron_asr', 'higgs_audio_stt', 'sense_asr'].includes(selected?.family);
   $: modelInventoryLoading = server === null ||
     (Boolean(server.ui_management) && Object.keys(packageSizes).length === 0 && packageSizeState !== 'failed');
-  $: selectableModelIds = new Set(catalog.filter((entry) => {
+  $: selectableModelIds = new Set(activeCatalog.filter((entry) => {
+    if (server && !server.ui_management) return true;
     if (loadedModels.some((model) => model.id === entry.id && model.loaded)) return true;
     if (entry.id === selectedId && installed === true) return true;
     const choices = entry.install_packages || [];
@@ -307,11 +410,42 @@
   }
 
   function selectedModelPath(entry: CatalogEntry) {
+    if (server && !server.ui_management) return entry.path;
     return resolveCatalogPath(selectedPackageChoice(entry)?.path || entry.path);
   }
 
   function comparablePath(path: string) {
     return path.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  }
+
+  function packagePathMatches(choice: InstallPackageChoice, path: string) {
+    return catalogPathMatches(choice.path, path);
+  }
+
+  function mergedSessionOptions(entry: CatalogEntry) {
+    const packageChoice = selectedPackageChoice(entry);
+    return { ...(entry.session_options || {}), ...(packageChoice?.session_options || {}) };
+  }
+
+  function packageSessionOptionsMatch(entry: CatalogEntry, choice: InstallPackageChoice, model: LoadedModel) {
+    const expected = choice.session_options || {};
+    const keys = Array.from(new Set((entry.install_packages || [])
+      .flatMap((candidate) => Object.keys(candidate.session_options || {}))));
+    if (!keys.length) return true;
+    const actual = model.session_options || {};
+    return keys.every((key) => actual[key] === expected[key]);
+  }
+
+  function modelMatchesPackage(entry: CatalogEntry, model: LoadedModel, choice: InstallPackageChoice) {
+    return packagePathMatches(choice, model.path) && packageSessionOptionsMatch(entry, choice, model);
+  }
+
+  function modelMatchesSelectedPackage(model: LoadedModel, entry: CatalogEntry | undefined) {
+    if (!entry) return comparablePath(model.path) === comparablePath(modelPath);
+    const choice = selectedPackageChoice(entry);
+    if (!choice) return comparablePath(model.path) === comparablePath(modelPath);
+    return comparablePath(model.path) === comparablePath(modelPath) &&
+      packageSessionOptionsMatch(entry, choice, model);
   }
 
   function residentModel(entry: CatalogEntry, models = loadedModels) {
@@ -320,11 +454,7 @@
 
   function packageIsResident(entry: CatalogEntry, choice: InstallPackageChoice, models = loadedModels) {
     const resident = residentModel(entry, models);
-    const selectedChoice = selectedPackageChoice(entry);
-    const expectedPath = entry.id === selectedId && choice.id === selectedChoice?.id
-      ? modelPath
-      : resolveCatalogPath(choice.path);
-    return Boolean(resident && comparablePath(resident.path) === comparablePath(expectedPath));
+    return Boolean(resident && modelMatchesPackage(entry, resident, choice));
   }
 
   function packageIsAvailable(
@@ -338,6 +468,9 @@
 
   function studioPackageSlots(entry: CatalogEntry) {
     const choices = entry.install_packages || [];
+    if (entry.family === 'ace_step' || entry.family === 'minimax_music3') {
+      return choices.map((choice) => ({ key: choice.id, label: choice.label, choice }));
+    }
     const q8 = choices.find((choice) => choice.format === 'gguf' &&
       ['q8', 'q8_0'].includes(choice.precision));
     const fp16 = choices.find((choice) => choice.format === 'gguf' &&
@@ -348,12 +481,12 @@
     return [
       {
         key: 'q8',
-        label: 'GGUF Q8',
+        label: q8?.label || 'GGUF Q8',
         choice: q8
       },
       {
         key: 'fp16',
-        label: 'GGUF FP16',
+        label: fp16?.label || 'GGUF FP16',
         choice: fp16
       },
     ];
@@ -392,6 +525,11 @@
       status = 'Reference voice changed. Choose or enter its matching transcript.';
       warningStatus = status;
     }
+  }
+
+  function chooseVibeVoiceSpeaker(index: number, file: File | null) {
+    vibeVoiceSpeakerFiles = vibeVoiceSpeakerFiles.map((current, currentIndex) =>
+      currentIndex === index ? file : current);
   }
 
   function chooseQuickStartVoice(voice: string) {
@@ -494,6 +632,10 @@
     return entry.request_options === undefined || entry.request_options.includes(option);
   }
 
+  function requiresRequestOption(entry: CatalogEntry, option: string) {
+    return entry.required_request_options?.includes(option) === true;
+  }
+
   function packageVersionLabel(size: ModelPackageSize | undefined, translate = tr) {
     if (!size?.installed) return '';
     if (size.version_state === 'up_to_date') return translate('models.upToDate');
@@ -570,6 +712,13 @@
   }
 
   function openModelsPage() {
+    if (!server?.ui_management) {
+      tab = 'studio';
+      status = 'Model management is disabled for this configured server.';
+      warningStatus = status;
+      errorStatus = '';
+      return;
+    }
     tab = 'models';
     if (packageSizeState === 'idle') packageSizeState = 'running';
     refreshPackageSizes();
@@ -612,13 +761,34 @@
     return true;
   }
 
+  function reconcileResidentPackageChoices(models = loadedModels) {
+    const nextIds = { ...selectedPackageIds };
+    let changed = false;
+
+    for (const entry of catalog) {
+      const resident = residentModel(entry, models);
+      if (!resident) continue;
+      const choice = (entry.install_packages || []).find((candidate) =>
+        modelMatchesPackage(entry, resident, candidate));
+      if (choice && nextIds[entry.id] !== choice.id) {
+        nextIds[entry.id] = choice.id;
+        changed = true;
+      }
+    }
+
+    if (!changed) return false;
+    selectedPackageIds = nextIds;
+    localStorage.setItem('audiocpp.ui.packageIds', JSON.stringify(selectedPackageIds));
+    if (selectedId) modelPath = selectedModelPath(selected);
+    return true;
+  }
+
   async function unloadRemovedResidentPackages(sizes = packageSizes) {
     const staleEntries = catalog.filter((entry) => {
       const resident = residentModel(entry);
       if (!resident) return false;
-      const residentPath = comparablePath(resident.path);
       const residentChoice = (entry.install_packages || []).find((choice) =>
-        comparablePath(resolveCatalogPath(choice.path)) === residentPath);
+        modelMatchesPackage(entry, resident, choice));
       return Boolean(residentChoice && sizes[residentChoice.id]?.installed === false);
     });
     if (!staleEntries.length) return false;
@@ -630,10 +800,13 @@
 
   async function openStudioPage() {
     tab = 'studio';
-    await Promise.all([refreshPackageSizes(), refresh()]);
-    await unloadRemovedResidentPackages();
-    const selectionChanged = reconcileSelectedPackageChoices();
-    if (selectionChanged && selectedId) await inspectPath();
+    await refresh();
+    if (server?.ui_management) {
+      await refreshPackageSizes();
+      await unloadRemovedResidentPackages();
+      const selectionChanged = reconcileSelectedPackageChoices();
+      if (selectionChanged && selectedId) await inspectPath();
+    }
   }
 
   function acceptModelsRoot(root: Awaited<ReturnType<typeof getModelsRoot>>) {
@@ -647,6 +820,7 @@
   function clearModelSelection() {
     selectedId = '';
     quickStartVoice = '';
+    configuredVoices = [];
     modelPath = '';
     installed = null;
     paramSpecs = [];
@@ -657,6 +831,7 @@
   }
 
   function clearUnavailableModelSelection(ignoreResident = false) {
+    if (server && !server.ui_management) return false;
     if (!selectedId || (!ignoreResident && isLoaded) || installed !== false) return false;
     clearModelSelection();
     return true;
@@ -722,7 +897,9 @@
 
   function resetParams() {
     const byId = parameterCatalog[selected?.id] || parameterCatalog[selected?.family] || [];
-    paramSpecs = byId;
+    paramSpecs = selected?.family === 'vibevoice'
+      ? byId.filter((spec) => spec.name !== 'voice_samples')
+      : byId;
     advancedValues = Object.fromEntries(byId.map((spec) => [spec.name, spec.default ?? '']));
     if (selected?.family === 'minimax_h3') {
       duration = 15;
@@ -733,9 +910,35 @@
     advancedJson = '{}';
   }
 
+  function syncConfiguredSelection() {
+    if (!server || server.ui_management) return;
+    const entries = configuredCatalogEntries();
+    if (!entries.length) {
+      clearModelSelection();
+      return;
+    }
+    const current = selectedId ? entries.find((entry) => entry.id === selectedId) : undefined;
+    const next = current || entries[0];
+    if (selectedId !== next.id) {
+      quickStartVoice = '';
+      configuredVoices = [];
+    }
+    selectedId = next.id;
+    selected = next;
+    activeWorkflow = workflowForTask(next.task);
+    workflowSelections = { ...workflowSelections, [activeWorkflow]: next.id };
+    modelPath = next.path;
+    installed = true;
+    chunkBudget = defaultChunkBudget(next.family);
+    localStorage.setItem('audiocpp.ui.model', next.id);
+    resetParams();
+  }
+
   async function refresh() {
     try {
       [server, loadedModels] = await Promise.all([health(), models()]);
+      if (server.ui_management) reconcileResidentPackageChoices();
+      else syncConfiguredSelection();
     } catch (error) {
       status = error instanceof Error ? error.message : String(error);
     }
@@ -744,6 +947,10 @@
   async function inspectPath() {
     if (!selectedId || !modelPath.trim()) {
       installed = null;
+      return;
+    }
+    if (server && !server.ui_management) {
+      installed = loadedModels.some((model) => model.id === selectedId);
       return;
     }
     installed = null;
@@ -760,11 +967,12 @@
       status = 'No model selected. Choose an installed model or download one from the Models tab.';
       return;
     }
-    const next = catalog.find((entry) => entry.id === id);
+    const next = activeCatalog.find((entry) => entry.id === id);
     if (!next || !entrySelectable(next)) return;
     selectedId = id;
     selected = next;
     quickStartVoice = '';
+    configuredVoices = [];
     activeWorkflow = workflowForTask(next.task);
     workflowSelections = { ...workflowSelections, [activeWorkflow]: id };
     modelPath = selectedModelPath(next);
@@ -772,6 +980,7 @@
     localStorage.setItem('audiocpp.ui.model', id);
     resetParams();
     inspectPath();
+    refreshConfiguredVoices();
   }
 
   function chooseWorkflow(id: WorkflowId) {
@@ -782,10 +991,10 @@
 
     const rememberedId = workflowSelections[id];
     const remembered = rememberedId
-      ? catalog.find((entry) => entry.id === rememberedId &&
+      ? activeCatalog.find((entry) => entry.id === rememberedId &&
           workflow.tasks.some((task) => task === entry.task) && entrySelectable(entry))
       : undefined;
-    const next = remembered || catalog.find((entry) =>
+    const next = remembered || activeCatalog.find((entry) =>
       workflow.tasks.some((task) => task === entry.task) && entrySelectable(entry));
     if (next) {
       chooseModel(next.id);
@@ -836,7 +1045,7 @@
         task: selected.task,
         mode: modeOverride || selected.mode || 'offline',
         load_options: selected.load_options || {},
-        session_options: selected.session_options || {}
+        session_options: mergedSessionOptions(selected)
       });
       await refresh();
       status = tr('status.modelReady', { model: selected.display_name });
@@ -846,12 +1055,19 @@
       status = error instanceof Error ? error.message : String(error);
       errorStatus = status;
       log(`Load failed: ${status}`);
+      throw error;
     } finally {
       loadingModel = false;
     }
   }
 
   async function doUnload() {
+    if (!server?.ui_management) {
+      status = 'Model unload is disabled for this configured server.';
+      warningStatus = status;
+      errorStatus = '';
+      return;
+    }
     if (!selectedId) return;
     const modelName = selected.display_name;
     loadingModel = true;
@@ -899,7 +1115,19 @@
       ? 44100
       : ['asr', 'vad', 'diar', 'align', 'midi'].includes(selected.task) ? 16000 : undefined;
     const wav = await browserDecodeToWav(file, targetSampleRate);
-    return uploadWav(wav, file.name.replace(/\.[^.]+$/, '') + '.wav', aborter?.signal);
+    return uploadWav(wav, aborter?.signal);
+  }
+
+  async function vibeVoiceSamplePaths(): Promise<string | undefined> {
+    const firstEmpty = vibeVoiceSpeakerFiles.findIndex((file) => !file);
+    const hasLaterFile = firstEmpty >= 0 && vibeVoiceSpeakerFiles.slice(firstEmpty + 1).some(Boolean);
+    if (hasLaterFile) {
+      throw new StatusWarning('VibeVoice speaker references must be filled from Speaker 1 without gaps.');
+    }
+    const files = vibeVoiceSpeakerFiles.filter((file): file is File => Boolean(file));
+    if (!files.length) return undefined;
+    const paths = await Promise.all(files.map((file) => stagedPath(file)));
+    return paths.filter((path): path is string => Boolean(path)).join(',');
   }
 
   function requestOptions() {
@@ -923,23 +1151,37 @@
   }
 
   async function ensureLoaded() {
+    if (!server?.ui_management) {
+      if (!loadedModels.some((model) => model.id === selectedId)) {
+        throw new Error('Configured model is not registered by this server.');
+      }
+      return;
+    }
     if (!isLoaded) {
       await doLoad();
       await refresh();
-      if (!loadedModels.some((model) => model.id === selectedId && model.loaded)) {
+      if (!loadedModels.some((model) => model.id === selectedId && model.loaded &&
+        modelMatchesSelectedPackage(model, selected))) {
         throw new Error('Model did not load.');
       }
     }
   }
 
   async function ensureLoadedMode(mode: string) {
+    if (!server?.ui_management) {
+      if (!loadedModels.some((model) => model.id === selectedId && model.mode === mode)) {
+        throw new Error(`Configured model is not registered in ${mode} mode.`);
+      }
+      return;
+    }
     const loaded = loadedModels.find((model) => model.id === selectedId && model.loaded);
     if (!loaded || loaded.mode !== mode) {
       await doLoad(mode);
       await refresh();
     }
     if (!loadedModels.some((model) =>
-      model.id === selectedId && model.loaded && model.mode === mode)) {
+      model.id === selectedId && model.loaded && model.mode === mode &&
+        modelMatchesSelectedPackage(model, selected))) {
       throw new Error(`Model did not load in ${mode} mode.`);
     }
   }
@@ -1013,6 +1255,20 @@
     }
   }
 
+  async function refreshConfiguredVoices() {
+    if (!selectedId || server?.ui_management !== false) {
+      configuredVoices = [];
+      return;
+    }
+    try {
+      configuredVoices = await availableVoices(selectedId);
+      if (quickStartVoice && !configuredVoices.includes(quickStartVoice)) quickStartVoice = '';
+    } catch (error) {
+      configuredVoices = [];
+      log(`Configured voices unavailable: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
   async function storeCurrentVoice() {
     if (!voiceFile) {
       status = 'Choose or record a voice reference first.';
@@ -1061,7 +1317,7 @@
     if (!blob.size) return;
     const file = new File([blob], `live-${liveChunkNumber}.webm`, { type: blob.type });
     const wav = await browserDecodeToWav(file, 16000);
-    const audio = await uploadWav(wav, `live-${liveChunkNumber}.wav`);
+    const audio = await uploadWav(wav);
     const result = await transcription({
       model: selected.id,
       audio,
@@ -1158,12 +1414,20 @@
         throw new StatusWarning(`${selected.display_name_en || selected.display_name} requires a reference voice.`);
       }
       if (referenceTextRequired && !referenceText.trim()) {
-        throw new StatusWarning('Qwen3-TTS Base voice cloning requires a reference transcript. Choose a matching .txt file or enter the transcript.');
+        const prefix = isQwenBase ? 'Qwen3-TTS Base voice cloning' : (selected.display_name_en || selected.display_name);
+        throw new StatusWarning(`${prefix} requires a reference transcript. Choose a matching .txt file or enter the transcript.`);
+      }
+      if (lyricsRequired && !lyrics.trim()) {
+        throw new StatusWarning(`${selected.display_name_en || selected.display_name} requires lyrics.`);
       }
       await ensureLoaded();
       const options = requestOptions();
+      if (usesVibeVoiceSpeakerFiles) {
+        const samples = await vibeVoiceSamplePaths();
+        if (samples) options.voice_samples = samples;
+      }
       const audio = acceptsSource ? await stagedPath(sourceFile) : undefined;
-      const voiceRef = needsVoice ? await stagedPath(voiceFile) : undefined;
+      const voiceRef = needsVoice && !usesVibeVoiceSpeakerFiles ? await stagedPath(voiceFile) : undefined;
 
       if (['tts', 'clon', 'vdes'].includes(selected.task)) {
         if (!text.trim()) throw new StatusWarning('Enter text to generate.');
@@ -1229,10 +1493,10 @@
           if (lyrics.trim()) request.lyrics = lyrics;
           request.duration_seconds = duration;
           request.seed = resolvedSeed;
-          request.max_tokens = maxTokens;
+          if (supportsMaxTokens(selected)) request.max_tokens = maxTokens;
         } else if (selected.task === 's2s') {
           request.seed = resolvedSeed;
-          request.max_tokens = maxTokens;
+          if (supportsMaxTokens(selected)) request.max_tokens = maxTokens;
         }
         if (audio) request.audio = audio;
         if (voiceRef) request.voice_ref = voiceRef;
@@ -1531,6 +1795,7 @@
   }
 
   onMount(async () => {
+    await clearLegacyUiCaches();
     const savedLanguage = localStorage.getItem('audiocpp.ui.language');
     uiLanguage = resolveUiLanguage(savedLanguage ? [savedLanguage] : navigator.languages);
     document.documentElement.lang = uiLanguage;
@@ -1543,9 +1808,10 @@
     // Package IDs are unambiguous; discard the legacy preference after migration.
     localStorage.removeItem('audiocpp.ui.packagePaths');
     const stored = localStorage.getItem('audiocpp.ui.model');
-    if (stored && catalog.some((entry) => entry.id === stored)) selectedId = stored;
-    selected = catalog.find((entry) => entry.id === selectedId) || catalog[0];
+    if (stored) selectedId = stored;
+    selected = activeCatalog.find((entry) => entry.id === selectedId) || activeCatalog[0] || catalog[0];
     quickStartVoice = '';
+    configuredVoices = [];
     activeWorkflow = workflowForTask(selected.task);
     if (selectedId) workflowSelections = { ...workflowSelections, [activeWorkflow]: selectedId };
     resetParams();
@@ -1565,13 +1831,18 @@
       }
     }
     modelPath = selectedModelPath(selected);
-    await refreshPackageSizes();
-    await inspectPath();
-    if (clearUnavailableModelSelection()) {
-      status = 'No installed model is selected. Choose a downloaded model or install one from the Models tab.';
+    if (server?.ui_management) {
+      await refreshPackageSizes();
+      await inspectPath();
+      if (clearUnavailableModelSelection()) {
+        status = 'No installed model is selected. Choose a downloaded model or install one from the Models tab.';
+      }
+    } else {
+      installed = Boolean(selectedId);
     }
     await refreshVoices();
     await refreshBundledVoices();
+    await refreshConfiguredVoices();
     await refreshInstallJobs();
   });
 
@@ -1601,7 +1872,9 @@
   </div>
   <nav aria-label={tr('nav.primary')}>
     <button class:active={tab === 'studio'} on:click={openStudioPage}>{tr('nav.studio')}</button>
-    <button class:active={tab === 'models'} on:click={openModelsPage}>{tr('nav.models')}</button>
+    {#if server?.ui_management !== false}
+      <button class:active={tab === 'models'} on:click={openModelsPage}>{tr('nav.models')}</button>
+    {/if}
     <button class:active={tab === 'logs'} on:click={() => tab = 'logs'}>{tr('nav.runtime')}</button>
   </nav>
   <label class="language-picker">
@@ -1625,7 +1898,7 @@
         <button class:active={activeWorkflow === workflow.id}
           on:click={() => chooseWorkflow(workflow.id)}>
           {workflowLabel(workflow.id, workflow.label, tr)}
-          <small>{catalog.filter((entry) => workflow.tasks.some((task) => task === entry.task)).length}</small>
+          <small>{activeCatalog.filter((entry) => workflow.tasks.some((task) => task === entry.task)).length}</small>
         </button>
       {/each}
     </nav>
@@ -1688,9 +1961,11 @@
           </div>
         {:else}
           <button class="single-model-toggle" class:resident={isLoaded}
-            disabled={!selectedId || loadingModel || installed === false}
-            title={isLoaded ? tr('studio.unload') : tr('studio.load')} on:click={toggleSingleModel}>
-            {loadingModel ? tr('studio.working') : isLoaded ? tr('studio.bundledLoaded') : tr('studio.load')}
+            disabled={!selectedId || loadingModel || installed === false || !server?.ui_management}
+            title={!server?.ui_management ? 'Configured by server config' : isLoaded ? tr('studio.unload') : tr('studio.load')}
+            on:click={toggleSingleModel}>
+            {!server?.ui_management ? (isLoaded ? tr('studio.bundledLoaded') : 'Configured') :
+              loadingModel ? tr('studio.working') : isLoaded ? tr('studio.bundledLoaded') : tr('studio.load')}
           </button>
         {/if}
 
@@ -1727,8 +2002,9 @@
         {/if}
 
         {#if selected.task === 'gen'}
-          <label for="lyrics">{tr('request.lyrics')} <span>{tr('request.optional')}</span></label>
-          <textarea id="lyrics" rows="3" bind:value={lyrics} placeholder="[Verse]…"></textarea>
+          <label for="lyrics">{tr('request.lyrics')} <span>{lyricsRequired ? tr('voice.required') : tr('request.optional')}</span></label>
+          <textarea id="lyrics" rows="3" bind:value={lyrics} required={lyricsRequired}
+            aria-required={lyricsRequired} placeholder="[Verse]…"></textarea>
         {/if}
 
         {#if selected.task === 'asr'}
@@ -1804,9 +2080,9 @@
           {/if}
         {/if}
 
-        {#if needsVoice}
-          {#if quickStartVoices.length}
-            <label for="quick-start-voice">{tr('voice.quickStart')}</label>
+        {#if needsVoice && !usesVibeVoiceSpeakerFiles}
+          {#if allowsQuickStartVoice && quickStartVoices.length}
+            <label for="quick-start-voice">{server?.ui_management === false ? tr('voice.configured') : tr('voice.quickStart')}</label>
             <select id="quick-start-voice" value={quickStartVoice}
               on:change={(event) => chooseQuickStartVoice(event.currentTarget.value)}>
               <option value="">{tr('voice.useReference')}</option>
@@ -1871,6 +2147,25 @@
               <button type="button" disabled={!voiceFile} on:click={storeCurrentVoice}>{tr('voice.save')}</button>
               <button class="danger" type="button" disabled={!savedVoiceId}
                 on:click={removeCurrentVoice}>{tr('common.delete')}</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if usesVibeVoiceSpeakerFiles}
+          <div class="vibevoice-speakers">
+            <div class="field-label">Speaker references <span>optional, up to 4</span></div>
+            <div class="reference-input-grid">
+              {#each [0, 1, 2, 3] as speaker}
+                <div>
+                  <label for={'vibevoice-speaker-' + speaker}>Speaker {speaker + 1}</label>
+                  <input id={'vibevoice-speaker-' + speaker} class="file file-native" type="file" accept="audio/*"
+                    on:change={(event) => chooseVibeVoiceSpeaker(speaker, event.currentTarget.files?.[0] || null)} />
+                  <label class="file-picker" for={'vibevoice-speaker-' + speaker}>
+                    <strong>{tr('file.choose')}</strong>
+                    <span>{vibeVoiceSpeakerFiles[speaker]?.name || tr('file.none')}</span>
+                  </label>
+                </div>
+              {/each}
             </div>
           </div>
         {/if}
@@ -2029,7 +2324,7 @@
                 </div>
                 <div class="model-actions">
                   {#if packageChoices.length}
-                    <div class="package-buttons">
+                    <div class={`package-buttons${packageChoices.length > 3 ? ' wide-package-set' : ''}`}>
                       {#each packageChoices as choice}
                         <div class="package-choice">
                           <button class="package-install"

@@ -85,7 +85,10 @@ class V060BackendCompatibilityTests(unittest.TestCase):
                 continue
             with open(os.path.join(spec_dir, name), "r", encoding="utf-8") as handle:
                 spec = json.load(handle)
-            if spec.get("category") == "tts" and "streaming" in spec.get("modes", []):
+            tasks = set(spec.get("tasks", []))
+            if (spec.get("category") == "tts"
+                    and tasks.intersection({"tts", "clone"})
+                    and "streaming" in spec.get("modes", [])):
                 backend_families.add(spec["family"])
 
         self.assertEqual(backend_families, set(expected_rates))

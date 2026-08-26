@@ -638,6 +638,56 @@ VDES_TASKS = ("vdes",)                    # 声音设计：文字 + 音色描述
 # `default_options` to override the family profile without editing this file, and
 # the "高级参数 (JSON)" box lets you pass ANY model-specific option at run time.
 MODEL_PROFILES = {
+    "f5_tts": {
+        "input_hint": (
+            "**Habibi / F5-TTS** 阿拉伯语零样本克隆：必须上传参考音色并填写与音频一致的参考文本；"
+            "方言、语速和采样步数在高级参数中调整。"),
+        "require_voice": True,
+        "require_reference_text": True,
+        "send_max_tokens": False,
+    },
+    "magpie_tts": {
+        "input_hint": (
+            "**MagpieTTS** 多语种预置音色 TTS：在高级参数中选择 Aria/Jason/John/Leo/Sofia；"
+            "不使用参考音频。"),
+        "accepts_voice_reference": False,
+        "send_reference_text": False,
+        "lang_map": {
+            "arabic": "ar-AE", "chinese": "zh", "english": "en",
+            "french": "fr", "german": "de", "hindi": "hi",
+            "italian": "it", "korean": "ko", "portuguese": "pt-BR",
+            "spanish": "es", "vietnamese": "vi",
+        },
+    },
+    "meanvc2": {
+        "input_hint": (
+            "**MeanVC2** 声音转换：必须上传源语音和目标音色参考；本地 WebUI 当前使用离线路由。"),
+        "require_vc_target": True,
+    },
+    "minimax_music3": {
+        "input_hint": (
+            "**MiniMax Music 3** 音乐生成：提示词描述风格，歌词为必填；-1 时长使用模型默认值。"),
+        "require_lyrics": True,
+        "omit_nonpositive_duration": True,
+    },
+    "mms_forced_aligner": {
+        "input_hint": (
+            "**MMS Forced Aligner**：必须填写与音频一致的原文和语言（nl/nld 或 en/eng）；"
+            "该非商业模型包需按上游文档本地转换。"),
+        "require_analysis_language": True,
+    },
+    "moss_voicegen": {
+        "input_hint": (
+            "**MOSS-VoiceGenerator** 声音设计：填写要朗读的文字与音色描述；"
+            "可在高级参数中选择 English 或 Chinese。"),
+        "default_options": {"language": "English"},
+        "send_max_tokens": False,
+    },
+    "personaplex": {
+        "input_hint": (
+            "**PersonaPlex** 语音到语音：上传源语音；默认使用 NATF2，"
+            "也可在高级参数选择内置 persona 或上传目标音色参考。"),
+    },
     "vibevoice": {
         "input_hint": (
             "**VibeVoice** 多说话人脚本：每行 `Speaker N: 内容`（纯文字自动包装）；"
@@ -1013,6 +1063,8 @@ _SPEAKER_RE = re.compile(r"^\s*Speaker\s+\d+\s*:", re.IGNORECASE | re.MULTILINE)
 def profile_for(entry):
     prof = {**DEFAULT_PROFILE, **MODEL_PROFILES.get(entry.get("family", ""), {})}
     prof["input_hint_en"] = MODEL_HINTS_EN.get(entry.get("family", ""), "")
+    if entry.get("profile"):
+        prof.update(entry["profile"])
     if entry.get("input_hint"):
         prof["input_hint"] = entry["input_hint"]
     if entry.get("input_hint_en"):
@@ -1043,6 +1095,30 @@ def vc_voice_input_updates(model_id):
         gr.update(visible=hide_target_voice),
         gr.update(value=None),
         gr.update(value=None),
+    )
+
+
+def tts_voice_input_updates(model_id):
+    """Relabel the shared TTS voice input when a package expects source audio."""
+    entry = catalog_by_id(model_id) if model_id else None
+    source_audio = bool(entry) and profile_for(entry).get("voice_input_role") == "source_audio"
+    if source_audio:
+        return (
+            gr.update(value=_t("#### 🎧 源音频（要编辑的语音）",
+                               "#### 🎧 Source audio to edit")),
+            gr.update(label=_t("内置源音频（可选）",
+                               "Built-in source audio (optional)")),
+            gr.update(label=_t("上传/录制源音频（必填）",
+                               "Upload/record source audio (required)")),
+            gr.update(visible=False, value=""),
+        )
+    return (
+        gr.update(value=_t("#### 🎧 参考音频（声音克隆）",
+                           "#### 🎧 Voice reference")),
+        gr.update(label=_t("内置参考音色", "Built-in voice")),
+        gr.update(label=_t("上传/录制参考音色（可选）",
+                           "Upload/record voice (optional)")),
+        gr.update(visible=True),
     )
 
 
@@ -3638,6 +3714,10 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
             raise gr.Error(_t(
                 "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
                 "This model requires a voice reference: upload/record one or pick a built-in voice."))
+        if prof.get("require_reference_text") and not (reference_text or "").strip():
+            raise gr.Error(_t(
+                "该模型必须填写与参考音频一致的参考文本。",
+                "This model requires the transcript matching the reference audio."))
 
         # 加载/模式切换（可能几十秒）单独计时：状态栏的"用时"只含合成本身，
         # 不报加载会让它看起来远小于实际等待时间。
@@ -3656,6 +3736,9 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
             voice_path = uploaded_voice
         elif builtin_voice and builtin_voice != "(none)":
             voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
+        if voice_path and prof.get("voice_input_role") == "source_audio":
+            options["source_audio"] = _ensure_wav(voice_path)
+            voice_path = None
         has_voice_samples = "voice_samples" in options or "vibevoice.voice_samples" in options
         if is_vibevoice and voice_path and not has_voice_samples:
             options["voice_samples"] = _ensure_wav(voice_path)
@@ -3778,6 +3861,10 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
         raise gr.Error(_t(
             "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
             "This model requires a voice reference: upload/record one or pick a built-in voice."))
+    if prof.get("require_reference_text") and not (reference_text or "").strip():
+        raise gr.Error(_t(
+            "该模型必须填写与参考音频一致的参考文本。",
+            "This model requires the transcript matching the reference audio."))
 
     t_load = time.time()
     ensure_model_loaded(model, TTS_TASKS, mode="streaming")
@@ -3797,6 +3884,9 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
         voice_path = uploaded_voice
     elif builtin_voice and builtin_voice != "(none)":
         voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
+    if voice_path and prof.get("voice_input_role") == "source_audio":
+        options["source_audio"] = _ensure_wav(voice_path)
+        voice_path = None
     # Supertonic 等预置音色家族要求 voice 位于请求顶层，而不是 options。
     voice_preset = options.pop("voice", None)
 
@@ -4305,6 +4395,10 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
+        if prof.get("require_lyrics") and not (lyrics or "").strip():
+            raise gr.Error(_t(
+                "该模型必须填写歌词。",
+                "This model requires lyrics."))
         if entry and entry.get("family") == "minimax_h3" and options.get("return_video"):
             raise gr.Error(_t(
                 "本地 Python WebUI 当前只接收 MiniMax-H3 的音频输出；请关闭 Decode video，"
@@ -4323,7 +4417,9 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         if (lyrics or "").strip():
             req["lyrics"] = lyrics
         if duration is not None and float(duration) != 0:
-            req["duration_seconds"] = float(duration)
+            duration_value = float(duration)
+            if duration_value > 0 or not prof.get("omit_nonpositive_duration"):
+                req["duration_seconds"] = duration_value
         if source_audio:
             req["audio"] = _ensure_wav(source_audio)
         if options:
@@ -4442,10 +4538,15 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
     try:
         if not source_audio:
             raise gr.Error(_t("请上传要转换的源音频", "Upload source audio to convert."))
-        ensure_model_loaded(model, VC_TASKS)
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
+        if (prof.get("require_vc_target") and not target_upload
+                and (not builtin_voice or builtin_voice == "(none)")):
+            raise gr.Error(_t(
+                "该模型必须提供目标音色：请上传/录制目标音频，或选择内置音色。",
+                "This model requires a target voice: upload/record one or pick a built-in voice."))
+        ensure_model_loaded(model, VC_TASKS)
 
         source_audio = _ensure_wav(source_audio)
         seed_note = ""
@@ -4661,21 +4762,29 @@ def _redact_task_artifacts(data):
     return safe
 
 
-def do_analyze(model, audio_path, transcript, language):
+def do_analyze(model, audio_path, transcript, language, adv_values=None, adv_options=""):
     """音频分析（vad/diar/align/midi）：格式化结构化结果，并保存通用产物。"""
     try:
         if not audio_path:
             raise gr.Error(_t("请上传或录制音频", "Upload or record audio."))
         entry = catalog_by_id(model)
         task = entry.get("task") if entry else ""
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
         req = {"audio": _to_16k_mono_wav(_ensure_wav(audio_path))}
         if task == "align":
             if not (transcript or "").strip():
                 raise gr.Error(_t("强制对齐需要填写音频原文。",
                                   "Forced alignment requires the source transcript."))
             req["text"] = transcript.strip()
+            if prof.get("require_analysis_language") and not (language or "").strip():
+                raise gr.Error(_t(
+                    "该对齐模型必须填写语言（nl/nld 或 en/eng）。",
+                    "This aligner requires a language (nl/nld or en/eng)."))
             if (language or "").strip():
                 req["language"] = language.strip()
+        options = _merged_options(prof, adv_values, adv_options)
+        if options:
+            req["options"] = options
         dur = _audio_duration_seconds(req["audio"])
         # diar（Sortformer）是固定图容量，>20s 的音频按时长动态重载。
         ensure_model_loaded(model, ANALYZE_TASKS,
@@ -5186,9 +5295,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 tts_model = tts_mm["model"]
 
                 with gr.Group():
-                    _localized(gr.Markdown("#### 🎧 参考音频（声音克隆）"),
-                               value=("#### 🎧 参考音频（声音克隆）",
-                                      "#### 🎧 Voice reference"))
+                    tts_voice_heading = _localized(
+                        gr.Markdown("#### 🎧 参考音频（声音克隆）"),
+                        value=("#### 🎧 参考音频（声音克隆）",
+                               "#### 🎧 Voice reference"))
                     with gr.Row(elem_classes="voice-refresh-row"):
                         tts_builtin = _localized(gr.Dropdown(
                             label="内置参考音色",
@@ -5299,6 +5409,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         tts_model.change(
             lambda m: gr.update(visible=supports_streaming(m), value="离线"),
             tts_model, tts_gen_mode)
+        tts_model.change(
+            tts_voice_input_updates,
+            tts_model, [tts_voice_heading, tts_builtin, tts_upload, tts_ref_text])
         # 流式播放组件只在选了流式模式时出现（离线路径的输出组件保持原样）。
         tts_gen_mode.change(lambda v: gr.update(visible=(v == "流式")),
                             tts_gen_mode, tts_out_stream)
@@ -5666,6 +5779,16 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         label="语言（仅 align 可选，如 English / Chinese）"),
                         label=("语言（仅 align 可选，如 English / Chinese）",
                                "Language (optional for align; e.g. English)"))
+                    ana_adv_state = gr.State({})
+                    with _localized(
+                            gr.Accordion("高级参数（只发送改动过的项）", open=False),
+                            label=("高级参数（只发送改动过的项）", "Advanced options")):
+                        _render_param_controls(ana_model, ana_adv_state, skip=("language",))
+                    with _localized(
+                            gr.Accordion("其它参数（JSON，覆盖控件）", open=False),
+                            label=("其它参数（JSON，覆盖控件）", "Other options (JSON override)")):
+                        ana_adv = gr.Textbox(label="", placeholder='{"return_timestamps": true}',
+                                             lines=3)
                 ana_hint = gr.Markdown(model_hint_for(ana_model.value))
                 ana_btn = _localized(
                     gr.Button("🔎 开始分析", variant="primary", size="lg"),
@@ -5690,9 +5813,11 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     ana_msg = gr.Markdown("")
 
         _wire_model_manager(ana_mm, ANALYZE_TASKS, ana_hint)
+        ana_model.change(lambda: {}, None, ana_adv_state)
         ana_btn.click(lambda: ("", None, None, ""), None,
                       [ana_out, ana_json, ana_artifact, ana_msg]).then(
-            do_analyze, [ana_model, ana_audio, ana_text, ana_lang],
+            do_analyze, [ana_model, ana_audio, ana_text, ana_lang,
+                         ana_adv_state, ana_adv],
             [ana_out, ana_json, ana_artifact, ana_msg])
 
     # ---------------- 声音设计 (vdes) ----------------
@@ -5843,10 +5968,15 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         tts_hint, asr_hint, gen_hint, vc_hint, sep_hint, ana_hint, vdes_hint,
     ]
 
-    ui_language.change(
+    language_change = ui_language.change(
         _change_ui_language,
         language_inputs,
         language_outputs,
+        show_progress="hidden")
+    language_change.then(
+        tts_voice_input_updates,
+        tts_model,
+        [tts_voice_heading, tts_builtin, tts_upload, tts_ref_text],
         show_progress="hidden")
     demo.load(
         _page_load_updates,

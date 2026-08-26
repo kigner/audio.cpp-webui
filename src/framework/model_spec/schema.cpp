@@ -97,7 +97,7 @@ const std::unordered_set<std::string> & source_formats() {
 const std::unordered_set<std::string> & precisions() {
     static const std::unordered_set<std::string> values = {
         "native", "orig", "f32", "f16", "bf16",
-        "q8_0", "q6_k", "q5_k_m", "q5_k_s", "q4_k_m", "q4_k_s", "q4_k", "q3_k_m", "q3_k_s", "q2_k",
+        "q8_0", "q6_k", "q5_k_m", "q5_k_s", "q4_k_m", "q4_k_s", "q4_k", "q4_0", "q3_k_m", "q3_k_s", "q2_k",
     };
     return values;
 }
@@ -485,7 +485,7 @@ void validate_layout(const json::Value & value, std::string_view path) {
         }
         (void) require_spec_string(root_value, std::string(path) + ".roots." + root_id);
     }
-    for (const std::string map_name : {"files", "optional_files", "tensors"}) {
+    for (const std::string map_name : {"files", "optional_files", "tensors", "optional_tensors"}) {
         const auto * map_value = value.find(map_name);
         if (map_value == nullptr) {
             continue;

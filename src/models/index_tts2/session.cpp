@@ -235,6 +235,13 @@ IndexTTS2Session::IndexTTS2Session(
         conv_weight_storage_type_ = engine::assets::parse_tensor_storage_type(it->second);
         validate_conv_weight_storage(conv_weight_storage_type_, "index_tts2.conv_weight_type");
     }
+    // Derived conv weights (weight-norm recomputed at load) with Native storage are kept
+    // as F32, doubling conv weight bandwidth; on HIP the conv/im2col paths support F16
+    // and measure significantly faster with it, so make F16 the default there.
+    if (conv_weight_storage_type_ == engine::assets::TensorStorageType::Native &&
+        execution_context().backend_type() == engine::core::BackendType::Hip) {
+        conv_weight_storage_type_ = engine::assets::TensorStorageType::F16;
+    }
     mem_saver_ = mem_saver_from_options(options);
     for (const auto & [key, _] : options.options) {
         if (key.rfind("index_tts2.", 0) == 0 &&
@@ -692,7 +699,8 @@ runtime::AudioBuffer IndexTTS2Session::synthesize_segment(
         content = add_latent_to_semantic(semantic, projected);
         content_frames = code_frames;
     }
-    const int64_t target_frames = static_cast<int64_t>(static_cast<float>(content_frames) * 1.72F);
+    const int64_t target_frames =
+        static_cast<int64_t>(static_cast<float>(content_frames) * 1.72F * options.duration_factor);
     const int64_t total_frames = speaker.prompt_condition.frames + target_frames;
     s2mel_->prepare_length_regulator(content_frames, target_frames);
     auto generated_condition = s2mel_->regulate_length(content, content_frames, target_frames);

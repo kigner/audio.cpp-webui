@@ -12,11 +12,36 @@
   `http://127.0.0.1:7860`。它只使用 `webui/model_manager_webui.py`，并以 `--no-ui`
   启动自己管理的 `audiocpp_server`；界面与下载行为继续由本仓库维护。
 - **上游原生 WebUI：**由 `webui/native/` 编译并嵌入 `audiocpp_server`。运行
-  `audiocpp_server --ui --backend cuda`，访问 `http://127.0.0.1:8080`；其可选模型准备任务
-  只使用上游 `tools/model_manager_v2.py`。
+  `audiocpp_server --ui --backend cuda`，访问 `http://127.0.0.1:8080`。如需浏览器内下载、
+  安装/删除、临时上传与动态切换模型，构建时加 `-NativeModelManager`，启动时加
+  `--ui-management`；普通原生模型包由上游 C++ 模型管理器处理。
 
-两套前端只共享 C++ server API，不共享 Python 界面或模型管理器代码。默认端口已经可以并行：
-本地 WebUI 管理的后台用 8088，上游原生 WebUI 用 8080。
+两套前端共享 C++ server API、model specs 与模型目录，但不共享前端或模型管理器实现。
+本地 WebUI 始终只使用 `webui/model_manager_webui.py`，不会回退到上游管理器；默认端口已经
+可以并行：本地 WebUI 管理的后台用 8088，上游原生 WebUI 用 8080。
+
+源码构建原生模型管理功能：
+
+```powershell
+.\scripts\build_windows.ps1 -Target audiocpp_server -NativeModelManager -Jobs 16
+.\build\windows-cuda-release\bin\audiocpp_server.exe --ui --ui-management --backend cuda
+```
+
+### 本次上游合并已接入本地 WebUI 的模型
+
+| 本地标签页 | 新条目 | 本地 WebUI 请求约定 |
+|---|---|---|
+| TTS / 克隆 | DotTTS Edit | 共用音频控件切换为必填源音频，并发送为 `options.source_audio`；编辑选项有独立控件 |
+| TTS / 克隆 | Habibi / F5-TTS | 参考音频及其对应文本均必填，并提供阿拉伯语方言控件 |
+| TTS | MagpieTTS | 使用预置音色与语言代码，不发送参考音频 |
+| 音乐生成 | MiniMax Music 3 | 歌词必填；非正时长使用模型默认值 |
+| 声音转换 | MeanVC2 | 源语音和目标音色都必填；本地 WebUI 暂只开放离线路由 |
+| 声音转换 | PersonaPlex | 使用源语音及预置 persona，也可上传目标音色；本地 WebUI 暂只开放离线路由 |
+| 音频分析 | MMS Forced Aligner | 原文及 `nl/nld` 或 `en/eng` 语言必填，分析页提供请求参数控件 |
+| 声音设计 | MOSS-VoiceGenerator | 使用朗读文本与音色描述，并提供中英文及采样参数 |
+
+这些条目继续走 `webui/model_manager_webui.py`，不会调用、导入或回退到原生 WebUI 的模型管理器。
+MMS 权重为非商业许可，其默认包会明确提示需要按上游文档本地转换，不会尝试不受支持的公开下载。
 
 | 脚本 | 作用 | 典型命令 |
 |---|---|---|
