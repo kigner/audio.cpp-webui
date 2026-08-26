@@ -1871,7 +1871,15 @@ def _variant_key(value):
     return key
 
 
+def _webui_can_install_package(package):
+    """Whether the downstream WebUI manager can install this spec package."""
+    download = package.get("download") or {}
+    return download.get("kind") == "huggingface_snapshot" and bool(download.get("repo"))
+
+
 def _prefer_package(candidates):
+    installable = [p for p in candidates if _webui_can_install_package(p)]
+    candidates = installable or candidates
     gguf = [p for p in candidates if p.get("format") == "gguf"]
     if gguf:
         defaults = [p for p in gguf if p.get("default")]
@@ -1890,9 +1898,16 @@ def _matching_spec_package(entry):
     current = SPEC_PACKAGE_BY_ID.get(download_id)
     if current is not None:
         if current.get("format") == "gguf":
-            return current
+            if _webui_can_install_package(current):
+                return current
+            current_key = _variant_key(current["id"])
+            related = [p for p in packages if _variant_key(p["id"]) == current_key]
+            return _prefer_package(related) or current
         stem = re.sub(r"_?safetensors$", "", current["id"])
-        related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+        related = [p for p in packages
+                   if p["id"].startswith(stem + "_")
+                   and p.get("format") == "gguf"
+                   and _webui_can_install_package(p)]
         return _prefer_package(related) or current
 
     direct = [p for p in packages if p["id"] == download_id or p["id"].startswith(download_id + "_")]
@@ -1906,7 +1921,10 @@ def _matching_spec_package(entry):
         target = _prefer_package(same_target)
         if target and target.get("format") == "safetensors":
             stem = re.sub(r"_?safetensors$", "", target["id"])
-            related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+            related = [p for p in packages
+                       if p["id"].startswith(stem + "_")
+                       and p.get("format") == "gguf"
+                       and _webui_can_install_package(p)]
             return _prefer_package(related) or target
         return target
     return None

@@ -87,6 +87,20 @@ class CatalogSyncTests(unittest.TestCase):
                           f"catalog entry {entry['id']} downloads {download_id!r}, "
                           "which model_specs/ does not define")
 
+    def test_every_download_id_is_installable_by_local_manager(self):
+        for entry in self.entries:
+            download_id = entry.get("download_id")
+            if download_id not in self.packages:
+                continue
+            download = self.packages[download_id].download
+            self.assertEqual(
+                download.get("kind"), "huggingface_snapshot",
+                f"catalog entry {entry['id']} exposes {download_id!r}, but the local "
+                "WebUI manager cannot install its download kind")
+            self.assertTrue(
+                download.get("repo"),
+                f"catalog entry {entry['id']} exposes {download_id!r} without a Hugging Face repo")
+
     def test_download_directory_matches_the_package_target(self):
         for entry in self.entries:
             download_id = entry.get("download_id")
@@ -136,6 +150,15 @@ class CatalogSyncTests(unittest.TestCase):
         self.assertEqual(by_id["kroko-asr"]["download_id"], "kroko_asr_community_q8_0")
         self.assertEqual(by_id["kroko-asr"]["path"], "models/Kroko-ASR-GGUF")
         self.assertEqual(by_id["kroko-asr"]["download_path"], "models/Kroko-ASR-GGUF")
+
+    def test_catalog_falls_back_from_unsupported_gguf_to_downloadable_weights(self):
+        entry = {item["id"]: item for item in self.entries}["mms-forced-aligner"]
+        self.assertEqual(entry["download_id"], "mms_forced_aligner_300m_safetensors")
+        self.assertEqual(entry["download_path"], "models/mms-300m-1130-forced-aligner")
+        self.assertEqual(entry["legacy_download_id"], "mms_forced_aligner_300m_f16")
+        self.assertEqual(
+            entry["path"],
+            "models/MMS-Forced-Aligner-GGUF/mms-forced-aligner-f16.gguf")
 
     def test_gguf_families_come_from_the_package_specs(self):
         specs = {os.path.splitext(f)[0]
