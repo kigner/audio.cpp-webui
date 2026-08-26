@@ -1,39 +1,47 @@
 // @ts-check
 /**
- * AudioWorkletProcessor that plays back Float32 mono samples received from
- * the main thread, upsampling whatever incoming rate the server uses
- * (typically 24 kHz PCM16) to the AudioContext rate (typically 48 kHz).
+ * Buffered PCM playback for the realtime voice client.
  *
- * Lifecycle / messaging:
+ * Incoming audio builds a short jitter buffer before playback. If a live TTS
+ * stream runs dry, playback pauses and waits for a larger resume buffer rather
+ * than repeatedly exposing tiny bursts separated by silence. The main thread
+ * can also force a completed sentence to start with `flush`.
  *
  *   main -> worklet:
- *     { kind: "config", inputRate: 24000 }              one-shot at startup
- *     { kind: "audio", samples: Float32Array }          (transferable) per chunk
- *     { kind: "clear" }                                 wipe queue (barge-in)
+ *     { kind: "config", inputRate, startBufferMs, resumeBufferMs }
+ *     { kind: "begin", responseId }
+ *     { kind: "audio", samples: Float32Array }
+ *     { kind: "flush" }
+ *     { kind: "end", responseId }
+ *     { kind: "clear" }
  *
  *   worklet -> main:
- *     { kind: "stats", queuedMs, played }               every ~250 ms
- *     { kind: "underrun" }                              every time the queue
- *                                                      runs dry mid-playback
- *
- * Underrun strategy: output silence. We do NOT hold the last sample (that
- * tends to produce audible clicks/buzzes when long gaps appear between
- * TTS chunks). A short ramp-out + ramp-in at boundaries would be nicer but
- * the server's 30 ms cadence makes underruns visible only at end of turn.
+ *     { kind: "started", responseId }
+ *     { kind: "stats", queuedMs, played, playing, rebuffering }
+ *     { kind: "underrun", responseId }
+ *     { kind: "drained", responseId }
  */
 
 const STATS_INTERVAL_FRAMES = 12000;
 const FADE_FRAMES = 32;
+const DEFAULT_START_BUFFER_MS = 800;
+const DEFAULT_RESUME_BUFFER_MS = 1000;
 
 class AudioPlaybackProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this._inputRate = 24000;
+    this._inputRate = 16000;
     this._stepRatio = this._inputRate / sampleRate;
+    this._startBufferMs = DEFAULT_START_BUFFER_MS;
+    this._resumeBufferMs = DEFAULT_RESUME_BUFFER_MS;
     this._queue = [];
     this._readIdx = 0;
     this._fracPos = 0;
     this._playing = false;
+    this._needsRebuffer = false;
+    this._streamEnded = true;
+    this._responseId = "";
+    this._drainedPosted = true;
     this._framesSinceStats = 0;
     this._totalPlayed = 0;
     this._fadeIn = 0;
@@ -49,22 +57,46 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
             this._inputRate = data.inputRate;
             this._stepRatio = this._inputRate / sampleRate;
           }
+          if (typeof data.startBufferMs === "number" && data.startBufferMs >= 0) {
+            this._startBufferMs = data.startBufferMs;
+          }
+          if (typeof data.resumeBufferMs === "number" && data.resumeBufferMs >= 0) {
+            this._resumeBufferMs = data.resumeBufferMs;
+          }
+          break;
+        case "begin":
+          this._responseId = typeof data.responseId === "string" ? data.responseId : "";
+          this._streamEnded = false;
+          this._drainedPosted = false;
           break;
         case "audio":
           if (data.samples instanceof Float32Array && data.samples.length > 0) {
             this._queue.push(data.samples);
-            if (!this._playing) {
-              this._playing = true;
-              this._fadeIn = FADE_FRAMES;
-              this._fadeOut = 0;
-            }
+            this._streamEnded = false;
+            this._drainedPosted = false;
+            this._maybeStart(false);
           }
+          break;
+        case "flush":
+          this._maybeStart(true);
+          break;
+        case "end":
+          this._streamEnded = true;
+          this._maybeStart(true);
+          if (!this._playing && this._queue.length === 0) this._postDrained();
           break;
         case "clear":
           this._queue.length = 0;
           this._readIdx = 0;
           this._fracPos = 0;
-          this._fadeOut = FADE_FRAMES;
+          this._playing = false;
+          this._needsRebuffer = false;
+          this._streamEnded = true;
+          this._drainedPosted = true;
+          this._fadeIn = 0;
+          this._fadeOut = 0;
+          this._lastSample = 0;
+          this._responseId = "";
           break;
       }
     };
@@ -74,6 +106,27 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
     let total = -this._readIdx;
     for (const buf of this._queue) total += buf.length;
     return Math.max(0, total);
+  }
+
+  _queuedMs() {
+    return (this._queuedSamples() / this._inputRate) * 1000;
+  }
+
+  _maybeStart(force) {
+    if (this._playing || this._queue.length === 0) return;
+    const threshold = this._needsRebuffer ? this._resumeBufferMs : this._startBufferMs;
+    if (!force && this._queuedMs() < threshold) return;
+    this._playing = true;
+    this._needsRebuffer = false;
+    this._fadeIn = FADE_FRAMES;
+    this._fadeOut = 0;
+    this.port.postMessage({ kind: "started", responseId: this._responseId });
+  }
+
+  _postDrained() {
+    if (this._drainedPosted) return;
+    this._drainedPosted = true;
+    this.port.postMessage({ kind: "drained", responseId: this._responseId });
   }
 
   /** Linear-interp read at the current fractional position. */
@@ -108,6 +161,18 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
     }
   }
 
+  _finishRun() {
+    this._playing = false;
+    this._lastSample = 0;
+    this._fadeOut = 0;
+    if (this._streamEnded) {
+      this._postDrained();
+    } else {
+      this._needsRebuffer = true;
+      this.port.postMessage({ kind: "underrun", responseId: this._responseId });
+    }
+  }
+
   process(_, outputs) {
     const channels = outputs[0];
     if (!channels || channels.length === 0) return true;
@@ -120,17 +185,14 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
       if (this._playing) {
         const v = this._readInterpolated();
         if (v === null) {
-          // Underrun: try to ramp out cleanly to avoid clicks.
-          sample = this._lastSample * Math.max(0, 1 - 1 / FADE_FRAMES);
-          this._lastSample = sample;
-          if (Math.abs(sample) < 1e-4) {
-            this._playing = false;
-            this._lastSample = 0;
-            this.port.postMessage({ kind: "underrun" });
-          }
+          if (this._fadeOut === 0) this._fadeOut = FADE_FRAMES;
+          sample = this._lastSample * (this._fadeOut / FADE_FRAMES);
+          this._fadeOut -= 1;
+          if (this._fadeOut === 0) this._finishRun();
         } else {
           sample = v;
           this._lastSample = v;
+          this._fadeOut = 0;
           this._advance();
         }
 
@@ -138,15 +200,6 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
           const gain = 1 - this._fadeIn / FADE_FRAMES;
           sample *= gain;
           this._fadeIn -= 1;
-        }
-        if (this._fadeOut > 0) {
-          const gain = this._fadeOut / FADE_FRAMES;
-          sample *= gain;
-          this._fadeOut -= 1;
-          if (this._fadeOut === 0) {
-            this._playing = false;
-            this._lastSample = 0;
-          }
         }
 
         this._totalPlayed += 1;
@@ -159,9 +212,13 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
     this._framesSinceStats += out.length;
     if (this._framesSinceStats >= STATS_INTERVAL_FRAMES) {
       this._framesSinceStats = 0;
-      const queuedSamples = this._queuedSamples();
-      const queuedMs = (queuedSamples / this._inputRate) * 1000;
-      this.port.postMessage({ kind: "stats", queuedMs, played: this._totalPlayed });
+      this.port.postMessage({
+        kind: "stats",
+        queuedMs: this._queuedMs(),
+        played: this._totalPlayed,
+        playing: this._playing,
+        rebuffering: this._needsRebuffer,
+      });
     }
 
     return true;

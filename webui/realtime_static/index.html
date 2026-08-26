@@ -158,8 +158,9 @@
               <label class="field">
                 <span>播放模式</span>
                 <select id="tts-playback-mode">
-                  <option value="auto">自动（流式优先）</option>
-                  <option value="streaming">原生/模型流式</option>
+                  <option value="auto">自动（按速度自适应）</option>
+                  <option value="streaming">低延迟（原生流式）</option>
+                  <option value="smooth">流畅优先（逐句缓冲）</option>
                   <option value="offline">兼容模式（完整 WAV）</option>
                 </select>
               </label>

@@ -8,6 +8,8 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from realtime_pipeline import (
+    AudioChunk,
+    AudioSegmentDone,
     CancelScope,
     RealtimePipeline,
     ResponseDone,
@@ -187,6 +189,35 @@ class StreamingPcmTests(unittest.TestCase):
         self.assertEqual(
             stage._http.kwargs["json"]["options"]["num_inference_steps"], 4)
 
+    def test_tts_worker_keeps_short_final_chunk_and_reports_rtf(self):
+        class TTS:
+            def synthesize_stream(self, *_args, **_kwargs):
+                yield bytes(600 * 2)
+
+        pipeline = RealtimePipeline.__new__(RealtimePipeline)
+        pipeline._stop_event = threading.Event()
+        pipeline._tts_queue = queue.Queue()
+        pipeline._tts_queue.put((
+            "hello", 0, "dots-tts-meanflow", "", "", "", True, 48000, {},
+        ))
+        pipeline._tts_queue.put(None)
+        pipeline._cancel_scope = _CancelScope()
+        pipeline._tts = TTS()
+        pipeline._out_events = queue.Queue()
+        pipeline._tts_lock = threading.Lock()
+        pipeline._tts_pending = 1
+
+        pipeline._tts_worker()
+
+        events = pipeline.drain_events()
+        chunks = [event for event in events if isinstance(event, AudioChunk)]
+        metrics = [event for event in events if isinstance(event, AudioSegmentDone)]
+        self.assertEqual([len(event.pcm) for event in chunks], [1024, 176])
+        self.assertEqual(len(metrics), 1)
+        self.assertAlmostEqual(metrics[0].duration_ms, 37.5)
+        self.assertGreaterEqual(metrics[0].rtf, 0.0)
+        self.assertTrue(metrics[0].streaming)
+
 
 class RealtimeTtsConfigTests(unittest.TestCase):
     @staticmethod
@@ -230,6 +261,21 @@ class RealtimeTtsConfigTests(unittest.TestCase):
                 "tts_server_source": "managed",
                 "tts_playback_mode": "streaming",
             }, self._models)
+
+    def test_smooth_uses_streaming_backend_when_available(self):
+        streaming = _resolve_tts_config({
+            "tts_model": "dots-tts-meanflow",
+            "tts_server_source": "managed",
+            "tts_playback_mode": "smooth",
+        }, self._models)
+        offline = _resolve_tts_config({
+            "tts_model": "qwen3-tts",
+            "tts_server_source": "managed",
+            "tts_playback_mode": "smooth",
+        }, self._models)
+
+        self.assertTrue(streaming["tts_streaming"])
+        self.assertFalse(offline["tts_streaming"])
 
     def test_activate_loads_managed_model_in_resolved_mode(self):
         calls = []

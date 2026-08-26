@@ -46,6 +46,7 @@ from fastapi.staticfiles import StaticFiles
 from realtime_pipeline import (
     AssistantText,
     AudioChunk,
+    AudioSegmentDone,
     PipelineEvent,
     RealtimePipeline,
     ResponseDone,
@@ -185,11 +186,12 @@ def _resolve_tts_config(
     if source not in {"managed", "external"}:
         raise ValueError("tts_server_source must be managed or external")
     playback = str(out.get("tts_playback_mode") or "auto").strip().lower()
-    if playback not in {"auto", "streaming", "offline"}:
-        raise ValueError("tts_playback_mode must be auto, streaming, or offline")
+    if playback not in {"auto", "streaming", "smooth", "offline"}:
+        raise ValueError(
+            "tts_playback_mode must be auto, streaming, smooth, or offline")
 
     supports_streaming = bool(meta and meta.get("supports_streaming"))
-    streaming = supports_streaming if playback == "auto" else playback == "streaming"
+    streaming = supports_streaming if playback in {"auto", "smooth"} else playback == "streaming"
     if streaming and not supports_streaming:
         raise ValueError(f"TTS model {model_id or '(empty)'} does not support streaming")
     stream_rate = int((meta or {}).get("stream_sample_rate") or 0)
@@ -368,6 +370,15 @@ def create_app(
                             "type": "response.output_audio.delta",
                             "response_id": _ensure_resp_id(),
                             "delta": b64,
+                        })
+                    elif isinstance(event, AudioSegmentDone):
+                        await ws.send_json({
+                            "type": "response.output_audio.segment_done",
+                            "response_id": _ensure_resp_id(),
+                            "duration_ms": round(event.duration_ms, 3),
+                            "elapsed_ms": round(event.elapsed_ms, 3),
+                            "rtf": round(event.rtf, 4),
+                            "streaming": event.streaming,
                         })
                     elif isinstance(event, ResponseDone):
                         rid = current_resp_id or _ensure_resp_id()

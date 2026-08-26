@@ -354,10 +354,10 @@ function syncTtsSettingsUi(applyModelDefaults = false) {
       ttsModelCapability.textContent = "请先在本地 WebUI 安装一个 TTS 模型。";
     } else if (meta.streaming_kind === "native") {
       ttsModelCapability.textContent =
-        `原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式将边生成边播放。`;
+        `原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式会根据首句 RTF 在低延迟与逐句缓冲之间切换。`;
     } else if (meta.supports_streaming) {
       ttsModelCapability.textContent =
-        `分段流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；每个模型文本段完成后立即播放。`;
+        `分段流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式会优先保证连续播放。`;
     } else {
       ttsModelCapability.textContent = "非流式模型；自动模式保持完整 WAV 兼容调用。";
     }

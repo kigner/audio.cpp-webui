@@ -36,6 +36,7 @@ import queue
 import re
 import tempfile
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from typing import Any, Iterator, Optional
@@ -119,6 +120,16 @@ class AssistantText(PipelineEvent):
 class AudioChunk(PipelineEvent):
     """One chunk of 16-bit PCM audio at 16 kHz."""
     pcm: bytes  # int16 LE
+
+
+@dataclass
+class AudioSegmentDone(PipelineEvent):
+    """Timing for one sentence-level TTS request after resampling to 16 kHz."""
+
+    duration_ms: float
+    elapsed_ms: float
+    rtf: float
+    streaming: bool
 
 
 @dataclass
@@ -789,6 +800,8 @@ class RealtimePipeline:
                 with self._tts_lock:
                     self._tts_pending -= 1
                 continue
+            started_at = time.perf_counter()
+            emitted_bytes = 0
             try:
                 step = CHUNK_SAMPLES * 2
                 if streaming:
@@ -802,11 +815,14 @@ class RealtimePipeline:
                             break
                         pending.extend(pcm)
                         while len(pending) >= step:
-                            self._out_events.put(AudioChunk(pcm=bytes(pending[:step])))
+                            chunk = bytes(pending[:step])
+                            emitted_bytes += len(chunk)
+                            self._out_events.put(AudioChunk(pcm=chunk))
                             del pending[:step]
                     if pending and not self._cancel_scope.is_stale(gen):
-                        self._out_events.put(
-                            AudioChunk(pcm=bytes(pending).ljust(step, b"\x00")))
+                        chunk = bytes(pending)
+                        emitted_bytes += len(chunk)
+                        self._out_events.put(AudioChunk(pcm=chunk))
                 else:
                     pcm = self._tts.synthesize(
                         text, model_id=model, voice=voice, voice_ref=voice_ref,
@@ -815,12 +831,20 @@ class RealtimePipeline:
                         if self._cancel_scope.is_stale(gen):
                             break
                         chunk = pcm[i:i + step]
-                        if len(chunk) < step:
-                            chunk = chunk.ljust(step, b"\x00")
+                        emitted_bytes += len(chunk)
                         self._out_events.put(AudioChunk(pcm=chunk))
             except Exception:
                 logger.exception("TTS synthesis failed")
             finally:
+                if emitted_bytes and not self._cancel_scope.is_stale(gen):
+                    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+                    duration_ms = emitted_bytes / (2 * PIPELINE_SR) * 1000.0
+                    self._out_events.put(AudioSegmentDone(
+                        duration_ms=duration_ms,
+                        elapsed_ms=elapsed_ms,
+                        rtf=elapsed_ms / duration_ms,
+                        streaming=streaming,
+                    ))
                 with self._tts_lock:
                     self._tts_pending -= 1
 
