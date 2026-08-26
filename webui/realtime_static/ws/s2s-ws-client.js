@@ -257,7 +257,8 @@ export class S2sWsRealtimeClient extends EventTarget {
 
   _playbackMode() {
     const mode = this._appConfig?.tts_playback_mode;
-    return ["auto", "streaming", "smooth", "offline"].includes(mode) ? mode : "auto";
+    if (mode === "smooth") return "offline";
+    return ["auto", "streaming", "offline"].includes(mode) ? mode : "auto";
   }
 
   _resetAdaptivePlayback() {
@@ -347,9 +348,11 @@ export class S2sWsRealtimeClient extends EventTarget {
     if (mode === "auto" && this._adaptivePlayback === "pending") {
       const rtf = Number(event.rtf);
       this._adaptiveRtf = Number.isFinite(rtf) && rtf > 0 ? rtf : 0;
-      // Keep margin for request-to-request startup jitter. RTF 0.85 means the
-      // backend creates one second of audio in at most 850 ms.
-      this._adaptivePlayback = this._adaptiveRtf > 0 && this._adaptiveRtf <= 0.85
+      // An offline endpoint delivers each completed WAV as one fast burst, so
+      // later segments can go straight to the playback queue. Native streaming
+      // still needs sustained headroom before bypassing sentence buffering.
+      this._adaptivePlayback = event.streaming === false ||
+        (this._adaptiveRtf > 0 && this._adaptiveRtf <= 0.85)
         ? "stream"
         : "smooth";
       if (this._debug) {
@@ -1003,9 +1006,21 @@ export class S2sWsRealtimeClient extends EventTarget {
         // Every other server error is non-fatal: surface it for logging but
         // NEVER tear the socket down. Only transport failures (close / failed
         // open) are fatal, and those come through their own paths.
-        this.dispatchEvent(
-          new CustomEvent("server-error", { detail: { error: new Error(err?.message ?? "Server error") } }),
+        const serverError = Object.assign(
+          new Error(err?.message ?? "Server error"),
+          {
+            code: typeof err?.code === "string" ? err.code : "server_error",
+            stage: typeof err?.stage === "string" ? err.stage : "server",
+            serverType: typeof err?.type === "string" ? err.type : "",
+          },
         );
+        this.dispatchEvent(new CustomEvent("server-error", {
+          detail: {
+            error: serverError,
+            code: serverError.code,
+            stage: serverError.stage,
+          },
+        }));
         break;
       }
     }

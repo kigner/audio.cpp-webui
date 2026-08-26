@@ -58,6 +58,8 @@ _SOFT_BREAK = re.compile(r"\s+")
 _MIN_TTS_CHARS = 6         # don't synthesize tiny fragments on their own
 _TARGET_TTS_CHARS = 36     # small chunks keep first audio responsive on local GPUs
 _MAX_TTS_CHARS = 72        # force a chunk even if the LLM avoids punctuation
+_DOTS_STREAM_TARGET_TTS_CHARS = 120  # reduce native-stream request restarts after TTFA
+_DOTS_STREAM_MAX_TTS_CHARS = 180
 
 
 # ── cancel scope (cooperative cancellation for barge-in) ───────────────
@@ -92,6 +94,29 @@ class CancelScope:
 @dataclass
 class PipelineEvent:
     pass
+
+
+class PipelineStageError(RuntimeError):
+    """A stage failure with a safe, user-facing message.
+
+    ``detail`` is retained for local logs only. The WebSocket layer sends the
+    short ``message`` and stable ``code`` to the browser, never the raw provider
+    response.
+    """
+
+    def __init__(self, stage: str, code: str, message: str, detail: str = ""):
+        super().__init__(detail or message)
+        self.stage = stage
+        self.code = code
+        self.message = message
+        self.detail = detail
+
+
+@dataclass
+class PipelineError(PipelineEvent):
+    stage: str
+    code: str
+    message: str
 
 
 @dataclass
@@ -142,6 +167,101 @@ class TurnDiscarded(PipelineEvent):
     """A VAD turn ended without producing a conversational response."""
 
     reason: str
+
+
+def _response_error_message(response: Any) -> str:
+    """Extract an HTTP error without assuming requests or httpx response types."""
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        detail = data.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        message = data.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    try:
+        text = str(response.text or "").strip()
+    except Exception:
+        text = ""
+    return text[:500]
+
+
+def _http_stage_error(stage: str, status_code: int, detail: str) -> PipelineStageError:
+    """Map provider/server HTTP failures to concise Chinese UI messages."""
+    normalized = detail.lower()
+    if stage == "llm":
+        if status_code in {401, 403} or any(term in normalized for term in (
+                "api key", "apikey", "authentication", "unauthorized", "forbidden")):
+            return PipelineStageError(
+                stage, "llm_auth",
+                "LLM API Key 无效，请在设置中检查并重新保存。", detail)
+        if status_code == 429:
+            return PipelineStageError(
+                stage, "llm_rate_limit",
+                "LLM 请求过于频繁或额度不足，请稍后重试。", detail)
+        if status_code == 400:
+            return PipelineStageError(
+                stage, "llm_request",
+                "LLM 请求被拒绝，请检查模型名称和服务配置。", detail)
+        return PipelineStageError(
+            stage, "llm_service",
+            "LLM 服务暂时不可用，请稍后重试。", detail)
+
+    if stage == "tts":
+        if "reference_text" in normalized or "reference text" in normalized:
+            return PipelineStageError(
+                stage, "tts_reference_text",
+                "当前 TTS 模型缺少参考文本，请填写 Reference text。", detail)
+        reference_audio_terms = (
+            "reference audio", "reference voice audio", "non-empty reference",
+            "voice clone reference", "voice_ref", "voice speaker audio",
+        )
+        if any(term in normalized for term in reference_audio_terms):
+            return PipelineStageError(
+                stage, "tts_reference_audio",
+                "当前 TTS 模型缺少或无法读取参考音频，请检查 Voice ref。", detail)
+        if "voice" in normalized and any(term in normalized for term in (
+                "not found", "unknown", "invalid", "cannot", "failed")):
+            return PipelineStageError(
+                stage, "tts_voice",
+                "TTS 音色无效，请检查 Voice name 或 Voice ref。", detail)
+        return PipelineStageError(
+            stage, "tts_request",
+            "TTS 合成失败，请检查模型、音色和服务状态。", detail)
+
+    if stage == "asr":
+        if status_code in {404, 400}:
+            return PipelineStageError(
+                stage, "asr_request",
+                "ASR 请求失败，请检查服务地址和模型名称。", detail)
+        return PipelineStageError(
+            stage, "asr_service",
+            "ASR 服务暂时不可用，请确认服务已启动。", detail)
+
+    return PipelineStageError(
+        stage, "pipeline_service",
+        "实时语音服务请求失败，请稍后重试。", detail)
+
+
+def _connection_stage_error(stage: str, detail: str) -> PipelineStageError:
+    messages = {
+        "llm": ("llm_connection", "无法连接 LLM 服务，请检查 Base URL 或网络。"),
+        "tts": ("tts_connection", "无法连接 TTS 服务，请确认服务已启动。"),
+        "asr": ("asr_connection", "无法连接 ASR 服务，请确认服务已启动。"),
+    }
+    code, message = messages.get(
+        stage, ("pipeline_connection", "无法连接实时语音服务，请稍后重试。"))
+    return PipelineStageError(stage, code, message, detail)
 
 
 # ── audio helpers ───────────────────────────────────────────────────────
@@ -418,15 +538,19 @@ class _STTStage:
             r = self._http.post(
                 f"{self._server_url}/v1/audio/transcriptions", json=payload, timeout=60)
             if r.status_code != 200:
-                logger.error("ASR error %s: %s", r.status_code, r.text[:200])
-                return ""
-            return (r.json().get("text") or "").strip()
+                detail = _response_error_message(r)
+                logger.error("ASR error %s: %s", r.status_code, detail[:300])
+                raise _http_stage_error("asr", r.status_code, detail)
+            try:
+                return (r.json().get("text") or "").strip()
+            except (ValueError, KeyError, AttributeError) as exc:
+                logger.error("ASR bad response: %r", exc)
+                raise PipelineStageError(
+                    "asr", "asr_response",
+                    "ASR 返回了无效结果，请检查服务版本。", repr(exc)) from exc
         except requests.RequestException as exc:
             logger.error("ASR server unreachable (%s): %r", self._server_url, exc)
-            return ""
-        except (ValueError, KeyError) as exc:
-            logger.error("ASR bad response: %r", exc)
-            return ""
+            raise _connection_stage_error("asr", repr(exc)) from exc
         finally:
             try:
                 os.unlink(tmp.name)
@@ -490,8 +614,9 @@ class _LLMStage:
                                    json=payload, headers=headers) as resp:
                 if resp.status_code != 200:
                     resp.read()
-                    logger.error("LLM API error %s: %s", resp.status_code, resp.text[:300])
-                    return
+                    detail = _response_error_message(resp)
+                    logger.error("LLM API error %s: %s", resp.status_code, detail[:300])
+                    raise _http_stage_error("llm", resp.status_code, detail)
                 for line in resp.iter_lines():
                     if cancel_scope.is_stale(gen):
                         return
@@ -509,6 +634,7 @@ class _LLMStage:
                         continue
         except httpx.RequestError as exc:
             logger.error("LLM API unreachable (%s): %r", self._base_url, exc)
+            raise _connection_stage_error("llm", repr(exc)) from exc
 
 
 # ── TTS stage (audio.cpp TTS server) ────────────────────────────────────
@@ -570,14 +696,20 @@ class _TTSStage:
                 stream=True, timeout=(10, 120))
         except requests.RequestException as exc:
             logger.error("TTS server unreachable (%s): %r", self._server_url, exc)
-            return b""
+            raise _connection_stage_error("tts", repr(exc)) from exc
         self._set_active(r)
         try:
             with r:
                 if r.status_code != 200:
-                    logger.error("TTS error %s: %s", r.status_code, r.text[:200])
-                    return b""
-                return _wav_bytes_to_pcm16_16k(r.content)
+                    detail = _response_error_message(r)
+                    logger.error("TTS error %s: %s", r.status_code, detail[:300])
+                    raise _http_stage_error("tts", r.status_code, detail)
+                pcm = _wav_bytes_to_pcm16_16k(r.content)
+                if not pcm:
+                    raise PipelineStageError(
+                        "tts", "tts_response",
+                        "TTS 未返回有效音频，请检查模型和音色配置。")
+                return pcm
         finally:
             self._clear_active(r)
 
@@ -601,14 +733,17 @@ class _TTSStage:
                 headers={"Accept": "text/event-stream"}, stream=True, timeout=(10, 900))
         except requests.RequestException as exc:
             logger.error("Streaming TTS server unreachable (%s): %r", self._server_url, exc)
-            return
+            raise _connection_stage_error("tts", repr(exc)) from exc
         self._set_active(r)
         resampler = _StreamingPcm16Resampler(source_rate)
+        emitted_audio = False
+        completed = False
         try:
             with r:
                 if r.status_code != 200:
-                    logger.error("Streaming TTS error %s: %s", r.status_code, r.text[:200])
-                    return
+                    detail = _response_error_message(r)
+                    logger.error("Streaming TTS error %s: %s", r.status_code, detail[:300])
+                    raise _http_stage_error("tts", r.status_code, detail)
                 for event in _iter_sse_events(r):
                     if cancel_scope.is_stale(generation):
                         r.close()
@@ -622,15 +757,26 @@ class _TTSStage:
                             continue
                         converted = resampler.process(pcm)
                         if converted:
+                            emitted_audio = True
                             yield converted
                     elif event_type == "speech.audio.done":
                         tail = resampler.process(b"", final=True)
                         if tail:
+                            emitted_audio = True
                             yield tail
+                        completed = True
+                        if not emitted_audio:
+                            raise PipelineStageError(
+                                "tts", "tts_response",
+                                "TTS 未返回有效音频，请检查模型和音色配置。")
                         return
-        except requests.RequestException:
+                if not cancel_scope.is_stale(generation) and not completed:
+                    raise _connection_stage_error(
+                        "tts", "stream ended before speech.audio.done")
+        except requests.RequestException as exc:
             if not cancel_scope.is_stale(generation):
                 logger.exception("Streaming TTS response failed")
+                raise _connection_stage_error("tts", repr(exc)) from exc
         finally:
             self._clear_active(r)
 
@@ -777,8 +923,20 @@ class RealtimePipeline:
                 continue
             try:
                 self._run_turn(audio)
+            except PipelineStageError as exc:
+                logger.error(
+                    "realtime %s stage failed (%s): %s",
+                    exc.stage, exc.code, exc.detail or exc.message)
+                self._out_events.put(PipelineError(
+                    stage=exc.stage, code=exc.code, message=exc.message))
+                self._out_events.put(ResponseDone())
             except Exception:
                 logger.exception("turn failed")
+                self._out_events.put(PipelineError(
+                    stage="pipeline",
+                    code="pipeline_internal",
+                    message="实时语音处理失败，请重试。",
+                ))
                 self._out_events.put(ResponseDone())
 
     # ── TTS worker thread ──────────────────────────────────────────────
@@ -833,8 +991,21 @@ class RealtimePipeline:
                         chunk = pcm[i:i + step]
                         emitted_bytes += len(chunk)
                         self._out_events.put(AudioChunk(pcm=chunk))
+            except PipelineStageError as exc:
+                if not self._cancel_scope.is_stale(gen):
+                    logger.error(
+                        "realtime TTS failed (%s): %s",
+                        exc.code, exc.detail or exc.message)
+                    self._out_events.put(PipelineError(
+                        stage=exc.stage, code=exc.code, message=exc.message))
             except Exception:
                 logger.exception("TTS synthesis failed")
+                if not self._cancel_scope.is_stale(gen):
+                    self._out_events.put(PipelineError(
+                        stage="tts",
+                        code="tts_internal",
+                        message="TTS 合成失败，请检查模型和服务状态。",
+                    ))
             finally:
                 if emitted_bytes and not self._cancel_scope.is_stale(gen):
                     elapsed_ms = (time.perf_counter() - started_at) * 1000.0
@@ -874,6 +1045,8 @@ class RealtimePipeline:
             tts_options = dict(self._tts_options)
         pending = ""
         full = ""
+        queued_tts_chunks = 0
+        dots_native_stream = tts_streaming and tts_model.startswith("dots-tts-")
         for token in self._llm.stream(self._cancel_scope, gen):
             if self._cancel_scope.is_stale(gen):
                 # Barge-in: drain queued TTS items that haven't started yet,
@@ -892,11 +1065,28 @@ class RealtimePipeline:
             full += token
             pending += token
             while True:
-                chunk, pending = self._split_speakable(pending)
+                # Keep DotTTS's first sentence responsive, then aggregate later
+                # LLM text into larger native-stream requests. The HTTP speech
+                # route accepts complete text per request, so frequent 36-char
+                # restarts add avoidable model warmup and boundary gaps.
+                aggregate_native_stream = dots_native_stream and queued_tts_chunks > 0
+                chunk, pending = self._split_speakable(
+                    pending,
+                    target_chars=(
+                        _DOTS_STREAM_TARGET_TTS_CHARS
+                        if aggregate_native_stream else _TARGET_TTS_CHARS
+                    ),
+                    max_chars=(
+                        _DOTS_STREAM_MAX_TTS_CHARS
+                        if aggregate_native_stream else _MAX_TTS_CHARS
+                    ),
+                    eager_sentence=not aggregate_native_stream,
+                )
                 if chunk is None:
                     break
                 self._speak(chunk, gen, tts_model, tts_voice, tts_ref, tts_ref_text,
                             tts_streaming, tts_stream_sample_rate, tts_options)
+                queued_tts_chunks += 1
 
         if self._cancel_scope.is_stale(gen):
             return
@@ -917,55 +1107,104 @@ class RealtimePipeline:
         self._out_events.put(ResponseDone())
 
     @staticmethod
-    def _split_speakable(buf: str) -> tuple[Optional[str], str]:
+    def _split_speakable(
+        buf: str,
+        *,
+        target_chars: int = _TARGET_TTS_CHARS,
+        max_chars: int = _MAX_TTS_CHARS,
+        eager_sentence: bool = True,
+    ) -> tuple[Optional[str], str]:
         """Pull one short, speakable chunk from ``buf``.
 
         audio.cpp's HTTP TTS endpoint returns a whole WAV per request, so we
         simulate streaming by feeding it compact clauses instead of waiting for
         an entire assistant paragraph. Sentence punctuation wins; clause
         punctuation is allowed once the chunk is useful; a long punctuation-free
-        span is force-split near a word boundary.
+        span is force-split near a word boundary. Native streaming callers can
+        disable eager sentence splitting and use a larger target after their
+        first low-latency request.
         """
         text = buf.lstrip()
         if not text:
             return None, ""
 
+        if target_chars <= 0 or max_chars < target_chars:
+            raise ValueError("invalid realtime TTS chunk bounds")
+
+        if not eager_sentence:
+            if len(text) < target_chars:
+                return None, buf
+
+            sentence_matches = [
+                match for match in _SENTENCE_END.finditer(text)
+                if match.end() <= max_chars
+            ]
+            for match in sentence_matches:
+                if match.end() >= target_chars:
+                    end = match.end()
+                    return text[:end].strip(), text[end:]
+
+            clause_matches = [
+                match for match in _CLAUSE_END.finditer(text)
+                if match.end() <= max_chars
+            ]
+            for match in clause_matches:
+                if match.end() >= target_chars:
+                    end = match.end()
+                    return text[:end].strip(), text[end:]
+
+            if len(text) < max_chars:
+                return None, buf
+            # No useful boundary reached the larger target. Split the full
+            # window rather than falling back to an old tiny sentence at its
+            # start, which would recreate the request-churn we are avoiding.
+            window = text[:max_chars]
+            split_at = 0
+            for match in _SOFT_BREAK.finditer(window):
+                if match.end() >= target_chars:
+                    split_at = match.end()
+                    break
+                split_at = match.end()
+            if split_at < _MIN_TTS_CHARS:
+                split_at = max_chars
+            return text[:split_at].strip(), text[split_at:]
+
         sentence = _SENTENCE_END.search(text)
-        if sentence and sentence.end() <= _TARGET_TTS_CHARS:
+        if sentence and sentence.end() <= target_chars:
             end = sentence.end()
             head, tail = text[:end], text[end:]
             if len(head.strip()) >= _MIN_TTS_CHARS or tail.strip():
                 return head.strip(), tail
 
-        if len(text) >= _TARGET_TTS_CHARS:
+        if len(text) >= target_chars:
             clause = None
             for match in _CLAUSE_END.finditer(text):
                 if match.end() >= _MIN_TTS_CHARS:
                     clause = match
-                    if match.end() >= _TARGET_TTS_CHARS:
+                    if match.end() >= target_chars:
                         break
-            if clause and clause.end() <= _MAX_TTS_CHARS:
+            if clause and clause.end() <= max_chars:
                 end = clause.end()
                 return text[:end].strip(), text[end:]
 
-        if sentence and sentence.end() <= _MAX_TTS_CHARS:
+        if sentence and sentence.end() <= max_chars:
             end = sentence.end()
             head, tail = text[:end], text[end:]
             if len(head.strip()) >= _MIN_TTS_CHARS or tail.strip():
                 return head.strip(), tail
 
-        if len(text) < _MAX_TTS_CHARS:
+        if len(text) < max_chars:
             return None, buf
 
-        window = text[:_MAX_TTS_CHARS]
+        window = text[:max_chars]
         split_at = 0
         for match in _SOFT_BREAK.finditer(window):
-            if match.end() >= _TARGET_TTS_CHARS:
+            if match.end() >= target_chars:
                 split_at = match.end()
                 break
             split_at = match.end()
         if split_at < _MIN_TTS_CHARS:
-            split_at = _MAX_TTS_CHARS
+            split_at = max_chars
         return text[:split_at].strip(), text[split_at:]
 
     def _speak(self, text: str, gen: int, model: str, voice: str,

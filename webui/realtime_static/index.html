@@ -88,6 +88,13 @@
 
         <p id="circle-caption" class="circle-caption" role="status">Tap to start</p>
 
+        <div id="realtime-notice" class="realtime-notice" role="alert" hidden>
+          <span class="realtime-notice-icon" aria-hidden="true">!</span>
+          <p id="realtime-notice-text"></p>
+          <button id="realtime-notice-settings" class="realtime-notice-action" type="button">打开设置</button>
+          <button id="realtime-notice-dismiss" class="realtime-notice-dismiss" type="button" aria-label="关闭错误提示">×</button>
+        </div>
+
         <div id="bubble-stack" class="bubble-stack" aria-live="polite"></div>
 
         <!-- Chat panel (slide-in from right) -->
@@ -158,10 +165,9 @@
               <label class="field">
                 <span>播放模式</span>
                 <select id="tts-playback-mode">
-                  <option value="auto">自动（按速度自适应）</option>
-                  <option value="streaming">低延迟（原生流式）</option>
-                  <option value="smooth">流畅优先（逐句缓冲）</option>
-                  <option value="offline">兼容模式（完整 WAV）</option>
+                  <option value="auto">自动（连续播放优先）</option>
+                  <option value="offline">完整 WAV（推荐）</option>
+                  <option value="streaming">低延迟流式（实验）</option>
                 </select>
               </label>
             </div>
@@ -223,6 +229,7 @@
             <label class="field">
               <span>LLM API key</span>
               <input id="llm-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." />
+              <small>保存后仅写入当前浏览器的本地存储；实时语音服务器不会通过 /config 回显密钥。</small>
             </label>
 
             <label class="field">

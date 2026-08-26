@@ -71,15 +71,17 @@ const DEFAULTS = {
 function loadSettings() {
   const s = {};
   for (const [k, def] of Object.entries(DEFAULTS)) {
-    if (k === "llmKey") {
-      localStorage.removeItem(STORAGE[k]);
-      s[k] = def;
-      continue;
-    }
     const v = localStorage.getItem(STORAGE[k]);
     if (k === "ttsUrl" && v === LEGACY_DEFAULT_TTS_URL) {
       localStorage.removeItem(STORAGE[k]);
       s[k] = def;
+      continue;
+    }
+    if (k === "ttsPlaybackMode" && v === "smooth") {
+      // v0.6 briefly exposed sentence buffering as a separate mode. It still
+      // starves when backend RTF exceeds 1, so migrate it to full-WAV playback.
+      localStorage.setItem(STORAGE[k], "offline");
+      s[k] = "offline";
       continue;
     }
     s[k] = v === null ? def : v;
@@ -146,10 +148,6 @@ async function refreshEnvDefaults() {
 
 function saveSettings(s) {
   for (const k of Object.keys(DEFAULTS)) {
-    if (k === "llmKey") {
-      localStorage.removeItem(STORAGE[k]);
-      continue;
-    }
     localStorage.setItem(STORAGE[k], String(s[k] ?? ""));
   }
 }
@@ -169,11 +167,19 @@ function appConfigFromSettings(s) {
       ttsOptions.vocoder_merge_steps = mergeSteps;
     }
   }
+  const requestedPlayback = s.ttsPlaybackMode === "smooth"
+    ? "offline"
+    : s.ttsPlaybackMode;
+  const effectivePlayback = requestedPlayback === "auto"
+    ? (meta?.realtime_auto_mode || (meta?.supports_streaming ? "streaming" : "offline"))
+    : requestedPlayback;
   return {
     tts_server: s.ttsUrl,
     tts_model: s.ttsModel,
     tts_server_source: s.ttsServerSource,
-    tts_playback_mode: s.ttsPlaybackMode,
+    // Send the resolved mode to both /activate and the realtime client so the
+    // browser's jitter-buffer behavior matches the backend session mode.
+    tts_playback_mode: effectivePlayback,
     tts_options: ttsOptions,
     tts_voice: s.ttsVoice,
     tts_voice_ref: s.ttsVoiceRef,
@@ -225,6 +231,10 @@ let chat;
 // DOM refs
 const circleBtn = /** @type {HTMLButtonElement} */ ($("#main-circle"));
 const captionEl = $("#circle-caption");
+const realtimeNotice = $("#realtime-notice");
+const realtimeNoticeText = $("#realtime-notice-text");
+const realtimeNoticeSettings = /** @type {HTMLButtonElement} */ ($("#realtime-notice-settings"));
+const realtimeNoticeDismiss = /** @type {HTMLButtonElement} */ ($("#realtime-notice-dismiss"));
 const micBtn = /** @type {HTMLButtonElement} */ ($("#mic-btn"));
 const stopBtn = /** @type {HTMLButtonElement} */ ($("#stop-btn"));
 const micGate = $("#mic-gate");
@@ -279,10 +289,10 @@ function ttsModelMeta(modelId) {
 
 function ttsModelLabel(model) {
   const badge = model.streaming_kind === "native"
-    ? "⚡ 原生流式"
+    ? (model.realtime_auto_mode === "offline" ? "⚡/WAV" : "⚡")
     : model.supports_streaming
-      ? "◐ 分段流式"
-      : "完整 WAV";
+      ? "◐"
+      : "WAV";
   return `${badge} · ${model.label || model.id}`;
 }
 
@@ -305,6 +315,7 @@ function renderTtsModelOptions() {
     const option = document.createElement("option");
     option.value = model.id;
     option.textContent = ttsModelLabel(model);
+    option.title = model.label || model.id;
     select.append(option);
   }
   const installedIds = new Set(availableTtsModels.map((model) => model.id));
@@ -317,6 +328,7 @@ function renderTtsModelOptions() {
       : availableTtsModels[0].id;
   settings.ttsModel = selected;
   select.value = selected;
+  select.title = select.selectedOptions[0]?.title || select.selectedOptions[0]?.textContent || "";
 }
 
 function syncTtsSettingsUi(applyModelDefaults = false) {
@@ -352,12 +364,15 @@ function syncTtsSettingsUi(applyModelDefaults = false) {
   if (ttsModelCapability) {
     if (!meta) {
       ttsModelCapability.textContent = "请先在本地 WebUI 安装一个 TTS 模型。";
+    } else if (meta.streaming_kind === "native" && meta.realtime_auto_mode === "offline") {
+      ttsModelCapability.textContent =
+        `支持原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；实测连续性不足，自动模式使用完整 WAV，低延迟流式仅供实验。`;
     } else if (meta.streaming_kind === "native") {
       ttsModelCapability.textContent =
-        `原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式会根据首句 RTF 在低延迟与逐句缓冲之间切换。`;
+        `原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式启用模型流式输出。`;
     } else if (meta.supports_streaming) {
       ttsModelCapability.textContent =
-        `分段流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式会优先保证连续播放。`;
+        `分段流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；可使用自动模式，出现停顿时请选择完整 WAV。`;
     } else {
       ttsModelCapability.textContent = "非流式模型；自动模式保持完整 WAV 兼容调用。";
     }
@@ -365,6 +380,10 @@ function syncTtsSettingsUi(applyModelDefaults = false) {
 }
 
 settingsFields.ttsModel?.addEventListener("change", () => {
+  settingsFields.ttsModel.title =
+    settingsFields.ttsModel.selectedOptions[0]?.title
+    || settingsFields.ttsModel.selectedOptions[0]?.textContent
+    || "";
   syncTtsSettingsUi(true);
 });
 settingsFields.ttsServerSource?.addEventListener("change", () => syncTtsSettingsUi(false));
@@ -504,6 +523,51 @@ function setCaption(text, kind) {
   captionEl.className = `circle-caption${kind ? ` ${kind}` : ""}${trimmed ? "" : " empty"}`;
 }
 
+const REALTIME_ERROR_MESSAGES = {
+  llm_auth: "LLM API Key 无效，请在设置中检查并重新保存。",
+  llm_connection: "无法连接 LLM 服务，请检查 Base URL 或网络。",
+  llm_rate_limit: "LLM 请求过于频繁或额度不足，请稍后重试。",
+  llm_request: "LLM 请求被拒绝，请检查模型名称和服务配置。",
+  llm_service: "LLM 服务暂时不可用，请稍后重试。",
+  tts_connection: "无法连接 TTS 服务，请确认服务已启动。",
+  tts_reference_audio: "当前 TTS 模型缺少或无法读取参考音频，请检查 Voice ref。",
+  tts_reference_text: "当前 TTS 模型缺少参考文本，请填写 Reference text。",
+  tts_voice: "TTS 音色无效，请检查 Voice name 或 Voice ref。",
+  tts_request: "TTS 合成失败，请检查模型、音色和服务状态。",
+  tts_response: "TTS 未返回有效音频，请检查模型和音色配置。",
+  tts_internal: "TTS 合成失败，请检查模型和服务状态。",
+  tts_activation: "TTS 模型准备失败，请检查模型和服务状态。",
+  asr_connection: "无法连接 ASR 服务，请确认服务已启动。",
+  asr_request: "ASR 请求失败，请检查服务地址和模型名称。",
+  asr_service: "ASR 服务暂时不可用，请确认服务已启动。",
+  asr_response: "ASR 返回了无效结果，请检查服务版本。",
+  pipeline_internal: "实时语音处理失败，请重试。",
+};
+
+function realtimeErrorMessage(error) {
+  const code = error && typeof error === "object" && "code" in error
+    ? String(error.code || "")
+    : "";
+  if (code && REALTIME_ERROR_MESSAGES[code]) return REALTIME_ERROR_MESSAGES[code];
+  const raw = error instanceof Error ? error.message : String(error || "");
+  if (/websocket (failed to open|closed)/i.test(raw)) {
+    return "无法连接实时语音服务，请确认本地 WebUI 已启动。";
+  }
+  return truncateError(raw || "实时语音发生错误，请重试。");
+}
+
+function showRealtimeError(error) {
+  const message = realtimeErrorMessage(error);
+  realtimeNoticeText.textContent = message;
+  realtimeNotice.hidden = false;
+  return message;
+}
+
+function hideRealtimeError() {
+  realtimeNotice.hidden = true;
+  realtimeNoticeText.textContent = "";
+}
+
 // ── Audio ──────────────────────────────────────────────────────────────
 const MIC_CONSTRAINTS = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
 
@@ -554,8 +618,7 @@ function onClientStatus(status) {
 function onFatalError(error) {
   console.error("[main] fatal:", error);
   setState("error");
-  const msg = error instanceof Error ? error.message : String(error);
-  setCaption(truncateError(msg), "error");
+  setCaption(showRealtimeError(error), "error");
 }
 
 function onQueuePosition(position) {
@@ -581,7 +644,7 @@ async function activateTts(s) {
       const body = await response.json();
       if (body?.detail) message = String(body.detail);
     } catch { /* keep the status message */ }
-    throw new Error(message);
+    throw Object.assign(new Error(message), { code: "tts_activation", stage: "tts" });
   }
   return response.json();
 }
@@ -589,6 +652,7 @@ async function activateTts(s) {
 async function doStart() {
   if (currentState === "idle" || currentState === "error") {
     chat.clear();
+    hideRealtimeError();
     setState("connecting");
     setCaption("请求麦克风权限…", "muted");
     if (!audioContext || audioContext.state === "closed") audioContext = createResumedAudioContext();
@@ -635,7 +699,9 @@ async function doStart() {
     c.addEventListener("response-finished", (e) => chat.onResponseFinished(/** @type {CustomEvent} */ (e).detail));
     c.addEventListener("error", (e) => onFatalError(/** @type {CustomEvent} */ (e).detail.error));
     c.addEventListener("server-error", (e) => {
-      console.warn("[main] server error (non-fatal):", /** @type {CustomEvent} */ (e).detail.error);
+      const error = /** @type {CustomEvent} */ (e).detail.error;
+      console.warn("[main] server error (non-fatal):", error);
+      showRealtimeError(error);
     });
     c.addEventListener("input-level", (e) => {
       paintInputLevel(/** @type {CustomEvent} */ (e).detail.rms);
@@ -705,6 +771,9 @@ queueFunnelJoin?.addEventListener("click", () => {
   client?.join();
 });
 
+realtimeNoticeDismiss.addEventListener("click", hideRealtimeError);
+realtimeNoticeSettings.addEventListener("click", () => settingsBtn.click());
+
 // ── Settings modal ─────────────────────────────────────────────────────
 function fillSettingsForm() {
   renderTtsModelOptions();
@@ -743,6 +812,7 @@ settingsModal?.addEventListener("close", () => {
   const next = readSettingsForm();
   settings = next;
   saveSettings(next);
+  hideRealtimeError();
   syncGateUi();
   syncTtsSettingsUi(false);
   // Server/model/mode changes need a model activation transaction before the

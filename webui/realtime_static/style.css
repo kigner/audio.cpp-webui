@@ -847,6 +847,64 @@ a:hover {
   letter-spacing: 0.08em;
 }
 
+.realtime-notice {
+  width: min(560px, calc(100vw - 32px));
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto 28px;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--error) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--error) 10%, var(--bg-elev));
+  color: var(--text);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 18%);
+}
+.realtime-notice[hidden] { display: none; }
+.realtime-notice-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--error);
+  color: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+}
+.realtime-notice p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.realtime-notice-action,
+.realtime-notice-dismiss {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.realtime-notice-action {
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: var(--error);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.realtime-notice-action:hover {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+.realtime-notice-dismiss {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+.realtime-notice-dismiss:hover { color: var(--text); }
+
 /* Warm, human line under the mono caption — sentence case, only while queued.
  * The caption keeps the terse position; this reassures. */
 .circle-subcaption {
@@ -1422,12 +1480,21 @@ body.cam-on .footer {
 
 #settings-modal .field {
   gap: 5px;
+  min-width: 0;
 }
 
 #settings-modal .field input,
 #settings-modal .field select,
 #settings-modal .field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 10px;
+}
+
+#settings-modal #tts-model {
+  text-overflow: ellipsis;
 }
 
 #settings-modal .field textarea {
@@ -2045,6 +2112,19 @@ body.cam-on .footer {
  * left/right) so the wide live row never overflows, and let the panel take
  * the full width. */
 @media (max-width: 600px) {
+  .realtime-notice {
+    grid-template-columns: 22px minmax(0, 1fr) 28px;
+  }
+  .realtime-notice-action {
+    grid-column: 2;
+    justify-self: start;
+    padding-left: 0;
+  }
+  .realtime-notice-dismiss {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
   .bubble-stack {
     display: none;
   }

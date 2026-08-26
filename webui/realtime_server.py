@@ -47,6 +47,7 @@ from realtime_pipeline import (
     AssistantText,
     AudioChunk,
     AudioSegmentDone,
+    PipelineError,
     PipelineEvent,
     RealtimePipeline,
     ResponseDone,
@@ -189,9 +190,23 @@ def _resolve_tts_config(
     if playback not in {"auto", "streaming", "smooth", "offline"}:
         raise ValueError(
             "tts_playback_mode must be auto, streaming, smooth, or offline")
+    # ``smooth`` was the old client-side sentence-buffer mode. Preserve saved
+    # browser configs, but resolve it to the full-WAV backend: sentence buffering
+    # cannot make a model with sustained RTF > 1 play continuously.
+    if playback == "smooth":
+        playback = "offline"
 
     supports_streaming = bool(meta and meta.get("supports_streaming"))
-    streaming = supports_streaming if playback in {"auto", "smooth"} else playback == "streaming"
+    auto_mode = str((meta or {}).get("realtime_auto_mode") or (
+        "streaming" if supports_streaming else "offline"
+    )).strip().lower()
+    if auto_mode not in {"offline", "streaming"}:
+        auto_mode = "offline"
+    streaming = (
+        supports_streaming and auto_mode == "streaming"
+        if playback == "auto"
+        else playback == "streaming"
+    )
     if streaming and not supports_streaming:
         raise ValueError(f"TTS model {model_id or '(empty)'} does not support streaming")
     stream_rate = int((meta or {}).get("stream_sample_rate") or 0)
@@ -207,6 +222,7 @@ def _resolve_tts_config(
     out.update({
         "tts_server_source": source,
         "tts_playback_mode": playback,
+        "tts_effective_mode": "streaming" if streaming else "offline",
         "tts_streaming": streaming,
         "tts_stream_sample_rate": stream_rate if streaming else 0,
         "tts_options": options,
@@ -281,6 +297,8 @@ def create_app(
             "status": "ok",
             "message": status,
             "tts_model": resolved["tts_model"],
+            "tts_playback_mode": resolved["tts_playback_mode"],
+            "tts_effective_mode": resolved["tts_effective_mode"],
             "tts_streaming": resolved["tts_streaming"],
             "tts_stream_sample_rate": resolved["tts_stream_sample_rate"],
         }
@@ -380,6 +398,16 @@ def create_app(
                             "rtf": round(event.rtf, 4),
                             "streaming": event.streaming,
                         })
+                    elif isinstance(event, PipelineError):
+                        await ws.send_json({
+                            "type": "error",
+                            "error": {
+                                "type": "audiocpp_pipeline_error",
+                                "code": event.code,
+                                "stage": event.stage,
+                                "message": event.message,
+                            },
+                        })
                     elif isinstance(event, ResponseDone):
                         rid = current_resp_id or _ensure_resp_id()
                         full_transcript = _join_transcript(_full_parts)
@@ -432,12 +460,16 @@ def create_app(
                                 pipeline.configure(_pipeline_config(resolved))
                                 session_cfg = resolved
                             except Exception as exc:
+                                logger.exception("Failed to update realtime TTS configuration")
                                 await ws.send_json({
                                     "type": "error",
                                     "error": {
                                         "type": "audiocpp_tts_activation_error",
-                                        "code": "audiocpp_tts_activation_error",
-                                        "message": str(exc),
+                                        "code": "tts_activation",
+                                        "stage": "tts",
+                                        "message": (
+                                            "TTS 模型准备失败，请检查模型和服务状态。"
+                                        ),
                                     },
                                 })
                                 continue

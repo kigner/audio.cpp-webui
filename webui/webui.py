@@ -5084,6 +5084,16 @@ def realtime_tts_models():
             defaults = {"num_inference_steps": 10, "vocoder_merge_steps": 4}
         elif family == "voxcpm2":
             defaults = {"retry_badcase": False}
+        # DotTTS exposes a real PCM stream, but on the current Windows CUDA
+        # runtime its sustained generation can still trail realtime playback.
+        # Keep that route available explicitly while making auto mode choose
+        # the uninterrupted full-WAV path. Other streaming families retain
+        # their existing automatic behavior until measured otherwise.
+        realtime_auto_mode = (
+            "offline" if family == "dots_tts"
+            else "streaming" if supports
+            else "offline"
+        )
         models.append({
             "id": entry["id"],
             "label": entry.get("display_name") or entry.get("label") or entry["id"],
@@ -5095,6 +5105,7 @@ def realtime_tts_models():
             ),
             "stream_sample_rate": int(profile.get("stream_sample_rate") or 0),
             "realtime_defaults": defaults,
+            "realtime_auto_mode": realtime_auto_mode,
         })
     return sorted(models, key=lambda model: not model["supports_streaming"])
 
