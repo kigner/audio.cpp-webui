@@ -13,10 +13,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 class AudioCapture:
-    def __init__(self, sample_rate: int, channels: int, frame_ms: int, queue_seconds: float = 2.0) -> None:
+    def __init__(
+        self,
+        sample_rate: int,
+        channels: int,
+        frame_ms: int,
+        queue_seconds: float = 2.0,
+        input_gain_db: float = 0.0,
+    ) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
         self.frame_ms = frame_ms
+        self.input_gain_db = float(input_gain_db)
+        self._input_gain = 10.0 ** (self.input_gain_db / 20.0)
         self._queue: queue.Queue[tuple[bytes, int]] = queue.Queue(
             maxsize=max(8, round(queue_seconds * 1000 / frame_ms))
         )
@@ -87,12 +96,13 @@ class AudioCapture:
         self._stream.start()
         hostapi = sd.query_hostapis(int(device["hostapi"]))
         LOGGER.info(
-            "microphone opened device=%s name=%r hostapi=%s capture_rate=%s output_rate=%s",
+            "microphone opened device=%s name=%r hostapi=%s capture_rate=%s output_rate=%s input_gain_db=%.1f",
             device_index if device_index is not None else "<default>",
             device["name"],
             hostapi["name"],
             self._capture_rate,
             self.sample_rate,
+            self.input_gain_db,
         )
 
     def stop(self) -> None:
@@ -139,9 +149,23 @@ class AudioCapture:
         self._resample_position = next_position - consumed
         return np.clip(resampled, -32768, 32767).astype("<i2").tobytes()
 
+    def _apply_input_gain(self, pcm: bytes) -> bytes:
+        """Boost raw WASAPI PCM before both VAD and ASR consume it.
+
+        Browser capture enables automatic gain control, while sounddevice exposes
+        the device's unprocessed PCM. A configurable digital preamp closes that
+        sensitivity gap. Values are clipped to the PCM16 range so a loud input
+        cannot wrap around and become corrupted.
+        """
+        if not pcm or self._input_gain == 1.0:
+            return pcm
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+        boosted = np.clip(samples * self._input_gain, -32768, 32767)
+        return np.rint(boosted).astype("<i2").tobytes()
+
     def get_frame(self, timeout: float = 0.1) -> bytes | None:
         try:
             pcm, source_rate = self._queue.get(timeout=timeout)
         except queue.Empty:
             return None
-        return self._resample(pcm, source_rate)
+        return self._apply_input_gain(self._resample(pcm, source_rate))

@@ -10,14 +10,15 @@
     "channels": 1,
     "sample_format": "pcm_s16le",
     "frame_ms": 20,
+    "input_gain_db": 18.0,
     "trailing_silence_ms": 400,
     "connect_timeout_s": 3.0,
     "final_timeout_s": 30.0
   },
   "vad": {
-    "threshold": 0.5,
-    "min_speech_duration_ms": 250,
-    "min_silence_duration_ms": 500,
+    "threshold": 0.35,
+    "min_speech_duration_ms": 200,
+    "min_silence_duration_ms": 450,
     "speech_pad_ms": 160,
     "max_speech_duration_s": 20.0
   },

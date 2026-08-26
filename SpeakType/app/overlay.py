@@ -4,6 +4,7 @@ import ctypes
 import os
 import time
 import uuid
+from collections.abc import Callable
 from ctypes import wintypes
 
 import webview
@@ -23,12 +24,21 @@ SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 
 
+class _OverlayApi:
+    def __init__(self, close_window: Callable[[], bool]) -> None:
+        self._close_window = close_window
+
+    def close(self) -> bool:
+        return self._close_window()
+
+
 class OverlayWindow:
     def __init__(self, config: UiConfig, url: str) -> None:
         self.config = config
         self.url = url
         self.title = f"SpeakType-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self.window: webview.Window | None = None
+        self._api = _OverlayApi(self.close)
 
     def _position(self) -> tuple[int, int]:
         screen_width = USER32.GetSystemMetrics(0)
@@ -53,8 +63,16 @@ class OverlayWindow:
             background_color="#000000",
             easy_drag=False,
             focus=False,  # pywebview 6.x: don't steal foreground focus on creation
+            js_api=self._api,
         )
         return self.window
+
+    def close(self) -> bool:
+        window = self.window
+        if window is None:
+            return False
+        window.destroy()
+        return True
 
     def _find_hwnd(self) -> int:
         found = 0

@@ -38,6 +38,7 @@ class SessionController:
             sample_rate=config.asr.sample_rate,
             channels=config.asr.channels,
             frame_ms=config.asr.frame_ms,
+            input_gain_db=config.asr.input_gain_db,
         )
         self.deduplicator = FinalDeduplicator()
         self._loop = asyncio.new_event_loop()

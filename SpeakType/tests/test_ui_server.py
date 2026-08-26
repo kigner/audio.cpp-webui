@@ -12,8 +12,11 @@ def test_ui_routes_and_initial_websocket_snapshot() -> None:
     hub = UiEventHub()
     server = UiServer(config, hub, lambda: "idle", Path("web"))
     with TestClient(server.app) as client:
-        assert client.get("/").status_code == 200
+        index = client.get("/")
+        assert index.status_code == 200
+        assert 'id="close-button"' in index.text
         assert client.get("/assets/styles.css").status_code == 200
+        assert "pywebview.api.close" in client.get("/assets/app.js").text
         assert client.get("/health").json() == {"status": "ok", "state": "idle"}
         public = client.get("/api/config").json()
         assert public["model"] == "nemotron-asr"

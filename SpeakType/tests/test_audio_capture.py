@@ -42,3 +42,17 @@ def test_streaming_resample_preserves_rate_and_chunk_continuity() -> None:
     resampled = np.frombuffer(output, dtype="<i2")
     assert resampled.size == 1600
     assert np.max(np.abs(np.diff(resampled.astype(np.int32)))) < 2500
+
+
+def test_input_gain_boosts_quiet_pcm_and_clips_safely() -> None:
+    capture = AudioCapture(
+        sample_rate=16000,
+        channels=1,
+        frame_ms=20,
+        input_gain_db=20.0,
+    )
+    source = np.array([-4000, -100, 0, 100, 4000], dtype="<i2")
+
+    boosted = np.frombuffer(capture._apply_input_gain(source.tobytes()), dtype="<i2")  # noqa: SLF001
+
+    assert boosted.tolist() == [-32768, -1000, 0, 1000, 32767]

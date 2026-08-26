@@ -50,6 +50,41 @@ body {
   content: "";
 }
 
+.close-button {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 4;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: rgba(151, 169, 191, 0.68);
+  background: transparent;
+  font: 300 22px/1 "Segoe UI", sans-serif;
+  cursor: pointer;
+  place-items: center;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+
+.close-button:hover {
+  border-color: rgba(255, 80, 108, 0.28);
+  color: #ff90a2;
+  background: rgba(255, 80, 108, 0.12);
+}
+
+.close-button:focus-visible {
+  outline: 2px solid rgba(86, 246, 210, 0.65);
+  outline-offset: 2px;
+}
+
+.close-button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
 .top-line {
   position: absolute;
   top: 0;
@@ -281,4 +316,3 @@ body {
     opacity: 0.42;
   }
 }
-

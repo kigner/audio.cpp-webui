@@ -7,6 +7,18 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 
+_LEGACY_VAD_DEFAULTS = {
+    "threshold": 0.5,
+    "min_speech_duration_ms": 250,
+    "min_silence_duration_ms": 500,
+}
+_QUIET_INPUT_VAD_DEFAULTS = {
+    "threshold": 0.35,
+    "min_speech_duration_ms": 200,
+    "min_silence_duration_ms": 450,
+}
+
+
 @dataclass(frozen=True)
 class AsrConfig:
     base_url: str = "http://127.0.0.1:8081"
@@ -19,6 +31,7 @@ class AsrConfig:
     channels: int = 1
     sample_format: str = "pcm_s16le"
     frame_ms: int = 20
+    input_gain_db: float = 18.0
     trailing_silence_ms: int = 400
     connect_timeout_s: float = 3.0
     final_timeout_s: float = 30.0
@@ -30,9 +43,9 @@ class AsrConfig:
 
 @dataclass(frozen=True)
 class VadConfig:
-    threshold: float = 0.5
-    min_speech_duration_ms: int = 250
-    min_silence_duration_ms: int = 500
+    threshold: float = 0.35
+    min_speech_duration_ms: int = 200
+    min_silence_duration_ms: int = 450
     speech_pad_ms: int = 160
     max_speech_duration_s: float = 20.0
 
@@ -92,9 +105,12 @@ def _assert_loopback_url(value: str, label: str) -> None:
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path)
     raw = json.loads(config_path.read_text(encoding="utf-8"))
+    vad_raw = dict(raw.get("vad", {}))
+    if all(vad_raw.get(key) == value for key, value in _LEGACY_VAD_DEFAULTS.items()):
+        vad_raw.update(_QUIET_INPUT_VAD_DEFAULTS)
     config = AppConfig(
         asr=AsrConfig(**raw.get("asr", {})),
-        vad=VadConfig(**raw.get("vad", {})),
+        vad=VadConfig(**vad_raw),
         ui=UiConfig(**raw.get("ui", {})),
         hotkeys=HotkeyConfig(**raw.get("hotkeys", {})),
         injection=InjectionConfig(**raw.get("injection", {})),
@@ -111,6 +127,8 @@ def load_config(path: str | Path) -> AppConfig:
         raise ValueError("only mono audio is supported")
     if config.asr.trailing_silence_ms < 0:
         raise ValueError("asr.trailing_silence_ms must not be negative")
+    if not 0.0 <= config.asr.input_gain_db <= 30.0:
+        raise ValueError("asr.input_gain_db must be between 0 and 30")
     if not 0.0 < config.vad.threshold < 1.0:
         raise ValueError("vad.threshold must be between 0 and 1")
     return config

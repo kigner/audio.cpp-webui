@@ -7,6 +7,7 @@
   const modelName = document.getElementById("model-name");
   const latency = document.getElementById("latency-value");
   const connection = document.getElementById("connection");
+  const closeButton = document.getElementById("close-button");
   const canvas = document.getElementById("waveform");
   const ctx = canvas.getContext("2d");
 
@@ -18,6 +19,21 @@
   let socket;
   let reconnectAttempt = 0;
   const reconnectDelays = [500, 1000, 2000, 5000];
+
+  async function closeApplication() {
+    closeButton.disabled = true;
+    connection.textContent = "CLOSING";
+    try {
+      if (window.pywebview?.api?.close) {
+        await window.pywebview.api.close();
+      } else {
+        window.close();
+      }
+    } catch (_) {
+      closeButton.disabled = false;
+      connection.textContent = "CLOSE FAILED";
+    }
+  }
 
   function setState(next) {
     state = next || "idle";
@@ -140,8 +156,8 @@
   }
 
   window.addEventListener("resize", resizeCanvas);
+  closeButton.addEventListener("click", closeApplication);
   resizeCanvas();
   requestAnimationFrame(drawWave);
   connect();
 })();
-
