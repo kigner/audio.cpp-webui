@@ -1,8 +1,8 @@
 // @ts-check
 /**
  * audio.cpp Realtime Voice — simplified orb frontend.
- * Always connects directly to ws://127.0.0.1:8765/v1/realtime.
- * No tools, no settings, no LB mode — just the orb.
+ * Connects directly to the configured realtime WebSocket and keeps local
+ * TTS/ASR/LLM settings in the browser.
  *
  * @typedef {"idle" | "connecting" | "queued" | "your-turn" |
  *           "listening" | "user-speaking" | "processing" |
@@ -25,6 +25,10 @@ const STORAGE = {
   rtUrl: "audiocpp.rt.url",
   ttsUrl: "audiocpp.tts.url",
   ttsModel: "audiocpp.tts.model",
+  ttsServerSource: "audiocpp.tts.serverSource",
+  ttsPlaybackMode: "audiocpp.tts.playbackMode",
+  ttsInferenceSteps: "audiocpp.tts.inferenceSteps",
+  ttsVocoderMergeSteps: "audiocpp.tts.vocoderMergeSteps",
   ttsVoice: "audiocpp.tts.voice",
   ttsVoiceRef: "audiocpp.tts.voiceRef",
   ttsRefText: "audiocpp.tts.refText",
@@ -47,6 +51,10 @@ const DEFAULTS = {
   rtUrl: DEFAULT_RT_URL,
   ttsUrl: "http://127.0.0.1:8088",
   ttsModel: "qwen3-tts",
+  ttsServerSource: "managed",
+  ttsPlaybackMode: "auto",
+  ttsInferenceSteps: "",
+  ttsVocoderMergeSteps: "",
   ttsVoice: "",
   ttsVoiceRef: "",
   ttsRefText: "",
@@ -83,6 +91,24 @@ function loadSettings() {
  *  until the fetch resolves; merged in so the Settings panel pre-fills fields
  *  the user hasn't customized. localStorage still wins over env defaults. */
 let envDefaults = {};
+/** @type {Array<Record<string, any>>} */
+let availableTtsModels = [];
+
+const ENV_SETTING_KEYS = {
+  ttsUrl: "tts_server",
+  ttsModel: "tts_model",
+  ttsServerSource: "tts_server_source",
+  ttsPlaybackMode: "tts_playback_mode",
+  ttsVoice: "tts_voice",
+  ttsVoiceRef: "tts_voice_ref",
+  ttsRefText: "tts_reference_text",
+  asrUrl: "asr_server",
+  asrModel: "asr_model",
+  asrLanguage: "asr_language",
+  llmUrl: "llm_base_url",
+  llmModel: "llm_model",
+  instructions: "instructions",
+};
 
 async function refreshEnvDefaults() {
   try {
@@ -97,12 +123,18 @@ async function refreshEnvDefaults() {
         const res = await fetch(u, { cache: "no-store" });
         if (res.ok) {
           envDefaults = await res.json();
+          availableTtsModels = Array.isArray(envDefaults.tts_models)
+            ? envDefaults.tts_models
+            : [];
           // Apply: any field the user hasn't set in localStorage takes the env value.
           for (const k of Object.keys(DEFAULTS)) {
-            if (envDefaults[k] != null && localStorage.getItem(STORAGE[k]) === null) {
-              settings[k] = envDefaults[k];
+            const envKey = ENV_SETTING_KEYS[k];
+            if (envKey && envDefaults[envKey] != null && localStorage.getItem(STORAGE[k]) === null) {
+              settings[k] = String(envDefaults[envKey]);
             }
           }
+          renderTtsModelOptions();
+          syncTtsSettingsUi(false);
           return;
         }
       } catch { /* try next */ }
@@ -124,9 +156,25 @@ function saveSettings(s) {
 
 /** Build the `audiocpp` config block sent inside session.update. */
 function appConfigFromSettings(s) {
+  /** @type {Record<string, any>} */
+  const ttsOptions = {};
+  const meta = ttsModelMeta(s.ttsModel);
+  if (meta?.family === "dots_tts") {
+    const inferenceSteps = Number(s.ttsInferenceSteps);
+    const mergeSteps = Number(s.ttsVocoderMergeSteps);
+    if (Number.isInteger(inferenceSteps) && inferenceSteps > 0) {
+      ttsOptions.num_inference_steps = inferenceSteps;
+    }
+    if (Number.isInteger(mergeSteps) && mergeSteps > 0) {
+      ttsOptions.vocoder_merge_steps = mergeSteps;
+    }
+  }
   return {
     tts_server: s.ttsUrl,
     tts_model: s.ttsModel,
+    tts_server_source: s.ttsServerSource,
+    tts_playback_mode: s.ttsPlaybackMode,
+    tts_options: ttsOptions,
     tts_voice: s.ttsVoice,
     tts_voice_ref: s.ttsVoiceRef,
     tts_reference_text: s.ttsRefText,
@@ -206,6 +254,10 @@ const settingsFields = {
   rtUrl: $("#rt-url"),
   ttsUrl: $("#tts-url"),
   ttsModel: $("#tts-model"),
+  ttsServerSource: $("#tts-server-source"),
+  ttsPlaybackMode: $("#tts-playback-mode"),
+  ttsInferenceSteps: $("#tts-inference-steps"),
+  ttsVocoderMergeSteps: $("#tts-vocoder-merge-steps"),
   ttsVoice: $("#tts-voice"),
   ttsVoiceRef: $("#tts-voice-ref"),
   ttsRefText: $("#tts-ref-text"),
@@ -218,6 +270,105 @@ const settingsFields = {
   instructions: $("#instructions"),
   noiseGate: $("#noise-gate"),
 };
+const ttsModelCapability = $("#tts-model-capability");
+const ttsDotsOptions = $("#tts-dots-options");
+
+function ttsModelMeta(modelId) {
+  return availableTtsModels.find((model) => model.id === modelId) || null;
+}
+
+function ttsModelLabel(model) {
+  const badge = model.streaming_kind === "native"
+    ? "⚡ 原生流式"
+    : model.supports_streaming
+      ? "◐ 分段流式"
+      : "完整 WAV";
+  return `${badge} · ${model.label || model.id}`;
+}
+
+function renderTtsModelOptions() {
+  const select = /** @type {HTMLSelectElement | null} */ (settingsFields.ttsModel);
+  if (!select) return;
+  const currentValue = select.value;
+  select.innerHTML = "";
+  if (!availableTtsModels.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "未检测到本地已安装的 TTS 模型";
+    select.append(option);
+    select.disabled = true;
+    settings.ttsModel = "";
+    return;
+  }
+  select.disabled = false;
+  for (const model of availableTtsModels) {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = ttsModelLabel(model);
+    select.append(option);
+  }
+  const installedIds = new Set(availableTtsModels.map((model) => model.id));
+  const selected = installedIds.has(currentValue)
+    ? currentValue
+    : installedIds.has(settings.ttsModel)
+    ? settings.ttsModel
+    : installedIds.has(envDefaults.tts_model)
+      ? envDefaults.tts_model
+      : availableTtsModels[0].id;
+  settings.ttsModel = selected;
+  select.value = selected;
+}
+
+function syncTtsSettingsUi(applyModelDefaults = false) {
+  const meta = ttsModelMeta(settingsFields.ttsModel?.value || settings.ttsModel);
+  const playback = /** @type {HTMLSelectElement | null} */ (settingsFields.ttsPlaybackMode);
+  const source = settingsFields.ttsServerSource?.value || settings.ttsServerSource;
+  const urlInput = /** @type {HTMLInputElement | null} */ (settingsFields.ttsUrl);
+  if (urlInput) {
+    urlInput.disabled = source === "managed";
+    if (source === "managed") {
+      urlInput.value = envDefaults.tts_server || "http://127.0.0.1:8088";
+    }
+  }
+
+  if (playback) {
+    const streamOption = Array.from(playback.options)
+      .find((option) => option.value === "streaming");
+    if (streamOption) streamOption.disabled = !meta?.supports_streaming;
+    if (!meta?.supports_streaming && playback.value === "streaming") {
+      playback.value = "auto";
+    }
+  }
+
+  if (ttsDotsOptions) ttsDotsOptions.hidden = meta?.family !== "dots_tts";
+  if (applyModelDefaults && meta?.family === "dots_tts") {
+    const defaults = meta.realtime_defaults || {};
+    const inference = String(defaults.num_inference_steps ?? 10);
+    const merge = String(defaults.vocoder_merge_steps ?? 4);
+    if (settingsFields.ttsInferenceSteps) settingsFields.ttsInferenceSteps.value = inference;
+    if (settingsFields.ttsVocoderMergeSteps) settingsFields.ttsVocoderMergeSteps.value = merge;
+  }
+
+  if (ttsModelCapability) {
+    if (!meta) {
+      ttsModelCapability.textContent = "请先在本地 WebUI 安装一个 TTS 模型。";
+    } else if (meta.streaming_kind === "native") {
+      ttsModelCapability.textContent =
+        `原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式将边生成边播放。`;
+    } else if (meta.supports_streaming) {
+      ttsModelCapability.textContent =
+        `分段流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；每个模型文本段完成后立即播放。`;
+    } else {
+      ttsModelCapability.textContent = "非流式模型；自动模式保持完整 WAV 兼容调用。";
+    }
+  }
+}
+
+settingsFields.ttsModel?.addEventListener("change", () => {
+  syncTtsSettingsUi(true);
+});
+settingsFields.ttsServerSource?.addEventListener("change", () => syncTtsSettingsUi(false));
+settingsFields.ttsPlaybackMode?.addEventListener("change", () => syncTtsSettingsUi(false));
 
 // ── Radial gate arc (around the mic button) ─────────────────────────────
 // A ~200° arc centred on the left so the wide gap faces the orb (right).
@@ -412,6 +563,29 @@ function onQueuePosition(position) {
   queuePosition.textContent = `排队位置: ${position}`;
 }
 
+async function activateTts(s) {
+  if (!s.ttsModel) throw new Error("没有可用的本地 TTS 模型，请先在 WebUI 安装模型");
+  const url = new URL(s.rtUrl || DEFAULT_RT_URL);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = "/activate";
+  url.search = "";
+  url.hash = "";
+  const response = await fetch(url.href, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(appConfigFromSettings(s)),
+  });
+  if (!response.ok) {
+    let message = `TTS 模型准备失败（HTTP ${response.status}）`;
+    try {
+      const body = await response.json();
+      if (body?.detail) message = String(body.detail);
+    } catch { /* keep the status message */ }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
 async function doStart() {
   if (currentState === "idle" || currentState === "error") {
     chat.clear();
@@ -419,6 +593,19 @@ async function doStart() {
     setCaption("请求麦克风权限…", "muted");
     if (!audioContext || audioContext.state === "closed") audioContext = createResumedAudioContext();
     try { await primeMicPermission(); } catch (err) {
+      if (audioContext) void audioContext.close().catch(() => {});
+      audioContext = null;
+      throw err;
+    }
+    if (!availableTtsModels.length) await refreshEnvDefaults();
+    setCaption("正在准备 TTS 模型…", "muted");
+    try {
+      await activateTts(settings);
+    } catch (err) {
+      if (micStream) {
+        for (const track of micStream.getTracks()) track.stop();
+        micStream = null;
+      }
       if (audioContext) void audioContext.close().catch(() => {});
       audioContext = null;
       throw err;
@@ -520,9 +707,13 @@ queueFunnelJoin?.addEventListener("click", () => {
 
 // ── Settings modal ─────────────────────────────────────────────────────
 function fillSettingsForm() {
+  renderTtsModelOptions();
   for (const [k, el] of Object.entries(settingsFields)) {
     if (el) el.value = settings[k] ?? "";
   }
+  syncTtsSettingsUi(
+    !settings.ttsInferenceSteps || !settings.ttsVocoderMergeSteps,
+  );
 }
 
 function readSettingsForm() {
@@ -537,6 +728,7 @@ settingsBtn?.addEventListener("click", () => {
   fillSettingsForm();
   syncGateUi();
   settingsModal?.showModal();
+  void refreshEnvDefaults();
 });
 
 settingsForm?.addEventListener("submit", (e) => {
@@ -547,15 +739,20 @@ settingsForm?.addEventListener("submit", (e) => {
 settingsModal?.addEventListener("close", () => {
   const rv = settingsModal.returnValue;
   if (rv !== "save") return;
-  const prevRtUrl = settings.rtUrl;
+  const previous = settings;
   const next = readSettingsForm();
   settings = next;
   saveSettings(next);
   syncGateUi();
-  // Live-apply TTS/ASR/LLM params to an active session; rtUrl needs a reconnect.
+  syncTtsSettingsUi(false);
+  // Server/model/mode changes need a model activation transaction before the
+  // microphone resumes. Voice/options and ASR/LLM values can apply live.
   if (client) {
-    if (next.rtUrl !== prevRtUrl) {
-      // Realtime backend URL changed — must reconnect.
+    const reconnectKeys = [
+      "rtUrl", "ttsUrl", "ttsModel", "ttsServerSource", "ttsPlaybackMode",
+    ];
+    const reconnect = reconnectKeys.some((key) => next[key] !== previous[key]);
+    if (reconnect) {
       void (async () => {
         await doStop();
         setTimeout(() => { void doStart(); }, 150);

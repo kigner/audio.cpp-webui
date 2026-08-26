@@ -137,12 +137,42 @@
                 <p class="settings-group-title">TTS · audio.cpp 语音合成服务</p>
             <div class="field-row">
               <label class="field">
+                <span>TTS server</span>
+                <select id="tts-server-source">
+                  <option value="managed">本地 WebUI 托管（推荐）</option>
+                  <option value="external">外部服务器</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>TTS model</span>
+                <select id="tts-model">
+                  <option value="">正在读取本地已安装模型…</option>
+                </select>
+              </label>
+            </div>
+            <div class="field-row">
+              <label class="field">
                 <span>TTS server URL</span>
                 <input id="tts-url" type="text" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8088" />
               </label>
               <label class="field">
-                <span>TTS model</span>
-                <input id="tts-model" type="text" autocomplete="off" spellcheck="false" placeholder="qwen3-tts" />
+                <span>播放模式</span>
+                <select id="tts-playback-mode">
+                  <option value="auto">自动（流式优先）</option>
+                  <option value="streaming">原生/模型流式</option>
+                  <option value="offline">兼容模式（完整 WAV）</option>
+                </select>
+              </label>
+            </div>
+            <small id="tts-model-capability">仅显示本地已安装的 TTS 模型；支持流式的模型排在前面。</small>
+            <div id="tts-dots-options" class="field-row" hidden>
+              <label class="field">
+                <span>推理步数 <small>(MeanFlow 推荐 4)</small></span>
+                <input id="tts-inference-steps" type="number" min="1" step="1" value="4" />
+              </label>
+              <label class="field">
+                <span>声码器合并步数 <small>(越小首包越快)</small></span>
+                <input id="tts-vocoder-merge-steps" type="number" min="1" step="1" value="2" />
               </label>
             </div>
             <div class="field-row">

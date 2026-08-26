@@ -23,7 +23,11 @@ Env overrides:
                                  above 4 cores — SMT siblings are not counted)
     AUDIOCPP_SERVER=http://...   talk to an already-running server instead of managing one
     AUDIOCPP_LOAD_TIMEOUT=300    seconds to wait for a model to finish loading
+    AUDIOCPP_MODELS_ROOT=...     model install/write directory (default: <bundle>/models)
+    AUDIOCPP_MODEL_SEARCH_ROOTS=...
+                                 extra read-only model roots, separated by os.pathsep
     AUDIOCPP_NO_BROWSER=1        don't open a browser tab
+    AUDIOCPP_DISABLE_REALTIME=1  don't start the realtime voice backend on 8765
 """
 import atexit
 import base64
@@ -569,7 +573,48 @@ def _find_gguf_exe():
             return candidate
     return None
 
-MODELS_ROOT = os.path.join(BUNDLE_ROOT, "models")
+def _absolute_model_root(path):
+    path = os.path.expanduser(str(path or "").strip())
+    if not os.path.isabs(path):
+        path = os.path.join(PROJECT_ROOT, path)
+    return os.path.normpath(os.path.abspath(path))
+
+
+def _model_search_roots(models_root=None, bundle_root=None, project_root=None, environ=None):
+    """Ordered roots used to find already-installed models.
+
+    Model lookup is deliberately separate from executable lookup: a development
+    server may run from build/ while its models remain in audiocpp-portable/.
+    The first root is also the model manager's single write target; the rest are
+    lookup-only fallbacks, so one install is never written into two trees.
+    """
+    env = os.environ if environ is None else environ
+    bundle = BUNDLE_ROOT if bundle_root is None else bundle_root
+    project = PROJECT_ROOT if project_root is None else project_root
+    primary = models_root or env.get("AUDIOCPP_MODELS_ROOT") or os.path.join(bundle, "models")
+    candidates = [primary]
+    candidates.extend(part for part in env.get("AUDIOCPP_MODEL_SEARCH_ROOTS", "").split(os.pathsep)
+                      if part.strip())
+    candidates.extend((
+        os.path.join(bundle, "models"),
+        os.path.join(project, "models"),
+        os.path.join(project, "audiocpp-portable", "models"),
+    ))
+
+    roots, seen = [], set()
+    for candidate in candidates:
+        root = _absolute_model_root(candidate)
+        key = os.path.normcase(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return tuple(roots)
+
+
+MODELS_ROOT = _absolute_model_root(
+    os.environ.get("AUDIOCPP_MODELS_ROOT") or os.path.join(BUNDLE_ROOT, "models"))
+MODEL_SEARCH_ROOTS = _model_search_roots(MODELS_ROOT)
 
 
 def _find_spec_model_manager():
@@ -1964,9 +2009,29 @@ _loaded_session_options = None   # 随本次加载写进 server config 的 sessi
 _loaded_mode = None              # 本次加载的运行模式（offline/streaming），None=未加载
 
 
-def _resolve_bundle_path(path):
-    ap = path if os.path.isabs(path) else os.path.join(BUNDLE_ROOT, path)
-    return os.path.normpath(ap).replace("\\", "/")
+def _normalized_runtime_path(path):
+    return os.path.normpath(path).replace("\\", "/")
+
+
+def _model_path_candidates(path):
+    """Resolve a catalog path against every compatible model root.
+
+    Absolute catalog paths keep their exact meaning. Relative paths below
+    ``models/`` are searched in MODEL_SEARCH_ROOTS; other relative runtime
+    assets remain relative to BUNDLE_ROOT.
+    """
+    if os.path.isabs(path):
+        return (_normalized_runtime_path(path),)
+
+    relative = os.path.normpath(path or "")
+    prefix = "models" + os.sep
+    if relative == "models":
+        return tuple(_normalized_runtime_path(root) for root in MODEL_SEARCH_ROOTS)
+    if os.path.normcase(relative).startswith(os.path.normcase(prefix)):
+        suffix = relative[len(prefix):]
+        return tuple(_normalized_runtime_path(os.path.join(root, suffix))
+                     for root in MODEL_SEARCH_ROOTS)
+    return (_normalized_runtime_path(os.path.join(BUNDLE_ROOT, relative)),)
 
 
 def _missing_required_files_for(path, download_id):
@@ -1984,28 +2049,43 @@ def catalog_models():
     out = []
     for m in CATALOG.get("models", []):
         entry = dict(m)
-        legacy_path = _resolve_bundle_path(m.get("path", ""))
-        package_path = _resolve_bundle_path(m.get("download_path") or m.get("path", ""))
-        package_missing = _missing_required_files_for(package_path, entry.get("download_id"))
-        legacy_missing = _missing_required_files_for(legacy_path, entry.get("legacy_download_id")
-                                                     or entry.get("download_id"))
-        package_complete = os.path.exists(package_path) and not package_missing
-        legacy_complete = os.path.exists(legacy_path) and not legacy_missing
+        package_states = [
+            (path, _missing_required_files_for(path, entry.get("download_id")))
+            for path in _model_path_candidates(m.get("download_path") or m.get("path", ""))
+        ]
+        legacy_states = [
+            (path, _missing_required_files_for(path, entry.get("legacy_download_id")
+                                               or entry.get("download_id")))
+            for path in _model_path_candidates(m.get("path", ""))
+        ]
+        package_complete = next(
+            ((path, missing) for path, missing in package_states
+             if os.path.exists(path) and not missing), None)
+        legacy_complete = next(
+            ((path, missing) for path, missing in legacy_states
+             if os.path.exists(path) and not missing), None)
+        package_existing = next(
+            ((path, missing) for path, missing in package_states if os.path.exists(path)), None)
+        legacy_existing = next(
+            ((path, missing) for path, missing in legacy_states if os.path.exists(path)), None)
         if package_complete:
-            entry["abs_path"] = package_path
+            entry["abs_path"] = package_complete[0]
             entry["missing_files"] = []
         elif legacy_complete:
-            entry["abs_path"] = legacy_path
+            entry["abs_path"] = legacy_complete[0]
             entry["missing_files"] = []
-        elif os.path.exists(package_path):
-            entry["abs_path"] = package_path
-            entry["missing_files"] = package_missing
+        elif package_existing:
+            entry["abs_path"] = package_existing[0]
+            entry["missing_files"] = package_existing[1]
+        elif legacy_existing:
+            entry["abs_path"] = legacy_existing[0]
+            entry["missing_files"] = legacy_existing[1]
         else:
-            entry["abs_path"] = legacy_path if os.path.exists(legacy_path) else package_path
-            entry["missing_files"] = legacy_missing if os.path.exists(legacy_path) else []
+            entry["abs_path"] = package_states[0][0]
+            entry["missing_files"] = []
         entry["incomplete"] = bool(entry["missing_files"])
-        entry["installed"] = package_complete or legacy_complete
-        entry["download_installed"] = package_complete
+        entry["installed"] = bool(package_complete or legacy_complete)
+        entry["download_installed"] = bool(package_complete)
         entry["gguf_path"] = (_existing_gguf_path(entry)
                               if entry.get("family") in GGUF_NATIVE_FAMILIES else None)
         entry["gguf_ready"] = bool(entry["gguf_path"])
@@ -2585,9 +2665,19 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
 
     with _proc_lock:
         managed_alive = _server_proc is not None and _server_proc.poll() is None
+        loaded_mode = _loaded_mode or entry.get("mode", "offline")
+        # A TTS model loaded with a streaming session can still serve a normal
+        # /v1/audio/speech request and return a final WAV. Reuse it for the main
+        # WebUI's offline button so an active realtime model is not needlessly
+        # torn down and reloaded in offline mode.
+        mode_compatible = (
+            want_mode == loaded_mode
+            or (entry.get("task") in TTS_TASKS
+                and want_mode == "offline" and loaded_mode == "streaming")
+        )
         if (managed_alive and _loaded_id == model_id and server_alive()
                 and (session_options or {}) == (_loaded_session_options or {})
-                and want_mode == (_loaded_mode or entry.get("mode", "offline"))):
+                and mode_compatible):
             return _t("✅ 已加载：{label}{mode}", "✅ Loaded: {label}{mode}",
                       label=entry["label"], mode=mode_note)
 
@@ -4971,6 +5061,50 @@ def refresh():
     return (*dropdowns, server_status(), *hints, asr_stream_update(asr_model_id))
 
 
+_REALTIME_NATIVE_STREAM_FAMILIES = {"dots_tts", "voxcpm2"}
+
+
+def realtime_tts_models():
+    """Installed TTS models for the standalone realtime settings page.
+
+    Streaming-capable entries are intentionally first; catalog order remains
+    stable inside each group so existing downstream model ordering is preserved.
+    """
+    models = []
+    for entry in catalog_models():
+        if entry.get("task") not in TTS_TASKS or not entry.get("installed"):
+            continue
+        profile = profile_for(entry)
+        supports = bool(profile.get("supports_streaming"))
+        family = entry.get("family") or ""
+        defaults = {}
+        if entry.get("id") == "dots-tts-meanflow":
+            defaults = {"num_inference_steps": 4, "vocoder_merge_steps": 2}
+        elif family == "dots_tts":
+            defaults = {"num_inference_steps": 10, "vocoder_merge_steps": 4}
+        elif family == "voxcpm2":
+            defaults = {"retry_badcase": False}
+        models.append({
+            "id": entry["id"],
+            "label": entry.get("display_name") or entry.get("label") or entry["id"],
+            "family": family,
+            "supports_streaming": supports,
+            "streaming_kind": (
+                "native" if supports and family in _REALTIME_NATIVE_STREAM_FAMILIES
+                else "segment" if supports else "none"
+            ),
+            "stream_sample_rate": int(profile.get("stream_sample_rate") or 0),
+            "realtime_defaults": defaults,
+        })
+    return sorted(models, key=lambda model: not model["supports_streaming"])
+
+
+def load_realtime_tts_model(model_id, mode):
+    if mode not in {"offline", "streaming"}:
+        raise ValueError(f"unsupported realtime TTS mode: {mode}")
+    return ensure_model_loaded(model_id, TTS_TASKS, mode=mode)
+
+
 atexit.register(_stop_server)
 
 
@@ -5988,6 +6122,25 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
 if __name__ == "__main__":
     open_browser = os.environ.get("AUDIOCPP_NO_BROWSER") != "1"
+    realtime = None
+    if os.environ.get("AUDIOCPP_DISABLE_REALTIME") != "1":
+        try:
+            from realtime_server import get_server as get_realtime_server
+            realtime_port = int(os.environ.get("AUDIOCPP_REALTIME_PORT", "8765"))
+            if _port_open("127.0.0.1", realtime_port):
+                print(f"[webui] realtime port {realtime_port} is already in use; "
+                      "keeping the existing realtime backend")
+            else:
+                realtime = get_realtime_server(
+                    port=realtime_port,
+                    model_catalog_provider=realtime_tts_models,
+                    managed_tts_loader=load_realtime_tts_model,
+                )
+                realtime.start()
+                atexit.register(realtime.stop)
+                print(f"[webui] realtime voice: http://127.0.0.1:{realtime_port}/realtime/")
+        except Exception as exc:
+            print(f"[webui] realtime backend failed to start: {exc}")
     # Gradio 6 moved css/theme from the Blocks constructor to launch().
     demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=open_browser,
                 css=CUSTOM_CSS)

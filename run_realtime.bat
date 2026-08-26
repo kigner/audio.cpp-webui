@@ -9,13 +9,23 @@ if not exist "%PY%" (
   pause
   exit /b 1
 )
+
+REM run_webui.bat now starts the managed realtime backend in-process.  When it
+REM is already available, this launcher only opens the page and does not create
+REM a competing Python server on the same port.
+powershell -NoProfile -Command "try { $r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8765/health' -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } } catch {}; exit 1"
+if not errorlevel 1 (
+  echo [realtime] using the backend managed by run_webui.bat
+  start "" "http://127.0.0.1:8765/realtime/"
+  exit /b 0
+)
 REM ============================================================
 REM  Realtime voice: VAD(silero) -> ASR -> LLM -> TTS, served on
 REM  ws://127.0.0.1:8765/v1/realtime + http://127.0.0.1:8765/realtime/
 REM
-REM  This script starts ONLY the Python realtime backend. It needs TWO
-REM  audio.cpp C++ servers already running (one TTS, one ASR) so both
-REM  models can be served at the same time. Start them in separate windows:
+REM  run_webui.bat now owns the normal realtime backend and managed TTS server;
+REM  when that backend is running this script only opens its page. The standalone
+REM  fallback below still needs TWO audio.cpp C++ servers already running:
 REM
 REM    run_server.bat qwen3-tts 8088        (TTS, GPU)
 REM    run_server_asr.bat                   (ASR on :8081, GPU or CPU)

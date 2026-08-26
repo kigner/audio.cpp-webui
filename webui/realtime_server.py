@@ -19,6 +19,8 @@ Environment variables::
     AUDIOCPP_TTS_MODEL       TTS model id loaded in that server (default: qwen3-tts)
     AUDIOCPP_TTS_VOICE       Named cached voice id (optional; else use voice_ref)
     AUDIOCPP_TTS_VOICE_REF   Reference audio path for voice cloning
+    AUDIOCPP_TTS_SERVER_SOURCE managed|external (default: managed)
+    AUDIOCPP_TTS_PLAYBACK_MODE auto|streaming|offline (default: auto)
     AUDIOCPP_TTS_REF_TEXT    Text of the reference audio
     AUDIOCPP_ASR_SERVER      C++ ASR server URL (default: http://127.0.0.1:8081)
     AUDIOCPP_ASR_MODEL       ASR model id loaded in that server (default: qwen3-asr)
@@ -35,10 +37,10 @@ import json
 import logging
 import os
 import threading
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from realtime_pipeline import (
@@ -57,6 +59,9 @@ logger = logging.getLogger("realtime.server")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "realtime_static")
+
+ModelCatalogProvider = Callable[[], list[dict[str, Any]]]
+ManagedTtsLoader = Callable[[str, str], str]
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -107,6 +112,11 @@ def _default_config() -> dict:
         "tts_voice": _env("AUDIOCPP_TTS_VOICE", ""),
         "tts_voice_ref": _resolve_voice_ref(_env("AUDIOCPP_TTS_VOICE_REF", "")),
         "tts_reference_text": _env("AUDIOCPP_TTS_REF_TEXT", ""),
+        "tts_server_source": _env("AUDIOCPP_TTS_SERVER_SOURCE", "managed"),
+        "tts_playback_mode": _env("AUDIOCPP_TTS_PLAYBACK_MODE", "auto"),
+        "tts_streaming": False,
+        "tts_stream_sample_rate": 0,
+        "tts_options": {},
         "asr_server": _env("AUDIOCPP_ASR_SERVER", "http://127.0.0.1:8081"),
         "asr_model": _env("AUDIOCPP_ASR_MODEL", "qwen3-asr"),
         "asr_language": _env("AUDIOCPP_ASR_LANGUAGE", ""),
@@ -120,6 +130,7 @@ def _default_config() -> dict:
 # Keys the browser is allowed to override via session.update -> session.audiocpp.
 _OVERRIDABLE_KEYS = {
     "tts_server", "tts_model", "tts_voice", "tts_voice_ref", "tts_reference_text",
+    "tts_server_source", "tts_playback_mode", "tts_options",
     "asr_server", "asr_model", "asr_language",
     "llm_base_url", "llm_api_key", "llm_model", "instructions",
 }
@@ -149,10 +160,77 @@ def _config_from_session(session: dict) -> dict:
     return cfg
 
 
+def _safe_tts_models(provider: Optional[ModelCatalogProvider]) -> list[dict[str, Any]]:
+    if provider is None:
+        return []
+    try:
+        models = provider()
+    except Exception:
+        logger.exception("Realtime TTS catalog provider failed")
+        return []
+    return [dict(model) for model in models if isinstance(model, dict) and model.get("id")]
+
+
+def _resolve_tts_config(
+    cfg: dict[str, Any],
+    provider: Optional[ModelCatalogProvider],
+) -> dict[str, Any]:
+    """Resolve user-facing playback mode into the pipeline/server contract."""
+    out = dict(cfg)
+    models = _safe_tts_models(provider)
+    model_id = str(out.get("tts_model") or "").strip()
+    meta = next((model for model in models if model.get("id") == model_id), None)
+
+    source = str(out.get("tts_server_source") or "managed").strip().lower()
+    if source not in {"managed", "external"}:
+        raise ValueError("tts_server_source must be managed or external")
+    playback = str(out.get("tts_playback_mode") or "auto").strip().lower()
+    if playback not in {"auto", "streaming", "offline"}:
+        raise ValueError("tts_playback_mode must be auto, streaming, or offline")
+
+    supports_streaming = bool(meta and meta.get("supports_streaming"))
+    streaming = supports_streaming if playback == "auto" else playback == "streaming"
+    if streaming and not supports_streaming:
+        raise ValueError(f"TTS model {model_id or '(empty)'} does not support streaming")
+    stream_rate = int((meta or {}).get("stream_sample_rate") or 0)
+    if streaming and stream_rate <= 0:
+        raise ValueError(f"TTS model {model_id} has no streaming sample-rate profile")
+
+    defaults = (meta or {}).get("realtime_defaults")
+    options = dict(defaults) if isinstance(defaults, dict) else {}
+    requested_options = out.get("tts_options")
+    if isinstance(requested_options, dict):
+        options.update(requested_options)
+
+    out.update({
+        "tts_server_source": source,
+        "tts_playback_mode": playback,
+        "tts_streaming": streaming,
+        "tts_stream_sample_rate": stream_rate if streaming else 0,
+        "tts_options": options,
+    })
+    return out
+
+
+_PIPELINE_CONFIG_KEYS = {
+    "tts_server", "tts_model", "tts_voice", "tts_voice_ref", "tts_reference_text",
+    "tts_streaming", "tts_stream_sample_rate", "tts_options",
+    "asr_server", "asr_model", "asr_language",
+    "llm_base_url", "llm_api_key", "llm_model", "instructions",
+}
+
+
+def _pipeline_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in cfg.items() if key in _PIPELINE_CONFIG_KEYS}
+
+
 # ── FastAPI app factory ─────────────────────────────────────────────────
 
 
-def create_app() -> FastAPI:
+def create_app(
+    model_catalog_provider: Optional[ModelCatalogProvider] = None,
+    managed_tts_loader: Optional[ManagedTtsLoader] = None,
+) -> FastAPI:
     app = FastAPI(title="audio.cpp Realtime")
 
     defaults = _default_config()
@@ -163,21 +241,56 @@ def create_app() -> FastAPI:
 
     @app.get("/config")
     async def config():
-        """Return the env-default pipeline config so the browser Settings panel
-        can pre-fill fields (TTS/ASR/LLM URLs, model ids, voice_ref, etc.).
+        """Return defaults and installed TTS capabilities for the Settings panel.
+
+        TTS/ASR/LLM URLs, model ids and voice_ref pre-fill the form; tts_models
+        contains only entries supplied by the local WebUI's installed catalog.
         Do not echo the LLM API key back to the browser; the pipeline can still
         use the env-provided key as its server-side default."""
         public_defaults = dict(defaults)
         public_defaults["llm_api_key"] = ""
         public_defaults["llm_api_key_set"] = bool(defaults.get("llm_api_key"))
+        public_defaults["tts_models"] = _safe_tts_models(model_catalog_provider)
+        public_defaults["managed_tts_available"] = managed_tts_loader is not None
         return public_defaults
+
+    @app.post("/activate")
+    async def activate(config: dict[str, Any]):
+        """Resolve TTS mode and prepare the local managed server before capture."""
+        merged = dict(defaults)
+        merged.update({key: value for key, value in config.items()
+                       if key in _OVERRIDABLE_KEYS})
+        try:
+            resolved = _resolve_tts_config(merged, model_catalog_provider)
+            status = "external server; model loading is caller-managed"
+            if resolved["tts_server_source"] == "managed":
+                if managed_tts_loader is None:
+                    status = "managed loader unavailable; using the existing server"
+                else:
+                    mode = "streaming" if resolved["tts_streaming"] else "offline"
+                    status = await asyncio.to_thread(
+                        managed_tts_loader, resolved["tts_model"], mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Failed to activate realtime TTS model")
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {
+            "status": "ok",
+            "message": status,
+            "tts_model": resolved["tts_model"],
+            "tts_streaming": resolved["tts_streaming"],
+            "tts_stream_sample_rate": resolved["tts_stream_sample_rate"],
+        }
 
     @app.websocket("/v1/realtime")
     async def ws_realtime(ws: WebSocket):
         await ws.accept()
         session_id = _generate_id("session")
 
-        pipeline = RealtimePipeline(**defaults)
+        initial_cfg = _resolve_tts_config(defaults, model_catalog_provider)
+        session_cfg = dict(initial_cfg)
+        pipeline = RealtimePipeline(**_pipeline_config(initial_cfg))
         pipeline.start()
 
         # ── Send session.created ──
@@ -294,7 +407,29 @@ def create_app() -> FastAPI:
                     if isinstance(session, dict):
                         cfg = _config_from_session(session)
                         if cfg:
-                            pipeline.configure(cfg)
+                            candidate = dict(session_cfg)
+                            candidate.update(cfg)
+                            try:
+                                resolved = _resolve_tts_config(
+                                    candidate, model_catalog_provider)
+                                if (resolved["tts_server_source"] == "managed"
+                                        and managed_tts_loader is not None):
+                                    mode = ("streaming" if resolved["tts_streaming"]
+                                            else "offline")
+                                    await asyncio.to_thread(
+                                        managed_tts_loader, resolved["tts_model"], mode)
+                                pipeline.configure(_pipeline_config(resolved))
+                                session_cfg = resolved
+                            except Exception as exc:
+                                await ws.send_json({
+                                    "type": "error",
+                                    "error": {
+                                        "type": "audiocpp_tts_activation_error",
+                                        "code": "audiocpp_tts_activation_error",
+                                        "message": str(exc),
+                                    },
+                                })
+                                continue
                     await ws.send_json({"type": "session.updated"})
 
                 elif msg_type == "input_audio_buffer.append":
@@ -338,8 +473,15 @@ def create_app() -> FastAPI:
 class RealtimeServerThread:
     """Manages a uvicorn server in a background daemon thread."""
 
-    def __init__(self, port: int = 8765):
+    def __init__(
+        self,
+        port: int = 8765,
+        model_catalog_provider: Optional[ModelCatalogProvider] = None,
+        managed_tts_loader: Optional[ManagedTtsLoader] = None,
+    ):
         self.port = port
+        self._model_catalog_provider = model_catalog_provider
+        self._managed_tts_loader = managed_tts_loader
         self._thread: Optional[threading.Thread] = None
         self._server: Optional[uvicorn.Server] = None
 
@@ -350,7 +492,7 @@ class RealtimeServerThread:
     def start(self) -> None:
         if self._server is not None:
             return
-        app = create_app()
+        app = create_app(self._model_catalog_provider, self._managed_tts_loader)
         config = uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning")
         self._server = uvicorn.Server(config)
 
@@ -374,10 +516,18 @@ class RealtimeServerThread:
 _server: Optional[RealtimeServerThread] = None
 
 
-def get_server(port: int = 8765) -> RealtimeServerThread:
+def get_server(
+    port: int = 8765,
+    model_catalog_provider: Optional[ModelCatalogProvider] = None,
+    managed_tts_loader: Optional[ManagedTtsLoader] = None,
+) -> RealtimeServerThread:
     global _server
     if _server is None:
-        _server = RealtimeServerThread(port=port)
+        _server = RealtimeServerThread(
+            port=port,
+            model_catalog_provider=model_catalog_provider,
+            managed_tts_loader=managed_tts_loader,
+        )
     return _server
 
 

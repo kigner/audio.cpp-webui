@@ -12,12 +12,13 @@ Topology (URLs/models are per-session, pushed from the browser Settings panel):
     mic PCM16 16k --> [silero VAD] --> speech segment
                                    --> [ASR server /v1/audio/transcriptions] --> text
                                    --> [LLM /chat/completions, streamed] --> reply tokens
-                                   --> [TTS server /v1/audio/speech, per sentence] --> WAV
+                                   --> [TTS server /v1/audio/speech, per sentence]
+                                       --> WAV or streaming PCM/SSE
                                    --> resample to 16k PCM16 --> browser playback
 
 Two independent audio.cpp servers are expected, e.g.:
 
-    run_server.bat qwen3-tts 8088     (TTS)
+    run_webui.bat + load a TTS model  (managed TTS on 8088)
     run_server.bat qwen3-asr 8081     (ASR)
 
 Both may also be the *same* multi-model server; the pipeline only needs a URL +
@@ -26,6 +27,7 @@ model id for each stage, so either topology works.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import logging
@@ -66,9 +68,18 @@ class CancelScope:
 
     def __init__(self) -> None:
         self.generation: int = 0
+        self._callbacks: list[Any] = []
+
+    def add_callback(self, callback) -> None:
+        self._callbacks.append(callback)
 
     def cancel(self) -> None:
         self.generation += 1
+        for callback in tuple(self._callbacks):
+            try:
+                callback()
+            except Exception:
+                logger.debug("cancel callback failed", exc_info=True)
 
     def is_stale(self, gen: int) -> bool:
         return gen != self.generation
@@ -167,6 +178,94 @@ def _float_to_wav16k(audio: np.ndarray) -> bytes:
         wf.setframerate(PIPELINE_SR)
         wf.writeframes(pcm.tobytes())
     return buf.getvalue()
+
+
+class _StreamingPcm16Resampler:
+    """Stateful mono PCM16 resampler for headerless streaming deltas.
+
+    A delta boundary is transport-level only and may split the interpolation
+    window anywhere. Keeping an absolute source position and the unconsumed tail
+    avoids clicks and timing drift caused by resampling each delta independently.
+    """
+
+    def __init__(self, source_rate: int, target_rate: int = PIPELINE_SR):
+        if source_rate <= 0 or target_rate <= 0:
+            raise ValueError("sample rates must be positive")
+        self.source_rate = int(source_rate)
+        self.target_rate = int(target_rate)
+        self._step = self.source_rate / self.target_rate
+        self._next_source_pos = 0.0
+        self._source_offset = 0
+        self._buffer = np.empty(0, dtype=np.float32)
+
+    def process(self, pcm: bytes, final: bool = False) -> bytes:
+        if pcm:
+            usable = len(pcm) - (len(pcm) % 2)
+            if usable:
+                incoming = np.frombuffer(pcm[:usable], dtype="<i2").astype(np.float32)
+                self._buffer = (incoming if not self._buffer.size
+                                else np.concatenate((self._buffer, incoming)))
+        if not self._buffer.size:
+            return b""
+
+        available_end = self._source_offset + self._buffer.size
+        limit = available_end if final else available_end - 1
+        if self._next_source_pos >= limit:
+            return b""
+
+        count = int(np.ceil((limit - self._next_source_pos) / self._step))
+        positions = self._next_source_pos + self._step * np.arange(count, dtype=np.float64)
+        positions = positions[positions < limit]
+        if not positions.size:
+            return b""
+
+        relative = positions - self._source_offset
+        left = np.floor(relative).astype(np.int64)
+        frac = relative - left
+        right = np.minimum(left + 1, self._buffer.size - 1)
+        samples = self._buffer[left] + (self._buffer[right] - self._buffer[left]) * frac
+        self._next_source_pos = float(positions[-1] + self._step)
+
+        drop = min(self._buffer.size,
+                   max(0, int(np.floor(self._next_source_pos)) - self._source_offset))
+        if drop:
+            self._buffer = self._buffer[drop:]
+            self._source_offset += drop
+
+        out = np.clip(np.round(samples), -32768, 32767).astype("<i2")
+        return out.tobytes()
+
+
+def _iter_sse_events(response) -> Iterator[dict[str, Any]]:
+    """Yield JSON objects from the server's ``data:`` SSE records."""
+    data_lines: list[str] = []
+    for raw in response.iter_lines(decode_unicode=True):
+        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else (raw or "")
+        if not line:
+            if data_lines:
+                data = "\n".join(data_lines)
+                data_lines = []
+                if data == "[DONE]":
+                    return
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.warning("Ignoring malformed TTS SSE event: %s", data[:200])
+                    continue
+                if isinstance(event, dict):
+                    yield event
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if data_lines:
+        data = "\n".join(data_lines)
+        if data != "[DONE]":
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                return
+            if isinstance(event, dict):
+                yield event
 
 
 # ── VAD stage (streaming silero, per-frame with hysteresis) ─────────────
@@ -410,13 +509,35 @@ class _TTSStage:
     def __init__(self, server_url: str):
         self._server_url = server_url.rstrip("/")
         self._http = requests.Session()
+        self._active_lock = threading.Lock()
+        self._active_response = None
 
     def configure(self, server_url: Optional[str] = None) -> None:
         if server_url:
             self._server_url = server_url.rstrip("/")
 
-    def synthesize(self, text: str, model_id: str, voice: str = "",
-                   voice_ref: str = "", reference_text: str = "") -> bytes:
+    def cancel_active(self) -> None:
+        with self._active_lock:
+            response = self._active_response
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def _set_active(self, response) -> None:
+        with self._active_lock:
+            self._active_response = response
+
+    def _clear_active(self, response) -> None:
+        with self._active_lock:
+            if self._active_response is response:
+                self._active_response = None
+
+    @staticmethod
+    def _payload(text: str, model_id: str, voice: str, voice_ref: str,
+                 reference_text: str,
+                 options: Optional[dict[str, Any]]) -> dict[str, Any]:
         payload: dict[str, Any] = {"model": model_id, "input": text}
         if voice:
             payload["voice"] = voice
@@ -424,16 +545,83 @@ class _TTSStage:
             payload["voice_ref"] = voice_ref
         if reference_text:
             payload["reference_text"] = reference_text
+        if options:
+            payload["options"] = dict(options)
+        return payload
+
+    def synthesize(self, text: str, model_id: str, voice: str = "",
+                   voice_ref: str = "", reference_text: str = "",
+                   options: Optional[dict[str, Any]] = None) -> bytes:
+        payload = self._payload(text, model_id, voice, voice_ref, reference_text, options)
         try:
             r = self._http.post(
-                f"{self._server_url}/v1/audio/speech", json=payload, timeout=120)
+                f"{self._server_url}/v1/audio/speech", json=payload,
+                stream=True, timeout=(10, 120))
         except requests.RequestException as exc:
             logger.error("TTS server unreachable (%s): %r", self._server_url, exc)
             return b""
-        if r.status_code != 200:
-            logger.error("TTS error %s: %s", r.status_code, r.text[:200])
-            return b""
-        return _wav_bytes_to_pcm16_16k(r.content)
+        self._set_active(r)
+        try:
+            with r:
+                if r.status_code != 200:
+                    logger.error("TTS error %s: %s", r.status_code, r.text[:200])
+                    return b""
+                return _wav_bytes_to_pcm16_16k(r.content)
+        finally:
+            self._clear_active(r)
+
+    def synthesize_stream(
+        self,
+        text: str,
+        model_id: str,
+        source_rate: int,
+        cancel_scope: CancelScope,
+        generation: int,
+        voice: str = "",
+        voice_ref: str = "",
+        reference_text: str = "",
+        options: Optional[dict[str, Any]] = None,
+    ) -> Iterator[bytes]:
+        payload = self._payload(text, model_id, voice, voice_ref, reference_text, options)
+        payload.update({"stream": True, "stream_format": "sse", "response_format": "pcm"})
+        try:
+            r = self._http.post(
+                f"{self._server_url}/v1/audio/speech", json=payload,
+                headers={"Accept": "text/event-stream"}, stream=True, timeout=(10, 900))
+        except requests.RequestException as exc:
+            logger.error("Streaming TTS server unreachable (%s): %r", self._server_url, exc)
+            return
+        self._set_active(r)
+        resampler = _StreamingPcm16Resampler(source_rate)
+        try:
+            with r:
+                if r.status_code != 200:
+                    logger.error("Streaming TTS error %s: %s", r.status_code, r.text[:200])
+                    return
+                for event in _iter_sse_events(r):
+                    if cancel_scope.is_stale(generation):
+                        r.close()
+                        return
+                    event_type = event.get("type")
+                    if event_type == "speech.audio.delta":
+                        try:
+                            pcm = base64.b64decode(event.get("audio") or "", validate=True)
+                        except (ValueError, TypeError):
+                            logger.warning("Ignoring invalid base64 TTS audio delta")
+                            continue
+                        converted = resampler.process(pcm)
+                        if converted:
+                            yield converted
+                    elif event_type == "speech.audio.done":
+                        tail = resampler.process(b"", final=True)
+                        if tail:
+                            yield tail
+                        return
+        except requests.RequestException:
+            if not cancel_scope.is_stale(generation):
+                logger.exception("Streaming TTS response failed")
+        finally:
+            self._clear_active(r)
 
 
 # ── orchestrator ────────────────────────────────────────────────────────
@@ -452,6 +640,9 @@ class RealtimePipeline:
         tts_voice: str = "",
         tts_voice_ref: str = "",
         tts_reference_text: str = "",
+        tts_streaming: bool = False,
+        tts_stream_sample_rate: int = 0,
+        tts_options: Optional[dict[str, Any]] = None,
         asr_server: str = "http://127.0.0.1:8081",
         asr_model: str = "qwen3-asr",
         asr_language: str = "",
@@ -471,6 +662,10 @@ class RealtimePipeline:
         self._tts_voice = tts_voice
         self._tts_voice_ref = tts_voice_ref
         self._tts_reference_text = tts_reference_text
+        self._tts_streaming = bool(tts_streaming)
+        self._tts_stream_sample_rate = int(tts_stream_sample_rate or 0)
+        self._tts_options = dict(tts_options or {})
+        self._cancel_scope.add_callback(self._tts.cancel_active)
         self._cfg_lock = threading.Lock()
         self._threads: list[threading.Thread] = []
         self._stop_event = threading.Event()
@@ -536,6 +731,12 @@ class RealtimePipeline:
                 self._tts_voice_ref = val("tts_voice_ref")
             if val("tts_reference_text"):
                 self._tts_reference_text = val("tts_reference_text")
+            if isinstance(cfg.get("tts_streaming"), bool):
+                self._tts_streaming = cfg["tts_streaming"]
+            if isinstance(cfg.get("tts_stream_sample_rate"), (int, float)):
+                self._tts_stream_sample_rate = int(cfg["tts_stream_sample_rate"])
+            if isinstance(cfg.get("tts_options"), dict):
+                self._tts_options = dict(cfg["tts_options"])
             self._llm.configure(
                 base_url=val("llm_base_url"),
                 api_key=val("llm_api_key"),
@@ -582,30 +783,46 @@ class RealtimePipeline:
                 continue
             if item is None:           # shutdown sentinel
                 break
-            text, gen, model, voice, voice_ref, reference_text = item
+            (text, gen, model, voice, voice_ref, reference_text,
+             streaming, stream_sample_rate, options) = item
             if self._cancel_scope.is_stale(gen):
                 with self._tts_lock:
                     self._tts_pending -= 1
                 continue
             try:
-                pcm = self._tts.synthesize(
-                    text, model_id=model, voice=voice,
-                    voice_ref=voice_ref, reference_text=reference_text)
+                step = CHUNK_SAMPLES * 2
+                if streaming:
+                    pending = bytearray()
+                    for pcm in self._tts.synthesize_stream(
+                            text, model_id=model, source_rate=stream_sample_rate,
+                            cancel_scope=self._cancel_scope, generation=gen,
+                            voice=voice, voice_ref=voice_ref,
+                            reference_text=reference_text, options=options):
+                        if self._cancel_scope.is_stale(gen):
+                            break
+                        pending.extend(pcm)
+                        while len(pending) >= step:
+                            self._out_events.put(AudioChunk(pcm=bytes(pending[:step])))
+                            del pending[:step]
+                    if pending and not self._cancel_scope.is_stale(gen):
+                        self._out_events.put(
+                            AudioChunk(pcm=bytes(pending).ljust(step, b"\x00")))
+                else:
+                    pcm = self._tts.synthesize(
+                        text, model_id=model, voice=voice, voice_ref=voice_ref,
+                        reference_text=reference_text, options=options)
+                    for i in range(0, len(pcm), step):
+                        if self._cancel_scope.is_stale(gen):
+                            break
+                        chunk = pcm[i:i + step]
+                        if len(chunk) < step:
+                            chunk = chunk.ljust(step, b"\x00")
+                        self._out_events.put(AudioChunk(pcm=chunk))
             except Exception:
                 logger.exception("TTS synthesis failed")
+            finally:
                 with self._tts_lock:
                     self._tts_pending -= 1
-                continue
-            step = CHUNK_SAMPLES * 2
-            for i in range(0, len(pcm), step):
-                if self._cancel_scope.is_stale(gen):
-                    break
-                chunk = pcm[i:i + step]
-                if len(chunk) < step:
-                    chunk = chunk.ljust(step, b"\x00")
-                self._out_events.put(AudioChunk(pcm=chunk))
-            with self._tts_lock:
-                self._tts_pending -= 1
 
     # ── one conversational turn ───────────────────────────────────────
 
@@ -628,6 +845,9 @@ class RealtimePipeline:
         with self._cfg_lock:
             tts_model, tts_voice = self._tts_model, self._tts_voice
             tts_ref, tts_ref_text = self._tts_voice_ref, self._tts_reference_text
+            tts_streaming = self._tts_streaming
+            tts_stream_sample_rate = self._tts_stream_sample_rate
+            tts_options = dict(self._tts_options)
         pending = ""
         full = ""
         for token in self._llm.stream(self._cancel_scope, gen):
@@ -651,12 +871,14 @@ class RealtimePipeline:
                 chunk, pending = self._split_speakable(pending)
                 if chunk is None:
                     break
-                self._speak(chunk, gen, tts_model, tts_voice, tts_ref, tts_ref_text)
+                self._speak(chunk, gen, tts_model, tts_voice, tts_ref, tts_ref_text,
+                            tts_streaming, tts_stream_sample_rate, tts_options)
 
         if self._cancel_scope.is_stale(gen):
             return
         if pending.strip():
-            self._speak(pending, gen, tts_model, tts_voice, tts_ref, tts_ref_text)
+            self._speak(pending, gen, tts_model, tts_voice, tts_ref, tts_ref_text,
+                        tts_streaming, tts_stream_sample_rate, tts_options)
 
         # Wait for all queued TTS items to finish before marking the turn done.
         while not self._stop_event.is_set():
@@ -723,7 +945,8 @@ class RealtimePipeline:
         return text[:split_at].strip(), text[split_at:]
 
     def _speak(self, text: str, gen: int, model: str, voice: str,
-               voice_ref: str, reference_text: str) -> None:
+               voice_ref: str, reference_text: str, streaming: bool,
+               stream_sample_rate: int, options: dict[str, Any]) -> None:
         """Queue a sentence for TTS synthesis.  The worker thread picks it up
         so LLM generation continues without blocking on the HTTP call."""
         text = text.strip()
@@ -736,4 +959,5 @@ class RealtimePipeline:
         self._out_events.put(AssistantText(text=text))
         with self._tts_lock:
             self._tts_pending += 1
-        self._tts_queue.put((text, gen, model, voice, voice_ref, reference_text))
+        self._tts_queue.put((text, gen, model, voice, voice_ref, reference_text,
+                             streaming, stream_sample_rate, dict(options)))
