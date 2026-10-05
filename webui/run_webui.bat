@@ -25,10 +25,10 @@ if not exist "%PY%" (
 echo [run_webui] python: %PY%
 
 echo [run_webui] the WebUI starts/switches audiocpp_server on demand
-echo [run_webui]   pick a model in the UI and click "load" (no need to start audiocpp_server first)
+echo [run_webui]   select a task and generate; installed models load automatically
 echo [run_webui]   backend: %AUDIOCPP_BACKEND%  (auto-detected; override with AUDIOCPP_BACKEND=gpu or cpu)
 echo [run_webui] UI -^> http://127.0.0.1:7860
-echo [run_webui] realtime voice -^> http://127.0.0.1:8765/realtime/
+echo [run_webui] realtime voice -^> http://127.0.0.1:7860/realtime/
 "%PY%" "%WEBUI_DIR%\webui.py"
 
 endlocal

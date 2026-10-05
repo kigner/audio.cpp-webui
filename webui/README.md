@@ -5,6 +5,25 @@
 The `webui/` directory holds the Python dependencies, launch scripts, and model-download wrappers needed to run the local WebUI.
 The launch scripts can be **double-clicked** or invoked from a command line / PowerShell.
 
+## Local audio workbench
+
+The default launcher now serves the task workspace, realtime chat, model center, API examples,
+and appearance settings on port 7860. It reuses the existing seven task handlers and local model
+manager. Installed models load on demand; basic, effect, and expert controls send only overrides.
+
+Realtime is available at `/realtime/`, with controls under `/api/realtime/`. A separate owned ASR
+process can use local port 8081 while TTS uses 8088. Configure the conversation provider before
+starting a call. Moving from the old 8765 origin requires re-entering browser connection settings.
+
+Downloads retain upstream spec sources, automatically probe official/mirror/proxy routes, and
+support safe pause/resume through persistent tasks. Cancellation retains resumable staging data.
+Transfer validation checks lengths and file identity; it does not imply a full upstream SHA256
+checksum is available. HF credentials are never forwarded to mirror hosts.
+
+Set `AUDIOCPP_UI_PORT=7861` for a separate development preview. Set `AUDIOCPP_WEBUI_LEGACY=1`
+before launching to use the retained Gradio UI and its legacy GGUF/voice tools. The upstream native
+WebUI remains independent. Runtime records, inputs and generated audio stay local and are ignored by Git.
+
 ## Two independent WebUIs
 
 - **Local Python/Gradio WebUI (primary here):** launch `webui\run_webui.bat` and open

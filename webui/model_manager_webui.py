@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from download_routes import (bind_resume_identity, clear_resume_identity,
+                             route_failed, route_label, save_resume_identity, urlopen)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +32,43 @@ STAGING_STATE_NAME = ".package.json"
 
 class ManagerError(RuntimeError):
     pass
+
+
+class DownloadInterrupted(ManagerError):
+    def __init__(self, action):
+        self.action = action
+        super().__init__(f"download {action} requested; partial files preserved")
+
+
+_control_file: Path | None = None
+
+
+def download_event(phase: str, **values):
+    print("AUDIOCPP_DOWNLOAD_EVENT " + json.dumps({"phase": phase, **values}), flush=True)
+
+
+def check_download_control():
+    if _control_file is None:
+        return
+    try:
+        value = json.loads(_control_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    action = value.get("action") if isinstance(value, dict) else None
+    if action in ("pause", "cancel"):
+        raise DownloadInterrupted(action)
+
+
+@contextmanager
+def install_control(path):
+    global _control_file
+    previous = _control_file
+    _control_file = Path(path) if path else None
+    try:
+        check_download_control()
+        yield
+    finally:
+        _control_file = previous
 
 
 @dataclass(frozen=True)
@@ -322,13 +362,15 @@ def download_file(package: PackageRecord, remote_path: str, output_path: Path) -
     last_error = "download ended before the advertised size"
 
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        check_download_control()
         offset = output_path.stat().st_size if output_path.is_file() else 0
         headers = http_headers()
         if offset:
             headers["Range"] = f"bytes={offset}-"
         request = Request(url, headers=headers)
+        bind_resume_identity(request, output_path)
         try:
-            with urlopen(request, timeout=300) as response:
+            with urlopen(request, timeout=30) as response:
                 status = getattr(response, "status", None) or response.getcode()
                 content_length = response.headers.get("Content-Length")
                 content_range = response.headers.get("Content-Range", "")
@@ -352,18 +394,33 @@ def download_file(package: PackageRecord, remote_path: str, output_path: Path) -
                     expected_total = int(content_length) if content_length else None
 
                 with output_path.open("ab" if append else "wb") as handle:
+                    save_resume_identity(response, output_path)
+                    downloaded = offset
+                    last_progress = time.monotonic()
+                    download_event("downloading", file=remote_path, bytes=downloaded,
+                                   total=expected_total, route=route_label(url))
+                    read = getattr(response, "read1", response.read)
                     while True:
-                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        check_download_control()
+                        chunk = read(DOWNLOAD_CHUNK_SIZE)
                         if not chunk:
                             break
                         handle.write(chunk)
+                        downloaded += len(chunk)
+                        if time.monotonic() - last_progress >= 1:
+                            download_event("downloading", file=remote_path, bytes=downloaded,
+                                           total=expected_total, route=route_label(url))
+                            last_progress = time.monotonic()
 
             total = output_path.stat().st_size
+            download_event("verifying", file=remote_path, bytes=total,
+                           total=expected_total, route=route_label(url))
             if expected_total is None or total == expected_total:
                 return
             if total > expected_total:
                 output_path.unlink(missing_ok=True)
             last_error = f"downloaded size mismatch: {total} != {expected_total}"
+            route_failed(url)
         except HTTPError as error:
             if package.download.get("gated") is True and error.code in (401, 403):
                 raise ManagerError(
@@ -379,10 +436,12 @@ def download_file(package: PackageRecord, remote_path: str, output_path: Path) -
                 raise ManagerError(f"failed to download {repo}/{remote_path}: HTTP {error.code}") from error
             else:
                 last_error = f"HTTP {error.code}"
+                route_failed(url)
         except ManagerError:
             raise
         except (URLError, TimeoutError, HTTPException, OSError) as error:
             last_error = str(error) or error.__class__.__name__
+            route_failed(url)
 
         if attempt < DOWNLOAD_ATTEMPTS:
             resume = output_path.stat().st_size if output_path.is_file() else 0
@@ -458,13 +517,18 @@ def install_package(package: PackageRecord, args: argparse.Namespace) -> None:
         return
     models_root.mkdir(parents=True, exist_ok=True)
     _staging, lock_path = package_staging_paths(package, models_root)
-    with package_install_lock(lock_path, package.id):
+    with package_install_lock(lock_path, package.id), install_control(getattr(args, "control_file", None)):
         if final_dir.exists() and not args.overwrite:
             raise ManagerError(f"target already exists: {final_dir} (use --overwrite)")
         staging = prepare_staging(package, models_root)
         try:
             for remote, output in plan:
+                check_download_control()
                 download_file(package, remote, staging / output.relative_to(final_dir))
+            check_download_control()
+            download_event("installing", package=package.id)
+            for _remote, output in plan:
+                clear_resume_identity(staging / output.relative_to(final_dir))
             (staging / STAGING_STATE_NAME).unlink(missing_ok=True)
             if final_dir.exists():
                 shutil.rmtree(final_dir)
@@ -474,6 +538,7 @@ def install_package(package: PackageRecord, args: argparse.Namespace) -> None:
             print(f"partial download kept at {staging}", file=sys.stderr, flush=True)
             raise
     print(f"installed {package.id} -> {final_dir}")
+    download_event("complete", package=package.id)
 
 
 def command_list(records: list[PackageRecord], args: argparse.Namespace) -> None:
@@ -547,6 +612,7 @@ def make_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--format")
     install_parser.add_argument("--precision")
     install_parser.add_argument("--models-root", default="models")
+    install_parser.add_argument("--control-file", help="JSON pause/cancel request file for managed downloads")
     install_parser.add_argument("--overwrite", action="store_true")
     install_parser.add_argument("--dry-run", action="store_true")
     install_parser.add_argument("--check", action="store_true", help="check remote files without downloading")
@@ -568,6 +634,10 @@ def main() -> int:
         else:
             raise ManagerError(f"unknown command: {args.command}")
         return 0
+    except DownloadInterrupted as error:
+        download_event("paused" if error.action == "pause" else "cancelled")
+        print(str(error), file=sys.stderr)
+        return 75
     except ManagerError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

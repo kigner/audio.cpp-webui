@@ -2754,6 +2754,9 @@ def _wait_health(timeout):
     return False
 
 
+_workbench_runtime_guard = None
+
+
 def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=None,
                         load_options=None):
     """(Re)start the server so `model_id` is loaded. Returns a status string.
@@ -2762,6 +2765,8 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
     mode：覆盖 catalog 条目的运行模式（"streaming"/"offline"），流式转写/生成用；
     与上次加载不一致时同样重启重载。"""
     global _loaded_session_options, _loaded_mode, _loaded_load_options
+    if _workbench_runtime_guard is not None:
+        _workbench_runtime_guard(model_id)
     if not model_id:
         raise gr.Error(_t("请先选择一个模型", "Select a model first."))
     entry = catalog_by_id(model_id)
@@ -6452,6 +6457,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
 
 if __name__ == "__main__":
+    if os.environ.get("AUDIOCPP_WEBUI_LEGACY") != "1":
+        from workbench_server import launch_workbench
+        launch_workbench(sys.modules[__name__])
+        sys.exit(0)
     open_browser = os.environ.get("AUDIOCPP_NO_BROWSER") != "1"
     realtime = None
     if os.environ.get("AUDIOCPP_DISABLE_REALTIME") != "1":

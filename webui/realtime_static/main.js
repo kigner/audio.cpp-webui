@@ -10,11 +10,13 @@
  */
 
 import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js";
-import { ChatView } from "./ui/chat.js";
+import { ChatView } from "./ui/chat.js?v=scene-1";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
 
 // ── Settings (persisted in localStorage) ───────────────────────────────
-const DEFAULT_RT_URL = "ws://127.0.0.1:8765/v1/realtime";
+const DEFAULT_RT_URL = new URL("/v1/realtime", window.location.href).href.replace(/^http/, "ws");
+let realtimeApiBase = "";
+let realtimeConfigReady = false;
 const LEGACY_DEFAULT_TTS_URL = "http://127.0.0.1:8080";
 const DEFAULT_INSTRUCTIONS =
   "You are a friendly voice assistant. Keep replies short and spoken. " +
@@ -114,17 +116,24 @@ const ENV_SETTING_KEYS = {
 
 async function refreshEnvDefaults() {
   try {
-    // The realtime page is served at /realtime/, so the backend root is two
-    // levels up. Fall back to same origin if that fails.
+    // The integrated host namespaces its API; the standalone server keeps its
+    // original routes. Validate the payload so Gradio's /config is never used.
     const urls = [
-      new URL("../../config", window.location.href).href,
+      new URL("../api/realtime/config", window.location.href).href,
+      new URL("../config", window.location.href).href,
       new URL("/config", window.location.origin).href,
     ];
     for (const u of urls) {
       try {
         const res = await fetch(u, { cache: "no-store" });
         if (res.ok) {
-          envDefaults = await res.json();
+          const config = await res.json();
+          if (!Array.isArray(config.tts_models)) continue;
+          envDefaults = config;
+          realtimeApiBase = String(config.api_base || "");
+          const wsUrl = new URL(`${realtimeApiBase}/v1/realtime`, window.location.origin);
+          settings.rtUrl = wsUrl.href.replace(/^http/, "ws");
+          realtimeConfigReady = true;
           availableTtsModels = Array.isArray(envDefaults.tts_models)
             ? envDefaults.tts_models
             : [];
@@ -136,7 +145,9 @@ async function refreshEnvDefaults() {
             }
           }
           renderTtsModelOptions();
+          renderAsrModelOptions();
           syncTtsSettingsUi(false);
+          updateSetupSummary();
           return;
         }
       } catch { /* try next */ }
@@ -148,6 +159,9 @@ async function refreshEnvDefaults() {
 
 function saveSettings(s) {
   for (const k of Object.keys(DEFAULTS)) {
+    // The realtime transport belongs to this host; preserve legacy overrides
+    // in storage but never send a credential to an old/different origin.
+    if (k === "rtUrl") continue;
     localStorage.setItem(STORAGE[k], String(s[k] ?? ""));
   }
 }
@@ -189,7 +203,7 @@ function appConfigFromSettings(s) {
     asr_language: s.asrLanguage,
     llm_base_url: s.llmUrl,
     llm_model: s.llmModel,
-    llm_api_key: s.llmKey,
+    ...(s.llmKey ? { llm_api_key: s.llmKey } : {}),
     instructions: s.instructions,
   };
 }
@@ -209,8 +223,8 @@ const STATE_VIEWS = {
   connecting:      { caption: "连接中",    disabled: true  },
   queued:          { caption: "排队中…", disabled: true },
   "your-turn":     { caption: "准备就绪",  disabled: true  },
-  listening:       { caption: "",              disabled: false },
-  "user-speaking": { caption: "",              disabled: false },
+  listening:       { caption: "正在听你说",    disabled: false },
+  "user-speaking": { caption: "正在聆听…",    disabled: false },
   processing:      { caption: "正在生成回复",  disabled: false },
   "ai-speaking":   { caption: "正在播放",      disabled: false },
   error:           { caption: "点击重试",  disabled: false },
@@ -287,13 +301,58 @@ function ttsModelMeta(modelId) {
   return availableTtsModels.find((model) => model.id === modelId) || null;
 }
 
+function renderAsrModelOptions() {
+  const list = document.querySelector("#asr-model-list");
+  if (!list) return;
+  list.replaceChildren();
+  const models = Array.isArray(envDefaults.asr_models) ? envDefaults.asr_models : [];
+  for (const model of models) {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.label = model.label || model.id;
+    list.append(option);
+  }
+  if (models.length && !localStorage.getItem(STORAGE.asrModel)
+      && !models.some((model) => model.id === settings.asrModel)) {
+    settings.asrModel = models[0].id;
+  }
+}
+
+function updateSetupSummary(result = null) {
+  const labels = {
+    asr: result?.asr?.message || (settings.asrModel ? "已选择识别模型，等待检测" : "选择识别模型"),
+    llm: result?.llm?.message || (settings.llmModel ? "已填写服务，连接后验证" : "配置对话服务"),
+    tts: result?.tts?.message || (settings.ttsModel ? "已选择声音模型" : "安装并选择声音模型"),
+  };
+  for (const [key, label] of Object.entries(labels)) {
+    const element = document.querySelector(`#setup-${key}-status`);
+    if (element) element.textContent = label;
+  }
+}
+
+async function checkSetup() {
+  const button = /** @type {HTMLButtonElement | null} */ (document.querySelector("#setup-check"));
+  if (button) { button.disabled = true; button.textContent = "检测中…"; }
+  try {
+    await refreshEnvDefaults();
+    if (!realtimeConfigReady) throw new Error("实时服务尚未就绪，请重启应用后重试。");
+    const response = await fetch(`${realtimeApiBase}/preflight`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(appConfigFromSettings(settings)),
+    });
+    if (!response.ok) throw new Error("暂时无法检测服务，请稍后重试。");
+    updateSetupSummary(await response.json());
+  } catch (error) {
+    showRealtimeError(error);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "检测准备情况"; }
+  }
+}
+
 function ttsModelLabel(model) {
-  const badge = model.streaming_kind === "native"
-    ? (model.realtime_auto_mode === "offline" ? "⚡/WAV" : "⚡")
-    : model.supports_streaming
-      ? "◐"
-      : "WAV";
-  return `${badge} · ${model.label || model.id}`;
+  const playback = model.realtime_auto_mode === "offline" || !model.supports_streaming
+    ? "完整生成后播放" : "支持边生成边播放";
+  return `${model.label || model.id} · ${playback}`;
 }
 
 function renderTtsModelOptions() {
@@ -363,18 +422,18 @@ function syncTtsSettingsUi(applyModelDefaults = false) {
 
   if (ttsModelCapability) {
     if (!meta) {
-      ttsModelCapability.textContent = "请先在本地 WebUI 安装一个 TTS 模型。";
+      ttsModelCapability.textContent = "还没有声音模型，请先到模型中心安装。";
     } else if (meta.streaming_kind === "native" && meta.realtime_auto_mode === "offline") {
       ttsModelCapability.textContent =
-        `支持原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；实测连续性不足，自动模式使用完整 WAV，低延迟流式仅供实验。`;
+        "该模型推荐完整生成后播放，听起来更连贯；高级设置中可以试用更快开口的播放方式。";
     } else if (meta.streaming_kind === "native") {
       ttsModelCapability.textContent =
-        `原生细粒度流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；自动模式启用模型流式输出。`;
+        "自动模式会边生成边播放，通常能更快开口。";
     } else if (meta.supports_streaming) {
       ttsModelCapability.textContent =
-        `分段流式 · PCM16 ${meta.stream_sample_rate || "?"} Hz；可使用自动模式，出现停顿时请选择完整 WAV。`;
+        "自动模式会分段播放；如果经常停顿，可在高级设置中选择完整生成后播放。";
     } else {
-      ttsModelCapability.textContent = "非流式模型；自动模式保持完整 WAV 兼容调用。";
+      ttsModelCapability.textContent = "该模型会先生成完整语音，再开始播放。";
     }
   }
 }
@@ -438,6 +497,7 @@ function renderGateHandle() {
 }
 
 function paintInputLevel(rms) {
+  document.getElementById("scene-waveform")?.style.setProperty("--mic-level", String(Math.min(1, Math.max(0, rms * 8))));
   const db = rms > 0 ? 20 * Math.log10(rms) : GATE_OFF_DB;
   const f = dbToFraction(db);
   mgaFill.style.strokeDashoffset = String(100 * (1 - f));
@@ -501,9 +561,11 @@ settingsFields.noiseGate?.addEventListener("input", () => {
 // ── State management ───────────────────────────────────────────────────
 function setState(next) {
   currentState = next;
+  document.body.dataset.callState = next;
   const view = STATE_VIEWS[next];
   circleBtn.disabled = view.disabled;
   circleBtn.className = `circle ${STATE_CLASS[next]}`;
+  circleBtn.setAttribute("aria-label", LIVE_STATES.has(next) ? "通话进行中" : next === "error" ? "重试语音对话" : "开始语音对话");
   if (next === "error") setCaption(view.caption, "error");
   else setCaption(view.caption, "");
   // Live indicator: side buttons appear + gate arc lights up
@@ -511,6 +573,10 @@ function setState(next) {
   if (wrap) {
     if (LIVE_STATES.has(next)) wrap.classList.add("live");
     else wrap.classList.remove("live");
+  }
+  for (const button of [micBtn, stopBtn]) {
+    button.setAttribute("aria-hidden", String(!LIVE_STATES.has(next)));
+    button.disabled = !LIVE_STATES.has(next);
   }
   // Show/hide queue UI
   queueBar.hidden = next !== "queued";
@@ -628,11 +694,7 @@ function onQueuePosition(position) {
 
 async function activateTts(s) {
   if (!s.ttsModel) throw new Error("没有可用的本地 TTS 模型，请先在 WebUI 安装模型");
-  const url = new URL(s.rtUrl || DEFAULT_RT_URL);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = "/activate";
-  url.search = "";
-  url.hash = "";
+  const url = new URL(`${realtimeApiBase}/activate`, window.location.origin);
   const response = await fetch(url.href, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -661,9 +723,10 @@ async function doStart() {
       audioContext = null;
       throw err;
     }
-    if (!availableTtsModels.length) await refreshEnvDefaults();
-    setCaption("正在准备 TTS 模型…", "muted");
     try {
+      await refreshEnvDefaults();
+      if (!realtimeConfigReady) throw new Error("实时服务尚未就绪，请重启应用后重试。");
+      setCaption("正在准备对话模型…", "muted");
       await activateTts(settings);
     } catch (err) {
       if (micStream) {
@@ -676,7 +739,7 @@ async function doStart() {
     }
     const gateThreshold = Number(settings.noiseGate) || GATE_DEFAULT_DB;
     const c = new S2sWsRealtimeClient({
-      directUrl: settings.rtUrl,
+      directUrl: new URL(`${realtimeApiBase}/v1/realtime`, window.location.origin).href.replace(/^http/, "ws"),
       instructions: settings.instructions,
       voice: settings.ttsVoice,
       appConfig: appConfigFromSettings(settings),
@@ -760,7 +823,7 @@ stopBtn.addEventListener("click", () => { void doStop(); });
 micBtn.addEventListener("click", () => {
   muted = !muted;
   micBtn.classList.toggle("muted", muted);
-  micBtn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+  micBtn.setAttribute("aria-label", muted ? "取消静音" : "静音");
   client?.setMuted(muted);
 });
 
@@ -778,8 +841,10 @@ realtimeNoticeSettings.addEventListener("click", () => settingsBtn.click());
 function fillSettingsForm() {
   renderTtsModelOptions();
   for (const [k, el] of Object.entries(settingsFields)) {
-    if (el) el.value = settings[k] ?? "";
+    if (el) el.value = k === "llmKey" ? "" : settings[k] ?? "";
   }
+  if (settingsFields.llmKey) settingsFields.llmKey.placeholder =
+    settings.llmKey || envDefaults.llm_api_key_set ? "已配置；留空保留，输入新密钥替换" : "填写服务商提供的 API Key";
   syncTtsSettingsUi(
     !settings.ttsInferenceSteps || !settings.ttsVocoderMergeSteps,
   );
@@ -788,6 +853,7 @@ function fillSettingsForm() {
 function readSettingsForm() {
   const s = { ...settings };
   for (const [k, el] of Object.entries(settingsFields)) {
+    if (k === "rtUrl" || (k === "llmKey" && !el?.value)) continue;
     if (el) s[k] = el.value;
   }
   return s;
@@ -815,18 +881,17 @@ settingsModal?.addEventListener("close", () => {
   hideRealtimeError();
   syncGateUi();
   syncTtsSettingsUi(false);
+  updateSetupSummary();
   // Server/model/mode changes need a model activation transaction before the
-  // microphone resumes. Voice/options and ASR/LLM values can apply live.
+  // microphone resumes. Voice/options and LLM values can apply live.
   if (client) {
     const reconnectKeys = [
       "rtUrl", "ttsUrl", "ttsModel", "ttsServerSource", "ttsPlaybackMode",
+      "asrUrl", "asrModel",
     ];
     const reconnect = reconnectKeys.some((key) => next[key] !== previous[key]);
     if (reconnect) {
-      void (async () => {
-        await doStop();
-        setTimeout(() => { void doStart(); }, 150);
-      })();
+      void doStop().then(() => setCaption("设置已保存，请点击开始新对话", "muted"));
     } else {
       client.updateAppConfig(appConfigFromSettings(next));
       const thr = Number(settings.noiseGate);
@@ -837,6 +902,29 @@ settingsModal?.addEventListener("close", () => {
 
 // Cleanup on page unload
 window.addEventListener("beforeunload", () => { void doStop(); });
+window.addEventListener("pagehide", () => { void doStop(); });
+document.querySelector("#setup-check")?.addEventListener("click", () => { void checkSetup(); });
+for (const button of document.querySelectorAll("[data-setup]")) {
+  button.addEventListener("click", () => {
+    if (!settingsModal.open) settingsBtn.click();
+    document.querySelector(`#${button.getAttribute("data-setup")}`)?.scrollIntoView({ block: "center" });
+  });
+}
+// Only same-origin UI preferences are shared with the shell; no service
+// settings, transcripts, or credentials are sent via postMessage.
+if (window.parent !== window) document.body.classList.add("embedded");
+function applyTheme(theme, palette) {
+  document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+  if (palette) document.documentElement.dataset.palette = palette === "forest" ? "forest" : "classic";
+}
+const shellTheme = localStorage.getItem("audiocpp-workbench-theme") || "light";
+applyTheme(shellTheme === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : shellTheme,
+  localStorage.getItem("audiocpp-workbench-palette") || "forest");
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin || event.source !== window.parent) return;
+  if (event.data?.type === "audiocpp:theme") applyTheme(event.data.theme, event.data.palette);
+  if (event.data?.type === "audiocpp:realtime-stop") void doStop();
+});
 
 // ── Init ───────────────────────────────────────────────────────────────
 chat = new ChatView();

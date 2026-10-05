@@ -38,24 +38,25 @@ import logging
 import os
 import threading
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from realtime_pipeline import (
-    AssistantText,
-    AudioChunk,
-    AudioSegmentDone,
-    PipelineError,
-    PipelineEvent,
-    RealtimePipeline,
-    ResponseDone,
-    SpeechStarted,
-    SpeechStopped,
-    TurnDiscarded,
-    UserTranscript,
-)
+try:
+    from .realtime_pipeline import (
+        AssistantText, AudioChunk, AudioSegmentDone, PipelineError, PipelineEvent,
+        RealtimePipeline, ResponseDone, SpeechStarted, SpeechStopped,
+        TurnDiscarded, UserTranscript,
+    )
+except ImportError:
+    from realtime_pipeline import (
+        AssistantText, AudioChunk, AudioSegmentDone, PipelineError, PipelineEvent,
+        RealtimePipeline, ResponseDone, SpeechStarted, SpeechStopped,
+        TurnDiscarded, UserTranscript,
+    )
 
 logger = logging.getLogger("realtime.server")
 
@@ -64,6 +65,8 @@ STATIC_DIR = os.path.join(HERE, "realtime_static")
 
 ModelCatalogProvider = Callable[[], list[dict[str, Any]]]
 ManagedTtsLoader = Callable[[str, str], str]
+SessionLease = Callable[[str, Optional[dict[str, Any]]], None]
+ManagedAsrLoader = Callable[[str], str]
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -248,17 +251,31 @@ def _pipeline_config(cfg: dict[str, Any]) -> dict[str, Any]:
 def create_app(
     model_catalog_provider: Optional[ModelCatalogProvider] = None,
     managed_tts_loader: Optional[ManagedTtsLoader] = None,
+    *,
+    api_prefix: str = "",
+    static_prefix: str = "/realtime",
+    lease_callback: Optional[SessionLease] = None,
+    asr_catalog_provider: Optional[ModelCatalogProvider] = None,
+    managed_asr_loader: Optional[ManagedAsrLoader] = None,
 ) -> FastAPI:
+    """Create a standalone app or the host app for the integrated WebUI.
+
+    Register this app's routes before a root Gradio mount. With api_prefix set
+    to /api/realtime, /config no longer overlaps Gradio's configuration route.
+    lease_callback(session_id, config) acquires/updates a model lease; passing
+    None releases it. The host may reject conflicting operations by raising.
+    """
     app = FastAPI(title="audio.cpp Realtime")
+    api_prefix = "/" + api_prefix.strip("/") if api_prefix.strip("/") else ""
 
     defaults = _default_config()
 
-    @app.get("/health")
+    @app.get(f"{api_prefix}/health")
     async def health():
         return {"status": "ok"}
 
-    @app.get("/config")
-    async def config():
+    @app.get(f"{api_prefix}/config")
+    async def config(request: Request):
         """Return defaults and installed TTS capabilities for the Settings panel.
 
         TTS/ASR/LLM URLs, model ids and voice_ref pre-fill the form; tts_models
@@ -270,16 +287,56 @@ def create_app(
         public_defaults["llm_api_key_set"] = bool(defaults.get("llm_api_key"))
         public_defaults["tts_models"] = _safe_tts_models(model_catalog_provider)
         public_defaults["managed_tts_available"] = managed_tts_loader is not None
+        public_defaults["asr_models"] = _safe_tts_models(asr_catalog_provider)
+        public_defaults["managed_asr_available"] = managed_asr_loader is not None
+        public_defaults["api_base"] = request.scope.get("root_path", "") + api_prefix
         return public_defaults
 
-    @app.post("/activate")
+    @app.post(f"{api_prefix}/preflight")
+    async def preflight(config: dict[str, Any]):
+        merged = dict(defaults)
+        merged.update({key: value for key, value in config.items()
+                       if key in _OVERRIDABLE_KEYS})
+        asr_ready = False
+        try:
+            async with httpx.AsyncClient(timeout=2.5, trust_env=False) as client:
+                response = await client.get(str(merged["asr_server"]).rstrip("/") + "/v1/models")
+                response.raise_for_status()
+                models = response.json().get("data", [])
+                asr_ready = any(model.get("id") == merged["asr_model"] for model in models)
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            pass
+        installed_asr = _safe_tts_models(asr_catalog_provider)
+        can_start_asr = bool(managed_asr_loader
+                            and merged["asr_server"] == defaults["asr_server"] and any(
+            model["id"] == merged["asr_model"] for model in installed_asr))
+        installed_tts = _safe_tts_models(model_catalog_provider)
+        tts_ready = (merged["tts_server_source"] == "external" or any(
+            model["id"] == merged["tts_model"] for model in installed_tts))
+        return {
+            "asr": {"ready": asr_ready, "can_start": can_start_asr,
+                    "message": "已就绪" if asr_ready else "开始时自动准备" if can_start_asr else "需要准备识别模型或服务"},
+            "llm": {"configured": bool(merged.get("llm_base_url") and merged.get("llm_model")),
+                    "key_set": bool(merged.get("llm_api_key")),
+                    "message": "已填写服务，连接后验证" if merged.get("llm_model") else "需要配置对话服务"},
+            "tts": {"ready": tts_ready, "message": "已选择声音模型" if tts_ready else "请先安装并选择声音模型"},
+        }
+
+    @app.post(f"{api_prefix}/activate")
     async def activate(config: dict[str, Any]):
         """Resolve TTS mode and prepare the local managed server before capture."""
         merged = dict(defaults)
         merged.update({key: value for key, value in config.items()
                        if key in _OVERRIDABLE_KEYS})
+        activation_id = _generate_id("activation")
+        activation_leased = False
         try:
             resolved = _resolve_tts_config(merged, model_catalog_provider)
+            if lease_callback is not None:
+                await asyncio.to_thread(lease_callback, activation_id, resolved)
+                activation_leased = True
+            if managed_asr_loader is not None and resolved["asr_server"] == defaults["asr_server"]:
+                await asyncio.to_thread(managed_asr_loader, resolved["asr_model"])
             status = "external server; model loading is caller-managed"
             if resolved["tts_server_source"] == "managed":
                 if managed_tts_loader is None:
@@ -292,7 +349,10 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception("Failed to activate realtime TTS model")
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail="模型正在使用或准备失败，请结束其他任务后检查模型状态。") from exc
+        finally:
+            if activation_leased and lease_callback is not None:
+                await asyncio.to_thread(lease_callback, activation_id, None)
         return {
             "status": "ok",
             "message": status,
@@ -303,8 +363,24 @@ def create_app(
             "tts_stream_sample_rate": resolved["tts_stream_sample_rate"],
         }
 
-    @app.websocket("/v1/realtime")
+    @app.websocket(f"{api_prefix}/v1/realtime")
     async def ws_realtime(ws: WebSocket):
+        origin = ws.headers.get("origin")
+        if origin is not None:
+            try:
+                source = urlsplit(origin)
+                scheme = "https" if ws.url.scheme == "wss" else "http"
+                expected_port = ws.url.port or (443 if scheme == "https" else 80)
+                source_port = source.port or (443 if source.scheme == "https" else 80)
+                allowed = (source.scheme == scheme and source.hostname == ws.url.hostname
+                           and source_port == expected_port
+                           and not (source.username or source.password or source.query or source.fragment)
+                           and source.path in {"", "/"})
+            except ValueError:
+                allowed = False
+            if not allowed:
+                await ws.close(code=1008, reason="Realtime connections must use the same origin.")
+                return
         await ws.accept()
         session_id = _generate_id("session")
 
@@ -312,6 +388,7 @@ def create_app(
         session_cfg = dict(initial_cfg)
         pipeline = RealtimePipeline(**_pipeline_config(initial_cfg))
         pipeline.start()
+        leased = False
 
         # ── Send session.created ──
         await ws.send_json({
@@ -448,9 +525,20 @@ def create_app(
                         if cfg:
                             candidate = dict(session_cfg)
                             candidate.update(cfg)
+                            was_leased = leased
+                            lease_updated = False
                             try:
                                 resolved = _resolve_tts_config(
                                     candidate, model_catalog_provider)
+                                runtime_keys = ("tts_server", "tts_model", "tts_server_source",
+                                                "tts_effective_mode", "asr_server", "asr_model")
+                                if leased and any(resolved.get(key) != session_cfg.get(key)
+                                                  for key in runtime_keys):
+                                    raise ValueError("End the current session before changing its models or servers.")
+                                if lease_callback is not None:
+                                    await asyncio.to_thread(lease_callback, session_id, resolved)
+                                    leased = True
+                                    lease_updated = True
                                 if (resolved["tts_server_source"] == "managed"
                                         and managed_tts_loader is not None):
                                     mode = ("streaming" if resolved["tts_streaming"]
@@ -460,6 +548,10 @@ def create_app(
                                 pipeline.configure(_pipeline_config(resolved))
                                 session_cfg = resolved
                             except Exception as exc:
+                                if lease_updated and lease_callback is not None:
+                                    await asyncio.to_thread(
+                                        lease_callback, session_id, session_cfg if was_leased else None)
+                                    leased = was_leased
                                 logger.exception("Failed to update realtime TTS configuration")
                                 await ws.send_json({
                                     "type": "error",
@@ -467,15 +559,20 @@ def create_app(
                                         "type": "audiocpp_tts_activation_error",
                                         "code": "tts_activation",
                                         "stage": "tts",
-                                        "message": (
-                                            "TTS 模型准备失败，请检查模型和服务状态。"
-                                        ),
+                                        "message": "模型正在使用或尚未就绪，请结束其他任务后重试。",
                                     },
                                 })
                                 continue
                     await ws.send_json({"type": "session.updated"})
 
                 elif msg_type == "input_audio_buffer.append":
+                    if lease_callback is not None and not leased:
+                        await ws.send_json({
+                            "type": "error",
+                            "error": {"type": "audiocpp_session_error", "code": "session_not_ready",
+                                      "stage": "session", "message": "请先准备对话模型，再开始录音。"},
+                        })
+                        continue
                     audio_b64 = msg.get("audio", "")
                     if audio_b64:
                         try:
@@ -502,10 +599,12 @@ def create_app(
             except asyncio.CancelledError:
                 pass
             pipeline.stop()
+            if leased and lease_callback is not None:
+                await asyncio.to_thread(lease_callback, session_id, None)
 
     # Serve static orb frontend
     if os.path.isdir(STATIC_DIR):
-        app.mount("/realtime", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+        app.mount(static_prefix, StaticFiles(directory=STATIC_DIR, html=True), name="realtime-static")
 
     return app
 
