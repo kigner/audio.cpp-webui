@@ -150,7 +150,7 @@ ChatterboxPromptPrepConfig make_prompt_prep_config(const runtime::SessionOptions
     return config;
 }
 
-std::unique_ptr<ChatterboxTtsComponent> make_chatterbox_component_for_language(
+std::unique_ptr<ChatterboxTTSComponent> make_chatterbox_component_for_language(
     const ChatterboxAssets & assets,
     const runtime::SessionOptions & options,
     const engine::core::ExecutionContext & execution_context,
@@ -196,7 +196,7 @@ std::unique_ptr<ChatterboxTtsComponent> make_chatterbox_component_for_language(
         execution_context,
         component_weight_storage_type);
     release_tensor_storage(assets);
-    return std::make_unique<ChatterboxTtsComponent>(
+    return std::make_unique<ChatterboxTTSComponent>(
         std::move(t3_weights),
         std::move(tokenizer),
         std::move(voice_encoder),
@@ -210,7 +210,7 @@ std::unique_ptr<ChatterboxTtsComponent> make_chatterbox_component_for_language(
         mem_saver);
 }
 
-std::unique_ptr<ChatterboxVcComponent> make_chatterbox_vc_component(
+std::unique_ptr<ChatterboxVCComponent> make_chatterbox_vc_component(
     const ChatterboxAssets & assets,
     const runtime::SessionOptions & options,
     const engine::core::ExecutionContext & execution_context,
@@ -237,7 +237,7 @@ std::unique_ptr<ChatterboxVcComponent> make_chatterbox_vc_component(
         execution_context,
         component_weight_storage_type);
     release_tensor_storage(assets);
-    return std::make_unique<ChatterboxVcComponent>(
+    return std::make_unique<ChatterboxVCComponent>(
         std::move(s3_tokenizer),
         std::move(campplus_encoder),
         std::move(flow_encoder),
@@ -526,6 +526,51 @@ runtime::TaskResult ChatterboxSession::run_voice_cloning(const runtime::TaskRequ
         throw std::runtime_error("Chatterbox voice cloning session config is fixed; create a new session for different config");
     }
 
+    const ChatterboxConditionalsOutputs * conditionals = &*cached_conditionals_;
+    double prompt_prep_ms = cached_prompt_prep_ms_;
+    std::optional<ChatterboxConditionalsOutputs> uncached_conditionals;
+    if (request.voice.has_value() &&
+        request.voice->speaker.has_value() &&
+        request.voice->speaker->audio.has_value()) {
+        const auto & reference_audio = *request.voice->speaker->audio;
+        ChatterboxConditionalsCacheKey conditionals_key{
+            reference_audio,
+            request_config.exaggeration,
+            request_config.language,
+        };
+        if (const auto * cache_entry = conditionals_cache_.find(conditionals_key)) {
+            conditionals = cache_entry;
+            prompt_prep_ms = 0.0;
+            engine::debug::trace_log_scalar("chatterbox.conditionals.cache_hit", 1);
+        } else {
+            const auto prompt_prep_started = std::chrono::steady_clock::now();
+            auto prepared_conditionals = component_->prepare_voice_clone_conditionals(
+                reference_audio,
+                request_config);
+            prompt_prep_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prompt_prep_started).count();
+            if (conditionals_cache_.capacity() == 0) {
+                uncached_conditionals = std::move(prepared_conditionals);
+                conditionals = &*uncached_conditionals;
+            } else {
+                conditionals_cache_.put(std::move(conditionals_key), std::move(prepared_conditionals));
+                const auto * cache_entry = conditionals_cache_.find(ChatterboxConditionalsCacheKey{
+                    reference_audio,
+                    request_config.exaggeration,
+                    request_config.language,
+                });
+                if (cache_entry == nullptr) {
+                    throw std::runtime_error("Chatterbox conditionals cache insert failed");
+                }
+                conditionals = cache_entry;
+            }
+            engine::debug::trace_log_scalar("chatterbox.conditionals.cache_hit", 0);
+        }
+        engine::debug::trace_log_scalar(
+            "chatterbox.conditionals.cache_slots",
+            static_cast<int64_t>(conditionals_cache_.capacity()));
+    }
+
     runtime::TaskResult result;
     runtime::AudioBuffer merged_audio;
     const int64_t text_chunk_size =
@@ -536,9 +581,9 @@ runtime::TaskResult ChatterboxSession::run_voice_cloning(const runtime::TaskRequ
     for (const auto & chunk_request : chunk_requests) {
         auto outputs = component_->synthesize_voice_clone_with_conditionals(
             chunk_request.text_input->text,
-            *cached_conditionals_,
+            *conditionals,
             *voice_clone_config_);
-        outputs.prompt_prep_ms = cached_prompt_prep_ms_;
+        outputs.prompt_prep_ms = prompt_prep_ms;
         runtime::append_audio_buffer(merged_audio, runtime::AudioBuffer{
             24000,
             1,

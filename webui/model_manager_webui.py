@@ -9,7 +9,7 @@ import shutil
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.client import HTTPException
 from pathlib import Path
 from typing import Any
@@ -413,6 +413,26 @@ def ensure_hf_package(package: PackageRecord) -> None:
         raise ManagerError(f"{package.id} has no Hugging Face repo")
 
 
+def combine_packages(package: PackageRecord, records: list[PackageRecord],
+                     additional_ids: list[str]) -> PackageRecord:
+    """Install same-directory components in one resumable staging transaction.
+
+    Calling install_package twice with --overwrite would remove the first
+    component. Refuse unrelated layouts instead of changing that legacy policy.
+    """
+    by_id = {record.id: record for record in records}
+    files = list(package.files)
+    for package_id in additional_ids:
+        extra = by_id.get(package_id)
+        if extra is None:
+            raise ManagerError(f"unknown component package: {package_id}")
+        if (extra.family, extra.target_directory, extra.strip_prefix, extra.download) != (
+                package.family, package.target_directory, package.strip_prefix, package.download):
+            raise ManagerError(f"component package has an incompatible install layout: {package_id}")
+        files.extend(extra.files)
+    return replace(package, files=tuple(dict.fromkeys(files)))
+
+
 def install_package(package: PackageRecord, args: argparse.Namespace) -> None:
     ensure_hf_package(package)
     target_dir = validate_relative_path(package.target_directory, "target_directory")
@@ -522,6 +542,8 @@ def make_parser() -> argparse.ArgumentParser:
 
     install_parser = sub.add_parser("install", help="install one Hugging Face snapshot package")
     install_parser.add_argument("package", help="package id or family")
+    install_parser.add_argument("--with-package", action="append", default=[],
+                                help="include a required same-directory component package")
     install_parser.add_argument("--format")
     install_parser.add_argument("--precision")
     install_parser.add_argument("--models-root", default="models")
@@ -541,7 +563,8 @@ def main() -> int:
         elif args.command == "info":
             command_info(records, args)
         elif args.command == "install":
-            install_package(select_package(records, args), args)
+            package = combine_packages(select_package(records, args), records, args.with_package)
+            install_package(package, args)
         else:
             raise ManagerError(f"unknown command: {args.command}")
         return 0

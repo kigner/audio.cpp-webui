@@ -123,35 +123,42 @@ void MossVoiceGenSession::prepare(const runtime::SessionPreparationRequest &) {
     const auto & config = assets_->config;
     text_processor_ = std::make_unique<MossVoiceGenTextProcessor>(assets_);
 
-    moss::AudioCodebookSpec codebook_spec;
+    engine::modules::MultiCodebookEmbeddingSpec codebook_spec;
     codebook_spec.hidden_size = config.backbone.hidden_size;
     codebook_spec.num_codebooks = config.num_codebooks;
-    codebook_spec.audio_vocab_size = config.audio_vocab_size + 1;
-    codebook_spec.audio_pad_token_id = config.audio_pad_code;
+    codebook_spec.vocab_size = config.audio_vocab_size + 1;
+    codebook_spec.pad_token_id = config.audio_pad_code;
     // The delay family stores its per-codebook input embeddings as emb_ext.<i>, not under
     // the shared default prefix.
     codebook_spec.tensor_prefix = "emb_ext";
-    codebooks_ = std::make_unique<moss::AudioCodebookEmbeddings>(*assets_->model_weights, codebook_spec);
+    codebooks_ = std::make_unique<engine::modules::MultiCodebookEmbedding>(*assets_->model_weights, codebook_spec);
 
-    backbone_ = std::make_unique<MossVoiceGenBackboneRuntime>(
-        assets_,
+    backbone_ = std::make_unique<decoders::MossTtsDelayBackboneRuntime>(
+        assets_->config,
+        assets_->model_weights,
         execution_context(),
         backbone_graph_arena_bytes_,
         backbone_weight_context_bytes_,
         weight_storage_type_);
-    heads_ = std::make_unique<MossVoiceGenHeadsRuntime>(
-        assets_,
+    heads_ = std::make_unique<decoders::MossTtsDelayHeadsRuntime>(
+        assets_->config,
+        assets_->model_weights,
         execution_context(),
         heads_graph_arena_bytes_,
         heads_weight_context_bytes_,
         weight_storage_type_);
-    codec_ = std::make_unique<moss::MossAudioTokenizerDecoder>(
-        *assets_->audio_tokenizer_weights,
+    codec_ = std::make_unique<engine::codecs::MossAudioTokenizerCodecRuntime>(
+        assets_->audio_tokenizer_weights,
         execution_context(),
         config.num_codebooks,
-        codec_weight_context_bytes_,
-        codec_graph_arena_bytes_,
-        moss::moss_audio_tokenizer_v1_config());
+        engine::codecs::MossAudioTokenizerCodecRuntimeOptions{
+            codec_weight_context_bytes_,
+            codec_graph_arena_bytes_,
+            codec_graph_arena_bytes_,
+            false,
+        },
+        engine::codecs::moss_audio_tokenizer_v1_config());
+    codec_->prepare_decoder();
 
     mark_prepared();
 }
@@ -160,9 +167,9 @@ MossVoiceGenSession::GeneratedChunk MossVoiceGenSession::generate_chunk(
     const std::string & text,
     const std::string & instruction,
     const std::optional<std::string> & language,
-    const MossVoiceGenSamplingOptions & sampling,
+    const decoders::MossTtsDelaySamplingOptions & sampling,
     uint32_t seed,
-    MossVoiceGenLengthBounds bounds_override) {
+    decoders::MossTtsDelayLengthBounds bounds_override) {
     const auto & config = assets_->config;
     const int64_t n_vq = config.num_codebooks;
     const int64_t hidden_size = config.backbone.hidden_size;
@@ -175,7 +182,7 @@ MossVoiceGenSession::GeneratedChunk MossVoiceGenSession::generate_chunk(
 
     const auto characters = static_cast<int64_t>(text.size());
     const double expected_frames = static_cast<double>(characters) * kFramesPerCharacter;
-    MossVoiceGenLengthBounds bounds = bounds_override;
+    decoders::MossTtsDelayLengthBounds bounds = bounds_override;
     if (bounds.min_frames <= 0) {
         bounds.min_frames = std::max<int64_t>(kMinFramesFloor, static_cast<int64_t>(expected_frames * kFloorFraction));
     }
@@ -193,11 +200,11 @@ MossVoiceGenSession::GeneratedChunk MossVoiceGenSession::generate_chunk(
             prompt_bias.data() + static_cast<size_t>(row * hidden_size));
     }
 
-    MossVoiceGenDelayDecoder decoder(config, sampling, seed, bounds);
+    decoders::MossTtsDelayDecoder decoder(config, sampling, seed, bounds);
     backbone_->begin_generation(prompt_rows + max_steps + 8);
     auto hidden = backbone_->prefill(prompt.text_tokens, prompt_bias);
 
-    MossVoiceGenStepLogits logits;
+    decoders::MossTtsDelayStepLogits logits;
     std::vector<float> row_bias(static_cast<size_t>(hidden_size), 0.0F);
     GeneratedChunk chunk;
     for (int64_t step = 0; step < max_steps; ++step) {
@@ -234,11 +241,11 @@ std::vector<float> MossVoiceGenSession::decode_codes(const GeneratedChunk & chun
             chunk.codes.begin() + static_cast<int64_t>(codebook * chunk.frames),
             chunk.codes.begin() + static_cast<int64_t>((codebook + 1) * chunk.frames));
     }
-    auto channels = codec_->decode(codes);
-    if (channels.empty()) {
+    auto audio = codec_->decode(engine::codecs::MossAudioTokenizerCodes{chunk.frames, std::move(codes)});
+    if (audio.channels.empty()) {
         throw std::runtime_error("MOSS-VoiceGenerator codec returned no audio");
     }
-    return std::move(channels.front());
+    return std::move(audio.channels.front());
 }
 
 runtime::TaskResult MossVoiceGenSession::run(const runtime::TaskRequest & request) {
@@ -250,7 +257,10 @@ runtime::TaskResult MossVoiceGenSession::run(const runtime::TaskRequest & reques
 
     // The voice description arrives either as a request option or as a style tag on the
     // voice condition, matching how qwen3_tts takes its voice-design instruction.
-    std::string instruction = option_string(request.options, {"instruct"}, "");
+    // Accept both spellings: the OpenAI-compatible speech route maps its
+    // `instructions` body field to `instruction`, which is the only name a
+    // WebUI voice-design request can arrive under.
+    std::string instruction = option_string(request.options, {"instruct", "instruction"}, "");
     if (instruction.empty() && request.voice.has_value() && request.voice->style.has_value()) {
         const auto tag = request.voice->style->tags.find("instruct");
         if (tag != request.voice->style->tags.end()) {
@@ -265,11 +275,11 @@ runtime::TaskResult MossVoiceGenSession::run(const runtime::TaskRequest & reques
         language = *language_option;
     }
 
-    MossVoiceGenLengthBounds bounds_override;
+    decoders::MossTtsDelayLengthBounds bounds_override;
     bounds_override.min_frames = option_int(request.options, {"min_frames"}, 0);
     bounds_override.max_frames = option_int(request.options, {"max_frames"}, 0);
 
-    MossVoiceGenSamplingOptions sampling;
+    decoders::MossTtsDelaySamplingOptions sampling;
     sampling.text_temperature = option_float(request.options, {"moss_voicegen.text_temperature"}, sampling.text_temperature);
     sampling.audio_temperature = option_float(request.options, {"temperature"}, sampling.audio_temperature);
     sampling.audio_top_p = option_float(request.options, {"top_p"}, sampling.audio_top_p);
@@ -312,7 +322,7 @@ runtime::TaskResult MossVoiceGenSession::run(const runtime::TaskRequest & reques
 
     debug::trace_log_scalar("moss_voicegen.chunk_count", static_cast<int64_t>(chunk_requests.size()));
     debug::trace_log_scalar("moss_voicegen.silent_chunks", silent_chunks);
-    debug::timing_log_scalar("moss_voicegen.run_ms", engine::debug::elapsed_ms(wall_start, Clock::now()));
+    debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start, Clock::now()));
 
     if (merged.samples.empty()) {
         throw std::runtime_error(

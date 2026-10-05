@@ -2,6 +2,7 @@
 
 #include "busy_guard.h"
 #include "config.h"
+#include "frontend.h"
 #include "http.h"
 #if defined(AUDIOCPP_HAS_NATIVE_MODEL_MANAGER)
 #include "model_installer.h"
@@ -19,13 +20,15 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 namespace minitts::server {
 
-class ServerState final : public IHttpHandler {
+class ServerState final : public IHttpHandler, public ServerFrontendContext {
 public:
     ServerState(
         ServerConfig config,
@@ -34,6 +37,10 @@ public:
     ~ServerState() override;
 
     HttpResponse handle(const HttpRequest & request) override;
+    HttpResponse forward_to_core(const HttpRequest & request) override;
+    std::filesystem::path resolve_request_path(const std::filesystem::path & path) const override;
+    std::filesystem::path make_frontend_temp_path(std::string_view filename) override;
+    std::unique_ptr<ServerFrontendListener> make_frontend_listener(std::string_view name) const;
 
     // Server-level `live_ingest` policy with this request's model override applied.
     // Deliberately does not reject an unknown or non-streaming model: it runs before
@@ -63,6 +70,23 @@ private:
         mutable std::shared_mutex metadata_mutex;
         std::unordered_map<std::string, RuntimeVoicePreset> voice_presets;
         std::optional<RuntimeVoicePreset> default_voice_preset;
+        // Whether this model's contract accepts the `reference_text` request
+        // option, resolved once at registration (refresh_model_option_flags).
+        // Resolving it per request re-reads the model file's embedded spec on
+        // the request thread, which costs ~0.9 s per request for large GGUFs.
+        // `true` mirrors model_accepts_request_option's no-contract behavior.
+        bool accepts_reference_text = true;
+        // Same treatment for `language`. Clients send the field on every
+        // transcription whether or not the user chose one, so a model whose
+        // contract omits it would reject the whole request over an option
+        // nobody set. Resolved once at registration for the same cost reason.
+        bool accepts_language = true;
+        bool accepts_speed = true;
+        bool accepts_speaking_rate = true;
+        // The spec's request options as a JSON array, served by
+        // `GET /v1/models?include_params=true`. Resolved at registration for the
+        // same cost reason as the flags above; "[]" when the spec declares none.
+        std::string request_params_json = "[]";
         // Serializes runs on this model and bounds how long a caller waits for its
         // turn; see BusyGuard.
         BusyGuard busy;
@@ -82,7 +106,11 @@ private:
     engine::runtime::RunMode model_run_mode(const LoadedModel & model) const;
 
     void load_models();
+    HttpResponse handle_request(const HttpRequest & request, bool use_frontends);
     std::unique_ptr<LoadedModel> make_model(ServerModelConfig config);
+    // Recompute the per-model, config-derived request-option flags (currently
+    // accepts_reference_text). Called at registration and on reconfiguration.
+    void refresh_model_option_flags(LoadedModel & model);
     std::filesystem::path resolve_ui_model_path(const std::filesystem::path & path) const;
     HttpResponse handle_model_load(const std::string & body_text);
     HttpResponse handle_model_unload(const std::string & body_text);
@@ -100,6 +128,7 @@ private:
     HttpResponse handle_directory_browser(const std::string & body_text) const;
 #endif
     HttpResponse handle_ui_asset() const;
+    HttpResponse handle_ui_voice_preview(const HttpRequest & request) const;
     LoadedModel::RuntimeVoicePreset load_runtime_voice_preset(const ServerModelConfig::VoicePreset & preset) const;
     void load_voice_presets(LoadedModel & model) const;
     void ensure_model_loaded_locked(LoadedModel & model);
@@ -107,6 +136,10 @@ private:
     // `loading` fits within the limit. A model mid-inference is never a victim;
     // when nothing can be evicted this throws ServerBusyError (-> HTTP 503).
     void evict_for_model_limit(const LoadedModel & loading);
+    // Refuse the load with InsufficientMemoryError (-> HTTP 503) when the
+    // estimated footprint plus configured headroom does not fit the free host
+    // memory and (for GPU backends) the backend device memory.
+    void ensure_model_fits_memory(const ServerModelConfig & model);
     LoadedModel & require_model(const engine::io::json::Value & body);
     const LoadedModel::RuntimeVoicePreset * select_voice_preset(
         const LoadedModel & model,
@@ -151,24 +184,42 @@ private:
         const engine::runtime::TaskRequest & request,
         const engine::io::json::Value & body);
     HttpResponse handle_speech_live(const HttpRequest & request);
-    HttpResponse handle_transcription(const HttpRequest & request);
-    HttpResponse handle_transcription_json(const std::string & body_text);
-    HttpResponse handle_transcription_multipart(const std::string & body_text, const std::string & boundary);
+    // detail selects the /v1/audio/transcriptions/details response, which adds the
+    // segment, speaker-turn and word arrays the plain route drops.
+    HttpResponse handle_transcription(const HttpRequest & request, bool detail = false);
+    HttpResponse handle_transcription_json(const std::string & body_text, bool detail = false);
+    HttpResponse handle_transcription_multipart(
+        const std::string & body_text, const std::string & boundary, bool detail = false);
+    HttpResponse handle_batch_transcriptions(const HttpRequest & request);
+    HttpResponse handle_batch_transcriptions_multipart(
+        const std::string & body_text, const std::string & boundary);
     HttpResponse run_transcription(
         LoadedModel & model,
         const engine::runtime::TaskRequest & request,
-        std::optional<int> busy_timeout_ms = std::nullopt);
+        std::optional<int> busy_timeout_ms = std::nullopt,
+        bool detail = false);
     HttpResponse run_transcription_stream(
+        LoadedModel & model,
+        const engine::runtime::TaskRequest & request,
+        std::optional<int> busy_timeout_ms = std::nullopt);
+    HttpResponse handle_alignment(const HttpRequest & request);
+    HttpResponse handle_alignment_multipart(const std::string & body_text, const std::string & boundary);
+    HttpResponse run_alignment(
         LoadedModel & model,
         const engine::runtime::TaskRequest & request,
         std::optional<int> busy_timeout_ms = std::nullopt);
     HttpResponse handle_transcription_live(const HttpRequest & request);
     HttpResponse handle_generic_run(const std::string & body_text);
+    HttpResponse handle_generic_batch(const std::string & body_text);
     HttpResponse handle_generic_stream(const std::string & body_text);
     HttpResponse handle_voices(const HttpRequest & request) const;
     HttpResponse handle_unload_models(const std::string & body_text);
     HttpResponse handle_unload_all_models();
-    std::string models_json(bool include_session_options = false) const;
+    // Background loop started when idle_unload_ms > 0: when the server has gone
+    // that long without a model load/run, unloads every resident (non-busy) model.
+    void idle_unload_loop();
+    void unload_idle_models();
+    std::string models_json(bool include_session_options = false, bool include_params = false) const;
     std::string get_allowed_origin(const HttpRequest & request) const;
 
     ServerConfig config_;
@@ -176,11 +227,13 @@ private:
     std::vector<std::unique_ptr<LoadedModel>> models_;
     std::unordered_map<std::string, size_t> model_index_;
     mutable std::mutex models_mutex_;
-    // Serializes framework loads while max_loaded_models is active, so two
-    // concurrent lazy loads cannot both pass the eviction check and overshoot
-    // the limit. Not taken when the limit is 0: loads stay concurrent there.
+    // Serializes framework loads while max_loaded_models or the memory guard
+    // (min_free_memory_mb) is active, so two concurrent lazy loads cannot both
+    // pass the eviction/memory check and overshoot. Not taken when both are off:
+    // unrelated first loads stay concurrent there.
     std::mutex model_load_mutex_;
     std::filesystem::path upload_root_;
+    std::mutex upload_root_mutex_;
     std::filesystem::path repository_root_;
 #if defined(AUDIOCPP_HAS_NATIVE_MODEL_MANAGER)
     std::filesystem::path default_models_root_;
@@ -189,6 +242,13 @@ private:
     std::unique_ptr<ModelInstaller> model_installer_;
 #endif
     std::atomic<uint64_t> next_upload_id_{1};
+    // Steady-clock ms of the most recent model load/run completion; drives idle
+    // unload. Updated at run start and again at completion so a long inference
+    // does not read as idle the moment it finishes.
+    std::atomic<std::int64_t> last_activity_ms_{0};
+    std::atomic<bool> idle_unload_shutdown_{false};
+    std::thread idle_unload_thread_;
+    ServerFrontendRegistry frontends_;
 };
 
 }  // namespace minitts::server

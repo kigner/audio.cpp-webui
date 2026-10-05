@@ -1,20 +1,22 @@
-// Generation parity for MOSS-VoiceGenerator: runs the backbone, the 1 + n_vq heads and the
-// delay-pattern state machine greedily, and compares the emitted rows against a dump from
-// the reference PyTorch generate(). Greedy with the repetition penalty off, so a mismatch
-// is a real divergence rather than an RNG difference.
-//
-//   moss_voicegen_generation_parity --model <dir> --prompt <ref_prompt.json> \
-//       --generation <ref_generation.json> [--weight-type bf16] [--threads N]
+/*
+ * Generation parity for MOSS-VoiceGenerator: runs the backbone, the 1 + n_vq heads and the
+ * delay-pattern state machine greedily, and compares the emitted rows against a dump from
+ * the reference PyTorch generate(). Greedy with the repetition penalty off, so a mismatch
+ * is a real divergence rather than an RNG difference.
+ *
+ *   moss_voicegen_generation_parity --model <dir> --prompt <ref_prompt.json> \
+ *       --generation <ref_generation.json> [--weight-type bf16] [--threads N]
+ */
 
 #include "engine/community_models/moss_voicegen/assets.h"
-#include "engine/community_models/moss_voicegen/backbone.h"
-#include "engine/community_models/moss_voicegen/delay_decoder.h"
-#include "engine/community_models/moss_voicegen/heads.h"
+#include "engine/framework/decoders/moss_tts_delay/backbone.h"
+#include "engine/framework/decoders/moss_tts_delay/delay_decoder.h"
+#include "engine/framework/decoders/moss_tts_delay/heads.h"
 #include "engine/community_models/moss_voicegen/tokenizer_text.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/io/json.h"
-#include "engine/models/moss/shared/token_rows.h"
+#include "engine/framework/modules/multi_codebook_embedding.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -95,13 +97,13 @@ int main(int argc, char ** argv) {
         const int64_t prompt_rows = static_cast<int64_t>(prompt.text_tokens.size());
         const auto steps = static_cast<int64_t>(expected.size());
 
-        engine::models::moss::AudioCodebookSpec codebook_spec;
+        engine::modules::MultiCodebookEmbeddingSpec codebook_spec;
         codebook_spec.hidden_size = hidden_size;
         codebook_spec.num_codebooks = n_vq;
-        codebook_spec.audio_vocab_size = config.audio_vocab_size + 1;
-        codebook_spec.audio_pad_token_id = config.audio_pad_code;
+        codebook_spec.vocab_size = config.audio_vocab_size + 1;
+        codebook_spec.pad_token_id = config.audio_pad_code;
         codebook_spec.tensor_prefix = "emb_ext";
-        const engine::models::moss::AudioCodebookEmbeddings codebooks(*assets->model_weights, codebook_spec);
+        const engine::modules::MultiCodebookEmbedding codebooks(*assets->model_weights, codebook_spec);
 
         std::vector<float> prompt_bias(static_cast<size_t>(prompt_rows * hidden_size), 0.0F);
         for (int64_t row = 0; row < prompt_rows; ++row) {
@@ -116,22 +118,22 @@ int main(int argc, char ** argv) {
         backend_config.threads = std::stoi(arg_value(argc, argv, "--threads", "8"));
         engine::core::ExecutionContext execution_context(backend_config);
 
-        const engine::models::moss_voicegen::MossVoiceGenBackboneRuntime backbone(
-            assets, execution_context, 512ull * 1024ull * 1024ull, 8192ull * 1024ull * 1024ull, weight_type);
-        const engine::models::moss_voicegen::MossVoiceGenHeadsRuntime heads(
-            assets, execution_context, 256ull * 1024ull * 1024ull, 4096ull * 1024ull * 1024ull, weight_type);
+        const engine::decoders::MossTtsDelayBackboneRuntime backbone(
+            assets->config, assets->model_weights, execution_context, 512ull * 1024ull * 1024ull, 8192ull * 1024ull * 1024ull, weight_type);
+        const engine::decoders::MossTtsDelayHeadsRuntime heads(
+            assets->config, assets->model_weights, execution_context, 256ull * 1024ull * 1024ull, 4096ull * 1024ull * 1024ull, weight_type);
 
-        engine::models::moss_voicegen::MossVoiceGenSamplingOptions sampling;
+        engine::decoders::MossTtsDelaySamplingOptions sampling;
         sampling.do_sample = false;
         sampling.text_temperature = 1.0F;
         sampling.audio_temperature = 1.0F;
         sampling.audio_repetition_penalty = 1.0F;
-        engine::models::moss_voicegen::MossVoiceGenDelayDecoder decoder(config, sampling, 0);
+        engine::decoders::MossTtsDelayDecoder decoder(config, sampling, 0);
 
         backbone.begin_generation(prompt_rows + steps + 8);
         auto hidden = backbone.prefill(prompt.text_tokens, prompt_bias);
 
-        engine::models::moss_voicegen::MossVoiceGenStepLogits logits;
+        engine::decoders::MossTtsDelayStepLogits logits;
         std::vector<float> row_bias(static_cast<size_t>(hidden_size), 0.0F);
         int64_t mismatching_rows = 0;
         int64_t produced = 0;

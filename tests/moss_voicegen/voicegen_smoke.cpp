@@ -1,19 +1,21 @@
-// End-to-end smoke test for MOSS-VoiceGenerator: designs a voice from a written
-// instruction, speaks the given text in it, and writes a WAV.
-//
-//   moss_voicegen_smoke --model <dir> --instruct "<voice description>" --text "<sentence>" \
-//       --language English --output out.wav [--weight-type bf16] [--seed 0] [--threads N]
+/*
+ * End-to-end smoke test for MOSS-VoiceGenerator: designs a voice from a written
+ * instruction, speaks the given text in it, and writes a WAV.
+ *
+ *   moss_voicegen_smoke --model <dir> --instruct "<voice description>" --text "<sentence>" \
+ *       --language English --output out.wav [--weight-type bf16] [--seed 0] [--threads N]
+ */
 
 #include "engine/community_models/moss_voicegen/assets.h"
-#include "engine/community_models/moss_voicegen/backbone.h"
-#include "engine/community_models/moss_voicegen/delay_decoder.h"
-#include "engine/community_models/moss_voicegen/heads.h"
+#include "engine/framework/decoders/moss_tts_delay/backbone.h"
+#include "engine/framework/decoders/moss_tts_delay/delay_decoder.h"
+#include "engine/framework/decoders/moss_tts_delay/heads.h"
 #include "engine/community_models/moss_voicegen/tokenizer_text.h"
 #include "engine/framework/audio/wav_writer.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/execution_context.h"
-#include "engine/models/moss/shared/audio_tokenizer_decoder.h"
-#include "engine/models/moss/shared/token_rows.h"
+#include "engine/framework/codecs/moss_audio_tokenizer_codec_runtime.h"
+#include "engine/framework/modules/multi_codebook_embedding.h"
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +25,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -86,13 +89,13 @@ int main(int argc, char ** argv) {
         std::cout << "prompt rows=" << prompt_rows << " frame bounds=[" << min_frames << ", "
                   << max_frames << "] max steps=" << max_steps << "\n";
 
-        engine::models::moss::AudioCodebookSpec codebook_spec;
+        engine::modules::MultiCodebookEmbeddingSpec codebook_spec;
         codebook_spec.hidden_size = hidden_size;
         codebook_spec.num_codebooks = n_vq;
-        codebook_spec.audio_vocab_size = config.audio_vocab_size + 1;
-        codebook_spec.audio_pad_token_id = config.audio_pad_code;
+        codebook_spec.vocab_size = config.audio_vocab_size + 1;
+        codebook_spec.pad_token_id = config.audio_pad_code;
         codebook_spec.tensor_prefix = "emb_ext";
-        const engine::models::moss::AudioCodebookEmbeddings codebooks(*assets->model_weights, codebook_spec);
+        const engine::modules::MultiCodebookEmbedding codebooks(*assets->model_weights, codebook_spec);
 
         std::vector<float> prompt_bias(static_cast<size_t>(prompt_rows * hidden_size), 0.0F);
         for (int64_t row = 0; row < prompt_rows; ++row) {
@@ -107,29 +110,29 @@ int main(int argc, char ** argv) {
         backend_config.threads = threads;
         engine::core::ExecutionContext execution_context(backend_config);
 
-        const engine::models::moss_voicegen::MossVoiceGenBackboneRuntime backbone(
-            assets, execution_context, 512ull * 1024ull * 1024ull, 8192ull * 1024ull * 1024ull, weight_type);
-        const engine::models::moss_voicegen::MossVoiceGenHeadsRuntime heads(
-            assets, execution_context, 256ull * 1024ull * 1024ull, 4096ull * 1024ull * 1024ull, weight_type);
+        const engine::decoders::MossTtsDelayBackboneRuntime backbone(
+            assets->config, assets->model_weights, execution_context, 512ull * 1024ull * 1024ull, 8192ull * 1024ull * 1024ull, weight_type);
+        const engine::decoders::MossTtsDelayHeadsRuntime heads(
+            assets->config, assets->model_weights, execution_context, 256ull * 1024ull * 1024ull, 4096ull * 1024ull * 1024ull, weight_type);
 
         // Checkpoint defaults from the model card; this family degenerates at a generic preset.
-        engine::models::moss_voicegen::MossVoiceGenSamplingOptions sampling;
+        engine::decoders::MossTtsDelaySamplingOptions sampling;
         sampling.text_temperature = std::stof(arg_value(argc, argv, "--text-temperature", "1.5"));
         sampling.audio_temperature = std::stof(arg_value(argc, argv, "--audio-temperature", "1.5"));
         sampling.audio_top_p = std::stof(arg_value(argc, argv, "--audio-top-p", "0.6"));
         sampling.audio_top_k = std::stoi(arg_value(argc, argv, "--audio-top-k", "50"));
         sampling.audio_repetition_penalty =
             std::stof(arg_value(argc, argv, "--audio-repetition-penalty", "1.1"));
-        engine::models::moss_voicegen::MossVoiceGenLengthBounds bounds;
+        engine::decoders::MossTtsDelayLengthBounds bounds;
         bounds.min_frames = min_frames;
         bounds.max_frames = max_frames;
-        engine::models::moss_voicegen::MossVoiceGenDelayDecoder decoder(config, sampling, seed, bounds);
+        engine::decoders::MossTtsDelayDecoder decoder(config, sampling, seed, bounds);
 
         const auto generation_start = std::chrono::steady_clock::now();
         backbone.begin_generation(prompt_rows + max_steps + 8);
         auto hidden = backbone.prefill(prompt.text_tokens, prompt_bias);
 
-        engine::models::moss_voicegen::MossVoiceGenStepLogits logits;
+        engine::decoders::MossTtsDelayStepLogits logits;
         std::vector<float> row_bias(static_cast<size_t>(hidden_size), 0.0F);
         int64_t steps = 0;
         std::vector<int32_t> text_trace;
@@ -191,18 +194,25 @@ int main(int argc, char ** argv) {
         }
 
         const auto decode_start = std::chrono::steady_clock::now();
-        const engine::models::moss::MossAudioTokenizerDecoder codec(
-            *assets->audio_tokenizer_weights,
+        engine::codecs::MossAudioTokenizerCodecRuntime codec(
+            assets->audio_tokenizer_weights,
             execution_context,
             codebooks_out,
-            4096ull * 1024ull * 1024ull,
-            2048ull * 1024ull * 1024ull,
-            engine::models::moss::moss_audio_tokenizer_v1_config());
-        const auto channels = codec.decode(codes);
+            engine::codecs::MossAudioTokenizerCodecRuntimeOptions{
+                4096ull * 1024ull * 1024ull,
+                2048ull * 1024ull * 1024ull,
+                2048ull * 1024ull * 1024ull,
+                false,
+            },
+            engine::codecs::moss_audio_tokenizer_v1_config());
+        const auto decoded = codec.decode(engine::codecs::MossAudioTokenizerCodes{
+            codes.empty() ? 0 : static_cast<int64_t>(codes.front().size()),
+            std::move(codes),
+        });
         const double decode_seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - decode_start).count();
 
-        const auto & waveform = channels.at(0);
+        const auto & waveform = decoded.channels.at(0);
         double peak = 0.0;
         double energy = 0.0;
         for (const float sample : waveform) {

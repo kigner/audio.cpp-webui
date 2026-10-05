@@ -376,7 +376,7 @@ Qwen3TTSSession::Qwen3TTSSession(
             speech_encoder_weight_storage_type_,
             conv_weight_storage_type_,
             perf_mode_);
-        speaker_encoder_ = std::make_unique<Qwen3SpeakerEncoderRuntime>(
+        speaker_encoder_ = std::make_unique<Qwen3TTSEcapaTdnnEncoderRuntime>(
             assets_,
             voice_prompt_context_,
             speaker_encoder_graph_arena_bytes_,
@@ -599,6 +599,9 @@ Qwen3TTSRequest Qwen3TTSSession::make_request(const runtime::TaskRequest & reque
     Qwen3TTSRequest out;
     out.text = request.text_input->text;
     out.language = !request.text_input->language.empty() ? request.text_input->language : "Auto";
+    if (const auto language = runtime::find_option(request.options, {"language"})) {
+        out.language = *language;
+    }
     out.generation = qwen3_tts_generation_options_from_request(request, assets_->config);
     if (assets_->config.variant == Qwen3TTSVariant::Base) {
         const runtime::AudioBuffer * reference_audio = nullptr;

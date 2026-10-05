@@ -2,6 +2,8 @@
 
 #include "engine/framework/core/module.h"
 
+#include <optional>
+
 namespace engine::modules {
 
 enum class GeluApproximation {
@@ -79,6 +81,13 @@ public:
     static const core::ModuleSchema & static_schema() noexcept;
 };
 
+class SeluModule {
+public:
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
+    static const core::ModuleSchema & static_schema() noexcept;
+};
+
 class SwooshLModule {
 public:
     const core::ModuleSchema & schema() const noexcept;
@@ -107,11 +116,20 @@ public:
     static const core::ModuleSchema & static_schema() noexcept;
 };
 
+struct GLUConfig {
+    bool contiguous_gate = false;
+};
+
 class GLUModule {
 public:
+    GLUModule() = default;
+    explicit GLUModule(GLUConfig config);
     const core::ModuleSchema & schema() const noexcept;
     core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
     static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    GLUConfig config_;
 };
 
 struct Snake1dConfig {
@@ -120,6 +138,7 @@ struct Snake1dConfig {
 
 struct Snake1dWeights {
     core::TensorValue alpha;
+    std::optional<core::TensorValue> inverse_alpha;
 };
 
 class Snake1dModule {
@@ -136,6 +155,32 @@ public:
 
 private:
     Snake1dConfig config_;
+};
+
+struct SnakeBeta1dConfig {
+    int64_t hidden_size = 0;
+    bool logscale = true;
+};
+
+struct SnakeBeta1dWeights {
+    core::TensorValue alpha;
+    core::TensorValue beta;
+};
+
+class SnakeBeta1dModule {
+public:
+    explicit SnakeBeta1dModule(SnakeBeta1dConfig config);
+
+    const SnakeBeta1dConfig & config() const noexcept;
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const SnakeBeta1dWeights & weights) const;
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    SnakeBeta1dConfig config_;
 };
 
 enum class AliasFreeActivationKind {

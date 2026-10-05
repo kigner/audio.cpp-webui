@@ -77,6 +77,16 @@ class V060BackendCompatibilityTests(unittest.TestCase):
             "omnivoice": 24000,
             "supertonic": 44100,
             "voxcpm2": 48000,
+            "audio8_tts": 44100,
+            "breeze_tts": 24000,
+            "kugelaudio": 24000,
+            "lfm2_audio": 24000,
+            "mira_tts": 48000,
+            "pocket_tts": 24000,
+            "soprano_tts": 32000,
+            "sopro_tts": 24000,
+            "voxcpm1": 16000,
+            "zipvoice": 24000,
         }
         spec_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "model_specs")
         backend_families = set()
@@ -86,15 +96,16 @@ class V060BackendCompatibilityTests(unittest.TestCase):
             with open(os.path.join(spec_dir, name), "r", encoding="utf-8") as handle:
                 spec = json.load(handle)
             tasks = set(spec.get("tasks", []))
-            if (spec.get("category") == "tts"
-                    and tasks.intersection({"tts", "clone"})
+            if (tasks.intersection({"tts", "clone"})
                     and "streaming" in spec.get("modes", [])):
                 backend_families.add(spec["family"])
 
         self.assertEqual(backend_families, set(expected_rates))
         for family, sample_rate in expected_rates.items():
             with self.subTest(family=family):
-                profile = app.profile_for({"family": family})
+                entry = next(e for e in app.CATALOG["models"]
+                             if e["family"] == family and e["task"] in app.TTS_TASKS)
+                profile = app.profile_for(entry)
                 self.assertTrue(profile["supports_streaming"])
                 self.assertEqual(profile["stream_sample_rate"], sample_rate)
 

@@ -1,21 +1,23 @@
-// Backbone parity for MOSS-VoiceGenerator. Builds the prompt with the audio.cpp text
-// processor, embeds it the way MossTTSDelayModel.get_input_embeddings does (text embedding
-// plus one embedding per audio codebook), runs the Qwen3 backbone, and compares the
-// resulting hidden states against a dump from the reference PyTorch model.
-//
-// It also re-runs the last position through the cached single-step path, which catches
-// rope/mask/cache-slot mistakes that a prefill-only comparison would miss.
-//
-//   moss_voicegen_backbone_parity --model <dir> --prompt <ref_prompt.json> \
-//       --hidden <ref_hidden.json> [--weight-type bf16] [--tolerance 0.02]
+/*
+ * Backbone parity for MOSS-VoiceGenerator. Builds the prompt with the audio.cpp text
+ * processor, embeds it the way MossTTSDelayModel.get_input_embeddings does (text embedding
+ * plus one embedding per audio codebook), runs the Qwen3 backbone, and compares the
+ * resulting hidden states against a dump from the reference PyTorch model.
+ *
+ * It also re-runs the last position through the cached single-step path, which catches
+ * rope/mask/cache-slot mistakes that a prefill-only comparison would miss.
+ *
+ *   moss_voicegen_backbone_parity --model <dir> --prompt <ref_prompt.json> \
+ *       --hidden <ref_hidden.json> [--weight-type bf16] [--tolerance 0.02]
+ */
 
 #include "engine/community_models/moss_voicegen/assets.h"
-#include "engine/community_models/moss_voicegen/backbone.h"
+#include "engine/framework/decoders/moss_tts_delay/backbone.h"
 #include "engine/community_models/moss_voicegen/tokenizer_text.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/io/json.h"
-#include "engine/models/moss/shared/token_rows.h"
+#include "engine/framework/modules/multi_codebook_embedding.h"
 
 #include <algorithm>
 #include <cmath>
@@ -138,13 +140,13 @@ int main(int argc, char ** argv) {
         // handed in as a per-position bias. The shared helper skips pad codes, which is
         // exact for this checkpoint: every emb_ext table's pad row (index audio_vocab_size)
         // is all zeros, so adding it the way the reference does changes nothing.
-        engine::models::moss::AudioCodebookSpec codebook_spec;
+        engine::modules::MultiCodebookEmbeddingSpec codebook_spec;
         codebook_spec.hidden_size = hidden_size;
         codebook_spec.num_codebooks = config.num_codebooks;
-        codebook_spec.audio_vocab_size = config.audio_vocab_size + 1;
-        codebook_spec.audio_pad_token_id = config.audio_pad_code;
+        codebook_spec.vocab_size = config.audio_vocab_size + 1;
+        codebook_spec.pad_token_id = config.audio_pad_code;
         codebook_spec.tensor_prefix = "emb_ext";
-        const engine::models::moss::AudioCodebookEmbeddings codebooks(*assets->model_weights, codebook_spec);
+        const engine::modules::MultiCodebookEmbedding codebooks(*assets->model_weights, codebook_spec);
 
         std::vector<float> audio_bias(static_cast<size_t>(steps * hidden_size), 0.0F);
         for (int64_t row = 0; row < steps; ++row) {
@@ -158,8 +160,8 @@ int main(int argc, char ** argv) {
         backend_config.device = 0;
         backend_config.threads = std::stoi(arg_value(argc, argv, "--threads", "8"));
         engine::core::ExecutionContext execution_context(backend_config);
-        const engine::models::moss_voicegen::MossVoiceGenBackboneRuntime backbone(
-            assets, execution_context, 512ull * 1024ull * 1024ull, 8192ull * 1024ull * 1024ull, weight_type);
+        const engine::decoders::MossTtsDelayBackboneRuntime backbone(
+            assets->config, assets->model_weights, execution_context, 512ull * 1024ull * 1024ull, 8192ull * 1024ull * 1024ull, weight_type);
 
         backbone.begin_generation(steps + 8);
         const auto prefill_hidden = backbone.prefill(rows.text_tokens, audio_bias);

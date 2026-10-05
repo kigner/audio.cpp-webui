@@ -84,6 +84,16 @@ const core::ModuleSchema kSiluSchema = {
     "Applies SiLU activation elementwise.",
 };
 
+const core::ModuleSchema kSeluSchema = {
+    "SELU",
+    "nn.activation",
+    kActivationInputs,
+    1,
+    kActivationOutputs,
+    1,
+    "Applies SELU activation elementwise.",
+};
+
 const core::ModuleSchema kSwooshLSchema = {
     "SwooshL",
     "nn.activation",
@@ -139,6 +149,12 @@ const core::ModulePortSpec kSnakeInputs[] = {
     {"alpha", core::PortKind::Parameter, false},
 };
 
+const core::ModulePortSpec kSnakeBetaInputs[] = {
+    {"input", core::PortKind::Activation, false},
+    {"alpha", core::PortKind::Parameter, false},
+    {"beta", core::PortKind::Parameter, false},
+};
+
 const core::ModulePortSpec kAliasFreeActivationInputs[] = {
     {"input", core::PortKind::Activation, false},
     {"alpha", core::PortKind::Parameter, false},
@@ -156,6 +172,16 @@ const core::ModuleSchema kSnake1dSchema = {
     kActivationOutputs,
     1,
     "Applies Snake activation over channel-time tensors using per-channel alpha.",
+};
+
+const core::ModuleSchema kSnakeBeta1dSchema = {
+    "SnakeBeta1d",
+    "nn.activation",
+    kSnakeBetaInputs,
+    3,
+    kActivationOutputs,
+    1,
+    "Applies SnakeBeta activation over channel-time tensors using per-channel alpha and beta.",
 };
 
 const core::ModuleSchema kAliasFreeActivationSchema = {
@@ -430,6 +456,31 @@ const core::ModuleSchema & SiluModule::static_schema() noexcept {
     return kSiluSchema;
 }
 
+const core::ModuleSchema & SeluModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue SeluModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    constexpr float kAlpha = 1.6732632423543772848170429916717F;
+    constexpr float kScale = 1.0507009873554804934193349852946F;
+    const auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
+    auto positive = ggml_relu(ctx.ggml, contiguous.tensor);
+    auto negative = ggml_scale(ctx.ggml, ggml_relu(ctx.ggml, ggml_scale(ctx.ggml, contiguous.tensor, -1.0F)), -1.0F);
+    negative = ggml_scale(ctx.ggml, ggml_expm1(ctx.ggml, negative), kAlpha);
+    return core::wrap_tensor(
+        ggml_scale(ctx.ggml, ggml_add(ctx.ggml, positive, negative), kScale),
+        input.shape,
+        GGML_TYPE_F32);
+}
+
+const core::ModuleSchema & SeluModule::static_schema() noexcept {
+    return kSeluSchema;
+}
+
 const core::ModuleSchema & SwooshLModule::schema() const noexcept {
     return static_schema();
 }
@@ -478,6 +529,8 @@ const core::ModuleSchema & SoftmaxModule::static_schema() noexcept {
     return kSoftmaxSchema;
 }
 
+GLUModule::GLUModule(GLUConfig config) : config_(config) {}
+
 const core::ModuleSchema & GLUModule::schema() const noexcept {
     return static_schema();
 }
@@ -505,6 +558,9 @@ core::TensorValue GLUModule::build(core::ModuleBuildContext & ctx, const core::T
         ggml_view_2d(ctx.ggml, flat.tensor, hidden, flat.shape.dims[0], flat.tensor->nb[1], hidden * sizeof(float)),
         core::TensorShape::from_dims({flat.shape.dims[0], hidden}),
         GGML_TYPE_F32);
+    if (config_.contiguous_gate) {
+        rhs = core::wrap_tensor(ggml_cont(ctx.ggml, rhs.tensor), rhs.shape, GGML_TYPE_F32);
+    }
     rhs = core::wrap_tensor(ggml_sigmoid(ctx.ggml, rhs.tensor), rhs.shape, GGML_TYPE_F32);
     auto output = core::wrap_tensor(ggml_mul(ctx.ggml, lhs.tensor, rhs.tensor), lhs.shape, GGML_TYPE_F32);
 
@@ -546,15 +602,28 @@ core::TensorValue Snake1dModule::build(
     const auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
     const auto input_f32 = ensure_f32(ctx, contiguous);
     core::TensorValue alpha_broadcast = {};
-    if (same_shape(weights.alpha.shape, input.shape)) {
+    const auto alpha_shape = make_snake_alpha_shape(input.shape, config_.hidden_size);
+    if (same_shape(weights.alpha.shape, input.shape) || same_shape(weights.alpha.shape, alpha_shape)) {
         alpha_broadcast = ensure_f32(ctx, weights.alpha);
     } else {
         core::validate_shape(weights.alpha, core::TensorShape::from_dims({config_.hidden_size}), "alpha");
-        const auto alpha_shape = make_snake_alpha_shape(input.shape, config_.hidden_size);
         alpha_broadcast = core::reshape_tensor(ctx, ensure_f32(ctx, weights.alpha), alpha_shape);
     }
     const auto ax = core::wrap_tensor(ggml_mul(ctx.ggml, input_f32.tensor, alpha_broadcast.tensor), input_f32.shape, GGML_TYPE_F32);
     const auto s = core::wrap_tensor(ggml_sin(ctx.ggml, ax.tensor), input_f32.shape, GGML_TYPE_F32);
+    if (weights.inverse_alpha) {
+        core::TensorValue inverse;
+        if (same_shape(weights.inverse_alpha->shape, alpha_shape)) {
+            inverse = ensure_f32(ctx, *weights.inverse_alpha);
+        } else {
+            core::validate_shape(*weights.inverse_alpha,
+                core::TensorShape::from_dims({config_.hidden_size}), "inverse_alpha");
+            inverse = core::reshape_tensor(ctx, ensure_f32(ctx, *weights.inverse_alpha), alpha_shape);
+        }
+        const auto squared = ggml_sqr(ctx.ggml, s.tensor);
+        const auto fraction = ggml_mul(ctx.ggml, squared, inverse.tensor);
+        return core::wrap_tensor(ggml_add(ctx.ggml, input_f32.tensor, fraction), input.shape, GGML_TYPE_F32);
+    }
     const auto s2 = core::wrap_tensor(ggml_mul(ctx.ggml, s.tensor, s.tensor), input_f32.shape, GGML_TYPE_F32);
     const auto frac = core::wrap_tensor(ggml_div(ctx.ggml, s2.tensor, alpha_broadcast.tensor), input_f32.shape, GGML_TYPE_F32);
     return core::wrap_tensor(ggml_add(ctx.ggml, input_f32.tensor, frac.tensor), input_f32.shape, GGML_TYPE_F32);
@@ -562,6 +631,55 @@ core::TensorValue Snake1dModule::build(
 
 const core::ModuleSchema & Snake1dModule::static_schema() noexcept {
     return kSnake1dSchema;
+}
+
+SnakeBeta1dModule::SnakeBeta1dModule(SnakeBeta1dConfig config) : config_(config) {
+    if (config_.hidden_size <= 0) {
+        throw std::runtime_error("SnakeBeta1dConfig.hidden_size must be positive");
+    }
+}
+
+const SnakeBeta1dConfig & SnakeBeta1dModule::config() const noexcept {
+    return config_;
+}
+
+const core::ModuleSchema & SnakeBeta1dModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue SnakeBeta1dModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const SnakeBeta1dWeights & weights) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 2, core::kMaxTensorRank, "input");
+    if (input.shape.dims[input.shape.rank - 2] != config_.hidden_size) {
+        throw std::runtime_error("SnakeBeta1d input hidden dimension mismatch");
+    }
+    core::validate_shape(weights.alpha, core::TensorShape::from_dims({config_.hidden_size}), "alpha");
+    core::validate_shape(weights.beta, core::TensorShape::from_dims({config_.hidden_size}), "beta");
+
+    const auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
+    const auto input_f32 = ensure_f32(ctx, contiguous);
+    const auto channel_shape = make_snake_alpha_shape(input.shape, config_.hidden_size);
+    auto alpha = core::reshape_tensor(ctx, ensure_f32(ctx, weights.alpha), channel_shape);
+    auto beta = core::reshape_tensor(ctx, ensure_f32(ctx, weights.beta), channel_shape);
+    if (config_.logscale) {
+        alpha = core::wrap_tensor(ggml_exp(ctx.ggml, alpha.tensor), alpha.shape, GGML_TYPE_F32);
+        beta = core::wrap_tensor(ggml_exp(ctx.ggml, beta.tensor), beta.shape, GGML_TYPE_F32);
+    }
+    const auto ax = core::wrap_tensor(ggml_mul(ctx.ggml, input_f32.tensor, alpha.tensor), input_f32.shape, GGML_TYPE_F32);
+    const auto s = core::wrap_tensor(ggml_sin(ctx.ggml, ax.tensor), input_f32.shape, GGML_TYPE_F32);
+    const auto s2 = core::wrap_tensor(ggml_mul(ctx.ggml, s.tensor, s.tensor), input_f32.shape, GGML_TYPE_F32);
+    const auto denom = core::wrap_tensor(ggml_scale_bias(ctx.ggml, beta.tensor, 1.0F, 1.0e-9F), beta.shape, GGML_TYPE_F32);
+    const auto periodic = core::wrap_tensor(ggml_div(ctx.ggml, s2.tensor, denom.tensor), input_f32.shape, GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_add(ctx.ggml, input_f32.tensor, periodic.tensor), input_f32.shape, GGML_TYPE_F32);
+}
+
+const core::ModuleSchema & SnakeBeta1dModule::static_schema() noexcept {
+    return kSnakeBeta1dSchema;
 }
 
 AliasFreeActivationModule::AliasFreeActivationModule(AliasFreeActivationConfig config) : config_(config) {

@@ -1,4 +1,5 @@
 #include "engine/framework/model_spec/metadata.h"
+#include "engine/framework/runtime/task_vocabulary.h"
 #include "engine/framework/model_spec/package.h"
 #include "engine/framework/model_spec/schema.h"
 #include "engine/framework/io/json.h"
@@ -9,6 +10,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -225,6 +227,32 @@ void expect_rejects(const std::string & label, const std::string & spec_text, co
         rejected = std::string(error.what()).find(needle) != std::string::npos;
     }
     engine::test::require(rejected, label + " should reject with: " + needle);
+}
+
+std::string spec_with_download(const std::string & download) {
+    auto text = schema_v1_spec_text("[]");
+    const std::string anchor = "\"download\": {\"kind\": \"unsupported\", \"reason\": \"test fixture\"}";
+    const auto at = text.find(anchor);
+    engine::test::require(at != std::string::npos, "download fixture anchor exists");
+    text.replace(at, anchor.size(), "\"download\": " + download);
+    return text;
+}
+
+void test_download_kinds_schema() {
+    // ModelScope snapshot downloads validate like Hugging Face snapshots:
+    // repo is required, revision is optional.
+    engine::model_spec::validate_spec(
+        json::parse(spec_with_download(
+            R"JSON({"kind": "modelscope_snapshot", "repo": "audio-cpp/toy-model"})JSON")),
+        "modelscope_snapshot_repo_only");
+    engine::model_spec::validate_spec(
+        json::parse(spec_with_download(
+            R"JSON({"kind": "modelscope_snapshot", "repo": "audio-cpp/toy-model", "revision": "master"})JSON")),
+        "modelscope_snapshot_with_revision");
+    expect_rejects(
+        "modelscope_snapshot_missing_repo",
+        spec_with_download(R"JSON({"kind": "modelscope_snapshot"})JSON"),
+        "missing required field 'repo'");
 }
 
 void test_legacy_dependencies_schema() {
@@ -1080,9 +1108,18 @@ void test_options_schema() {
 }
 
 void test_option_name_mapping_from_production_spec() {
-    // The production catalog currently points at the legacy source-only specs.
-    const auto omnivoice_cli = engine::model_spec::cli_interface("omnivoice");
-    engine::test::require(!omnivoice_cli.has_value(), "legacy omnivoice spec should not expose CLI metadata");
+    // Reference option tables do not opt legacy loaders into v1 contracts.
+    for (const auto * family : {"omnivoice", "qwen3_tts", "qwen3_asr"}) {
+        const auto cli = engine::model_spec::cli_interface(family);
+        engine::test::require(!cli.has_value(), "legacy spec should not expose v1 CLI metadata");
+        const auto spec = engine::model_spec::load_spec(
+            std::filesystem::path(AUDIOCPP_SOURCE_DIR) / "model_specs" / (std::string(family) + ".json"));
+        engine::test::require(spec.find("schema_version") == nullptr, "reference options must not migrate the spec");
+        const auto * options = spec.find("options");
+        engine::test::require(options != nullptr, "reference options should be documented");
+        engine::model_spec::validate_spec(
+            json::parse(schema_v1_spec_with_options(json::stringify(*options))), family);
+    }
 
     const auto vibevoice_cli = engine::model_spec::cli_interface("vibevoice");
     engine::test::require(!vibevoice_cli.has_value(), "legacy vibevoice spec should not expose CLI metadata");
@@ -1170,6 +1207,96 @@ void test_schema_v1_metadata_projection() {
     std::filesystem::remove_all(root);
 }
 
+void test_contract_projection_ignores_package_metadata_validation() {
+    const auto root = make_temp_root();
+    std::string spec_text = schema_v1_spec_with_options(R"JSON({
+      "request": [
+        {
+          "name": "reference_text",
+          "type": "string",
+          "required": false,
+          "description": "Reference transcript."
+        }
+      ],
+      "session": [],
+      "load": []
+    })JSON");
+    const std::string marker = "\"default\": true";
+    const auto pos = spec_text.find(marker);
+    engine::test::require(pos != std::string::npos, "test fixture package marker");
+    spec_text.replace(pos, marker.size(), "\"default\": true,\n      \"strip_prefix\": \"\"");
+    const auto spec_path = write_text(root, "toy_model.json", spec_text);
+
+    bool full_validation_rejected = false;
+    try {
+        (void) engine::model_spec::load_spec(spec_path);
+    } catch (const std::runtime_error & error) {
+        full_validation_rejected = std::string(error.what()).find("strip_prefix: expected non-empty string") !=
+            std::string::npos;
+    }
+    engine::test::require(
+        full_validation_rejected,
+        "full package/catalog validation should reject empty strip_prefix");
+
+    const engine::model_spec::ScopedSpecOverride spec_override(root);
+    const auto contract = engine::model_spec::model_contract("toy_model");
+    engine::test::require(contract.has_value(), "contract projection should ignore package metadata validation");
+    engine::test::require(contract->metadata.weight_candidates.empty(), "contract metadata should not read packages");
+    engine::test::require(
+        contract->request_option_keys.find("reference_text") != contract->request_option_keys.end(),
+        "contract should include reference_text");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_legacy_spec_contract_behavior_unchanged() {
+    const auto root = make_temp_root();
+    write_text(root, "toy_model.json", legacy_spec_text("[]"));
+
+    const engine::model_spec::ScopedSpecOverride spec_override(root);
+    const auto contract = engine::model_spec::model_contract("toy_model");
+    engine::test::require(!contract.has_value(), "legacy specs should not expose schema v1 contracts");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_experimental_spec_without_installable_package() {
+    const std::string experimental = R"JSON({
+      "schema_version": 1,
+      "family": "local_only_model",
+      "display_name": "Local Only Model",
+      "description": "Requires a local checkpoint conversion.",
+      "category": "tts",
+      "status": "experimental",
+      "tasks": ["tts"],
+      "modes": ["offline"],
+      "languages": ["en"],
+      "runtime": {"tags": ["gguf"]},
+      "capabilities": {},
+      "options": {"request": [], "session": [], "load": []},
+      "packages": [],
+      "dependencies": [],
+      "ui": {"tags": ["TTS"], "docs": ["docs/local.md"]},
+      "sources": [{
+        "format": "safetensors",
+        "roots": {"model": "."},
+        "files": {"config": "model:config.json"},
+        "tensors": {"weights": "model:model.safetensors"}
+      }]
+    })JSON";
+    engine::model_spec::validate_spec(
+        json::parse(experimental), "experimental_local_only");
+
+    auto community = experimental;
+    const auto status = community.find("\"status\": \"experimental\"");
+    engine::test::require(status != std::string::npos, "experimental status fixture");
+    community.replace(status, std::string("\"status\": \"experimental\"").size(),
+                      "\"status\": \"community\"");
+    expect_rejects(
+        "community_requires_package", community,
+        "packages must not be empty unless status is experimental");
+}
+
 void test_contract_spec_prefers_workspace_over_package_local_spec() {
     const auto root = make_temp_root();
     const auto workspace = root / "workspace";
@@ -1226,18 +1353,131 @@ void test_loading_and_resource_bundle() {
     std::filesystem::remove_all(root);
 }
 
+// Every task name is written down once, and the surfaces that read it agree.
+//
+// They did not. The schema allowed "codec", which no parser mapped to a task
+// kind, so model_specs/miocodec.json threw on load; the spec parser accepted
+// "audio_generation", which the schema rejected; include/audiocpp.h documented
+// "diarization" and "alignment", which nothing accepts; and no test read the
+// shipped specs, so none of it surfaced here.
+void test_task_vocabulary_is_consistent() {
+    std::size_t count = 0;
+    const auto * entries = engine::runtime::task_vocabulary(count);
+    engine::test::require(count > 0, "task vocabulary should not be empty");
+
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto & entry = entries[i];
+        const std::string token(entry.token);
+
+        // The canonical token round-trips through the ABI's own parser.
+        engine::test::require(
+            engine::runtime::parse_voice_task_kind(token) == entry.kind,
+            "task token should parse back to its kind: " + token);
+        engine::test::require_eq(
+            std::string(engine::runtime::to_string(entry.kind)),
+            token,
+            "to_string should return the canonical token");
+
+        // Every spec alias maps to that token.
+        engine::test::require(entry.alias_count > 0,
+                              "task kind should have at least one spec name: " + token);
+        for (std::size_t alias = 0; alias < entry.alias_count; ++alias) {
+            const std::string name(entry.aliases[alias]);
+            engine::test::require_eq(
+                std::string(engine::runtime::task_token_for_spec_name(name)),
+                token,
+                "spec name should map to its token: " + name);
+        }
+    }
+
+    // A name that is neither is rejected rather than guessed at.
+    engine::test::require(
+        engine::runtime::task_token_for_spec_name("codec").empty(),
+        "a name that maps to no task kind should report as such");
+    engine::test::require(
+        engine::runtime::task_token_for_spec_name("diarization").empty(),
+        "the header's old example spelling should not silently resolve");
+}
+
+void test_vad_timestamp_capability() {
+    const auto root = make_temp_root();
+    auto spec = json::parse(schema_v1_spec_text("[]")).as_object();
+    spec["category"] = json::Value::make_string("audio_tools");
+    spec["tasks"] = json::parse(R"(["vad"])");
+    for (const bool segments : {false, true}) {
+        spec["capabilities"] = json::parse(segments ? R"({"vad":["speech_segments"]})" : R"({"vad":["chunk_planning"]})");
+        const auto path = write_text(root, "toy_model.json", json::stringify(json::Value::make_object(spec)));
+        (void)engine::model_spec::load_spec(path);
+        const engine::model_spec::ScopedSpecOverride spec_override(root);
+        const auto capabilities = engine::model_spec::advertised_capabilities("toy_model");
+        engine::test::require(capabilities.has_value(), "VAD capabilities should be projected");
+        engine::test::require_eq(capabilities->supports_timestamps, segments,
+                                "only speech_segments should enable VAD timestamps");
+    }
+    std::filesystem::remove_all(root);
+}
+
+// Every task name the shipped specs declare is one the engine can serve.
+//
+// The two that were not -- moss_voicegen declaring the ABI token "vdes" where
+// the spec vocabulary wants "design", and miocodec declaring "codec", which
+// names no task kind -- were found by a binding reading the spec files, not by
+// anything here. Both threw from parse_task_kind at load, so the families were
+// unreachable.
+void test_shipped_model_specs_declare_known_tasks() {
+    const std::filesystem::path specs =
+        std::filesystem::path(AUDIOCPP_SOURCE_DIR) / "model_specs";
+    engine::test::require(std::filesystem::is_directory(specs),
+                          "model_specs should exist at " + specs.string());
+
+    std::vector<std::string> failures;
+    std::size_t checked = 0;
+    for (const auto & entry : std::filesystem::directory_iterator(specs)) {
+        if (entry.path().extension() != ".json") {
+            continue;
+        }
+        const auto spec = engine::model_spec::load_spec(entry.path());
+        const auto * tasks = spec.find("tasks");
+        if (tasks == nullptr || !tasks->is_array()) {
+            continue;
+        }
+        ++checked;
+        for (const auto & task : tasks->as_array()) {
+            const auto name = task.as_string();
+            if (engine::runtime::task_token_for_spec_name(name).empty()) {
+                failures.push_back(entry.path().filename().string() + " declares '" + name + "'");
+            }
+        }
+    }
+
+    for (const auto & failure : failures) {
+        std::cerr << "  unmappable task: " << failure << "\n";
+    }
+    engine::test::require(failures.empty(),
+                          "every shipped spec should declare task names the engine knows (" +
+                              std::to_string(failures.size()) + " did not)");
+    engine::test::require(checked > 0, "should have checked at least one shipped spec");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_legacy_dependencies_schema();
+        test_download_kinds_schema();
         test_typed_schema_renamed_dependencies();
         test_dependency_option_mapping_from_production_spec();
         test_options_schema();
         test_option_name_mapping_from_production_spec();
         test_schema_v1_metadata_projection();
+        test_contract_projection_ignores_package_metadata_validation();
+        test_legacy_spec_contract_behavior_unchanged();
+        test_experimental_spec_without_installable_package();
         test_contract_spec_prefers_workspace_over_package_local_spec();
         test_loading_and_resource_bundle();
+        test_task_vocabulary_is_consistent();
+        test_vad_timestamp_capability();
+        test_shipped_model_specs_declare_known_tasks();
     } catch (const std::exception & error) {
         std::cerr << "model_spec_system_test failed: " << error.what() << "\n";
         return 1;

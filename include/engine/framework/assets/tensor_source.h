@@ -16,6 +16,12 @@
 
 namespace engine::assets {
 
+// Existing loaders remain unsynchronized. Model adapters explicitly opt in before
+// sharing a source across sessions; the policy is fixed at source construction.
+struct TensorSourceOptions {
+    bool synchronized_access = false;
+};
+
 enum class TensorStorageType {
     Native,
     F32,
@@ -32,6 +38,7 @@ enum class TensorStorageType {
     Q5_K,
     Q6_K,
     Q8_0,
+    NVFP4,
 };
 
 struct TensorMetadata {
@@ -146,13 +153,19 @@ inline void require_tensor_shape(
     std::initializer_list<int64_t> expected_shape) {
     require_tensor_shape(source, name, std::vector<int64_t>(expected_shape));
 }
+// When requested, retain the exact upload bytes for reuse instead of reconverting.
 void set_backend_tensor_from_f32_parallel(
     ggml_tensor * tensor,
     std::string_view name,
     const std::vector<float> & values,
     const core::TensorShape & shape,
-    ggml_type type);
+    ggml_type type,
+    std::vector<std::byte> * retained_bytes = nullptr);
 std::shared_ptr<const TensorSource> open_tensor_source(const std::filesystem::path & path);
+std::shared_ptr<const TensorSource> open_tensor_source(
+    const std::filesystem::path & path, TensorSourceOptions options);
+std::shared_ptr<const TensorSource> open_tensor_source(
+    const std::filesystem::path & path, std::string_view tensor_prefix, TensorSourceOptions options);
 std::shared_ptr<const TensorSource> open_tensor_source(
     const std::filesystem::path & path,
     std::string_view tensor_prefix);
@@ -194,6 +207,13 @@ void convert_tensor_sources_to_gguf(const std::vector<TensorSourceInput> & input
 void convert_tensor_source_to_gguf(const std::filesystem::path & input_path, const std::filesystem::path & output_path,
                                    TensorStorageType weight_type, bool overwrite = false, bool embed_sidecars = true);
 [[nodiscard]] bool gguf_has_embedded_sidecars(const std::filesystem::path & path);
+// The destinations of a GGUF's embedded sidecars, in the order it stores them.
+// Read from the file itself, so a caller re-emitting a package does not have to
+// infer the set from whatever is sitting in the materialisation cache. Throws on
+// the same malformed metadata that materialising the sidecars would reject: this
+// answers what the package holds, and a package whose byte ranges do not fit its
+// blob holds nothing anyone can read.
+[[nodiscard]] std::vector<std::string> gguf_embedded_sidecar_names(const std::filesystem::path & path);
 [[nodiscard]] std::optional<GgufEmbeddedModelSpec> read_gguf_embedded_model_spec(const std::filesystem::path & path);
 [[nodiscard]] std::filesystem::path materialize_gguf_sidecars(const std::filesystem::path & path);
 struct PreparedModelDirectory {
@@ -214,5 +234,8 @@ std::vector<std::filesystem::path> indexed_tensor_source_shard_paths(const std::
     const std::filesystem::path & model_root);
 std::shared_ptr<const TensorSource> open_indexed_tensor_source(const std::filesystem::path & index_path,
     const std::filesystem::path & model_root);
+std::shared_ptr<const TensorSource> open_indexed_tensor_source(
+    const std::filesystem::path & index_path, const std::filesystem::path & model_root,
+    TensorSourceOptions options);
 
 }  // namespace engine::assets

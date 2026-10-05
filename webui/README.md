@@ -31,7 +31,40 @@ Without `AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON` (the CMake option selected by
 `-NativeModelManager`), `--ui` still serves the embedded frontend for config-driven use, but
 `--ui-management` is unavailable. This build choice does not alter the local Gradio model manager.
 
-### Upstream models integrated into the local WebUI in this merge
+### Backend integration on 2026-10-05
+
+This source merge follows upstream `3cf21614`. The local Gradio UI and model manager remain
+downstream-owned; `webui/native/` stays at the pre-merge downstream baseline. The local RTX 4060
+CUDA build (`89-real`, AVX2, native model manager enabled) and portable runtime synchronization
+are complete. CPU binaries are unchanged; real-model inference still requires manual acceptance.
+The product version remains 0.6.0; this is a local test bundle, not a published release.
+
+| Page | Added models and behavior |
+|---|---|
+| TTS / cloning / voice design | New families include CosyVoice3, FireRedTTS3 / FireRedAudio, Breeze, Kokoro, Kitten, KugelAudio, Maya1, VoxCPM1, Audio8, Echo, Mira, Soprano, Sopro, ZipVoice and LFM2.5-Audio, with model-specific reference audio, transcript and preset-voice handling |
+| Transcription | Adds Cohere, Canary, Audio Flamingo, Granite, Moonshine, OWSM, VibeASR, VibeVoice Streaming and others; Qwen3-ASR and Kroko expose streaming. Advanced options follow model specs. Offline detail results retain available word timestamps / speaker turns as downloadable JSON |
+| Music / sound | Adds ControlFoley, MiDashengLM-Gen, YuE2, AuK and FireRedAudio editing. YuE2 and AuK install their required components in one resumable download transaction. All audio and ABC / token artifacts are retained, including artifact-only intermediate outputs |
+| Separation | HTDemucs 6-stem has six players and downloads. SAM Audio uses a sound description and 48 kHz input, returning target and residual audio |
+| Conversion / enhancement | Adds Apollo, AudioSR, REUSE, Sidon, UniverSR, and separate RNNoise, DeepFilterNet2, ZipEnhancer, GTCRN and FlashSR entries bound to their matching weights. Enhancement-only tasks hide target-voice controls |
+| Analysis | Smart Turn shows end-of-turn detection and probability. SheetSage2 retains ABC text and all artifacts; new diarization and alignment models use the structured result view |
+
+Request, session and load controls are filled from `model_specs`. Session/load changes reload the
+model on the next run and are kept out of request options. GLM-TTS, OmniVoice and Seed-VC option
+names follow the merged backend; Qwen3-TTS retains downstream token-budget-based text limits.
+Streaming TTS uses each family's PCM rate, including 16 / 22.05 / 24 / 32 / 44.1 / 48 kHz.
+
+- **LFM2.5-Audio:** English and Japanese use separate entries/checkpoints. English offers four
+  preset voices; Japanese leaves the voice unset. ASR is offline-only; TTS supports streaming.
+- **VibeASR / BitNet:** selects the CPU backend automatically, including with a CUDA server binary.
+- **MiraTTS and Sortformer v2:** require manually prepared weights; unavailable one-click downloads
+  are disabled. Use the upstream model guide and the path shown by the entry. MiraTTS defaults to
+  `models/MiraTTS/mira-tts.gguf`.
+- **LiveAvatar:** backend sources are included; image/video tasks remain outside the local audio
+  pages. Use the upstream CLI documentation.
+- **ASR details:** available without streaming or dialogue mode. Long-audio results include each
+  chunk's `offset_seconds`; timestamps inside that result remain relative to the chunk.
+
+### Previously integrated upstream models
 
 | Local tab | New entry | Local-WebUI contract |
 |---|---|---|

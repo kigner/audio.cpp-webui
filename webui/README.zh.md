@@ -27,7 +27,36 @@
 .\build\windows-cuda-release\bin\audiocpp_server.exe --ui --ui-management --backend cuda
 ```
 
-### 本次上游合并已接入本地 WebUI 的模型
+### 2026-10-05 上游后端适配
+
+本次源码合并跟进上游 `3cf21614`，保留本地 Gradio 界面与下载器，也保留本轮合并前的
+`webui/native/`。本机 RTX 4060 CUDA 版本（`89-real`、AVX2、开启原生模型管理）已完成编译并
+同步到 portable；CPU 程序保持原样，真实模型推理仍待手动验收。
+产品版本仍为 0.6.0，本次仅更新本地测试包，尚未发布。
+
+| 页面 | 新增模型与行为 |
+|---|---|
+| TTS / 克隆 / 声音设计 | 接入 CosyVoice3、FireRedTTS3 / FireRedAudio、Breeze、Kokoro、Kitten、KugelAudio、Maya1、VoxCPM1、Audio8、Echo、Mira、Soprano、Sopro、ZipVoice、LFM2.5-Audio 等新增模型；参考音频、参考文本与预置音色按模型处理 |
+| 转写 | 接入 Cohere、Canary、Audio Flamingo、Granite、Moonshine、OWSM、VibeASR、VibeVoice Streaming 等；Qwen3-ASR 与 Kroko 新增流式开关。高级参数跟随模型规格；普通离线模式可查看并下载词时间戳、说话人轮次等详细 JSON，实际字段取决于模型 |
+| 音乐 / 音效 | 接入 ControlFoley、MiDashengLM-Gen、YuE2、AuK 和 FireRedAudio 编辑；YuE2 与 AuK 在一次可续传下载中安装必需的多个组件；保留全部音频及 ABC / token 等附件，允许只有附件的中间阶段输出 |
+| 分离 | HTDemucs 6-stem 提供六路播放及下载；SAM Audio 使用声音描述与 48 kHz 源音频，返回目标声和剩余声音 |
+| 声音转换 / 增强 | 接入 Apollo、AudioSR、REUSE、Sidon、UniverSR，以及独立绑定权重的 RNNoise、DeepFilterNet2、ZipEnhancer、GTCRN、FlashSR 工具；纯增强任务隐藏目标音色控件 |
+| 分析 | Smart Turn 显示发言结束判断与概率；SheetSage2 保留 ABC 文本和全部附件；新增分离说话人、对齐等模型沿用结构化结果页 |
+
+高级参数自动补齐 `model_specs` 中的请求、会话和加载选项。标为“会话/加载”的选项会在下次
+运行时重载模型，不会混入单次请求。GLM-TTS、OmniVoice、Seed-VC 的参数名已跟随后端调整；
+Qwen3-TTS 保留本地按 token 预算限制长文本的策略。SSE TTS 使用每个模型的 PCM 采样率，
+包括 16 / 22.05 / 24 / 32 / 44.1 / 48 kHz。
+
+- **LFM2.5-Audio**：英语和日语是独立权重条目；英语支持四个预置音色，日语使用单一默认音色。
+  ASR 仅离线，TTS 支持流式，语言必须匹配所选权重。
+- **VibeASR / BitNet**：自动使用 CPU 后端，即使当前启动的是 CUDA 版 server。
+- **MiraTTS、Sortformer v2**：显示手动安装提示，不提供无效的一键下载；按上游模型文档准备权重，
+  放到所选条目显示的路径。MiraTTS 默认路径为 `models/MiraTTS/mira-tts.gguf`。
+- **LiveAvatar**：后端代码已合入；本地音频页面未加入图像/视频任务，使用上游 CLI 文档。
+- **详细 ASR**：需关闭流式和对话模式；长音频分块结果附带 `offset_seconds`，时间戳仍是各分块的本地值。
+
+### 先前已接入本地 WebUI 的模型
 
 | 本地标签页 | 新条目 | 本地 WebUI 请求约定 |
 |---|---|---|

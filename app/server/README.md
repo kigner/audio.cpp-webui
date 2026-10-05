@@ -2,6 +2,8 @@
 
 `audiocpp_server` is an HTTP adapter over the framework runtime registry. It keeps one loaded model and one offline task session per active model id, so repeated HTTP requests reuse the same framework session and model-owned graph/cache state.
 
+`POST /v1/audio/speech` accepts top-level `speed` (or `speaking_rate`) as a positive speech-rate multiplier when the selected model supports speed control. Models without speed control reject the field.
+
 ## Build
 
 ```bash
@@ -23,9 +25,35 @@ Pick the mode that matches the behavior you want:
 | Standalone deployed binary without local `model_specs/` | `-DAUDIOCPP_DEPLOYMENT_BUILD=ON` | `audiocpp_server --config server.json` | Binary carries compiled package specs for fallback model-spec lookup. |
 | Offline/reproducible native-manager build | `-DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON -DAUDIOCPP_BORINGSSL_ARCHIVE=/path/to/boringssl.tar.gz` | `audiocpp_server --ui --ui-management --backend <backend>` | Configure does not fetch BoringSSL from the network. |
 | Distro-packaged TLS instead of bundled BoringSSL | `-DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON -DAUDIOCPP_USE_SYSTEM_OPENSSL=ON` | `audiocpp_server --ui --ui-management --backend <backend>` | Uses system OpenSSL; useful for packagers. |
+| Optional in-process frontend pipeline | `-DAUDIOCPP_BUILD_SERVER_FRONTENDS=ON -DAUDIOCPP_SERVER_FRONTENDS_DIR=external/audio.cpp-server-frontends -DAUDIOCPP_SERVER_FRONTEND_MODULES="audio_decode;mp3_encode"` | `audiocpp_server --config server.json` | Adds compiled-in pre/post processing modules around the stable core API. The external frontend package owns modules and private dependencies such as miniaudio and libmp3lame. The default server build includes none of these modules or dependencies. |
+| Optional frontend listener | `-DAUDIOCPP_BUILD_SERVER_FRONTENDS=ON -DAUDIOCPP_SERVER_FRONTENDS_DIR=external/audio.cpp-server-frontends -DAUDIOCPP_SERVER_FRONTEND_MODULES=<listener>` | `audiocpp_server --config server.json --frontend-listener <listener> --frontend-option key=value` | Runs a selected frontend-owned transport listener, such as HTTPS or WebSocket, over the same in-process server handler. Listener code and private dependencies live in the external frontend package. |
 
 Native model management uses bundled BoringSSL by default. Normal server builds
 do not build or link that HTTP/TLS dependency.
+
+Optional frontend modules are selected at configure time with the semicolon-separated
+`AUDIOCPP_SERVER_FRONTEND_MODULES` list and an external
+`AUDIOCPP_SERVER_FRONTENDS_DIR` package. If you use the bundled submodule path,
+fetch it before configuring:
+
+```bash
+git submodule update --init external/audio.cpp-server-frontends
+```
+
+For a fresh clone, `git clone --recurse-submodules` also fetches it.
+
+The server runs selected modules as an ordered pipeline: every module gets a
+pre-processing pass before the core handler, then every module gets a
+post-processing pass after the core handler. A module that does not need one side
+leaves that method empty. Each active side declares a simple contract over the
+HTTP envelope state (`method`, `path`, `request_in/request_out` for
+pre-processing, or `response_in/response_out` for post-processing), and module
+registration rejects incompatible adjacent transforms on the same route.
+
+Listener frontends are selected through the same external package but are not
+part of the pre/post pipeline. The server core only knows a listener name plus
+string options; the external package owns listener implementations, docs, and
+dependency detection.
 
 ## Config
 
@@ -97,9 +125,18 @@ Set top-level `"lazy_load": true` to register all configured model ids at startu
 
 Set top-level `"max_loaded_models"` to bound how many models are resident in memory at once. When a request needs a model that is not loaded and the limit is already reached, the server first unloads the least recently used idle model (freeing VRAM on GPU backends) and reloads it on its own next request. `1` enforces a single loaded model at a time, which is the practical choice when each model alone nearly fills the device. Higher values keep that many most recently used models warm. The default `0` disables the limit. A model that is mid-inference is never unloaded; if the limit is reached and every loaded model is busy, the request fails with `503` so the client can retry. With more non-lazy models configured than the limit allows, startup loads the first `max_loaded_models` of them and defers the rest to their first request. The equivalent command-line option is `--max-loaded-models <n>`.
 
+Set top-level `"idle_unload_ms"` to have the server unload every resident model after it has gone that long without any model load/run. The next request reloads lazily; a model mid-inference is never unloaded. This complements `max_loaded_models`: that bounds peak residency, this frees memory during quiet periods. Defaults to `0` (disabled). The `--idle-unload-ms <ms>` command-line flag overrides the config value.
+
+Set top-level `"min_free_memory_mb"` to refuse a model load when the host or the GPU backend does not have that much free memory left after the estimated footprint of the new model. The estimate covers only what the loader will actually read: a single-file model's weights, the one GGUF a model directory selects (`model.gguf` or the sole `*.gguf`), or a full safetensors/HF checkpoint tree, plus any session auxiliary files. A directory holding several GGUFs with no `model.gguf` is ambiguous, so the guard makes no estimate there: the loader's own error surfaces for spec-driven loads, and family-specific layouts the estimator cannot resolve load unguarded (the server logs that the guard skipped the model). The estimate is scaled by a runtime overhead factor plus a fixed floor. When the check fails, the request returns HTTP 503 with `insufficient_memory`; the client may retry later. Defaults to `0`, which disables the guard entirely so existing deployments are unaffected; set a positive value to opt in. The `--min-free-memory-mb <mb>` command-line flag overrides the config value.
+
 Set per-model `"default_request_options"` to apply request-option defaults to every request for that model. Values supplied by the actual request body override these defaults.
 
 Set top-level `"max_request_body_bytes"` to bound the largest HTTP request body buffered in host RAM before routing. This protects endpoints that accept JSON or audio uploads from unbounded `Content-Length` claims. The default is `2147483648` bytes (2 GiB). Raise or lower it to match the largest upload your deployment intends to accept. Values above `2^53 - 1` are rejected because this config parser stores JSON numbers as doubles.
+
+Set top-level `"frontend_listener"` to use an optional frontend transport
+listener compiled from the external frontend package. Listener-specific string
+settings go under `"frontend_options"`. The equivalent command-line options are
+`--frontend-listener <name>` and repeated `--frontend-option key=value`.
 
 Set top-level `"log_request_body": true` and start the server with `--log` to print full JSON request bodies for debugging. This is off by default, and both switches are required so prompt text, paths, and request options are not logged accidentally. Audio bodies are not printed; multipart uploads log filename and byte count, while raw or live/chunked audio requests log only route, content type, query, and size/stream metadata.
 
@@ -122,7 +159,65 @@ or in `server.json`:
 > [!WARNING]
 > CORS support is experimental and intended for trusted local web apps only. Do not expose a server with CORS enabled on an untrusted network. With CORS enabled, any browser page can send requests to the local server and consume local CPU/GPU resources.
 
-Set top-level `"busy_timeout_ms"` to bound how long a request waits for a model that is already running. Each model serializes its requests on an internal lock, so a second request normally queues behind the first. A GPU call that wedges cannot be cancelled from userspace, so without a bound every subsequent request would park a worker thread forever. When the current inference has held the lock past this timeout, a new request fails fast with HTTP 503 (`server_busy`) instead of queuing; streaming requests that have already sent headers surface the same condition as a `{"type":"error"}` stream event. The value must exceed the slowest legitimate single inference (music generation can take minutes). Defaults to `300000` (5 minutes); set `0` to disable the guard and restore unbounded waiting. The `--busy-timeout-ms <ms>` command-line flag overrides the config value.
+### Experimental parallel model slots
+
+The single authoritative
+[Parallel Server Behavior Contract](../../docs/maintainers/parallel_server_behavior_contract.md)
+defines operation/state matrices, linked tests, validation by area and known
+limitations. Enabling the feature prints a warning with the tested and untested
+scope. Controlled session tests do not admit real catalogue models to multi-slot
+execution; GPU streaming, full lifecycle coverage and hard backend cancellation
+remain unverified. The descriptions below are a usage summary.
+
+The existing implementation remains the default. Opt into the separate parallel
+runtime at process startup:
+
+```bash
+audiocpp_server --config server.json --parallel-jobs
+```
+
+Without `--parallel-jobs`, **any explicit `slots` field** in a model entry or
+dynamic registration is rejected, including `"slots": 1` and `"slots": null`.
+Existing configurations without the field use the original `ServerState`.
+
+With `--parallel-jobs`, every model uses `ParallelServerState`. Omitted slots
+means capacity one; otherwise `"slots"` must be an integer from 1 to 16. Capacity
+one also uses the new scheduler and session pool. Slot count never selects the
+runtime. The requested count must fit the model's advertised parallel capacity.
+The default HTTP listener in this mode owns its request workers, interrupts
+socket I/O on shutdown, and joins workers before destroying the runtime. Active
+GPU work must still finish. Custom frontend listeners own their shutdown/drain
+behavior through the existing frontend interface.
+The common framework retains capacity one for existing models; model adapters
+and validated admission entries belong to the separate PR #706 follow-up.
+
+`GET /v1/models` on the parallel runtime reports configured `slots`, `active_slots`,
+`queued_requests` and loaded `max_parallel_slots` (`null` when unloaded). Legacy
+model responses retain upstream's schema and do not gain synthetic slots fields.
+Parallel requests and management share FIFO admission; unload, eviction and
+reconfiguration drain active leases. Counts can be resized across one under an
+exclusive lease, but registration never changes the process's selected runtime.
+The inference CLI has no new flag and retains its existing behavior.
+
+Each slot needs private execution contexts, graphs, KV/reference caches,
+stream state and sampling state. Immutable assets/weights can be shared.
+More slots can improve throughput but increase latency and working memory.
+This is concurrent session execution; continuous token batching is not included.
+See [the adapter guide](../../docs/maintainers/parallel_sessions.md).
+
+The [validation procedure](../../docs/maintainers/parallel_model_validation.md)
+keeps model quality/recovery/memory checks separate from shared framework
+ownership tests and performance measurements. Shared evidence is referenced once
+per applicable revision/backend; every admitted count still needs repeated
+quality testing. Optional separate-server benchmarks do not determine admission.
+
+Set top-level `"busy_timeout_ms"` to bound how long a request waits for a model that is already running. By default each model runs one request at a time. With multiple slots, requests queue when every slot is occupied or a management operation blocks admission. A GPU call that wedges cannot be cancelled from userspace, so without a bound every subsequent request would park a worker thread forever. When every occupied request slot has exceeded this timeout, a new request fails fast with HTTP 503 (`server_busy`) instead of queuing; streaming requests that have already sent headers surface the same condition as a `{"type":"error"}` stream event. The value must exceed the slowest legitimate single inference (music generation can take minutes). Defaults to `300000` (5 minutes); set `0` to disable the guard and restore unbounded waiting. The `--busy-timeout-ms <ms>` command-line flag overrides the config value.
+
+Waiting unload/reconfiguration operations keep priority over new inference, but
+do not suppress this overdue check. If admission is blocked by management and
+all occupied inference slots are overdue, a new request fails immediately even
+when the pool has spare slots. A healthy occupied slot still permits bounded
+waiting; a timeout of `0` disables the overdue check and wait bound.
 
 The bound is resolved in three layers, since model runtimes differ by orders of magnitude (a short TTS clip versus minutes of music generation):
 
@@ -273,6 +368,22 @@ Returns server readiness and the number of configured models.
 
 Returns OpenAI-style model entries for the configured audio.cpp model ids.
 
+Two opt-in query flags add to each entry:
+
+- `include_session_options=true` echoes the model's configured `session_options`.
+- `include_params=true` adds `params`: the request options the model's spec
+  declares under `options.request`, as the spec writes them (`name`, `type`,
+  `required`, `description`, and `default`/`min`/`max` where given). An enum row
+  that names a `preset` also carries the preset's `values`. A model whose spec
+  declares no request options returns `"params": []`.
+
+```bash
+curl 'http://127.0.0.1:8080/v1/models?include_params=true'
+```
+
+The list describes options; it does not validate them. Requests are still checked
+per model as before.
+
 ### `POST /v1/audio/speech`
 
 OpenAI-style text-to-audio. The response is `audio/wav` by default.
@@ -315,7 +426,7 @@ curl http://127.0.0.1:8080/v1/audio/speech \
   }'
 ```
 
-Set `"response_format": "json"` to receive base64 WAV in a JSON response.
+Set `"response_format": "json"` to receive base64 WAV in a JSON response. In builds configured with `-DAUDIOCPP_BUILD_SERVER_FRONTENDS=ON -DAUDIOCPP_SERVER_FRONTENDS_DIR=external/audio.cpp-server-frontends -DAUDIOCPP_SERVER_FRONTEND_MODULES=mp3_encode`, `"response_format": "mp3"` returns `audio/mpeg` MP3 bytes for non-streaming speech requests.
 
 For streaming-capable TTS models configured with `mode: "streaming"`, `stream_format` follows the OpenAI speech streaming shape:
 
@@ -340,7 +451,7 @@ The SSE stream emits `speech.audio.delta` events with base64 mono PCM16 chunks, 
 
 ### `POST /v1/audio/transcriptions`
 
-JSON transcription request using a server-local audio path.
+JSON transcription request using a server-local WAV audio path.
 
 ```bash
 curl http://127.0.0.1:8080/v1/audio/transcriptions \
@@ -360,7 +471,7 @@ curl http://127.0.0.1:8080/v1/audio/transcriptions \
   -F file=@/path/to/input.wav
 ```
 
-`file` and `model` are required; `language` is optional. Uploaded WAV bytes are decoded in memory and are not written to a temporary file.
+`file` and `model` are required; `language` is optional. Uploaded WAV bytes are decoded in memory and are not written to a temporary file. In builds configured with `-DAUDIOCPP_BUILD_SERVER_FRONTENDS=ON -DAUDIOCPP_SERVER_FRONTENDS_DIR=external/audio.cpp-server-frontends -DAUDIOCPP_SERVER_FRONTEND_MODULES=audio_decode`, the frontend also accepts MP3 and FLAC input for this route, decodes it to a temporary WAV, and forwards that normalized request to the same core transcription handler.
 
 For streaming-capable ASR models configured with `mode: "streaming"`, pass `stream=true` to receive OpenAI-style transcription SSE:
 
@@ -376,11 +487,95 @@ The stream emits `transcript.text.delta` events, one final `transcript.text.done
 
 Note that `stream=true` streams the *output* of an already-uploaded file: the whole recording is sent first, and the deltas describe decoding it. It shortens time-to-first-token on long audio, but nothing can appear while the speaker is still talking. For that, use the live endpoint below.
 
+### `POST /v1/audio/transcriptions/details`
+
+Same request as `POST /v1/audio/transcriptions` — JSON with a server-local path, or a `multipart/form-data` upload — with a richer response. Use it when the model produces timestamps or speaker labels and the caller wants them.
+
+`/v1/audio/transcriptions` returns `text` and `timing` and nothing else, so a model that aligned every word or separated speakers has that work discarded on the way out. This route returns those fields instead. The response schema of the plain route is unchanged; existing clients see exactly what they see today.
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/transcriptions/details \
+  -F model=parakeet-tdt \
+  -F file=@/path/to/input.wav
+```
+
+```json
+{
+  "text": "the task has completed successfully",
+  "language": "en",
+  "words": [
+    {"word": "the", "start_sample": 3200, "end_sample": 6400, "confidence": 0.98}
+  ],
+  "sample_rate": 16000,
+  "timing": { "wall_ms": 412.7, "audio_duration_ms": 2400.0, "rtf": 0.17 }
+}
+```
+
+`text` and `timing` are always present and match the plain route. The rest appear only when the model produced them:
+
+| Field | Present when | Contents |
+|---|---|---|
+| `language` | the model reports a detected or configured language | Language code. |
+| `segments` | the model produces speech segments | `start_sample`, `end_sample`, `confidence`, and `text` where the segment carries it. |
+| `speaker_turns` | the model diarizes | `start_sample`, `end_sample`, `speaker_id`, `confidence`, and `text` where present. |
+| `words` | the model aligns words | `word`, `start_sample`, `end_sample`, `confidence`. |
+| `sample_rate` | any of the three arrays above is present | Rate the sample offsets are counted in. Divide an offset by it for seconds. |
+
+Spans are sample offsets rather than seconds because that is what the models report; `sample_rate` is what converts them, which is why it only appears alongside them.
+
+`stream=true` is rejected with a 400 on this route: the SSE response carries transcript deltas only, so it has nowhere to put the detail arrays. Use `/v1/audio/transcriptions` for a streamed transcript.
+
+### `POST /v1/batches/transcriptions`
+
+Runs multiple uploaded WAV files through one native offline model batch. This is
+an audio.cpp extension, not an OpenAI API endpoint. The selected model must
+implement native batching; the server rejects unsupported models instead of
+silently running each file separately.
+
+Supply `file` more than once in one multipart request:
+
+```bash
+curl -N http://127.0.0.1:8080/v1/batches/transcriptions \
+  -F model=nemotron-3-diar \
+  -F file=@/path/to/meeting-a.wav \
+  -F file=@/path/to/meeting-b.wav
+```
+
+`model` and at least one `file` are required. `language`, `prompt`,
+`busy_timeout_ms`, and a JSON object in `options` are optional and apply to every
+file. The response is an SSE stream. Each file is published as soon as the model
+finishes it; `index` maps the result back to its upload position. The final event
+contains aggregate batch timing measured against the combined audio duration.
+
+```text
+data: {"type":"batch.transcription.result","index":0,"filename":"meeting-a.wav","text":"","speaker_turns":[{"start_sample":0,"end_sample":32000,"speaker_id":"speaker_0","confidence":1.0}],"sample_rate":16000}
+
+data: {"type":"batch.transcription.result","index":1,"filename":"meeting-b.wav","text":"","speaker_turns":[...],"sample_rate":16000}
+
+data: {"type":"batch.transcription.done","result_count":2,"timing":{"wall_ms":145.5,"audio_duration_ms":70000.0,"rtf":0.0021}}
+
+data: [DONE]
+```
+
+### `POST /v1/audio/alignments`
+
+Multipart forced-alignment request using uploaded audio bytes and a known transcript. Use this when the server cannot see the client's local audio path, for example when the server is remote or running in Docker.
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/alignments \
+  -F model=qwen3-align \
+  -F language=en \
+  -F text='The task has completed successfully.' \
+  -F file=@/path/to/input.wav
+```
+
+`file`, `model`, and `text` are required. `language` is model-dependent: Qwen3 Forced Aligner requires it (for example, `English` or `Chinese`). The selected model must be configured with `task: "align"` and `mode: "offline"`. Uploaded WAV bytes are decoded in memory and are not written to a temporary file. The response includes word timestamps in seconds plus sample offsets.
+
 ### `POST /v1/audio/transcriptions/live`
 
 Streams raw PCM **as it is captured** and returns transcript deltas on the same connection, so partial text can appear while the user is still speaking.
 
-The request body is raw interleaved PCM sent with `Transfer-Encoding: chunked`; the response is the same SSE event shape as `stream=true` above, so a client can share one reader. There is no multipart form and no file — the audio never has to exist on disk, and the transport hands each chunk to the model as it arrives rather than assembling the recording first. Whether the *model* then keeps the whole utterance in memory is its own business: `nemotron_asr`, for instance, accumulates internally regardless of how the audio reaches it.
+The request body is raw interleaved PCM sent with `Transfer-Encoding: chunked`; the response is the same SSE event shape as `stream=true` above, so a client can share one reader. There is no multipart form and no file — the audio never has to exist on disk, and the transport hands each chunk to the model as it arrives rather than assembling the recording first.
 
 Because the body carries audio rather than JSON, parameters are query parameters:
 
@@ -391,6 +586,7 @@ Because the body carries audio rather than JSON, parameters are query parameters
 | `channels` | `1` | interleaved channel count |
 | `sample_format` | `s16le` | `s16le` or `f32le` |
 | `language` | unset | passed through to the model |
+| `prompt` | unset | URL-encoded recognition context (hotwords, spellings), same as the multipart `prompt` field |
 | `busy_timeout_ms` | model policy | how long to wait for the model lock, as elsewhere; clamped by the configured ceiling, so a request can shorten its own wait but never weaken the guard |
 
 ```bash
@@ -404,7 +600,24 @@ ffmpeg -f avfoundation -i ":0" -ar 16000 -ac 1 -f s16le - \
 
 A headerless stream carries no format, so the parameters above are a contract the server cannot verify — sending 48 kHz audio while declaring 16 kHz produces a confident, wrong transcript rather than an error.
 
-Whether partial text actually appears *during* capture is a property of the model, not of this endpoint. A model that decodes incrementally (`voxtral_realtime`) emits deltas throughout the utterance; one whose encoder consumes the whole utterance before decoding (`nemotron_asr`) will stream its deltas only after the audio ends. Both work here; only the first feels live.
+Whether partial text actually appears *during* capture is a property of the model, not of this endpoint. Cache-aware streaming models such as `voxtral_realtime` and `nemotron_asr` emit deltas throughout the utterance; buffered models may emit only after enough audio has accumulated.
+
+For a model configured with `task: "diar"`, this route and the file-backed
+`/v1/audio/transcriptions` route with `stream=true` return speaker turns instead
+of text deltas:
+
+```text
+data: {"type":"diarization.delta","speaker_turns":[{"start_sample":5760,"end_sample":52480,"speaker_id":"speaker_0","confidence":0.99}],"sample_rate":16000}
+data: {"type":"diarization.done","speaker_turns":[...],"sample_rate":16000,"timing":{"ttft_ms":3606}}
+data: [DONE]
+```
+
+Each delta contains newly emitted turns. The final event contains the complete
+result, including any turn still open when input ended; do not append it to the
+deltas. TTFT measures the first speaker-turn result, not the first internal
+probability prediction. A model that emits only completed turns waits for a turn
+to end. If no turns are detected, the final array is empty and `ttft_ms` is `null`.
+ASR responses keep their `transcript.text.delta` / `transcript.text.done` format.
 
 The request ends when the client sends the terminating chunk. Closing the connection without one is an error, not an end of speech — a truncated transcript that arrives as a normal `transcript.text.done` would be indistinguishable from the speaker stopping, so the endpoint refuses to produce one. The same applies to a stall past the idle timeout, an oversized chunk, or a malformed frame: each surfaces as an SSE `error` event.
 
@@ -462,6 +675,23 @@ curl 'http://127.0.0.1:8080/v1/audio/voices?model=pocket-tts'
 
 ### `POST /v1/tasks/run`
 
+For audio input, `request.audio` is a server-local WAV path. Alternatively,
+`request.audio_base64` accepts a Base64-encoded WAV or a
+`data:audio/wav;base64,...` URI:
+
+```json
+{
+  "model": "mel_band_roformer",
+  "request": {"audio_base64": "<Base64-encoded WAV>"}
+}
+```
+
+Provide only one of `audio` and `audio_base64`. Invalid inline audio returns
+HTTP 400. The existing `max_request_body_bytes` limit applies to the entire
+JSON body, including Base64 expansion. The WAV must meet the model's input
+sample-rate and channel requirements. Inline audio is supported on this endpoint;
+batch and stream endpoints retain their existing input formats.
+
 Generic framework request route. The `request` object uses the same JSON fields as the `audiocpp_cli` request sequence format.
 
 ```bash
@@ -477,6 +707,30 @@ curl http://127.0.0.1:8080/v1/tasks/run \
     }
   }'
 ```
+
+### `POST /v1/tasks/batch`
+
+Runs multiple generic requests through a model's native offline batch path. The
+selected model must implement native batching; unsupported models are rejected
+instead of being run sequentially. Each entry uses the same fields as the
+`request` object accepted by `/v1/tasks/run`.
+
+```bash
+curl -N http://127.0.0.1:8080/v1/tasks/batch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "reuse",
+    "requests": [
+      {"audio": "/path/to/first.wav"},
+      {"audio": "/path/to/second.wav"}
+    ]
+  }'
+```
+
+The SSE response emits `task.batch.result` events with the original request
+index as results become available, followed by `task.batch.done` with aggregate
+batch timing. Per-result `timing` is `null` because fused execution does not
+produce an independent wall time for each request.
 
 ### `POST /v1/tasks/unload_models`
 
@@ -516,3 +770,13 @@ Response:
   "unloaded": ["pocket-tts", "qwen3-asr"]
 }
 ```
+
+With `--parallel-jobs`, all models (including capacity one) use FIFO admission.
+Earlier queued requests drain before a later unload/reconfiguration, and later
+arrivals cannot overtake a reserved waiter. A request binds model configuration
+before preparation and retains its lease through any deferred stream/native
+batch response. Bulk unload releases ready idle pools before waiting on busy
+ones. Logical residency ends when teardown starts; unload completes when
+resources have been destroyed, and physical-memory guards still apply.
+Registry lookup/snapshot locks never span model admission or metadata waits.
+See the [behavior contract](../../docs/maintainers/parallel_server_behavior_contract.md).

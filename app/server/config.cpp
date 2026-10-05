@@ -217,6 +217,10 @@ engine::core::BackendType parse_server_backend(const std::string & value) {
 }
 
 ServerConfig load_server_config(const std::filesystem::path & path) {
+    return load_server_config(path, false);
+}
+
+ServerConfig load_server_config(const std::filesystem::path & path, bool parallel_jobs) {
     const auto root = engine::io::json::parse_file(path);
     const auto base = path.parent_path();
     ServerConfig config;
@@ -235,6 +239,8 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
     }
     config.busy_timeout_ms = engine::io::json::optional_i32(root, "busy_timeout_ms", config.busy_timeout_ms);
     config.max_loaded_models = engine::io::json::optional_i32(root, "max_loaded_models", config.max_loaded_models);
+    config.idle_unload_ms = engine::io::json::optional_i32(root, "idle_unload_ms", config.idle_unload_ms);
+    config.min_free_memory_mb = engine::io::json::optional_i32(root, "min_free_memory_mb", config.min_free_memory_mb);
     if (const auto * value = root.find("live_ingest")) {
         config.live_ingest = parse_live_ingest_limits(*value, config.live_ingest, "server live_ingest");
     }
@@ -247,6 +253,18 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
         }
         config.voice_dir = resolve_path(base, value->as_string());
     }
+    config.frontend_listener = engine::io::json::optional_string(root, "frontend_listener", config.frontend_listener);
+    if (const auto * value = root.find("frontend_options")) {
+        if (!value->is_object()) {
+            throw std::runtime_error("server frontend_options must be an object");
+        }
+        for (const auto & [key, option] : value->as_object()) {
+            if (!option.is_string()) {
+                throw std::runtime_error("server frontend_options values must be strings");
+            }
+            config.frontend_options[key] = option.as_string();
+        }
+    }
     if (config.port <= 0 || config.port > 65535) {
         throw std::runtime_error("server port must be in 1..65535");
     }
@@ -255,6 +273,15 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
     }
     if (config.max_loaded_models < 0) {
         throw std::runtime_error("server max_loaded_models must be >= 0 (0 disables the limit)");
+    }
+    if (config.idle_unload_ms < 0) {
+        throw std::runtime_error("server idle_unload_ms must be >= 0 (0 disables idle unload)");
+    }
+    if (config.min_free_memory_mb < 0) {
+        throw std::runtime_error("server min_free_memory_mb must be >= 0 (0 disables the memory guard)");
+    }
+    if (config.frontend_listener.empty() && !config.frontend_options.empty()) {
+        throw std::runtime_error("server frontend_options requires frontend_listener");
     }
     if (config.threads <= 0) {
         throw std::runtime_error("server threads must be positive");
@@ -270,14 +297,28 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
     for (const auto & item : models->as_array()) {
         ServerModelConfig model;
         model.id = engine::io::json::require_string(item, "id");
-        model.path = resolve_path(base, engine::io::json::require_string(item, "path"));
+        model.family = engine::io::json::require_string(item, "family");
+        const auto raw_path = engine::io::json::require_string(item, "path");
+        model.path = resolve_path(base, raw_path);
         if (const auto * value = item.find("model_spec_override")) {
             model.model_spec_override = resolve_path(base, value->as_string());
         }
-        model.family = engine::io::json::require_string(item, "family");
         model.task = engine::io::json::optional_string(item, "task", model.task);
         model.mode = engine::io::json::optional_string(item, "mode", model.mode);
         model.lazy = engine::io::json::optional_bool(item, "lazy", config.lazy_load);
+        if (!parallel_jobs && item.find("slots") != nullptr) {
+            throw std::runtime_error("slots requires --parallel-jobs at server startup");
+        }
+        if (parallel_jobs) {
+            if (const auto * value = item.find("slots")) {
+                if (!value->is_number() || !std::isfinite(value->as_number()) ||
+                    std::floor(value->as_number()) != value->as_number() ||
+                    value->as_number() < 1 || value->as_number() > 16) {
+                    throw std::runtime_error("model slots must be an integer between 1 and 16");
+                }
+                model.slots = static_cast<int>(value->as_number());
+            }
+        }
         if (item.find("busy_timeout_ms") != nullptr) {
             const auto busy_timeout_ms = engine::io::json::optional_i32(item, "busy_timeout_ms", 0);
             if (busy_timeout_ms < 0) {

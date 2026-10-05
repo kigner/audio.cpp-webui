@@ -217,7 +217,7 @@ audiocpp_cli --task svc --family vevo2 --model models/Vevo2 --backend cuda --tas
 audiocpp_cli --task svc --family vevo2 --model models/Vevo2 --backend cuda --task-route instrument_to_singing --prosody-ref melody.wav --target-voice target_singer.wav --target-text "Lyrics to sing from the instrumental melody." --out instrument_song.wav
 ```
 
-## Shared Controls
+## Common Options (use directly)
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
@@ -245,4 +245,11 @@ audiocpp_cli --task svc --family vevo2 --model models/Vevo2 --backend cuda --tas
 | `--seed` | integer | random if omitted | Request seed. |
 | `--predict-target-prosody` | `true`, `false` | `false` | Parsed by the CLI, but `true` is not implemented in the current reference path. |
 
-For backend weight-type controls, use `audiocpp_cli --inspect --model models/Vevo2 --family vevo2`.
+## Request Options (use with `--request-option`)
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `audio_chunk_duration_sec` | float | `0` | Opt-in source-audio chunking for `style_preserved_vc` and `style_preserved_svc`. `0` keeps the existing one-shot path. |
+| `cross_fade_duration_sec` | float | `1.0` with source-audio chunking | Source chunk overlap and output crossfade duration when source-audio chunking is enabled. Must be smaller than `audio_chunk_duration_sec`. |
+
+For backend weight-type controls, use `audiocpp_cli --inspect --model models/VeVo2 --family vevo2`.

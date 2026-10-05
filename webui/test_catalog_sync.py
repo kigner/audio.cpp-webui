@@ -35,7 +35,9 @@ _LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader(?:\s*\(\s*\))?")
 
 # Families the server registers but the WebUI deliberately does not surface,
 # with the reason. Keep this empty unless there is one.
-UNLISTED_FAMILIES: dict[str, str] = {}
+UNLISTED_FAMILIES: dict[str, str] = {
+    "liveavatar": "Image-conditioned raw video generation needs a separate video UI; use the CLI.",
+}
 
 
 def _packages():
@@ -92,6 +94,8 @@ class CatalogSyncTests(unittest.TestCase):
             download_id = entry.get("download_id")
             if download_id not in self.packages:
                 continue
+            if entry.get("manual_install"):
+                continue
             download = self.packages[download_id].download
             self.assertEqual(
                 download.get("kind"), "huggingface_snapshot",
@@ -116,11 +120,11 @@ class CatalogSyncTests(unittest.TestCase):
         # No download_id means the weights are committed (bundled assets); the
         # path has to exist in a checkout or the model is simply unreachable.
         for entry in self.entries:
-            if entry.get("download_id"):
+            if entry.get("download_id") or entry.get("manual_install"):
                 continue
-            self.assertTrue(os.path.isdir(os.path.join(REPO_ROOT, entry["path"])),
+            self.assertTrue(os.path.exists(os.path.join(REPO_ROOT, entry["path"])),
                             f"catalog entry {entry['id']} has no download_id, so "
-                            f"{entry['path']!r} must be a bundled directory in the repo")
+                            f"{entry['path']!r} must be a bundled file or directory in the repo")
 
     def test_required_files_mirrors_the_package_specs(self):
         expected = {pkg_id: _required_files(p)

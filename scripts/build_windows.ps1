@@ -4,6 +4,7 @@ param(
     [string]$Target = "audiocpp_cli",
     [int]$Jobs = 0,
     [switch]$ConfigureOnly,
+    [switch]$RunTests,
     [switch]$Clean,
     [string]$CudaArchitectures = "auto",
     [ValidateSet("", "native", "avx2", "baseline")]
@@ -19,6 +20,7 @@ param(
     [ValidateSet("full", "core", "custom")]
     [string]$ModelSet = "full",
     [string]$Models = "",
+    [string]$Version = "dev",
     [string]$VsInstall = ""
 )
 
@@ -195,12 +197,25 @@ function Add-MsvcEnvironment {
         [Parameter(Mandatory = $true)][string]$SdkTool
     )
 
+    # A stray double quote in PATH (some installers write one) is fatal here:
+    # nvcc re-runs vcvars64.bat for every .cu file, and on that nested run
+    # vcvarsall restores PATH from the __VSCMD_PREINIT_PATH copy taken below.
+    # The unbalanced quote breaks cmd's parser, the script exits 255, and nvcc
+    # reports "Could not set up the environment for Microsoft Visual Studio".
+    # Strip quotes from PATH going in, and from both PATH copies coming back.
+    $env:PATH = $env:PATH -replace '"', ''
+
     $vcvars = Join-Path $VsInstall "VC\Auxiliary\Build\vcvars64.bat"
     if (Test-Path $vcvars) {
         $cmd = "`"$vcvars`" >nul && set"
         foreach ($line in (& cmd.exe /d /s /c $cmd)) {
             if ($line -match "^([^=]+)=(.*)$") {
-                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
+                $name = $Matches[1]
+                $value = $Matches[2]
+                if ($name -eq "PATH" -or $name -eq "__VSCMD_PREINIT_PATH") {
+                    $value = $value -replace '"', ''
+                }
+                [Environment]::SetEnvironmentVariable($name, $value, "Process")
             }
         }
     }
@@ -459,6 +474,9 @@ function Find-VulkanRoot {
 }
 
 $settings = Get-PresetSettings $Preset
+if ($RunTests) {
+    $settings.BuildTests = "ON"
+}
 $cpuArchSettings = Get-CpuArchSettings $CpuArch
 if ($null -ne $cpuArchSettings.Native) {
     $settings.Native = $cpuArchSettings.Native
@@ -551,6 +569,7 @@ Write-Host "Model composite: $ModelSet"
 if ($Models -ne "") {
     Write-Host "Selected models: $Models"
 }
+Write-Host "audio.cpp version: $Version"
 
 if ($Clean) {
     $buildDirForClean = Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) "build") $Preset
@@ -587,6 +606,7 @@ $configureArgs = @(
     "-DAUDIOCPP_DEPLOYMENT_BUILD=$deploymentBuildValue",
     "-DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=$nativeModelManagerValue",
     "-DAUDIOCPP_USE_SYSTEM_OPENSSL=$systemOpenSslValue",
+    "-DAUDIOCPP_VERSION=$Version",
     "-U", "AUDIOCPP_BORINGSSL_ARCHIVE",
     "-DAUDIOCPP_MODEL_SET=$ModelSet",
     "-DAUDIOCPP_MODELS=$Models"
@@ -629,3 +649,11 @@ if ($Target -ne "") {
 
 Write-Host "Build jobs: $effectiveJobs"
 Invoke-Checked $cmake $buildArgs
+
+if ($RunTests) {
+    # Unit tests live under ENGINE_BUILD_TESTS; flip ON above, build everything
+    # that the -Target build skipped, then run the registered ctest suite.
+    Invoke-Checked $cmake @("--build", $buildDir, "-j", $effectiveJobs.ToString())
+    $ctest = Join-Path (Split-Path $cmake -Parent) "ctest.exe"
+    Invoke-Checked $ctest @("--test-dir", $buildDir, "--output-on-failure", "-j", $effectiveJobs.ToString())
+}

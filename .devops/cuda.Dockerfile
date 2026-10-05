@@ -17,6 +17,7 @@ ARG BASE_CUDA_RUN_CONTAINER=docker.io/nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
 ARG GCC_VERSION=14
+ARG AUDIOCPP_VERSION=dev
 # CUDA architectures to compile for.
 # - default = the portable default list from CMakeLists.txt
 # - for a custom arch set build with --build-arg CUDA_DOCKER_ARCH="89-real;...".
@@ -46,6 +47,7 @@ RUN if [ "${CUDA_DOCKER_ARCH}" != "default" ]; then \
         -DENGINE_ENABLE_VULKAN=OFF \
         -DENGINE_ENABLE_OPENMP=ON \
         -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON \
+        -DAUDIOCPP_VERSION="${AUDIOCPP_VERSION}" \
         -DENGINE_BUILD_EXAMPLES=OFF \
         -DENGINE_BUILD_TESTS=OFF \
         -DENGINE_BUILD_WARMBENCH=OFF \
@@ -55,8 +57,7 @@ RUN if [ "${CUDA_DOCKER_ARCH}" != "default" ]; then \
         --target audiocpp_cli \
         --target audiocpp_server \
         --target audiocpp_model_manager \
-        --target model_perf \
-        --target miocodec_wavlm_parity
+        --target model_perf
 
 # Collect shared libraries
 RUN mkdir -p /app/lib && \
@@ -65,7 +66,7 @@ RUN mkdir -p /app/lib && \
 # Collect binaries + multiplexer into /app/full
 RUN mkdir -p /app/full && \
     cp build/bin/audiocpp_cli build/bin/audiocpp_server build/bin/audiocpp_model_manager \
-       build/bin/model_perf build/bin/miocodec_wavlm_parity /app/full/ && \
+       build/bin/model_perf /app/full/ && \
     cp .devops/entrypoint.sh /app/full/entrypoint.sh && \
     chmod +x /app/full/entrypoint.sh
 

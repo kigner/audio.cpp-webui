@@ -126,6 +126,58 @@ types stored in that file. The performance study below used the safetensors
 package plus session-time storage conversion; the GGUF checks validate
 standalone loading and output, not a separate GGUF-vs-safetensors speed claim.
 
+## Orukeet r3 checkpoint
+
+[Orukeet r3](https://huggingface.co/oruk/orukeet) (Oruk AI) is a fine-tune of
+`parakeet-tdt-0.6b-v3` that replaces half of the encoder's temporal depthwise
+filters with fitted, frozen Gabor kernels and continues training on
+multilingual and multi-accent data. It keeps the exact architecture,
+tensor shapes, preprocessor, and tokenizer of the stock checkpoint — the
+fitted kernels are materialized as ordinary convolution weights — so it runs
+through this same `parakeet_tdt` loader with no engine changes. It is a
+weight variant, not a new model family.
+
+Orukeet publishes a `.nemo` checkpoint rather than a Transformers-compatible
+safetensors package, so conversion goes through
+`tools/community_models/convert_orukeet.py`, which maps the 651 NeMo tensors
+to the audio.cpp layout, reuses the stock sidecars (verified against the
+`.nemo` config; the r3 export audit certifies the tokenizer is unchanged),
+and packs a standalone GGUF via `audiocpp_gguf`. The script never downloads
+anything; point it at a local copy of the pinned r3 file:
+
+```bash
+uv run --python 3.12 --with torch --with pyyaml --with safetensors \
+    --with sentencepiece --with numpy \
+  tools/community_models/convert_orukeet.py \
+    --checkpoint path/to/orukeet-v0.1.0.nemo \
+    --converter build/<preset>/bin/audiocpp_gguf \
+    --gguf-output models/Orukeet-GGUF/orukeet-q8_0.gguf \
+    --type q8_0
+```
+
+The stock install (`models/parakeet-tdt-0.6b-v3`, from
+`model_manager_v2.py install parakeet_tdt`) supplies the reference sidecars.
+Source checkpoint SHA-256:
+`031c8ddab4845aeced904a7cde8e8aa57993b2e344716cf83a545b079c473b56`.
+
+Validated on CUDA (RTX 4070 Ti SUPER) against the golden clip
+(`tests/parakeet_tdt/assets/2086-149220-0033.wav`): all four storage
+variants reproduce the checked-in stock transcription byte-identically with
+word timestamps — F32 (~210 ms, ~35x realtime), F16 (~141 ms, ~53x),
+BF16 (~186 ms, ~40x), Q8_0 (~162 ms, ~46x); tested files are about 2.5 GB
+for F32, 1.3 GB for F16 or BF16, and 916 MB for Q8_0. This checks port
+correctness on one English clip; Orukeet's vendor-reported multilingual
+gains (pooled FLEURS WER 9.85% vs 11.01%) are not independently validated
+here, and its final adaptation trained on LibriSpeech test-other, so treat
+the vendor's LibriSpeech numbers with caution.
+
+License: Orukeet r3 weights and fitted kernels are CC BY-SA 4.0, retaining
+NVIDIA's CC BY 4.0 foundation attribution; redistribution of converted GGUFs
+carries the ShareAlike terms. See the upstream
+[NOTICE](https://huggingface.co/oruk/orukeet/blob/main/NOTICE.md) and
+[weight license](https://huggingface.co/oruk/orukeet/blob/main/LICENSE-WEIGHTS).
+The converter records both in the staging `provenance.json`.
+
 ## Options
 
 Request options are bare names. Session options use the
@@ -135,6 +187,8 @@ Request options are bare names. Session options use the
 |---|---|---|---|
 | `max_tokens` | request | integer >= 0; `0` | TDT token limit; `0` uses the model-derived limit |
 | `keep_language_tags` | request | boolean; `false` | Preserve language-tag tokens in decoded text |
+| `audio_chunk_mode` | request | `auto`, `fixed`, `vad`, `none`; `auto` | Offline chunking mode; `vad` skips silent spans with Silero VAD |
+| `audio_chunk_duration_sec` | request | float >= 0.001; session value | Request-level chunk duration for fixed or VAD offline chunking |
 | `weight_type` | session | `native`, `f32`, `f16`, `bf16`, `q8_0`; `native` | Fallback storage type for matmul weights |
 | `matmul_weight_type` | session | same values; inherits `weight_type` | Encoder and decoder matmul storage type |
 | `conv_weight_type` | session | `native`, `f32`, `f16`; `native` | True convolution-weight storage type |
@@ -148,6 +202,7 @@ Request options are bare names. Session options use the
 | `streaming_attention_mode` | session | `full_context`; `full_context` | Bidirectional attention within each bounded streaming window |
 | `offline_mode` | session | `full_context`, `long_form`, `auto`; `full_context` | Offline scheduling policy |
 | `audio_chunk_threshold_sec` | session | float >= 0.001; `30` | `auto` threshold for switching to long-form execution |
+| `vad_model_path` | session | path; `assets/framework/models/silero_vad` | Silero VAD model directory for `audio_chunk_mode=vad` |
 
 Word timestamps are built from the decoder's actual nonblank token-emission
 frames. SentencePiece fragments and following punctuation are merged into
@@ -182,6 +237,13 @@ default). Long-form mode preserves global timestamps and predictor state while
 decoding every center region exactly once. Because each region sees bounded
 rather than utterance-wide context, its transcript can differ from the default
 full-context result.
+
+Set `--request-option audio_chunk_mode=vad` to use Silero VAD-planned speech
+spans instead of fixed windows. VAD mode uses
+`audio_chunk_duration_sec` as the maximum speech chunk duration, falling back to
+`parakeet_tdt.audio_chunk_duration_sec` when omitted. `parakeet_tdt.vad_model_path`
+locates the bundled Silero VAD model. `auto` keeps the existing Parakeet
+`offline_mode` behavior.
 
 ## Performance
 

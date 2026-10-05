@@ -9,6 +9,7 @@
 
 #include "engine/framework/core/backend.h"
 
+#include "frontend.h"
 #include "http.h"
 
 namespace minitts::server {
@@ -45,6 +46,7 @@ struct ServerModelConfig {
     std::string task = "tts";
     std::string mode = "offline";
     bool lazy = false;
+    int slots = 1; // Capacity read only by the startup-selected parallel runtime.
     // Overrides ServerConfig::busy_timeout_ms for this model, and acts as the ceiling
     // a per-request busy_timeout_ms is clamped to. Model runtimes differ by orders of
     // magnitude (a short TTS clip vs. minutes of music generation), so one fleet-wide
@@ -90,9 +92,23 @@ struct ServerConfig {
     // limit and keeps the original behavior: once loaded, a model stays in memory
     // until it is unloaded explicitly or the server exits.
     int max_loaded_models = 0;
+    // Unload every resident model once the server has been idle this long without
+    // any model load/run (steady-clock ms). 0 disables idle unload. Complements
+    // max_loaded_models: that bounds peak residency, this frees memory during
+    // quiet periods. The next request reloads lazily.
+    int idle_unload_ms = 0;
+    // Minimum free memory (host and GPU, each) the server must retain after
+    // loading a model, in MiB. Before every lazy load the server estimates the
+    // model's resident footprint from its weights and refuses to load when
+    // estimate + this headroom would not fit. 0 disables the memory guard
+    // entirely (the default), so existing deployments see no behavior change
+    // unless they opt in.
+    int min_free_memory_mb = 0;
     // Fleet-wide bounds for incrementally delivered request bodies. The defaults are
     // in LiveIngestLimits; a model entry may override any subset of them.
     LiveIngestLimits live_ingest;
+    std::string frontend_listener;
+    ServerFrontendOptions frontend_options;
     std::optional<std::filesystem::path> model_spec_override;
     // Voice library shared across all TTS models: *.wav files plus a `prompt_text`
     // mapping file (<basename>|<transcript>). A request `voice` name that is not a
@@ -103,5 +119,6 @@ struct ServerConfig {
 
 engine::core::BackendType parse_server_backend(const std::string & value);
 ServerConfig load_server_config(const std::filesystem::path & path);
+ServerConfig load_server_config(const std::filesystem::path & path, bool parallel_jobs);
 
 }  // namespace minitts::server

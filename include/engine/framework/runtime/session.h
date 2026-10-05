@@ -2,6 +2,7 @@
 
 #include "engine/framework/core/backend.h"
 #include "engine/framework/debug/trace.h"
+#include "engine/framework/io/json.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +35,7 @@ enum class VoiceTaskKind {
     SpeakerRecognition,
     Svc,
     Midi,
+    TurnDetection,
 };
 
 enum class RunMode {
@@ -163,6 +165,10 @@ struct TaskRequest {
     std::optional<VoiceCondition> voice = std::nullopt;
     std::vector<VoiceArtifact> input_artifacts;
     std::unordered_map<std::string, std::string> options;
+    /// List-valued options, kept apart from the single-valued ones so a family
+    /// reading either cannot silently see the other half-formed. The `*_list`
+    /// option types the spec schema already declares are carried here.
+    std::unordered_map<std::string, std::vector<std::string>> option_arrays;
 };
 
 struct AudioPreparationContract {
@@ -176,6 +182,9 @@ struct SessionPreparationRequest {
     std::optional<Transcript> text = std::nullopt;
     std::optional<VoiceCondition> voice = std::nullopt;
     std::unordered_map<std::string, std::string> options;
+    /// See TaskRequest::option_arrays. Carried through preparation so a session
+    /// can size its graphs for what run() will actually be handed.
+    std::unordered_map<std::string, std::vector<std::string>> option_arrays;
 };
 
 struct VoiceActivityEvent {
@@ -191,6 +200,11 @@ struct VoiceActivityEvent {
     std::optional<SpeechSegment> segment = std::nullopt;
 };
 
+struct CustomSchemaOutput {
+    std::string schema;
+    io::json::Value data;
+};
+
 struct TaskResult {
     std::optional<AudioBuffer> audio_output = std::nullopt;
     std::vector<NamedAudioBuffer> named_audio_outputs;
@@ -198,6 +212,7 @@ struct TaskResult {
     std::vector<SpeechSegment> speech_segments;
     std::vector<SpeakerTurn> speaker_turns;
     std::vector<WordTimestamp> word_timestamps;
+    std::optional<CustomSchemaOutput> custom_schema_output = std::nullopt;
     std::optional<VoiceArtifact> artifact_output = std::nullopt;
     std::vector<VoiceArtifact> output_artifacts;
 };
@@ -247,6 +262,24 @@ public:
     ~IOfflineVoiceTaskSession() override = default;
 
     virtual TaskResult run(const TaskRequest & request) = 0;
+};
+
+class IBatchedOfflineVoiceTaskSession : public virtual IVoiceTaskSession {
+public:
+    using ResultCallback = std::function<void(size_t, TaskResult)>;
+
+    ~IBatchedOfflineVoiceTaskSession() override = default;
+
+    virtual std::vector<TaskResult> run_batch(const std::vector<TaskRequest> & requests) = 0;
+
+    virtual void run_batch(
+        const std::vector<TaskRequest> & requests,
+        const ResultCallback & on_result) {
+        auto results = run_batch(requests);
+        for (size_t index = 0; index < results.size(); ++index) {
+            on_result(index, std::move(results[index]));
+        }
+    }
 };
 
 class IStreamingVoiceTaskSession : public virtual IVoiceTaskSession {

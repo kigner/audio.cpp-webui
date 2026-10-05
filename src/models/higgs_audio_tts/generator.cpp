@@ -141,7 +141,7 @@ HiggsPreparedPrompt make_prepared_prompt(const HiggsPromptEncoding & prompt,
 } // namespace
 
 HiggsGenerator::HiggsGenerator(std::shared_ptr<const HiggsAssets> assets,
-                               std::shared_ptr<HiggsARRuntime> ar,
+                               std::shared_ptr<HiggsQwen3ARRuntime> ar,
                                std::shared_ptr<HiggsCodecRuntime> codec,
                                size_t ar_decode_graph_arena_bytes)
     : assets_([&]() {
@@ -167,6 +167,40 @@ HiggsGenerator::HiggsGenerator(std::shared_ptr<const HiggsAssets> assets,
     if (ar_decode_graph_arena_bytes_ == 0) {
         throw std::runtime_error("Higgs TTS generator graph arena bytes must be non-zero");
     }
+}
+
+void HiggsGenerator::replace_kv_cache(int64_t steps, bool preserve_state) {
+    if (ar_->backend_type() != core::BackendType::Cuda) {
+        const auto state = preserve_state ? ar_kv_cache_->export_state() : runtime::TransformerKVState{};
+        decode_graph_.reset();
+        ar_kv_cache_ = std::make_unique<HiggsQwen3KVCache>(ar_, steps);
+        if (preserve_state) {
+            ar_kv_cache_->import_state(state);
+        }
+        return;
+    }
+    std::unique_ptr<HiggsQwen3KVCache> next_cache;
+    std::unique_ptr<HiggsQwen3DecodeGraph> next_graph;
+    // Match the original capacity exactly: changing attention tensor sizes or
+    // retaining a different reference prefix can change sampled audio. One
+    // spare lets repeated requests reuse allocation and graph capture safely.
+    if (spare_kv_cache_ && spare_kv_cache_->can_run(*ar_, steps) &&
+        spare_kv_cache_->cache_steps() == steps) {
+        next_cache = std::move(spare_kv_cache_);
+        next_graph = std::move(spare_decode_graph_);
+    } else {
+        spare_decode_graph_.reset();
+        spare_kv_cache_.reset();
+        next_cache = std::make_unique<HiggsQwen3KVCache>(ar_, steps);
+    }
+    if (preserve_state) {
+        next_cache->retain_prefix(0);
+        next_cache->copy_from(*ar_kv_cache_);
+    }
+    spare_decode_graph_ = std::move(decode_graph_);
+    spare_kv_cache_ = std::move(ar_kv_cache_);
+    ar_kv_cache_ = std::move(next_cache);
+    decode_graph_ = std::move(next_graph);
 }
 
 void HiggsGenerator::prepare(const HiggsGenerationRequest & request) {
@@ -359,8 +393,7 @@ HiggsGenerationResult HiggsGenerator::generate(const HiggsGenerationRequest & re
         ar_kv_cache_ == nullptr || !ar_kv_cache_->can_run(*ar_, initial_cache_steps) ||
         ar_kv_cache_->cache_steps() != initial_cache_steps;
     if (cache_rebuild) {
-        decode_graph_.reset();
-        ar_kv_cache_ = std::make_unique<HiggsARKVCache>(ar_, initial_cache_steps);
+        replace_kv_cache(initial_cache_steps, false);
         reference_kv_ready_ = false;
     }
     const bool reference_kv_cache_hit =
@@ -380,7 +413,7 @@ HiggsGenerationResult HiggsGenerator::generate(const HiggsGenerationRequest & re
     if (prefill_graph_ == nullptr ||
         !prefill_graph_->matches(*ar_, prompt_steps, prefill_start_step)) {
         prefill_graph_.reset();
-        prefill_graph_ = std::make_unique<HiggsARPrefillGraph>(
+        prefill_graph_ = std::make_unique<HiggsQwen3PrefillGraph>(
             ar_, prompt_steps, prefill_start_step, ar_kv_cache_.get(), ar_decode_graph_arena_bytes_);
     }
     auto prefill_output = prefill_graph_->run(prepared.ar_input, prefill_start_step);
@@ -388,7 +421,7 @@ HiggsGenerationResult HiggsGenerator::generate(const HiggsGenerationRequest & re
     reference_kv_ready_ = reference_cache_hit;
 
     if (decode_graph_ == nullptr || !decode_graph_->can_run(*ar_, ar_kv_cache_->cache_steps())) {
-        decode_graph_ = std::make_unique<HiggsARDecodeGraph>(
+        decode_graph_ = std::make_unique<HiggsQwen3DecodeGraph>(
             ar_, ar_kv_cache_->cache_steps(), *ar_kv_cache_, ar_decode_graph_arena_bytes_);
     }
     if (!prefill_output.wrote_cache) {
@@ -458,19 +491,18 @@ HiggsGenerationResult HiggsGenerator::generate(const HiggsGenerationRequest & re
     while (!state.generation_done && result.delayed_frames < request.options.max_tokens) {
         if (ar_kv_cache_->valid_steps() >= ar_kv_cache_->cache_steps()) {
             decode_timing_total.add(decode_graph_->timing());
-            const auto kv_state = ar_kv_cache_->export_state();
             const int64_t grown_cache_steps =
                 std::min(max_cache_steps,
                          std::max(ar_kv_cache_->cache_steps() * 2, ar_kv_cache_->valid_steps() + 1));
             if (grown_cache_steps <= ar_kv_cache_->cache_steps()) {
                 throw std::runtime_error("Higgs TTS AR cache cannot grow");
             }
-            decode_graph_.reset();
-            ar_kv_cache_ = std::make_unique<HiggsARKVCache>(ar_, grown_cache_steps);
-            ar_kv_cache_->import_state(kv_state);
+            replace_kv_cache(grown_cache_steps, true);
             engine::debug::trace_log_scalar("higgs_audio_tts.generator.kv_cache_grown_steps", grown_cache_steps);
-            decode_graph_ = std::make_unique<HiggsARDecodeGraph>(
-                ar_, ar_kv_cache_->cache_steps(), *ar_kv_cache_, ar_decode_graph_arena_bytes_);
+            if (decode_graph_ == nullptr) {
+                decode_graph_ = std::make_unique<HiggsQwen3DecodeGraph>(
+                    ar_, ar_kv_cache_->cache_steps(), *ar_kv_cache_, ar_decode_graph_arena_bytes_);
+            }
             decode_graph_->begin_decode_run();
         }
         HiggsARDecodeInput input;
@@ -508,7 +540,11 @@ HiggsGenerationResult HiggsGenerator::generate(const HiggsGenerationRequest & re
     engine::debug::timing_log_scalar("higgs_audio_tts.generator.decode_ms",
                                      engine::debug::elapsed_ms(decode_start, Clock::now()));
     if (!state.generation_done) {
-        throw std::runtime_error("Higgs TTS generation reached max_tokens before EOC");
+        throw std::runtime_error(
+            "Higgs TTS generation reached max_tokens (" + std::to_string(request.options.max_tokens) +
+            ") before EOC for this text chunk; raise it with --max-tokens on the CLI or "
+            "the \"max_tokens\" request option on the server, or lower --text-chunk-size / "
+            "\"text_chunk_size\" so each chunk needs fewer generated frames");
     }
 
     result.raw_codes = reverse_higgs_delay_pattern(

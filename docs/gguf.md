@@ -40,6 +40,11 @@ server-wide value.
 
 ## Support And Test Status
 
+AuK Base and AuK-Flash use separate GGUFs for the generator, Qwen conditioner,
+and VAE, plus config and tokenizer sidecars. F16 and Q8_0 components have smoke
+coverage, but full Python parity was measured only for the earlier combined
+GGUF with FP32 inference. See [AuK](community_models/auk.md) for CLI usage.
+
 Status labels:
 
 | Label | Meaning |
@@ -58,52 +63,79 @@ Status labels:
 | Family | Package-spec refactor | Safetensors tested after refactor | `orig` GGUF tested | 16-bit GGUF tested | `q8_0` GGUF tested |
 |---|---|---|---|---|---|
 | `ace_step` | Done | Pass | --- | Pass (drift) | No (planner sampling can fail) |
+| `apollo` | Done | --- | Pass (drift) | --- | --- |
+| `audio_flamingo` | Done | Pass | Pass | --- | --- |
 | `bs_roformer` | Done | Pass | --- | --- | Pass |
+| `canary_asr` | Done | Pass | Pass | --- | Pass |
 | `chatterbox` | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `citrinet_asr` | Done | Pass | --- | --- | Pass |
+| `cohere_asr` | Done | Pass | Pass | --- | Pass (drift) |
+| `crisperwhisper` | Done | Pass | Pass | --- | Pass (drift) |
 | `fish_audio` | Done | Pass | --- | Pass | Pass |
 | `fun_asr_nano` | Done | Pass | --- | Pass | Pass |
+| `gigaam_asr` | Done | --- | Pass | Pass | --- |
 | `glm_tts` | Done | Pass (TTS + clone) | --- | --- | Pass (ASR match, drift) |
 | `heartmula` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `higgs_audio_stt` | Done | Pass | --- | Pass | Pass |
 | `higgs_audio_tts` | Done | Pass | --- | Pass | Pass |
 | `htdemucs` | Done | Pass | --- | Pass | Pass (drift) |
+| `htdemucs_6stems` | Done | Pass | --- | Pass | Pass (drift) |
 | `hviske_asr` | Done | Pass | --- | --- | Pass |
 | `inflect_v2` | Done | Pass | Pass | --- | --- |
 | `index_tts2` | Done (v2 + v2.5 variant) | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
 | `irodori_tts` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
 | `kroko_asr` | Done | Pass | --- | --- | Pass |
+| `kitten_tts` | Done | --- | Pass (drift) | --- | --- |
+| `kugelaudio` | Done | --- | --- | Pass (ASR match, drift) | --- |
 | `magpie_tts` | Done | --- | Pass | --- | Pass |
 | `marblenet_vad` | Bundled (tiny model) | Pass | --- | --- | --- |
+| `maya1` | Done | --- | Pass | --- | --- |
 | `meanvc2` | Done | --- | --- | Pass | --- |
+| `tone_color_vc` | Done | --- | Pass (F32) | Pass (F16, drift) | No (drift) |
 | `mel_band_roformer` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `miocodec` | Done | Pass | Pass | Pass (drift) | Pass (drift) |
 | `miotts` | Done | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
 | `mms_forced_aligner` | Done | Pass | --- | Pass | Pass (bit-identical) |
+| `moonshine_asr` | Done | Pass | --- | --- | Pass |
 | `moss_tts_local` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
 | `moss_tts_nano` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
+| `moss_transcribe_diarize` | Done | --- | Pass | --- | Pass |
 | `muscriptor` | Done | Pass | Pass | --- | --- |
+| `nemotron_3_diar` | Done | --- | Pass | --- | --- |
 | `nemotron_asr` | Done | Pass | --- | Pass | Pass (minor filler drift) |
 | `neutts` | Done | Pass | --- | Pass | --- |
 | `omnivoice` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `outetts` | Done | Pass (TTS + clone) | --- | --- | Pass (TTS + clone) |
+| `owsm` | Done | --- | Pass | --- | Pass (drift) |
 | `parakeet_tdt` | Done | Pass | Pass | Pass | Pass |
+| `piper_tts` | Done | Pass | Pass | --- | --- |
 | `personaplex` | Done | --- | --- | --- | Pass |
 | `pocket_tts` | Done | Pass | --- | Pass | Pass (drift) |
+| `pulsevad` | Done | Pass | Pass | --- | --- |
 | `qwen3_asr` | Done | Pass | --- | Pass | Pass |
 | `qwen3_forced_aligner` | Done | Pass | --- | Pass | Pass |
 | `qwen3_tts` base | Done | Pass | Pass | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `qwen3_tts` custom voice | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `qwen3_tts` voice design | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
+| `reuse` | Done | --- | Pass (drift) | Pass (drift) | Pass (drift) |
 | `rvc` | Done | --- | --- | Pass | --- |
+| `sam_audio` | Done | --- | Pass | --- | --- |
+| `samsone` | Done | --- | --- | Pass | Pass (drift) |
+| `sidon` | Done | --- | Pass | --- | --- |
 | `seed_vc` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `sopro_tts` | Done | Pass | --- | Pass | Pass |
+| `soprano_tts` | Done | Pass | --- | Pass | Pass (drift) |
 | `silero_vad` | Skip (tiny model) | --- | --- | --- | --- |
+| `smart_turn` | Done | F32 | --- | --- | --- |
 | `sortformer_diar` | Done | Pass | --- | Pass | Pass |
+| `sortformer_diar_v2` | Done | Pass | Pass | Pass (mixed; output-turn criteria) | No (speaker drift) |
 | `stable_audio` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `supertonic` | Done | Pass | Pass | Pass | No (Q8 blockers unresolved) |
+| `universr` | Done | --- | Pass | --- | --- |
 | `vevo2` | Done | Pass | Pass | Pass (drift) | No (mixed route drift; speech ASR match) |
 | `vibevoice` | Done | Pass | --- | Pass | Pass (drift) |
 | `vibevoice_asr` | Done | Pass | --- | Pass | Pass |
+| `vibevoice_asr_streaming` | Done | --- | --- | Pass | Pass |
 | `voxcpm2` | Done | Pass | Pass | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `voxtral_realtime` | Done | Pass | --- | Pass | Pass |
 
@@ -111,12 +143,18 @@ Additional lower-bit checks:
 
 | Family | Format | Tested |
 |---|---|---|
+| `cohere_asr` | `q4_0` | Pass (drift) |
 | `meanvc2` | `q4_k` | Pass |
+| `moss_transcribe_diarize` | `q4_k` | No (long-audio segmentation/timestamp drift) |
+| `owsm` | `q4_k` | Pass (Small and Medium; transcript and timestamp drift) |
 | `personaplex` | `q4_k` | Pass |
+| `vibevoice_asr_streaming` | `q4_k` | Pass (quick CUDA check; transcript stays usable and matches the BF16 wording class) |
 | `voxtral_realtime` | `q4_k` | Pass (quick CUDA check; transcripts match Q8 except one capitalization-only difference) |
 
 Q8 packaging notes:
 
+- Apollo and UniverSR `orig` packages preserve F32 weights. See the
+  [Apollo](models/apollo.md) and [UniverSR](models/universr.md) usage guides.
 - `chatterbox` Q8 is intentionally mixed type. Graph-sensitive scalar, norm,
   bias, and side tensors stay in non-Q8 types while matmul-compatible weights
   are quantized.
@@ -143,6 +181,17 @@ Q8 packaging notes:
 - `voxtral_realtime` also has a tested `q4_k` package. In a quick CUDA path
   check it was smaller and faster than Q8_0, while transcript output matched
   Q8_0 except for one capitalization-only difference.
+- `vibevoice_asr_streaming` also has a tested `q4_k` package. In a quick CUDA
+  check, BF16 and Q4_K produced the same transcript wording on the validation
+  clip; Q8_0 produced the same sentence with minor wording drift. On the 1.5B
+  packages, scored WER over the four `assets/asr_validation/librispeech` clips
+  degrades in quantization order on both backends -- CUDA 4.35/5.80/7.25% and
+  CPU 4.35/4.35/5.80% for BF16/Q8_0/Q4_K -- but that whole spread is two
+  substitutions out of 69 words, so treat the ordering as unsurprising rather
+  than as measured. Note that the quantized packages score differently per
+  backend because CPU and CUDA quantize activations differently upstream (Q8_K
+  or Q8_0 against Q8_1); BF16 quantizes none and matches exactly. Quote a WER
+  for a quantized package with its backend.
 
 ## Build The Converter
 
