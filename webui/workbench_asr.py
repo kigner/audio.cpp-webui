@@ -167,8 +167,7 @@ class ManagedASR:
                     raise RuntimeError("识别服务正在退出，不能再加载模型。")
                 self._proc = subprocess.Popen(
                     command, cwd=self.backend.BUNDLE_ROOT, stdin=subprocess.DEVNULL,
-                    stdout=self._log_file, stderr=subprocess.STDOUT,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                    stdout=self._log_file, stderr=subprocess.STDOUT)
                 self._config_key = config_key
                 deadline = time.monotonic() + self.backend.LOAD_TIMEOUT
                 while time.monotonic() < deadline and not self._cancel.is_set():

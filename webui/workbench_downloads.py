@@ -214,8 +214,7 @@ class DownloadJobs:
                     code = 75  # preserve resumable state if shutdown beat the worker
                     return
                 self.proc = subprocess.Popen(command, cwd=self.b.PROJECT_ROOT, env=env,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
                 self.current["pid"] = self.proc.pid
                 self._save(True)
                 proc = self.proc

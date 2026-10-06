@@ -2738,7 +2738,7 @@ def _start_server(entry):
                           "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|cpu|metal.",
                           path=SERVER_EXE))
     cfg = _write_temp_config(entry)
-    flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     _open_log_file(truncate=True)
     # --log 会打开 engine 的 [TRACE]/[TIMING] 调试输出，日常太吵，默认关闭；
     # 排查推理问题时设 AUDIOCPP_SERVER_DEBUG=1 再启动 webui。

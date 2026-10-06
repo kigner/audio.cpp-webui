@@ -109,8 +109,7 @@ class ManagedASRTests(unittest.TestCase):
             self.assertEqual(model["session_options"], {"asr_family.weight_type": "q8_0", "asr_family.arena_mb": "64"})
             self.assertNotIn("temperature", model)
             self.assertIn("--no-ui", popen.call_args.args[0])
-            if os.name == "nt":
-                self.assertEqual(popen.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+            self.assertEqual(popen.call_args.kwargs.get("creationflags", 0), 0)
             manager.load("asr-model")
             popen.assert_called_once()
             manager.close()

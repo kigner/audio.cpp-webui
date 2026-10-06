@@ -171,19 +171,19 @@ def stop_instance(port):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="audio.cpp 本地工作台启动器")
     parser.add_argument("--diagnostic", action="store_true", help="保留控制台并同时写入启动日志")
-    parser.add_argument("--detach", action="store_true", help="在后台启动，不保留控制台")
+    parser.add_argument("--detach", action="store_true", help="在独立命令窗口启动")
     parser.add_argument("--stop", action="store_true", help="退出本目录启动的工作台")
     args = parser.parse_args(argv)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     if args.detach and not args.diagnostic and not args.stop:
         # Use the interpreter selected by the existing environment scripts.
-        # CREATE_NO_WINDOW prevents an additional terminal even without pythonw.
-        command = [sys.executable, str(Path(__file__).resolve())]
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        with STARTUP_LOG.open("a", encoding="utf-8") as log:
-            subprocess.Popen(command, cwd=WEBUI_DIR, stdin=subprocess.DEVNULL,
-                             stdout=log, stderr=log, creationflags=flags,
-                             start_new_session=os.name != "nt")
+        command = [sys.executable, str(Path(__file__).resolve()), "--diagnostic"]
+        if os.name == "nt":
+            subprocess.Popen(command, cwd=WEBUI_DIR, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:
+            with STARTUP_LOG.open("a", encoding="utf-8") as log:
+                subprocess.Popen(command, cwd=WEBUI_DIR, stdin=subprocess.DEVNULL,
+                                 stdout=log, stderr=log, start_new_session=True)
         return 0
 
     # Keep the stream open through atexit so backend cleanup cannot lose stderr.
