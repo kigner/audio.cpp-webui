@@ -52,6 +52,18 @@ document.querySelectorAll('[data-setup]').forEach(button=>button.addEventListene
 
 // Keep overlays outside the transformed control dock, so they anchor to the scene.
 document.body.append(byId('bubble-stack'),byId('realtime-notice'));
+const more = byId('call-more');
+byId('call-more-menu').append(...document.querySelector('.topbar-right').children);
+document.querySelector('.topbar-right').remove();
+more.querySelectorAll('button').forEach(button => button.addEventListener('click', () => { more.open = false; }));
+document.addEventListener('pointerdown', event => { if (!more.contains(event.target)) more.open = false; });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && more.open) { more.open = false; more.querySelector('summary').focus(); }
+});
+const dock = document.querySelector('.call-controls');
+const updateDockSize = () => document.body.style.setProperty('--dock-height', `${dock.getBoundingClientRect().height}px`);
+new ResizeObserver(updateDockSize).observe(dock);
+updateDockSize();
 byId('chat-panel').inert=true;
 byId('chat-btn').setAttribute('aria-expanded','false');
 byId('chat-btn').setAttribute('aria-controls','chat-panel');
@@ -76,6 +88,7 @@ fullscreenDocument.addEventListener('fullscreenchange',()=>{
   byId('scene-fullscreen').setAttribute('aria-label',active?'退出全屏':'全屏聊天');
 });
 function showConnection(online) {
+  byId('scene-connection').hidden = online;
   byId('scene-connection').dataset.state=online?'online':'offline';
   byId('scene-connection').textContent=online?'本地服务在线':'本地服务断开';
 }

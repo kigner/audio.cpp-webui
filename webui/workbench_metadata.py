@@ -1,9 +1,10 @@
 """Presentation metadata for the local audio workbench; model specs stay authoritative."""
 TASKS = {
-    "tts": ("文字配音", ("tts", "clon")),
-    "asr": ("音频转文字", ("asr",)),
+    "tts": ("语音合成", ("tts", "clon")),
+    "asr": ("语音识别", ("asr",)),
     "music": ("音乐与音效", ("gen",)),
-    "vc": ("声音转换", ("vc", "svc", "s2s")),
+    "vc": ("声音转换", ("vc", "svc")),
+    "processing": ("音频处理", ("s2s",)),
     "separation": ("音源分离", ("sep",)),
     "analysis": ("音频分析", ("vad", "diar", "align", "midi", "turn")),
     "design": ("声音设计", ("vdes",)),
@@ -16,6 +17,7 @@ FRIENDLY = {
     "retrieval_blend": ("目标音色融合", "控制检索音色特征的混合比例，需要检索索引。", "effect"),
     "audio_cover_strength": ("贴近原曲", "控制翻唱时对原曲的保留程度。", "effect"),
     "task_route": ("创作方式", "选择当前模型支持的创作方式。", "basic"),
+    "tags": ("音乐风格标签", "填写逗号分隔的风格、情绪与乐器标签。", "basic"),
     "speaker": ("说话人", "选择模型内置的说话人。", "basic"),
     "voice_id": ("内置音色", "使用随模型提供的音色。", "basic"),
     "voice": ("内置音色", "选择此模型支持的命名音色。", "basic"),
@@ -104,4 +106,42 @@ def model_detail(backend, entry):
         install_path=entry.get("abs_path", ""),
         requirements="显存数值为估算；文件大小未知时会显示为待确认。已有模型和未完成下载会保留。",
     )
+    if result["task"] == "music":
+        result["music_inputs"] = music_inputs(backend, entry, prof, params)
     return result
+
+
+def music_inputs(backend, entry, profile, parameters):
+    """Expose only inputs consumed by the existing local generation request path."""
+    spec = getattr(backend, "MODEL_SPECS", {}).get(entry["family"], {})
+    request = {option["name"]: option for option in spec.get("options", {}).get("request", [])}
+    controls = {parameter["name"]: parameter for parameter in parameters}
+    route = controls.get("task_route", {})
+    routes = route.get("choices", [])
+    # Legacy text2music routes and init/inpaint controls predate spec option metadata.
+    # Their existing parameter contracts identify the supported input semantics;
+    # broad capability tags do not (Stable Audio's spec also carries a lyrics tag).
+    legacy_routes = routes if "text2music" in routes else []
+    audio_conditioning = "audio_input_kind" in controls
+    lyrics_option = request.get("lyrics", {})
+    lyrics_in_text = "lyrics" in request and "tags" in request
+    editing = bool(profile.get("require_source_audio") or profile.get("edit_instruction_key"))
+    duration = request.get("duration_sec") or request.get("duration_seconds") or {}
+    duration_supported = bool(duration or legacy_routes or audio_conditioning)
+    minimum = duration.get("min", 0.1)
+    # The local request builder omits nonpositive durations for these profiles.
+    automatic_duration = bool(profile.get("omit_nonpositive_duration") or legacy_routes)
+    return {
+        "text_role": "lyrics" if lyrics_in_text else "instruction" if editing else "prompt",
+        "text_label": "歌词" if lyrics_in_text else "编辑指令" if editing else "音乐或音效描述",
+        "lyrics": not lyrics_in_text and bool(lyrics_option or profile.get("require_lyrics") or legacy_routes),
+        "require_lyrics": not lyrics_in_text and bool(profile.get("require_lyrics") or lyrics_option.get("required")),
+        "source_audio": bool(editing or audio_conditioning or legacy_routes),
+        "require_source_audio": bool(profile.get("require_source_audio")),
+        "source_audio_routes": [value for value in legacy_routes if value != "text2music"] if legacy_routes else None,
+        "source_required_routes": [value for value in legacy_routes if value not in {"text2music", "complete"}],
+        "duration": duration_supported,
+        "duration_default": duration.get("default", -1 if automatic_duration else 30),
+        "duration_min": -1 if automatic_duration else max(minimum, 0.001),
+        "duration_max": duration.get("max"),
+    }

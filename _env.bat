@@ -53,9 +53,11 @@ if /I "%BACKEND%"=="cuda" (
 )
 
 REM --- python with webui deps ---
-set "PY=%BUNDLE%\venv\python.exe"
-if not exist "%PY%" set "PY=%ROOT%\venv\python.exe"
-if not exist "%PY%" set "PY=%ROOT%\venv\Scripts\python.exe"
+set "PY="
+if defined AUDIOCPP_PYTHON if exist "%AUDIOCPP_PYTHON%" set "PY=%AUDIOCPP_PYTHON%"
+if not defined PY if exist "%BUNDLE%\venv\python.exe" set "PY=%BUNDLE%\venv\python.exe"
+if not defined PY if exist "%ROOT%\venv\python.exe" set "PY=%ROOT%\venv\python.exe"
+if not defined PY if exist "%ROOT%\venv\Scripts\python.exe" set "PY=%ROOT%\venv\Scripts\python.exe"
 
 REM --- bundled ffmpeg (webui.py transcodes non-WAV uploads with it): put webui folder on PATH ---
 if exist "%WEBUI_DIR%\ffmpeg.exe" set "PATH=%WEBUI_DIR%;%PATH%"

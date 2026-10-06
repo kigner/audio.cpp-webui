@@ -110,6 +110,16 @@ class DownloadJobTests(unittest.TestCase):
             self.jobs.start("alias")
         self.popen.assert_not_called()
 
+    def test_shutdown_before_worker_start_preserves_pause_without_spawn(self):
+        # Hold creation until after close, matching a pending download thread.
+        with patch.object(downloads.threading.Thread, "start"):
+            self.jobs.start("demo")
+        self.jobs.close()
+        self.jobs._run(["unused"], {})
+        self.popen.assert_not_called()
+        self.assertEqual(self.jobs.list()[0]["status"], "paused")
+        self.jobs.worker = None
+
     def test_token_is_child_environment_only_and_cli_has_control_file(self):
         token = "hf_TEST_DO_NOT_PERSIST_98765"
         self.start_download(token)

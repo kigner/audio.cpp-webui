@@ -335,7 +335,8 @@ def create_app(
             if lease_callback is not None:
                 await asyncio.to_thread(lease_callback, activation_id, resolved)
                 activation_leased = True
-            if managed_asr_loader is not None and resolved["asr_server"] == defaults["asr_server"]:
+            if (config.get("input_mode") != "text" and managed_asr_loader is not None
+                    and resolved["asr_server"] == defaults["asr_server"]):
                 await asyncio.to_thread(managed_asr_loader, resolved["asr_model"])
             status = "external server; model loading is caller-managed"
             if resolved["tts_server_source"] == "managed":
@@ -389,6 +390,7 @@ def create_app(
         pipeline = RealtimePipeline(**_pipeline_config(initial_cfg))
         pipeline.start()
         leased = False
+        configured = False
 
         # ── Send session.created ──
         await ws.send_json({
@@ -407,6 +409,16 @@ def create_app(
             """Poll pipeline events and send them over the WebSocket."""
             current_resp_id: Optional[str] = None  # stable across one assistant turn
             _full_parts: list[str] = []    # committed sentences for response.done
+            current_generation: Optional[int] = None
+
+            async def send_event(payload, event):
+                # A cancel can arrive while send_events awaits a socket write.
+                # Stamp every result so the browser can also reject late data.
+                if event.generation is not None:
+                    if event.generation != pipeline.generation:
+                        return
+                    payload["generation"] = event.generation
+                await ws.send_json(payload)
 
             def _ensure_resp_id() -> str:
                 nonlocal current_resp_id
@@ -417,66 +429,70 @@ def create_app(
             while True:
                 await asyncio.sleep(0.01)
                 for event in pipeline.drain_events():
+                    if event.generation != current_generation:
+                        current_resp_id = None
+                        _full_parts = []
+                        current_generation = event.generation
                     if isinstance(event, SpeechStarted):
                         current_resp_id = None  # barge-in: new turn, new response
                         _full_parts = []
                         item_id = _generate_id("item")
-                        await ws.send_json({
+                        await send_event({
                             "type": "input_audio_buffer.speech_started",
                             "item_id": item_id,
-                        })
+                        }, event)
                     elif isinstance(event, SpeechStopped):
-                        await ws.send_json({
+                        await send_event({
                             "type": "input_audio_buffer.speech_stopped",
-                        })
+                        }, event)
                     elif isinstance(event, TurnDiscarded):
-                        await ws.send_json({
+                        await send_event({
                             "type": "input_audio_buffer.turn_discarded",
                             "reason": event.reason,
-                        })
+                        }, event)
                     elif isinstance(event, UserTranscript):
                         item_id = _generate_id("item")
-                        await ws.send_json({
+                        await send_event({
                             "type": "conversation.item.input_audio_transcription.completed",
                             "item_id": item_id,
                             "transcript": event.text,
-                        })
+                        }, event)
                     elif isinstance(event, AssistantText):
                         # Each delta is now a complete sentence, emitted when
                         # its TTS audio starts being sent — so the frontend
                         # shows the text synchronised with audio playback.
                         rid = _ensure_resp_id()
-                        await ws.send_json({
+                        await send_event({
                             "type": "response.output_audio_transcript.delta",
                             "response_id": rid,
                             "delta": event.text,
-                        })
+                        }, event)
                         # Immediately commit as a done segment (the pipeline
                         # already split on sentence boundaries).
                         _full_parts.append(event.text)
-                        await ws.send_json({
+                        await send_event({
                             "type": "response.output_audio_transcript.done",
                             "response_id": rid,
                             "transcript": event.text,
-                        })
+                        }, event)
                     elif isinstance(event, AudioChunk):
                         b64 = base64.b64encode(event.pcm).decode("ascii")
-                        await ws.send_json({
+                        await send_event({
                             "type": "response.output_audio.delta",
                             "response_id": _ensure_resp_id(),
                             "delta": b64,
-                        })
+                        }, event)
                     elif isinstance(event, AudioSegmentDone):
-                        await ws.send_json({
+                        await send_event({
                             "type": "response.output_audio.segment_done",
                             "response_id": _ensure_resp_id(),
                             "duration_ms": round(event.duration_ms, 3),
                             "elapsed_ms": round(event.elapsed_ms, 3),
                             "rtf": round(event.rtf, 4),
                             "streaming": event.streaming,
-                        })
+                        }, event)
                     elif isinstance(event, PipelineError):
-                        await ws.send_json({
+                        await send_event({
                             "type": "error",
                             "error": {
                                 "type": "audiocpp_pipeline_error",
@@ -484,11 +500,11 @@ def create_app(
                                 "stage": event.stage,
                                 "message": event.message,
                             },
-                        })
+                        }, event)
                     elif isinstance(event, ResponseDone):
                         rid = current_resp_id or _ensure_resp_id()
                         full_transcript = _join_transcript(_full_parts)
-                        await ws.send_json({
+                        await send_event({
                             "type": "response.done",
                             "response": {
                                 "id": rid,
@@ -501,7 +517,7 @@ def create_app(
                                     }],
                                 }] if full_transcript else [],
                             },
-                        })
+                        }, event)
                         current_resp_id = None
                         _full_parts = []
 
@@ -564,6 +580,7 @@ def create_app(
                                 })
                                 continue
                     await ws.send_json({"type": "session.updated"})
+                    configured = True
 
                 elif msg_type == "input_audio_buffer.append":
                     if lease_callback is not None and not leased:
@@ -577,12 +594,30 @@ def create_app(
                     if audio_b64:
                         try:
                             pcm = base64.b64decode(audio_b64)
-                            pipeline.feed_audio(pcm)
+                            await asyncio.to_thread(pipeline.feed_audio, pcm)
                         except Exception:
                             pass
 
                 elif msg_type == "response.cancel":
                     pipeline.cancel()
+                    await ws.send_json({"type": "response.cancelled", "generation": pipeline.generation,
+                                        "request_id": msg.get("request_id")})
+
+                elif msg_type == "user.text":
+                    text = msg.get("text")
+                    if not configured or (lease_callback is not None and not leased):
+                        await ws.send_json({"type": "error", "error": {
+                            "code": "session_not_ready", "stage": "session",
+                            "message": "请先准备对话服务，再发送文字。"}})
+                        continue
+                    if not isinstance(text, str) or not text.strip() or len(text) > 12000:
+                        await ws.send_json({"type": "error", "error": {
+                            "code": "invalid_text", "stage": "session",
+                            "message": "请输入 1 至 12000 个字符。"}})
+                        continue
+                    generation = pipeline.feed_text(text)
+                    await ws.send_json({"type": "user.text.accepted", "generation": generation,
+                                        "request_id": msg.get("request_id")})
 
                 elif msg_type == "input_audio_buffer.commit":
                     pass  # VAD handles boundaries automatically

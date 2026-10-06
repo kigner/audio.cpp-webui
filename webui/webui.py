@@ -2036,6 +2036,8 @@ else:
 
 # --- managed server process state ------------------------------------------
 _proc_lock = threading.Lock()
+_proc_lifecycle_lock = threading.RLock()
+_server_closing = threading.Event()
 _server_proc = None      # subprocess.Popen we launched, or None
 _loaded_id = None        # model id our managed server is serving
 _loaded_session_options = None   # 随本次加载写进 server config 的 session_options
@@ -2589,10 +2591,11 @@ def _model_threads(backend):
 
 def _stop_server():
     global _server_proc, _loaded_id, _loaded_session_options, _loaded_mode, _loaded_load_options
-    _loaded_session_options = None
-    _loaded_load_options = None
-    _loaded_mode = None
-    proc, _server_proc, _loaded_id = _server_proc, None, None
+    with _proc_lifecycle_lock:
+        _loaded_session_options = None
+        _loaded_load_options = None
+        _loaded_mode = None
+        proc, _server_proc, _loaded_id = _server_proc, None, None
     if proc is not None and proc.poll() is None:
         try:
             proc.terminate()
@@ -2607,6 +2610,20 @@ def _stop_server():
         if not _port_open(HOST, PORT):
             break
         time.sleep(0.25)
+
+
+def _shutdown_server():
+    """Permanently close this runtime; ordinary unload still uses _stop_server."""
+    _server_closing.set()
+    # _start_server publishes its owned handle under the same lock. A start
+    # already in Popen must finish before shutdown can detach and stop it.
+    _stop_server()
+
+
+def _check_server_open():
+    if _server_closing.is_set():
+        raise gr.Error(_t("本地服务正在退出，不能再加载模型。",
+                          "The local service is shutting down; model loading is disabled."))
 
 
 def _read_tail(path, n=30, max_bytes=65536):
@@ -2715,42 +2732,48 @@ def _pump_server_output(proc):
 
 def _start_server(entry):
     global _server_proc, _loaded_id
+    _check_server_open()
     if not os.path.isfile(SERVER_EXE):
         raise gr.Error(_t("找不到 server：{path}（可用 AUDIOCPP_BACKEND=gpu|cpu|metal 指定）",
                           "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|cpu|metal.",
                           path=SERVER_EXE))
     cfg = _write_temp_config(entry)
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0
     _open_log_file(truncate=True)
     # --log 会打开 engine 的 [TRACE]/[TIMING] 调试输出，日常太吵，默认关闭；
     # 排查推理问题时设 AUDIOCPP_SERVER_DEBUG=1 再启动 webui。
     cmd = [SERVER_EXE, "--config", cfg, "--no-ui", "--host", HOST, "--port", str(PORT)]
     if os.environ.get("AUDIOCPP_SERVER_DEBUG") == "1":
         cmd.append("--log")
-    _server_proc = subprocess.Popen(
-        cmd,
-        cwd=BUNDLE_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
-    )
-    _loaded_id = entry["id"]
+    with _proc_lifecycle_lock:
+        _check_server_open()
+        proc = subprocess.Popen(
+            cmd,
+            cwd=BUNDLE_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
+        )
+        _server_proc = proc
+        _loaded_id = entry["id"]
     backend = entry.get("backend", SERVER_BACKEND)
     extra = (_t("，threads={threads}", ", threads={threads}", threads=_model_threads(backend))
              if backend == "cpu" else "")
     _ui_log(_t("启动 audiocpp_server（backend={backend}{extra}），加载模型 {label} …",
                "starting audiocpp_server (backend={backend}{extra}), loading model {label} …",
                backend=backend, extra=extra, label=entry['label']))
-    threading.Thread(target=_pump_server_output, args=(_server_proc,),
+    threading.Thread(target=_pump_server_output, args=(proc,),
                      daemon=True).start()
 
 
 def _wait_health(timeout):
     start = time.time()
     while time.time() - start < timeout:
+        if _server_closing.is_set():
+            return False
         if _server_proc is not None and _server_proc.poll() is not None:
             return False  # process exited before becoming healthy
         if server_alive():
             return True
-        time.sleep(0.5)
+        _server_closing.wait(0.5)
     return False
 
 
@@ -2765,6 +2788,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
     mode：覆盖 catalog 条目的运行模式（"streaming"/"offline"），流式转写/生成用；
     与上次加载不一致时同样重启重载。"""
     global _loaded_session_options, _loaded_mode, _loaded_load_options
+    _check_server_open()
     if _workbench_runtime_guard is not None:
         _workbench_runtime_guard(model_id)
     if not model_id:
@@ -2793,6 +2817,7 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
                  if want_mode == "streaming" else "")
 
     with _proc_lock:
+        _check_server_open()
         managed_alive = _server_proc is not None and _server_proc.poll() is None
         loaded_mode = _loaded_mode or entry.get("mode", "offline")
         # A TTS model loaded with a streaming session can still serve a normal
@@ -5405,7 +5430,7 @@ def load_realtime_tts_model(model_id, mode):
     return ensure_model_loaded(model_id, TTS_TASKS, mode=mode)
 
 
-atexit.register(_stop_server)
+atexit.register(_shutdown_server)
 
 
 _I18N_COMPONENTS = []

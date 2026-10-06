@@ -210,6 +210,9 @@ class DownloadJobs:
         code = None
         try:
             with self.lock:
+                if self.closed:
+                    code = 75  # preserve resumable state if shutdown beat the worker
+                    return
                 self.proc = subprocess.Popen(command, cwd=self.b.PROJECT_ROOT, env=env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

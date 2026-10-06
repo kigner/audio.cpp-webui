@@ -52,6 +52,7 @@
  * @property {string} voice
  * @property {string} instructions
  * @property {MediaStream} [micStream] Live mic stream. Provide this OR `acquireMic`.
+ * @property {boolean} [textOnly] Start without requesting microphone access.
  * @property {() => Promise<MediaStream>} [acquireMic] Lazily obtain the mic stream,
  *   called only once a session is actually granted (after any queue wait). Lets the
  *   caller prime mic permission up front but not hold the mic 'in use' indicator on
@@ -212,6 +213,9 @@ export class S2sWsRealtimeClient extends EventTarget {
     /** @type {Promise<void> | null} */
     this._readyPromise = null;
     this._sessionConfigured = false;
+    this._generation = 0;
+    this._awaitingText = false;
+    this._textRequestId = 0;
     /** @type {Record<string, any> | null} audio.cpp per-session config (TTS/ASR/
      *  LLM URLs + params) sent inside session.update as `session.audiocpp`. */
     this._appConfig = options.appConfig ?? null;
@@ -271,6 +275,21 @@ export class S2sWsRealtimeClient extends EventTarget {
     this._bufferedPlaybackResponseId = "";
     this._playbackResponses.clear();
     this._currentPlaybackResponseId = "";
+  }
+
+  _interruptResponse() {
+    for (const responseId of new Set([...this._asstTranscriptByResp.keys(), ...this._asstFullByResp.keys()])) {
+      this.dispatchEvent(new CustomEvent("response-finished", { detail: {
+        responseId, status: "cancelled", audible: this._audibleResponses.has(responseId),
+        transcript: this._asstDisplay(responseId),
+      } }));
+      this._audibleResponses.delete(responseId);
+    }
+    this._asstTranscriptByResp.clear();
+    this._asstFullByResp.clear();
+    this._playbackNode?.port.postMessage({ kind: "clear" });
+    this._clearPlaybackState();
+    this._aiSpeaking = false;
   }
 
   _configurePlaybackNode() {
@@ -408,14 +427,71 @@ export class S2sWsRealtimeClient extends EventTarget {
     // Acquire the mic now — only once a slot is actually ours. The caller primed
     // permission up front, so this is silent and the 'in use' indicator lights
     // only for a real, connecting session (never during a queue wait).
-    if (!this.options.micStream && this._acquireMic) {
+    if (!this.options.textOnly && !this.options.micStream && this._acquireMic) {
       this.options.micStream = await this._acquireMic();
+    }
+    if (this._closed) {
+      this.options.micStream?.getTracks().forEach(track => track.stop());
+      throw _codedError("connect aborted", "aborted");
     }
 
     // Spin up the AudioContext + worklets in parallel with the WS dial.
     const audioReady = this._setupAudio();
+    const configurationReady = this._waitForConfiguration();
     const wsReady = this._openWebSocket(connectUrl);
-    await Promise.all([audioReady, wsReady]);
+    await Promise.all([audioReady, wsReady, configurationReady]);
+  }
+
+  _waitForConfiguration() {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeEventListener("configured", ready);
+        this.removeEventListener("server-error", failed);
+        this.removeEventListener("status", status);
+      };
+      const ready = () => { cleanup(); resolve(); };
+      const failed = event => { cleanup(); reject(event.detail.error); };
+      const status = event => {
+        if (["closed", "error"].includes(event.detail.status)) {
+          cleanup(); reject(new Error("实时连接已关闭。"));
+        }
+      };
+      const timer = setTimeout(() => { cleanup(); reject(new Error("对话服务准备超时，请重试。")); }, 120000);
+      this.addEventListener("configured", ready);
+      this.addEventListener("server-error", failed);
+      this.addEventListener("status", status);
+    });
+  }
+
+  async enableMicrophone() {
+    if (this.options.micStream) return;
+    const stream = await this._acquireMic();
+    if (this._closed || !this._ctx) {
+      stream.getTracks().forEach(track => track.stop());
+      throw _codedError("connect aborted", "aborted");
+    }
+    this.options.micStream = stream;
+    this.options.textOnly = false;
+    this._micSrc = this._ctx.createMediaStreamSource(stream);
+    this._micSrc.connect(this._captureNode);
+    this._micSrc.connect(this._micAnalyser);
+  }
+
+  sendText(text) {
+    if (!this._sessionConfigured || !this._ws || this._ws.readyState !== WebSocket.OPEN) {
+      throw new Error("对话连接尚未就绪，请重试。");
+    }
+    this._awaitingText = true;
+    this._interruptResponse();
+    this._setStatus("processing");
+    this._send({ type: "user.text", text, request_id: ++this._textRequestId });
+  }
+
+  cancelResponse() {
+    this._interruptResponse();
+    this._awaitingText = true;
+    this._send({ type: "response.cancel", request_id: ++this._textRequestId });
   }
 
   /**
@@ -641,17 +717,18 @@ export class S2sWsRealtimeClient extends EventTarget {
     captureNode.port.postMessage({ kind: "gate", ...this._noiseGate });
     this._captureNode = captureNode;
 
-    const micSrc = ctx.createMediaStreamSource(this.options.micStream);
-    micSrc.connect(captureNode);
-    this._micSrc = micSrc;
-
     // Mic analyser: tap the mic in parallel with the worklet so we get the
     // raw (un-resampled, un-clipped) signal for the visualiser.
     const micAnalyser = ctx.createAnalyser();
     micAnalyser.fftSize = VIS_FFT_SIZE;
     micAnalyser.smoothingTimeConstant = 0;
-    micSrc.connect(micAnalyser);
     this._micAnalyser = micAnalyser;
+    if (this.options.micStream) {
+      const micSrc = ctx.createMediaStreamSource(this.options.micStream);
+      micSrc.connect(captureNode);
+      micSrc.connect(micAnalyser);
+      this._micSrc = micSrc;
+    }
 
     const playbackNode = new AudioWorkletNode(ctx, "audio-playback", {
       numberOfInputs: 0,
@@ -775,21 +852,36 @@ export class S2sWsRealtimeClient extends EventTarget {
       console.debug(`[ws] ${type}${extra}`);
     }
 
+    if (type === "user.text.accepted" || type === "response.cancelled") {
+      if (event.request_id !== this._textRequestId) return;
+      this._generation = event.generation;
+      this._awaitingText = false;
+      if (type === "response.cancelled") {
+        this._aiSpeaking = false;
+        this._setStatus("connected");
+      }
+      return;
+    }
+    if (typeof event.generation === "number") {
+      if (this._awaitingText || event.generation < this._generation) return;
+      this._generation = event.generation;
+    }
     switch (type) {
       case "session.created":
         // Server-side defaults for the s2s pipeline are already what we
         // want (server_vad, whisper-1 transcription, PCM16 16k in / 24k
         // out). We only push the user-tunable bits: voice + instructions.
         this._sendSessionUpdate();
-        this._sessionConfigured = true;
-        if (this._status === "connecting") this._setStatus("connected");
         break;
 
       case "session.updated":
-        // Acknowledged by server, nothing to do.
+        this._sessionConfigured = true;
+        this.dispatchEvent(new Event("configured"));
+        if (this._status === "connecting") this._setStatus("connected");
         break;
 
       case "input_audio_buffer.speech_started":
+        if (typeof event.generation === "number") this._interruptResponse();
         // User started speaking — stop any audio still playing OR queued, every
         // time. We clear unconditionally (not just when `_aiSpeaking`): after a
         // reply or a tool result the worklet's ring buffer can still be draining
@@ -986,6 +1078,7 @@ export class S2sWsRealtimeClient extends EventTarget {
       }
 
       case "error": {
+        this._awaitingText = false;
         const err = event.error;
         console.error("[ws] server error:", err);
         // The "another response is already active" race: our optimistic create

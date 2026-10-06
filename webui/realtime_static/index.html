@@ -3,23 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>实时对话 · audio.cpp</title>
+    <title>实时语音聊天 · Aixora Audio</title>
     <link rel="stylesheet" href="style.css" />
-    <link rel="stylesheet" href="workbench.css?v=scene-3" />
-    <link rel="stylesheet" href="scene.css?v=scene-3" />
+    <link rel="stylesheet" href="workbench.css?v=scene-5" />
+    <link rel="stylesheet" href="scene.css?v=scene-6" />
   </head>
   <body class="booting">
     <div class="scene-background" aria-hidden="true"></div>
     <div class="scene-shade" aria-hidden="true"></div>
     <div id="app">
       <header class="topbar">
-        <div class="scene-heading"><button id="scene-back" class="scene-button" type="button" aria-label="返回工作台">← <span>工作台</span></button><span class="scene-divider"></span><div><strong>实时对话</strong><span id="scene-location">窗边 · 日间</span></div><span id="scene-connection" class="scene-connection" data-state="checking">检查连接</span></div>
+        <div class="scene-heading"><button id="scene-back" class="scene-button" type="button" aria-label="返回场景应用" title="返回场景应用">←</button><span id="scene-location" hidden></span><span id="scene-connection" class="scene-connection" data-state="checking" hidden>检查连接</span></div>
         <div class="brand">
           <div class="ident">
             <div class="ident-head">
-              <span class="ident-title">实时对话</span>
+              <span class="ident-title">实时语音聊天</span>
             </div>
-            <p class="ident-blurb">像聊天一样，自然地说出来。</p>
           </div>
         </div>
         <div class="topbar-right">
@@ -37,11 +36,11 @@
 
       <main class="stage">
         <section class="setup-guide" aria-label="对话准备">
-          <div class="setup-heading"><div><h2>准备好，就可以聊了</h2><p>选择听、想、说的模型与服务。只需配置一次。</p></div><button id="setup-check" class="btn plain" type="button">检测准备情况</button></div>
+            <div class="setup-heading"><div><h2>服务连接</h2><p>文字输入使用对话与声音服务；麦克风输入另需语音识别。</p></div><button id="setup-check" class="btn plain" type="button">检测准备情况</button></div>
           <div class="setup-cards">
-            <button class="setup-card" type="button" data-setup="settings-asr"><span class="setup-number">01</span><strong>听懂你</strong><span id="setup-asr-status">选择识别模型</span></button>
-            <button class="setup-card" type="button" data-setup="settings-llm"><span class="setup-number">02</span><strong>回答你</strong><span id="setup-llm-status">配置对话服务</span></button>
-            <button class="setup-card" type="button" data-setup="settings-tts"><span class="setup-number">03</span><strong>说出来</strong><span id="setup-tts-status">选择声音与音色</span></button>
+            <button class="setup-card" type="button" data-setup="settings-asr"><span class="setup-number">01</span><strong>语音识别</strong><span id="setup-asr-status">选择识别模型</span></button>
+            <button class="setup-card" type="button" data-setup="settings-llm"><span class="setup-number">02</span><strong>对话模型</strong><span id="setup-llm-status">配置对话服务</span></button>
+            <button class="setup-card" type="button" data-setup="settings-tts"><span class="setup-number">03</span><strong>语音合成</strong><span id="setup-tts-status">选择声音与音色</span></button>
           </div>
         </section>
         <section class="call-controls" aria-label="语音通话">
@@ -100,7 +99,14 @@
           </button>
         </div>
 
-        <p id="circle-caption" class="circle-caption" role="status">点击开始对话</p>
+        <p id="circle-caption" class="circle-caption" role="status">未开始</p>
+        <button id="text-toggle" class="scene-button" type="button" aria-label="展开文字输入" title="文字输入" aria-expanded="false" aria-controls="text-composer"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M5 9h2m2 0h2m2 0h2m2 0h2M5 12h2m2 0h2m2 0h2m2 0h2M7 15h10"/></svg></button>
+        <details id="call-more" class="call-more"><summary aria-label="更多操作" title="更多操作">•••</summary><div id="call-more-menu"></div></details>
+        <form id="text-composer" class="text-composer" hidden>
+          <label class="sr-only" for="text-input">发送文字到当前会话</label>
+          <textarea id="text-input" rows="1" maxlength="12000" placeholder="输入文字，Enter 发送 · Shift+Enter 换行"></textarea>
+          <div class="text-actions"><button id="text-cancel" type="button" class="btn plain" hidden>停止回复</button><button id="text-send" class="btn primary" type="submit">发送</button></div>
+        </form>
 
         <div id="realtime-notice" class="realtime-notice" role="alert" hidden>
           <span class="realtime-notice-icon" aria-hidden="true">!</span>
@@ -145,36 +151,36 @@
 
     <dialog id="settings-modal" class="modal">
       <form method="dialog" class="modal-content">
-        <header class="modal-header"><div><h2>对话设置</h2><p>场景外观与对话服务分开设置</p></div><button class="icon-btn" value="close" aria-label="关闭">×</button></header>
+          <header class="modal-header"><h2>对话设置</h2><button class="icon-btn" value="close" aria-label="关闭">×</button></header>
         <nav class="scene-settings-tabs" role="tablist" aria-label="对话设置分类"><button type="button" role="tab" data-settings-tab="scene">场景</button><button type="button" role="tab" data-settings-tab="llm">对话</button><button type="button" role="tab" data-settings-tab="tts">声音</button><button type="button" role="tab" data-settings-tab="asr">识别</button><button type="button" role="tab" data-settings-tab="connection">连接</button></nav>
         <div class="tab-panels">
-          <section id="settings-scene" class="settings-section" data-settings-panel="scene"><h3>聊天背景</h3><div class="scene-options"><button type="button" class="scene-option" data-scene-choice="window"><span class="scene-thumb scene-thumb-window"></span><strong>窗边</strong><small>日间 · 人物场景</small></button><button type="button" class="scene-option" data-scene-choice="quiet"><span class="scene-thumb scene-thumb-quiet"></span><strong>静谧</strong><small>纯色 · 无人物</small></button></div><p class="scene-setting-help">背景为静态画面，不会随语音生成口型。角色回复方式可在“对话”中设置。</p><h3 class="scene-preference-title">画面显示</h3><label class="scene-check"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label><p class="scene-setting-help">最近的对话显示在画面左下方，完整内容保留在“对话记录”中。</p></section>
+            <section id="settings-scene" class="settings-section" data-settings-panel="scene"><h3>聊天背景</h3><div class="scene-options"><button type="button" class="scene-option" data-scene-choice="window"><span class="scene-thumb scene-thumb-window"></span><strong>窗边</strong></button><button type="button" class="scene-option" data-scene-choice="quiet"><span class="scene-thumb scene-thumb-quiet"></span><strong>静谧</strong></button></div><p class="scene-setting-help">静态背景，无口型动画。</p><h3 class="scene-preference-title">画面显示</h3><label class="scene-check"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label></section>
           <section id="settings-asr" class="settings-section">
-            <h3><span>01</span> 听懂你 <small>将语音识别为文字</small></h3>
-            <div class="field-row"><label class="field"><span>识别模型</span><input id="asr-model" list="asr-model-list" autocomplete="off" placeholder="选择本地模型，或填写已启动服务中的模型名" /><datalist id="asr-model-list"></datalist></label><label class="field"><span>识别语言</span><input id="asr-language" placeholder="留空自动识别；也可填写 zh / en" /></label></div>
-            <small>本地已安装模型会出现在候选项中；需要同时运行识别与声音模型。</small>
+              <h3>语音识别</h3>
+              <div class="field-row"><label class="field"><span>识别模型</span><input id="asr-model" list="asr-model-list" autocomplete="off" placeholder="选择或输入模型名" /><datalist id="asr-model-list"></datalist></label><label class="field"><span>识别语言</span><input id="asr-language" placeholder="自动识别，或填 zh / en" /></label></div>
+              <small>麦克风输入需同时运行识别与声音模型。</small>
           </section>
           <section id="settings-llm" class="settings-section">
-            <h3><span>02</span> 回答你 <small>支持 Chat Completions 服务</small></h3>
-            <div class="field-row"><label class="field"><span>对话服务地址</span><input id="llm-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com/v1" /></label><label class="field"><span>对话模型</span><input id="llm-model" autocomplete="off" placeholder="deepseek-chat" /></label></div>
-            <label class="field"><span>API 密钥</span><input id="llm-key" type="password" autocomplete="off" spellcheck="false" placeholder="填写服务商提供的 API Key" /><small>仅保存在此浏览器；再次打开时不显示密钥。已有密钥留空即可保留。</small></label>
+              <h3>对话模型</h3>
+              <div class="field-row"><label class="field"><span>对话服务地址</span><input id="llm-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com/v1" title="需兼容 Chat Completions 接口" /></label><label class="field"><span>对话模型</span><input id="llm-model" autocomplete="off" placeholder="deepseek-chat" /></label></div>
+              <label class="field"><span>API 密钥</span><input id="llm-key" type="password" autocomplete="off" spellcheck="false" placeholder="API Key" /><small>保存在此浏览器；留空保留已有密钥。</small></label>
             <label class="field"><span>你希望它怎样回答？</span><textarea id="instructions" rows="3" placeholder="例如：你是一位耐心的英语口语老师，回复简短自然。"></textarea></label>
           </section>
           <section id="settings-tts" class="settings-section">
-            <h3><span>03</span> 说出来 <small>选择模型与声音</small></h3>
+              <h3>语音合成</h3>
             <label class="field"><span>声音模型</span><select id="tts-model"><option value="">正在读取已安装模型…</option></select></label>
-            <small id="tts-model-capability">只显示已安装的声音模型；更多模型请前往模型中心。</small>
+              <small id="tts-model-capability"></small>
             <div class="field-row"><label class="field"><span>音色名称 <small>模型支持时填写</small></span><input id="tts-voice" autocomplete="off" placeholder="使用模型默认音色" /></label><label class="field"><span>参考音频路径 <small>克隆声音时使用</small></span><input id="tts-voice-ref" autocomplete="off" placeholder="voice/demo_01_man.wav" /></label></div>
-            <label class="field"><span>参考音频中的原话 <small>部分克隆模型必填</small></span><input id="tts-ref-text" autocomplete="off" placeholder="如使用参考音频，准确填写其中的文字" /></label>
+              <label class="field"><span>参考音频中的原话 <small>部分克隆模型必填</small></span><input id="tts-ref-text" autocomplete="off" /></label>
           </section>
           <details class="advanced-settings">
-            <summary>高级设置 <span>服务连接、播放方式与环境噪声</span></summary>
+              <summary>高级设置</summary>
             <div class="settings-section">
-              <div class="field-row"><label class="field"><span>声音服务</span><select id="tts-server-source"><option value="managed">应用自动管理（推荐）</option><option value="external">使用外部服务</option></select></label><label class="field"><span>播放方式</span><select id="tts-playback-mode"><option value="auto">自动推荐</option><option value="offline">完整生成后播放 · 更连贯</option><option value="streaming">边生成边播放 · 更快开口</option></select></label></div>
+                <div class="field-row"><label class="field"><span>声音服务</span><select id="tts-server-source"><option value="managed">自动管理</option><option value="external">外部服务</option></select></label><label class="field"><span>播放方式</span><select id="tts-playback-mode"><option value="auto">自动</option><option value="offline">完整生成后播放</option><option value="streaming">边生成边播放</option></select></label></div>
               <div class="field-row"><label class="field"><span>声音服务地址</span><input id="tts-url" autocomplete="off" placeholder="http://127.0.0.1:8088" /></label><label class="field"><span>识别服务地址</span><input id="asr-url" autocomplete="off" placeholder="http://127.0.0.1:8081" /></label></div>
-              <div id="tts-dots-options" class="field-row" hidden><label class="field"><span>推理步数</span><input id="tts-inference-steps" type="number" min="1" step="1" /><small>通常越大越慢；建议保留该模型默认值。</small></label><label class="field"><span>声码器合并步数</span><input id="tts-vocoder-merge-steps" type="number" min="1" step="1" /><small>较小值可能更快开口，也更容易出现播放停顿。</small></label></div>
+                <div id="tts-dots-options" class="field-row" hidden><label class="field"><span>推理步数</span><input id="tts-inference-steps" type="number" min="1" step="1" /><small>步数越大，生成越慢。</small></label><label class="field"><span>声码器合并步数</span><input id="tts-vocoder-merge-steps" type="number" min="1" step="1" /><small>减小可更早开口，但可能播放停顿。</small></label></div>
               <label class="field"><span>忽略环境噪声 <span id="gate-value" class="field-value">关闭</span></span><div class="gate"><div class="gate-track" aria-hidden="true"><div id="gate-meter-fill" class="gate-meter-fill"></div><input id="noise-gate" type="range" min="-66" max="-3" step="1" value="-50" aria-label="环境噪声阈值" /></div><div class="gate-ends"><span>关闭</span><span>更强过滤</span></div></div><small>听不清小声说话时向左调；背景声误触发时向右调。</small></label>
-              <label class="field"><span>实时连接地址</span><input id="rt-url" readonly /><small>由应用自动连接当前页面的服务。</small></label>
+                <label class="field"><span>实时连接地址</span><input id="rt-url" readonly /></label>
             </div>
           </details>
         </div>
@@ -182,7 +188,7 @@
       </form>
     </dialog>
 
-    <script type="module" src="main.js?v=scene-3"></script>
-    <script type="module" src="scene.js?v=scene-3"></script>
+    <script type="module" src="main.js?v=scene-5"></script>
+    <script type="module" src="scene.js?v=scene-5"></script>
   </body>
 </html>

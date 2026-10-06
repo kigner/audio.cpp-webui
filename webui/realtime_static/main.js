@@ -219,14 +219,14 @@ const STATE_CLASS = {
   error: "state-error",
 };
 const STATE_VIEWS = {
-  idle:            { caption: "点击开始对话",  disabled: false },
+  idle:            { caption: "未开始",  disabled: false },
   connecting:      { caption: "连接中",    disabled: true  },
   queued:          { caption: "排队中…", disabled: true },
   "your-turn":     { caption: "准备就绪",  disabled: true  },
-  listening:       { caption: "正在听你说",    disabled: false },
+  listening:       { caption: "正在聆听",    disabled: false },
   "user-speaking": { caption: "正在聆听…",    disabled: false },
-  processing:      { caption: "正在生成回复",  disabled: false },
-  "ai-speaking":   { caption: "正在播放",      disabled: false },
+  processing:      { caption: "正在回复",  disabled: false },
+  "ai-speaking":   { caption: "正在回复",      disabled: false },
   error:           { caption: "点击重试",  disabled: false },
 };
 const LIVE_STATES = new Set(["listening", "user-speaking", "processing", "ai-speaking"]);
@@ -235,6 +235,7 @@ const LIVE_STATES = new Set(["listening", "user-speaking", "processing", "ai-spe
 let currentState = "idle";
 /** @type {S2sWsRealtimeClient | null} */
 let client = null;
+let connectionAttempt = 0;
 /** @type {AudioContext | null} */
 let audioContext = null;
 /** @type {MediaStream | null} */
@@ -422,18 +423,18 @@ function syncTtsSettingsUi(applyModelDefaults = false) {
 
   if (ttsModelCapability) {
     if (!meta) {
-      ttsModelCapability.textContent = "还没有声音模型，请先到模型中心安装。";
+      ttsModelCapability.textContent = "请到模型中心安装声音模型。";
     } else if (meta.streaming_kind === "native" && meta.realtime_auto_mode === "offline") {
       ttsModelCapability.textContent =
-        "该模型推荐完整生成后播放，听起来更连贯；高级设置中可以试用更快开口的播放方式。";
+        "推荐完整生成后播放。";
     } else if (meta.streaming_kind === "native") {
       ttsModelCapability.textContent =
-        "自动模式会边生成边播放，通常能更快开口。";
+        "";
     } else if (meta.supports_streaming) {
       ttsModelCapability.textContent =
-        "自动模式会分段播放；如果经常停顿，可在高级设置中选择完整生成后播放。";
+        "分段播放；停顿时可切换完整播放。";
     } else {
-      ttsModelCapability.textContent = "该模型会先生成完整语音，再开始播放。";
+      ttsModelCapability.textContent = "仅支持完整生成后播放。";
     }
   }
 }
@@ -566,8 +567,14 @@ function setState(next) {
   circleBtn.disabled = view.disabled;
   circleBtn.className = `circle ${STATE_CLASS[next]}`;
   circleBtn.setAttribute("aria-label", LIVE_STATES.has(next) ? "通话进行中" : next === "error" ? "重试语音对话" : "开始语音对话");
+  if (client?.options.textOnly && LIVE_STATES.has(next)) {
+    circleBtn.setAttribute("aria-label", "启用麦克风继续当前会话");
+    circleBtn.title = "启用麦克风继续当前会话";
+    if (next === "listening") circleBtn.className = "circle state-idle";
+  } else circleBtn.title = circleBtn.getAttribute("aria-label");
   if (next === "error") setCaption(view.caption, "error");
   else setCaption(view.caption, "");
+  if (next === "listening") setCaption(client?.options.textOnly ? "文字会话已连接" : muted ? "已静音" : "正在聆听", "");
   // Live indicator: side buttons appear + gate arc lights up
   const wrap = circleBtn.closest(".orb-wrap");
   if (wrap) {
@@ -578,9 +585,16 @@ function setState(next) {
     button.setAttribute("aria-hidden", String(!LIVE_STATES.has(next)));
     button.disabled = !LIVE_STATES.has(next);
   }
+  micBtn.disabled = !LIVE_STATES.has(next) || !micStream;
+  stopBtn.disabled = !(LIVE_STATES.has(next) || next === "connecting");
+  stopBtn.setAttribute("aria-hidden", String(stopBtn.disabled));
+  document.getElementById("text-cancel").hidden = !["processing", "ai-speaking"].includes(next);
   // Show/hide queue UI
   queueBar.hidden = next !== "queued";
   queueFunnel.hidden = next !== "your-turn";
+  window.parent.postMessage({type: "audiocpp:realtime-state", state: next,
+    active: !!client && next !== "idle" && next !== "error",
+    microphone: !!micStream?.getAudioTracks().some(track => track.readyState === "live"), muted}, location.origin);
 }
 
 function setCaption(text, kind) {
@@ -692,13 +706,13 @@ function onQueuePosition(position) {
   queuePosition.textContent = `排队位置: ${position}`;
 }
 
-async function activateTts(s) {
+async function activateTts(s, textOnly = false) {
   if (!s.ttsModel) throw new Error("没有可用的本地 TTS 模型，请先在 WebUI 安装模型");
   const url = new URL(`${realtimeApiBase}/activate`, window.location.origin);
   const response = await fetch(url.href, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(appConfigFromSettings(s)),
+    body: JSON.stringify({ ...appConfigFromSettings(s), input_mode: textOnly ? "text" : "voice" }),
   });
   if (!response.ok) {
     let message = `TTS 模型准备失败（HTTP ${response.status}）`;
@@ -711,23 +725,38 @@ async function activateTts(s) {
   return response.json();
 }
 
-async function doStart() {
+async function doStart(textOnly = false) {
+  if (client && LIVE_STATES.has(currentState)) {
+    if (!textOnly && client.options.textOnly) {
+      const activeClient = client;
+      await activateTts(settings, false);
+      if (client !== activeClient) return;
+      await activeClient.enableMicrophone();
+      if (client !== activeClient) return;
+      setState(currentState);
+    }
+    return;
+  }
   if (currentState === "idle" || currentState === "error") {
+    if (client) await doStop();
+    const attempt = ++connectionAttempt;
     chat.clear();
     hideRealtimeError();
     setState("connecting");
-    setCaption("请求麦克风权限…", "muted");
+    setCaption(textOnly ? "正在连接对话服务…" : "请求麦克风权限…", "muted");
     if (!audioContext || audioContext.state === "closed") audioContext = createResumedAudioContext();
-    try { await primeMicPermission(); } catch (err) {
+    try { if (!textOnly) await primeMicPermission(); } catch (err) {
       if (audioContext) void audioContext.close().catch(() => {});
       audioContext = null;
       throw err;
     }
     try {
       await refreshEnvDefaults();
+      if (attempt !== connectionAttempt) return;
       if (!realtimeConfigReady) throw new Error("实时服务尚未就绪，请重启应用后重试。");
       setCaption("正在准备对话模型…", "muted");
-      await activateTts(settings);
+      await activateTts(settings, textOnly);
+      if (attempt !== connectionAttempt) return;
     } catch (err) {
       if (micStream) {
         for (const track of micStream.getTracks()) track.stop();
@@ -743,6 +772,7 @@ async function doStart() {
       instructions: settings.instructions,
       voice: settings.ttsVoice,
       appConfig: appConfigFromSettings(settings),
+      textOnly,
       acquireMic: acquireMicStream,
       noiseGate: { enabled: gateThreshold > GATE_OFF_DB, thresholdDb: gateThreshold },
       ...(audioContext ? { audioContext } : {}),
@@ -757,10 +787,10 @@ async function doStart() {
       setState("your-turn");
       queueFunnelMsg.textContent = "已就绪！点击加入开始对话。";
     });
-    c.addEventListener("status", (e) => onClientStatus(/** @type {CustomEvent} */ (e).detail.status));
-    c.addEventListener("transcript", (e) => chat.onTranscript(/** @type {CustomEvent} */ (e).detail));
-    c.addEventListener("response-finished", (e) => chat.onResponseFinished(/** @type {CustomEvent} */ (e).detail));
-    c.addEventListener("error", (e) => onFatalError(/** @type {CustomEvent} */ (e).detail.error));
+    c.addEventListener("status", (e) => { if (client === c) onClientStatus(/** @type {CustomEvent} */ (e).detail.status); });
+    c.addEventListener("transcript", (e) => { if (client === c) chat.onTranscript(/** @type {CustomEvent} */ (e).detail); });
+    c.addEventListener("response-finished", (e) => { if (client === c) chat.onResponseFinished(/** @type {CustomEvent} */ (e).detail); });
+    c.addEventListener("error", (e) => { if (client === c) { void doStop().then(() => onFatalError(/** @type {CustomEvent} */ (e).detail.error)); } });
     c.addEventListener("server-error", (e) => {
       const error = /** @type {CustomEvent} */ (e).detail.error;
       console.warn("[main] server error (non-fatal):", error);
@@ -769,7 +799,8 @@ async function doStart() {
     c.addEventListener("input-level", (e) => {
       paintInputLevel(/** @type {CustomEvent} */ (e).detail.rms);
     });
-    try { await c.connect(); chat.reset(); } catch (err) {
+    try { await c.connect(); if (client === c) chat.reset(); } catch (err) {
+      if (client === c) await doStop();
       if (audioContext) void audioContext.close().catch(() => {});
       audioContext = null;
       throw err;
@@ -778,6 +809,7 @@ async function doStart() {
 }
 
 async function doStop() {
+  connectionAttempt++;
   const activeClient = client;
   client = null;
   if (activeClient) {
@@ -810,7 +842,7 @@ async function doStop() {
 // ── Events ─────────────────────────────────────────────────────────────
 circleBtn.addEventListener("click", async () => {
   try {
-    if (currentState === "idle" || currentState === "error") {
+    if (currentState === "idle" || currentState === "error" || client?.options.textOnly) {
       await doStart();
     }
   } catch (err) {
@@ -820,11 +852,55 @@ circleBtn.addEventListener("click", async () => {
 
 stopBtn.addEventListener("click", () => { void doStop(); });
 
+const textToggle = document.getElementById("text-toggle");
+const textComposer = document.getElementById("text-composer");
+const textInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("text-input"));
+const textSend = /** @type {HTMLButtonElement} */ (document.getElementById("text-send"));
+textToggle.addEventListener("click", () => {
+  textComposer.hidden = !textComposer.hidden;
+  textToggle.setAttribute("aria-expanded", String(!textComposer.hidden));
+  textToggle.setAttribute("aria-label", textComposer.hidden ? "展开文字输入" : "收起文字输入");
+  document.body.classList.toggle("text-input-open", !textComposer.hidden);
+  if (!textComposer.hidden) textInput.focus();
+});
+textInput.addEventListener("input", () => {
+  textInput.style.height = "auto";
+  textInput.style.height = `${Math.min(textInput.scrollHeight, 144)}px`;
+});
+textInput.addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    textComposer.requestSubmit();
+  }
+});
+textComposer.addEventListener("submit", async event => {
+  event.preventDefault();
+  const text = textInput.value.trim();
+  if (!text || textSend.disabled || currentState === "connecting") return;
+  textSend.disabled = true;
+  try {
+    hideRealtimeError();
+    await doStart(true);
+    if (!client) return;
+    client.sendText(text);
+    if (textInput.value.trim() === text) {
+      textInput.value = "";
+      textInput.style.height = "auto";
+    }
+  } catch (error) {
+    if (!client) setState("error");
+    showRealtimeError(error);
+  }
+  finally { textSend.disabled = false; textInput.focus(); }
+});
+document.getElementById("text-cancel").addEventListener("click", () => client?.cancelResponse());
+
 micBtn.addEventListener("click", () => {
   muted = !muted;
   micBtn.classList.toggle("muted", muted);
   micBtn.setAttribute("aria-label", muted ? "取消静音" : "静音");
   client?.setMuted(muted);
+  setState(currentState);
 });
 
 queueLeave.addEventListener("click", () => { void doStop(); });
@@ -915,11 +991,11 @@ for (const button of document.querySelectorAll("[data-setup]")) {
 if (window.parent !== window) document.body.classList.add("embedded");
 function applyTheme(theme, palette) {
   document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
-  if (palette) document.documentElement.dataset.palette = palette === "forest" ? "forest" : "classic";
+  document.documentElement.dataset.palette = palette === "classic" ? "classic" : "studio";
 }
 const shellTheme = localStorage.getItem("audiocpp-workbench-theme") || "light";
 applyTheme(shellTheme === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : shellTheme,
-  localStorage.getItem("audiocpp-workbench-palette") || "forest");
+  localStorage.getItem("audiocpp-workbench-palette") || "studio");
 window.addEventListener("message", (event) => {
   if (event.origin !== window.location.origin || event.source !== window.parent) return;
   if (event.data?.type === "audiocpp:theme") applyTheme(event.data.theme, event.data.palette);

@@ -1,80 +1,111 @@
 <!doctype html>
-<html lang="zh-CN" data-palette="forest" data-theme="light">
+<html lang="zh-CN" data-palette="classic" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>audio.cpp · 音频工作台</title>
-  <link rel="stylesheet" href="/workbench-static/app.css?v=scene-3">
-  <link rel="stylesheet" href="/workbench-static/palettes.css?v=scene-3">
-  <script type="module" src="/workbench-static/app.js?v=scene-3"></script>
+  <title>Aixora Audio</title>
+  <link rel="icon" type="image/png" href="/workbench-static/aixora-audio-logo.png?v=audio-2">
+  <link rel="stylesheet" href="/workbench-static/app.css?v=aixora-models-6">
+  <link rel="stylesheet" href="/workbench-static/palettes.css?v=aixora-1">
+  <script type="module" src="/workbench-static/app.js?v=aixora-models-6"></script>
 </head>
 <body>
+  <svg class="icon-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="icon-wave" viewBox="0 0 24 24"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4"/></symbol>
+    <symbol id="icon-text" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 8h10M7 12h7M7 16h5"/></symbol>
+    <symbol id="icon-music" viewBox="0 0 24 24"><path d="M9 17V5l11-2v12M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2.5"/><ellipse cx="17" cy="16" rx="3" ry="2.5"/></symbol>
+    <symbol id="icon-sliders" viewBox="0 0 24 24"><path d="M3 7h4m6 0h8M3 17h10m6 0h2"/><circle cx="10" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></symbol>
+    <symbol id="icon-chat" viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3v-3a2 2 0 0 1-2-2V6a2 2 0 0 1 3-2Z"/><path d="M8 9v3m4-5v7m4-5v3"/></symbol>
+    <symbol id="icon-box" viewBox="0 0 24 24"><path d="m12 3 9 5v9l-9 5-9-5V8Zm0 10 9-5M12 13 3 8m9 5v9M7 5.8l10 5.4"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="m9 3-1 3-3 1-2 3 2 3-1 3 3 2 3-1 3 2 3-1 1-3 3-1 1-4-3-2V6l-3-2-3 1Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></symbol>
+    <symbol id="icon-arrow-left" viewBox="0 0 24 24"><path d="m13 6-6 6 6 6M7 12h13"/></symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></symbol>
+    <symbol id="icon-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
+    <symbol id="icon-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+    <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="icon-file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8Zm0 0v5h5M8 12h8M8 16h5"/></symbol>
+  </defs></svg>
   <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="#workspace" aria-label="audio.cpp 首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>audio<span class="brand-muted">.cpp</span><small>本地音频工作台</small></span></a>
-      <div class="nav-caption">工作空间</div>
-      <nav class="main-nav" aria-label="主导航">
-        <button class="nav-item active" data-page="workspace"><span class="nav-icon" aria-hidden="true">◫</span>音频工作台</button>
-        <button class="nav-item" data-page="realtime"><span class="nav-icon" aria-hidden="true">◉</span>实时聊天</button>
-        <button class="nav-item" data-page="models"><span class="nav-icon" aria-hidden="true">▦</span>模型中心<span id="download-badge" class="nav-count" hidden></span></button>
+    <aside id="app-sidebar" class="sidebar" aria-label="工作空间导航">
+      <div class="sidebar-controls"><a class="brand" href="#tts" aria-label="Aixora Audio"><img class="brand-logo" src="/workbench-static/aixora-audio-logo.png?v=audio-2" alt="" width="28" height="28"><span class="brand-name">Aixora Audio</span></a><button id="sidebar-toggle" class="icon-button" type="button" title="收起导航" aria-label="收起导航" aria-controls="app-sidebar" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#icon-sidebar"/></svg></button></div>
+      <nav class="main-nav" aria-label="功能导航">
+        <button class="nav-item active" data-route="tts" title="语音合成" aria-label="语音合成" aria-current="page"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-wave"/></svg><span class="nav-label">语音合成</span></button>
+        <button class="nav-item" data-route="asr" title="语音识别" aria-label="语音识别"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-text"/></svg><span class="nav-label">语音识别</span></button>
+        <button class="nav-item" data-route="music" title="音乐与音效" aria-label="音乐与音效"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-music"/></svg><span class="nav-label">音乐与音效</span></button>
+        <button class="nav-item" data-route="design" title="声音设计" aria-label="声音设计"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-sliders"/></svg><span class="nav-label">声音设计</span></button>
+        <button class="nav-item" data-route="vc" title="声音转换" aria-label="声音转换"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-wave"/></svg><span class="nav-label">声音转换</span></button>
+        <button class="nav-item" data-route="tools" title="音频工具" aria-label="音频工具"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-sliders"/></svg><span class="nav-label">音频工具</span></button>
+        <button class="nav-item" data-route="scenarios" title="场景应用" aria-label="场景应用"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-chat"/></svg><span class="nav-label">场景应用</span><span id="realtime-nav-status" class="nav-count" hidden></span></button>
+        <button class="nav-item" data-route="references" title="参考音频" aria-label="参考音频"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-file"/></svg><span class="nav-label">参考音频</span></button>
+          <button class="nav-item" data-route="models" title="模型中心" aria-label="模型中心"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-box"/></svg><span class="nav-label">模型中心</span><span id="download-badge" class="nav-count" hidden></span></button>
+          <button class="nav-item" data-route="settings" title="系统设置" aria-label="系统设置"><svg class="icon nav-icon" aria-hidden="true"><use href="#icon-settings"/></svg><span class="nav-label">系统设置</span></button>
       </nav>
-      <div class="nav-caption nav-caption-lower">更多</div>
-      <nav class="main-nav" aria-label="工具导航">
-        <button class="nav-item" data-page="api"><span class="nav-icon" aria-hidden="true">⌘</span>API 调用</button>
-        <button class="nav-item" data-page="settings"><span class="nav-icon" aria-hidden="true">⚙</span>设置</button>
-      </nav>
-      <div class="sidebar-bottom"><span class="muted small" id="hardware-label">本机运行 · 文件保留在本地</span><span class="version" id="version-label">audio.cpp</span></div>
+      <button id="end-realtime-session" class="button subtle small-button end-realtime-session" type="button" title="结束当前对话" aria-label="结束当前对话" hidden><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg><span>结束当前对话</span></button>
+      <div class="sidebar-bottom">
+        <div id="connection-status" class="connection-status" data-state="connecting" role="status" title="连接服务中"><span class="status-dot" id="server-dot" aria-hidden="true"></span><span id="sidebar-status">连接服务中</span></div>
+        <div class="local-info"><span class="muted small" id="hardware-label">本地工作空间</span><span class="version" id="version-label">Aixora Audio 0.6.0</span></div>
+      </div>
     </aside>
-
+    <button id="sidebar-backdrop" class="drawer-backdrop sidebar-backdrop" type="button" aria-label="关闭导航" tabindex="-1" hidden></button>
     <main class="main-content">
-      <header class="topbar"><span id="breadcrumb">工作空间 / 音频工作台</span><div class="topbar-actions"><div class="status-dock" aria-label="服务与模型状态" role="status"><span id="connection-status" class="connection-status" data-state="connecting"><span class="status-dot" id="server-dot"></span><span id="sidebar-status">连接服务中</span></span><span id="runtime-status" class="runtime-status" data-state="idle">模型状态检查中</span></div></div></header>
-      <div id="recording-banner" class="recording-banner" role="status" aria-live="polite" hidden><span><span class="recording-dot" aria-hidden="true"></span><strong>麦克风正在录音</strong><span id="recording-elapsed"></span> · 切换页面不会中断录音</span><button id="stop-all-recordings" class="button danger small-button">停止录音并保存</button></div>
+      <div id="recording-banner" class="recording-banner" role="status" aria-live="polite" hidden><span><span class="recording-dot" aria-hidden="true"></span><strong>麦克风正在录音</strong><span id="recording-elapsed"></span></span><button id="stop-all-recordings" class="button danger small-button">停止录音并保存</button></div>
+      <div id="active-job-banner" class="active-job-banner" role="status" hidden><span id="active-job-label"></span><button id="return-active-job" class="text-button" type="button">查看任务</button></div>
       <div id="connection-error" class="notice error" role="alert" hidden></div>
-
-      <section id="page-workspace" class="page active" aria-labelledby="workspace-heading">
-        <h1 id="workspace-heading" class="sr-only">音频工作台</h1>
-        <div id="task-nav" class="task-nav" role="tablist" aria-label="音频任务"></div>
-        <div class="workspace-grid">
-          <div class="workspace-main">
-            <section class="card input-card"><div class="card-heading"><div><h2 id="task-title">文字转语音</h2><p id="task-description" class="muted">输入文字，生成自然的声音。</p></div><span class="step-label">01 / 内容</span></div><form id="task-form"><div id="task-inputs" class="form-fields"></div><div class="generate-row"><span id="input-hint" class="muted small">使用模型默认设置即可开始</span><button type="submit" id="run-button" class="button primary" disabled>开始生成<span aria-hidden="true"> →</span></button></div></form></section>
-            <section class="card result-card" aria-labelledby="result-heading"><div class="card-heading"><div><h2 id="result-heading">输出结果</h2><p id="result-subtitle" class="muted">生成的音频与文件会显示在这里。</p></div><div class="result-actions"><button id="stop-stream-playback" class="button subtle small-button" hidden>停止试听</button><button id="cancel-job" class="button subtle small-button" hidden>停止任务</button></div></div><div id="job-status" class="job-status" role="status" aria-live="polite" hidden></div><div id="result-content" class="result-content"><div class="empty-state compact"><span class="wave-placeholder" aria-hidden="true">▂ ▄ ▆ ▃ ▇ ▅ ▂ ▄ ▆ ▃ ▂</span><p>暂无输出结果</p></div></div></section>
+      <section id="page-workspace" class="page workspace-page active" data-task="tts" aria-labelledby="task-title">
+        <header id="app-toolbar" class="app-toolbar">
+          <div id="workspace-heading-row" class="workspace-heading-row"><div id="workspace-navigation" class="workspace-navigation" hidden><button id="tools-back" class="icon-button" type="button" title="返回音频工具" aria-label="返回音频工具"><svg class="icon" aria-hidden="true"><use href="#icon-arrow-left"/></svg></button></div><h1 id="task-title">语音合成</h1><div class="workspace-model-actions"><button id="model-picker-trigger" class="model-picker-trigger" type="button" aria-haspopup="dialog" aria-controls="model-picker-popover" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-box"/></svg><span id="model-picker-label">加载语音合成模型</span><svg class="icon chevron" aria-hidden="true"><use href="#icon-chevron"/></svg></button><span id="workspace-load-status" class="workspace-load-status" role="status" aria-live="polite" hidden></span></div></div>
+          <button id="parameter-toggle" class="icon-button parameter-toggle" type="button" aria-label="收起任务参数" title="收起任务参数" aria-expanded="true" aria-controls="workspace-settings" hidden><svg class="icon" aria-hidden="true"><use href="#icon-panel"/></svg></button>
+        </header>
+        <div class="workspace-layout">
+          <div class="workspace-operation card">
+            <div id="workspace-start" class="workspace-start"><svg class="icon" aria-hidden="true"><use href="#icon-wave"/></svg><p>选择模型开始</p></div>
+            <div id="workspace-grid" class="workspace-grid workspace-main" hidden>
+            <section class="card input-card" aria-labelledby="input-heading"><div class="card-heading"><h2 id="input-heading">音色与文本</h2></div><form id="task-form"><div id="task-inputs" class="form-fields"></div><div class="generate-row"><button type="submit" id="run-button" class="button primary" disabled>生成语音</button></div></form></section>
+            <section class="card result-card" aria-labelledby="result-heading"><div class="card-heading"><div><h2 id="result-heading">生成结果</h2><p id="result-subtitle" class="muted"></p></div><div class="result-actions"><button id="stop-stream-playback" class="button subtle small-button" hidden>停止试听</button><button id="cancel-job" class="button subtle small-button" hidden>停止任务</button></div></div><div id="job-status" class="job-status" role="status" aria-live="polite" hidden></div><div id="result-content" class="result-content"><p class="muted small">暂无结果</p></div></section>
+            </div>
           </div>
-          <aside class="workspace-settings">
-            <section class="card model-picker-card"><div class="card-heading"><h2>使用的模型</h2><span class="step-label">02 / 模型</span></div><label for="workspace-model" class="field-label">已安装且适用于此任务</label><select id="workspace-model" aria-describedby="workspace-model-description"><option value="">正在读取模型…</option></select><div id="workspace-model-description" class="model-summary muted"></div><div id="workspace-model-badges" class="badge-row"></div><button class="text-button" id="browse-models">到模型中心选择更多 <span aria-hidden="true">↗</span></button></section>
-            <section class="card adjustment-card"><div class="card-heading"><h2>效果调整</h2><button class="text-button small" id="reset-options">恢复默认</button></div><p class="muted small">默认值来自当前模型。只需调整你关心的效果。</p><div id="effect-controls" class="form-fields"></div><details id="expert-panel" class="expert-panel"><summary>专家设置 <span class="muted">按需展开</span></summary><p class="muted small">采样与运行参数。标注“需重载”的设置会在下次执行时重新加载模型。</p><div id="expert-controls" class="form-fields"></div><label class="field-label" for="options-json">其他参数（JSON）</label><textarea id="options-json" rows="3" class="code-input" placeholder='{"temperature": 0.9}' spellcheck="false"></textarea><p class="field-help">仅覆盖本次任务参数；通常无需填写。</p></details></section>
+          <button id="parameter-backdrop" class="drawer-backdrop parameter-backdrop" type="button" aria-label="关闭任务参数" tabindex="-1" hidden></button>
+          <aside id="workspace-settings" class="workspace-settings card" aria-labelledby="parameter-title">
+            <div class="parameter-heading"><h2 id="parameter-title">合成参数</h2><button class="text-button small" id="reset-options" type="button">恢复默认</button></div>
+            <section class="adjustment-card"><div id="task-setting-inputs" class="form-fields"></div><div id="basic-controls" class="form-fields"></div><div id="effect-controls" class="form-fields"></div><details id="expert-panel" class="expert-panel"><summary>高级参数</summary><div id="expert-controls" class="form-fields"></div><label class="field-label" for="options-json">其他参数（JSON）</label><textarea id="options-json" rows="3" class="code-input" placeholder='{"temperature": 0.9}' title="覆盖本次任务参数" spellcheck="false"></textarea></details></section>
           </aside>
         </div>
       </section>
-
-      <section id="page-realtime" class="page realtime-page" aria-labelledby="realtime-heading" hidden><div class="page-heading"><div><h1 id="realtime-heading">实时聊天</h1><p>直接开口交流。切换页面会保留当前聊天连接。</p></div></div><div class="realtime-frame-wrap"><iframe id="realtime-frame" title="实时语音聊天" allow="microphone; autoplay; fullscreen" allowfullscreen data-src="/realtime/"></iframe></div></section>
-
-      <section id="page-models" class="page" aria-labelledby="models-heading" hidden>
-        <div class="page-heading"><div><h1 id="models-heading">模型中心</h1><p>按用途选择，下载完成即可回到工作台使用。</p></div><button class="button secondary" id="refresh-catalog">刷新模型</button></div>
-        <div class="model-toolbar"><div class="search-field"><span aria-hidden="true">⌕</span><input type="search" id="model-search" placeholder="搜索模型名称、系列或用途" aria-label="搜索模型"></div><select id="model-task-filter" aria-label="筛选用途"><option value="">所有用途</option></select><select id="model-state-filter" aria-label="筛选安装状态"><option value="">全部模型</option><option value="installed">已安装</option><option value="available">可下载</option><option value="manual">需手动导入</option></select></div>
-        <div class="library-meta"><span id="model-count" class="muted small"></span><span class="muted small">来源遵循项目模型清单</span></div>
-        <div class="library-grid"><div id="model-list" class="model-list" aria-label="模型列表"></div><aside class="card model-detail" id="model-detail" aria-live="polite"><div class="empty-state compact"><p>选择一个模型</p><span class="muted small">查看用途、所需空间与下载信息</span></div></aside></div>
-        <section class="card downloads-card"><div class="card-heading"><div><h2>下载管理 <span id="downloads-count" class="muted"></span></h2><p class="muted">一次下载一个模型，自动选择线路，支持暂停与续传。</p></div><details class="download-auth"><summary class="text-button">访问凭证</summary><label for="hf-token" class="field-label">Hugging Face Token（按需）</label><input id="hf-token" type="password" autocomplete="off" placeholder="仅访问受限模型需要"><p class="field-help">只用于发起下载，不保存到浏览器。</p></details></div><div id="download-list"><p class="muted small">暂无下载任务</p></div></section>
+      <section id="page-tools" class="page tools-page" aria-labelledby="tools-heading" hidden><div class="page-heading"><h1 id="tools-heading">音频工具</h1></div><div id="tool-list" class="tool-list"></div></section>
+      <section id="page-scenarios" class="page scenarios-page" aria-labelledby="scenarios-heading" hidden><div class="page-heading"><div><h1 id="scenarios-heading">场景应用</h1><p>按工作流使用音频能力；规划中的应用暂未开放。</p></div></div><div id="scenario-list" class="tool-list"></div></section>
+      <section id="page-references" class="page references-page" aria-labelledby="references-heading" hidden>
+        <div class="page-heading"><div><h1 id="references-heading">参考音频库</h1><p class="muted small">保存参考音频与对应文本，供语音合成和声音转换重复使用。</p></div><div class="reference-actions"><button id="new-reference" class="button secondary">新建参考音频</button><button id="refresh-references" class="button secondary">刷新列表</button></div></div>
+        <div class="references-grid"><section class="card"><div class="card-heading"><h2>添加或编辑参考音频</h2></div><div id="reference-editor" class="form-fields"></div></section><section class="card"><div class="card-heading"><h2>已保存参考音频</h2><span id="reference-count" class="muted small"></span></div><input id="reference-search" type="search" placeholder="搜索名称或参考文本" aria-label="搜索参考音频"><div id="reference-list" class="reference-list"></div></section></div>
       </section>
-
-      <section id="page-api" class="page" aria-labelledby="api-heading" hidden><div class="page-heading"><div><h1 id="api-heading">API 调用</h1><p>复制当前服务的调用示例，即可从代码使用本地模型。</p></div></div><div class="card api-connection"><div><span class="field-label">服务地址</span><code id="api-base">正在读取…</code></div><div><span class="field-label">当前模型</span><span id="api-model">—</span></div></div><div id="api-endpoints" class="api-endpoints"></div></section>
-
+      <section id="page-realtime" class="page realtime-page" aria-labelledby="realtime-heading" hidden><h1 id="realtime-heading" class="sr-only">实时语音聊天</h1><div class="realtime-frame-wrap"><iframe id="realtime-frame" title="实时语音聊天" allow="microphone; autoplay; fullscreen" allowfullscreen data-src="/realtime/"></iframe></div></section>
+      <section id="page-models" class="page" aria-labelledby="models-heading" hidden>
+        <div class="page-heading"><h1 id="models-heading">模型中心</h1><button class="button secondary" id="refresh-catalog">刷新模型</button></div>
+        <div class="model-toolbar"><div class="search-field"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg><input type="search" id="model-search" placeholder="搜索模型名称、系列或用途" aria-label="搜索模型"></div><select id="model-task-filter" aria-label="筛选用途"><option value="">所有用途</option></select><select id="model-state-filter" aria-label="筛选安装状态"><option value="">全部模型</option><option value="installed">已安装</option><option value="available">可下载</option><option value="manual">需手动导入</option></select></div>
+        <div class="library-meta"><span id="model-count" class="muted small"></span></div>
+        <div class="library-grid"><div id="model-list" class="model-list" aria-label="模型列表"></div><aside class="card model-detail" id="model-detail" aria-live="polite"><div class="empty-state compact"><p>选择模型查看详情</p></div></aside></div>
+        <section class="card downloads-card"><div class="card-heading"><h2>下载管理 <span id="downloads-count" class="muted"></span></h2><details class="download-auth"><summary class="text-button">访问凭证</summary><label for="hf-token" class="field-label">Hugging Face Token</label><input id="hf-token" type="password" autocomplete="off" placeholder="受限模型需要" title="仅用于本次下载，不保存到浏览器"></details></div><div id="download-list"><p class="muted small">暂无下载任务</p></div></section>
+      </section>
       <section id="page-settings" class="page settings-page" aria-labelledby="settings-heading" hidden>
-        <div class="page-heading"><h1 id="settings-heading">设置</h1></div>
-        <section class="card">
-          <div class="card-heading"><h2>外观</h2></div>
-          <div class="field-label">界面风格</div>
-          <div class="palette-options" role="group" aria-label="界面风格预览">
-            <button type="button" class="palette-option" data-palette-choice="forest" aria-pressed="true"><span class="palette-preview preview-forest" aria-hidden="true"><i></i><b></b><em></em></span><strong>奶油森林</strong><small>暖白 · 墨绿 · 珊瑚橙</small></button>
-            <button type="button" class="palette-option" data-palette-choice="classic" aria-pressed="false"><span class="palette-preview preview-classic" aria-hidden="true"><i></i><b></b><em></em></span><strong>清爽蓝白</strong><small>雾灰 · 纯白 · 蓝色</small></button>
-          </div>
-          <label class="field-label" for="theme-select">明暗模式</label><select id="theme-select"><option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option></select>
-          <p class="field-help">风格和明暗模式分别设置，只保存在当前浏览器。要让预览与 Chrome 一致，请选择相同选项。</p>
+        <div class="page-heading"><h1 id="settings-heading">系统设置</h1></div>
+        <nav id="settings-tabs" class="settings-tabs" aria-label="设置分类"><button class="active" data-settings-tab="appearance" aria-current="page">外观</button><button data-settings-tab="runtime">模型运行</button><button data-settings-tab="api">API 与开发</button></nav>
+        <section id="settings-appearance" class="card settings-section" aria-labelledby="appearance-heading"><h2 id="appearance-heading" class="sr-only">外观</h2><div class="palette-options" role="group" aria-label="界面配色"><button type="button" class="palette-option" data-palette-choice="classic" aria-pressed="true"><span class="palette-swatch swatch-classic" aria-hidden="true"></span><strong>经典蓝紫</strong></button><button type="button" class="palette-option" data-palette-choice="studio" aria-pressed="false"><span class="palette-swatch swatch-studio" aria-hidden="true"></span><strong>石墨琥珀</strong></button></div><label class="field-label" for="theme-select">明暗模式</label><select id="theme-select"><option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option></select></section>
+        <section id="settings-runtime-section" class="settings-section" aria-labelledby="runtime-heading" hidden>
+          <div class="card"><h2 id="runtime-heading" class="sr-only">模型运行</h2><p id="settings-runtime" class="muted">正在读取服务状态…</p><div class="reference-actions"><button id="unload-model" class="button secondary" title="释放当前任务模型的内存">卸载当前模型</button><button id="unload-all-models" class="button secondary" title="释放当前模型和常驻识别模型的内存">卸载所有内存模型</button></div><p class="field-help">参考音频识别首次加载 Qwen3-ASR 0.6B 后保持驻留；其他场景显存不足或用量未知时自动释放。模型文件保留在本地。</p></div>
+          <div class="card"><div class="card-heading"><h2>本地服务</h2><button id="refresh-runtime-logs" class="text-button" type="button">刷新日志</button></div><p id="runtime-health" class="muted small">正在读取运行状态…</p><pre id="runtime-logs" class="runtime-logs" aria-label="服务日志">暂无日志</pre><div class="runtime-actions"><a id="download-runtime-logs" class="button secondary small-button" href="/api/workbench/runtime/logs" download>下载诊断日志</a><button id="shutdown-service" class="button danger small-button" type="button">退出工作空间服务</button></div></div>
         </section>
-        <section class="card"><div class="card-heading"><h2>模型运行</h2></div><p id="settings-runtime" class="muted">正在读取服务状态…</p><button id="unload-model" class="button secondary">卸载当前模型，释放内存</button><p class="field-help">卸载不会删除模型文件；执行新任务时会自动加载。</p></section>
-        <section class="card"><div class="card-heading"><h2>关于下载</h2></div><p class="muted">下载使用项目模型清单中的文件来源，自动检测可用的直连、系统代理与镜像线路。线路与进度可在模型中心查看。</p></section>
+        <section id="page-api" class="settings-section" aria-labelledby="api-heading" hidden><h2 id="api-heading" class="sr-only">API 与开发</h2><div class="card api-connection"><div><span class="field-label">服务地址</span><code id="api-base">正在读取…</code></div><div><span class="field-label">当前模型</span><span id="api-model">—</span></div></div><div id="api-endpoints" class="api-endpoints"></div></section>
       </section>
     </main>
+  </div>
+  <div id="model-picker-popover" class="model-picker-popover" popover="auto" role="dialog" aria-labelledby="model-picker-heading">
+    <div class="model-picker-heading"><h2 id="model-picker-heading">语音合成模型</h2><div class="search-field"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg><input type="search" id="model-picker-search" placeholder="搜索模型" aria-label="搜索适用模型" autocomplete="off"></div><button class="icon-button" id="browse-models" type="button" title="模型中心" aria-label="模型中心"><svg class="icon" aria-hidden="true"><use href="#icon-box"/></svg></button></div>
+    <select id="workspace-model" aria-label="当前任务模型" hidden><option value="">正在读取模型…</option></select>
+    <p id="model-picker-status" class="model-picker-status" role="status" aria-live="polite" hidden></p>
+    <div id="model-picker-list" class="model-picker-list" aria-label="适用的已安装模型"></div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>

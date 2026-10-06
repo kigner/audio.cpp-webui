@@ -38,7 +38,7 @@ import tempfile
 import threading
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
 import numpy as np
@@ -93,7 +93,7 @@ class CancelScope:
 
 @dataclass
 class PipelineEvent:
-    pass
+    generation: Optional[int] = field(default=None, kw_only=True, compare=False)
 
 
 class PipelineStageError(RuntimeError):
@@ -134,6 +134,11 @@ class SpeechStopped(PipelineEvent):
 class UserTranscript(PipelineEvent):
     text: str
     partial: bool = False
+
+
+@dataclass
+class TextTurn(PipelineEvent):
+    text: str
 
 
 @dataclass
@@ -485,8 +490,9 @@ class _VADStage:
                         # ASR gets the complete utterance from the very start.
                         self._segment = list(self._pre_speech_buf)
                         self._pre_speech_buf = []
-                        self._out.put(SpeechStarted())
                         self._cancel.cancel()  # barge-in
+                        self._speech_generation = self._cancel.generation
+                        self._out.put(SpeechStarted(generation=self._speech_generation))
                 else:
                     self._speech_run = 0
                     self._pre_speech_buf = []
@@ -501,8 +507,8 @@ class _VADStage:
                         self._segment = []
                         self._speaking = False
                         self._speech_run = 0
-                        self._out.put(SpeechStopped())
-                        self._turns.put(SpeechStopped(audio=seg))
+                        self._out.put(SpeechStopped(generation=self._speech_generation))
+                        self._turns.put(SpeechStopped(audio=seg, generation=self._speech_generation))
 
 
 # ── STT stage (audio.cpp ASR server) ────────────────────────────────────
@@ -579,6 +585,15 @@ class _LLMStage:
         self._system = instructions.strip() or self.DEFAULT_SYSTEM
         self._messages: list[dict[str, Any]] = [{"role": "system", "content": self._system}]
         self._http = httpx.Client(timeout=60.0)
+        self._response = None
+        self._response_lock = threading.Lock()
+
+    def cancel_active(self) -> None:
+        with self._response_lock:
+            response = self._response
+            self._response = None
+        if response is not None:
+            response.close()
 
     def configure(self, base_url: Optional[str] = None, api_key: Optional[str] = None,
                   model: Optional[str] = None, instructions: Optional[str] = None) -> None:
@@ -607,11 +622,13 @@ class _LLMStage:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         payload: dict[str, Any] = {
-            "model": self._model, "messages": self._messages, "stream": True,
+            "model": self._model, "messages": list(self._messages), "stream": True,
         }
         try:
             with self._http.stream("POST", f"{self._base_url}/chat/completions",
                                    json=payload, headers=headers) as resp:
+                with self._response_lock:
+                    self._response = resp
                 if resp.status_code != 200:
                     resp.read()
                     detail = _response_error_message(resp)
@@ -633,8 +650,13 @@ class _LLMStage:
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
         except httpx.RequestError as exc:
+            if cancel_scope.is_stale(gen):
+                return
             logger.error("LLM API unreachable (%s): %r", self._base_url, exc)
             raise _connection_stage_error("llm", repr(exc)) from exc
+        finally:
+            with self._response_lock:
+                self._response = None
 
 
 # ── TTS stage (audio.cpp TTS server) ────────────────────────────────────
@@ -809,9 +831,12 @@ class RealtimePipeline:
         instructions: str = "",
     ):
         self._out_events: "queue.Queue[PipelineEvent]" = queue.Queue()
-        self._turn_queue: "queue.Queue[SpeechStopped]" = queue.Queue()
+        self._turn_queue: "queue.Queue[SpeechStopped | TextTurn]" = queue.Queue()
         self._cancel_scope = CancelScope()
-        self._vad = _VADStage(self._out_events, self._turn_queue, self._cancel_scope)
+        # Text conversations must not load VAD or an ASR model. Capture creates
+        # VAD lazily on the existing session when its first audio frame arrives.
+        self._vad: Optional[_VADStage] = None
+        self._vad_lock = threading.Lock()
         self._stt = _STTStage(asr_server, asr_model, asr_language)
         self._llm = _LLMStage(llm_base_url, llm_api_key, llm_model, instructions)
         self._tts = _TTSStage(tts_server)
@@ -823,6 +848,7 @@ class RealtimePipeline:
         self._tts_stream_sample_rate = int(tts_stream_sample_rate or 0)
         self._tts_options = dict(tts_options or {})
         self._cancel_scope.add_callback(self._tts.cancel_active)
+        self._cancel_scope.add_callback(self._llm.cancel_active)
         self._cfg_lock = threading.Lock()
         self._threads: list[threading.Thread] = []
         self._stop_event = threading.Event()
@@ -847,7 +873,23 @@ class RealtimePipeline:
         self._tts_queue.put(None)  # wake TTS worker so it can exit
 
     def feed_audio(self, pcm: bytes) -> None:
-        self._vad.add_chunk(pcm)
+        with self._vad_lock:
+            if self._vad is None:
+                self._vad = _VADStage(self._out_events, self._turn_queue, self._cancel_scope)
+            self._vad.add_chunk(pcm)
+
+    def feed_text(self, text: str) -> int:
+        text = text.strip()
+        if not text or len(text) > 12000:
+            raise ValueError("请输入 1 至 12000 个字符。")
+        self.cancel()
+        generation = self._cancel_scope.generation
+        self._turn_queue.put(TextTurn(text=text, generation=generation))
+        return generation
+
+    @property
+    def generation(self) -> int:
+        return self._cancel_scope.generation
 
     def cancel(self) -> None:
         self._cancel_scope.cancel()
@@ -856,7 +898,9 @@ class RealtimePipeline:
         events: list[PipelineEvent] = []
         while True:
             try:
-                events.append(self._out_events.get_nowait())
+                event = self._out_events.get_nowait()
+                if event.generation is None or not self._cancel_scope.is_stale(event.generation):
+                    events.append(event)
             except queue.Empty:
                 break
         return events
@@ -906,7 +950,9 @@ class RealtimePipeline:
     def _vad_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                self._vad.process()
+                with self._vad_lock:
+                    if self._vad is not None:
+                        self._vad.process()
             except Exception:  # never let a bad frame kill the ticker
                 logger.exception("VAD process error")
             self._stop_event.wait(0.03)
@@ -917,27 +963,34 @@ class RealtimePipeline:
                 stopped = self._turn_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            audio = stopped.audio
-            if audio is None or len(audio) < PIPELINE_SR * 0.3:  # < 0.3s: ignore
-                self._out_events.put(TurnDiscarded(reason="too_short"))
+            gen = stopped.generation
+            if gen is not None and self._cancel_scope.is_stale(gen):
                 continue
             try:
-                self._run_turn(audio)
+                if isinstance(stopped, TextTurn):
+                    self._run_text_turn(stopped.text, gen)
+                else:
+                    audio = stopped.audio
+                    if audio is None or len(audio) < PIPELINE_SR * 0.3:
+                        self._out_events.put(TurnDiscarded(reason="too_short", generation=gen))
+                        continue
+                    self._run_turn(audio, gen)
             except PipelineStageError as exc:
                 logger.error(
                     "realtime %s stage failed (%s): %s",
                     exc.stage, exc.code, exc.detail or exc.message)
                 self._out_events.put(PipelineError(
-                    stage=exc.stage, code=exc.code, message=exc.message))
-                self._out_events.put(ResponseDone())
+                    stage=exc.stage, code=exc.code, message=exc.message, generation=gen))
+                self._out_events.put(ResponseDone(generation=gen))
             except Exception:
                 logger.exception("turn failed")
                 self._out_events.put(PipelineError(
                     stage="pipeline",
                     code="pipeline_internal",
                     message="实时语音处理失败，请重试。",
+                    generation=gen,
                 ))
-                self._out_events.put(ResponseDone())
+                self._out_events.put(ResponseDone(generation=gen))
 
     # ── TTS worker thread ──────────────────────────────────────────────
 
@@ -975,12 +1028,12 @@ class RealtimePipeline:
                         while len(pending) >= step:
                             chunk = bytes(pending[:step])
                             emitted_bytes += len(chunk)
-                            self._out_events.put(AudioChunk(pcm=chunk))
+                            self._out_events.put(AudioChunk(pcm=chunk, generation=gen))
                             del pending[:step]
                     if pending and not self._cancel_scope.is_stale(gen):
                         chunk = bytes(pending)
                         emitted_bytes += len(chunk)
-                        self._out_events.put(AudioChunk(pcm=chunk))
+                        self._out_events.put(AudioChunk(pcm=chunk, generation=gen))
                 else:
                     pcm = self._tts.synthesize(
                         text, model_id=model, voice=voice, voice_ref=voice_ref,
@@ -990,14 +1043,14 @@ class RealtimePipeline:
                             break
                         chunk = pcm[i:i + step]
                         emitted_bytes += len(chunk)
-                        self._out_events.put(AudioChunk(pcm=chunk))
+                        self._out_events.put(AudioChunk(pcm=chunk, generation=gen))
             except PipelineStageError as exc:
                 if not self._cancel_scope.is_stale(gen):
                     logger.error(
                         "realtime TTS failed (%s): %s",
                         exc.code, exc.detail or exc.message)
                     self._out_events.put(PipelineError(
-                        stage=exc.stage, code=exc.code, message=exc.message))
+                        stage=exc.stage, code=exc.code, message=exc.message, generation=gen))
             except Exception:
                 logger.exception("TTS synthesis failed")
                 if not self._cancel_scope.is_stale(gen):
@@ -1005,6 +1058,7 @@ class RealtimePipeline:
                         stage="tts",
                         code="tts_internal",
                         message="TTS 合成失败，请检查模型和服务状态。",
+                        generation=gen,
                     ))
             finally:
                 if emitted_bytes and not self._cancel_scope.is_stale(gen):
@@ -1015,14 +1069,16 @@ class RealtimePipeline:
                         elapsed_ms=elapsed_ms,
                         rtf=elapsed_ms / duration_ms,
                         streaming=streaming,
+                        generation=gen,
                     ))
                 with self._tts_lock:
                     self._tts_pending -= 1
 
     # ── one conversational turn ───────────────────────────────────────
 
-    def _run_turn(self, audio: np.ndarray) -> None:
-        gen = self._cancel_scope.generation
+    def _run_turn(self, audio: np.ndarray, gen: Optional[int] = None) -> None:
+        if gen is None:
+            gen = self._cancel_scope.generation
 
         # ── STT ──
         text = self._stt.transcribe(audio)
@@ -1030,10 +1086,15 @@ class RealtimePipeline:
             return
         if not text:
             logger.info("ASR returned no transcript; discarding realtime turn")
-            self._out_events.put(TurnDiscarded(reason="empty_transcript"))
+            self._out_events.put(TurnDiscarded(reason="empty_transcript", generation=gen))
+            return
+        self._run_text_turn(text, gen)
+
+    def _run_text_turn(self, text: str, gen: int) -> None:
+        if self._cancel_scope.is_stale(gen):
             return
         logger.info("USER: %s", text)
-        self._out_events.put(UserTranscript(text=text, partial=False))
+        self._out_events.put(UserTranscript(text=text, partial=False, generation=gen))
         self._llm.add_user_message(text)
 
         # ── LLM stream -> sentence-chunked TTS (parallel via queue) ──
@@ -1096,15 +1157,19 @@ class RealtimePipeline:
 
         # Wait for all queued TTS items to finish before marking the turn done.
         while not self._stop_event.is_set():
+            if self._cancel_scope.is_stale(gen):
+                return
             with self._tts_lock:
                 if self._tts_pending <= 0:
                     break
             self._stop_event.wait(0.05)
 
+        if self._cancel_scope.is_stale(gen):
+            return
         if full.strip():
             logger.info("ASSISTANT: %s", full.strip())
             self._llm.add_assistant_message(full.strip())
-        self._out_events.put(ResponseDone())
+        self._out_events.put(ResponseDone(generation=gen))
 
     @staticmethod
     def _split_speakable(
@@ -1219,7 +1284,7 @@ class RealtimePipeline:
         # client as soon as the LLM has a speakable sentence, while TTS works in
         # the background. This keeps the side panel from sitting blank during
         # local TTS latency.
-        self._out_events.put(AssistantText(text=text))
+        self._out_events.put(AssistantText(text=text, generation=gen))
         with self._tts_lock:
             self._tts_pending += 1
         self._tts_queue.put((text, gen, model, voice, voice_ref, reference_text,

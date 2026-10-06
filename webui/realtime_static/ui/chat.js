@@ -289,7 +289,7 @@ export class ChatView {
     hist.classList.add("interrupted");
     const note = document.createElement("div");
     note.className = "hist-note";
-    note.textContent = "Interrupted";
+    note.textContent = "已中断";
     hist.appendChild(note);
   }
 

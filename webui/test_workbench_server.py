@@ -53,8 +53,48 @@ class WorkbenchTests(unittest.TestCase):
         response = self.client.get("/api/workbench/catalog")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["models"][0]["task"], "tts")
-        self.assertEqual(len(response.json()["tasks"]), 7)
+        self.assertEqual(len(response.json()["tasks"]), 8)
+        self.assertEqual(next(t["types"] for t in response.json()["tasks"] if t["id"] == "asr"), ["asr"])
         self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_runtime_configuration_only_reports_a_live_managed_process(self):
+        self.b._loaded_id = "tts"
+        self.b._server_proc = Mock()
+        self.b._server_proc.poll.return_value = None
+        self.b._loaded_load_options = {"threads": "8"}
+        self.b._loaded_session_options = {"voice": "warm"}
+        self.b._loaded_mode = "streaming"
+        server = self.client.get("/api/workbench/status").json()["server"]
+        self.assertEqual(server["model"], "tts")
+        self.assertEqual(server["configuration"], {
+            "managed": True, "load_options": {"threads": "8"},
+            "session_options": {"voice": "warm"}, "mode": "streaming"})
+        self.b._server_proc.poll.return_value = 1
+        server = self.client.get("/api/workbench/status").json()["server"]
+        self.assertIsNone(server["model"])
+        self.assertFalse(server["configuration"]["managed"])
+        self.assertEqual(server["configuration"]["load_options"], {})
+
+    def test_external_api_model_is_reported_after_reuse_and_disappears_when_stopped(self):
+        self.b.loaded_ids = Mock(return_value=["other-api-model", "tts"])
+        response = self.client.post("/api/workbench/models/tts/load", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["server"]["model"], "tts")
+        self.assertFalse(response.json()["busy"])
+        self.assertFalse(response.json()["server"]["configuration"]["managed"])
+        self.assertEqual(self.client.get("/api/workbench/status").json()["server"]["model"], "tts")
+        self.b.loaded_ids.return_value = []
+        self.assertIsNone(self.client.get("/api/workbench/status").json()["server"]["model"])
+
+    def test_loader_error_has_readable_json_and_releases_the_operation(self):
+        class LoaderError(Exception):
+            pass
+        self.b.gr = SimpleNamespace(Error=LoaderError)
+        self.b._ensure_with_options.side_effect = LoaderError("8088 被外部模型服务占用，请先关闭。")
+        response = self.client.post("/api/workbench/models/tts/load", json={})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "8088 被外部模型服务占用，请先关闭。")
+        self.assertFalse(self.client.get("/api/workbench/status").json()["busy"])
 
     def test_uploaded_id_and_generated_file_are_scoped(self):
         ident = self.upload()
@@ -69,6 +109,7 @@ class WorkbenchTests(unittest.TestCase):
                                     "inputs":{"text":"hello", "voice":ident}, "options":{"speed":1.2}})
         job = self.wait_job(response.json()["id"])
         self.assertEqual(job["status"], "done")
+        self.assertEqual((job["task"], job["model"]), ("tts", "tts"))
         self.assertTrue(Path(seen["args"][3]).is_relative_to(self.temp.name))
         self.assertEqual(seen["args"][-2], {"speed": 1.2})
         self.assertEqual(self.client.get(job["artifacts"][0]["url"]).content, b"RIFF")
