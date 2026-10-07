@@ -1580,6 +1580,58 @@ cases.push(['model-specific common controls are rebuilt on every selection',asyn
   assert.equal(await page.locator('#common-options #param-speaker').count(),0);
 }]);
 
+cases.push(['IndexTTS emotion controls stay beside generation with one language and visible result seed',async(page,backend)=>{
+  const labels={emotion_text:'情感描述',emotion_alpha:'情感强度',use_emotion_text:'从朗读文本推断情感',duration_factor:'时长倍率',interval_silence_ms:'句间停顿'};
+  const parameters=presetParameters('index_tts2').map(p=>({...p,label:labels[p.name]||p.label,level:Object.hasOwn(labels,p.name)?'effect':'expert'}));
+  Object.assign(backend.models.find(m=>m.id==='tts-two'),{family:'index_tts2',label:'IndexTTS2',parameters,
+    streaming:false,voice_mode:'reference',profile:{accepts_voice_reference:true,require_voice:true,send_reference_text:false,send_seed:true,send_max_tokens:false}});
+  await page.setViewportSize({width:1366,height:768});await pick(page,'tts-two');
+  for(const name of Object.keys(labels))assert.equal(await page.locator(`#common-options #param-${name}`).count(),1,name);
+  assert.equal(await page.locator('#param-lang').count(),0);
+  assert.equal(await page.locator('[data-input-key="language"]').count(),1);
+  await page.locator('#param-emotion_text').fill('开心又激动，带着期待');
+  await page.locator('#param-emotion_alpha').fill('0.7');
+  await page.locator('[data-input-key="language"]').selectOption('chinese');
+  await page.locator('[data-input-key="text"]').fill('终于等到你了，今天真是个好日子。');
+  await referenceMore(page);
+  await upload(page,'#task-form [data-input-key="voice"]','reference.wav');
+  await advanced(page);
+  assert.equal(await page.locator('#workspace-settings #param-lang,#workspace-settings [data-input-key="language"],#workspace-settings #param-emotion_text').count(),0);
+  await page.locator('[data-input-key="seed"]').fill('42');await page.keyboard.press('Escape');
+  for(const selector of ['#param-emotion_text','#param-emotion_alpha','#run-button'])await assertVisibleControl(page,selector,'IndexTTS common control clipped');
+  await snapshot(page,'index-tts-common-controls');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'IndexTTS did not submit');
+  assert.equal(backend.requests[0].options.emotion_text,'开心又激动，带着期待');
+  assert.equal(backend.requests[0].options.emotion_alpha,0.7);
+  assert.equal(backend.requests[0].inputs.language,'chinese');assert.equal(backend.requests[0].inputs.seed,42);
+  assert.equal(backend.requests[0].options.lang,undefined);
+  backend.finish('job-1','',['emotion.wav']);backend.jobs.get('job-1').message='生成完成，用时 2.3s。随机种子：42';
+  await waitText(page,'#job-status','随机种子：42');await waitText(page,'#job-status','emotion.wav');
+  await snapshot(page,'index-tts-result-seed');
+  await page.setViewportSize({width:390,height:844});
+  for(const selector of ['#param-emotion_text','#param-emotion_alpha','#run-button'])await assertVisibleControl(page,selector,'Narrow IndexTTS control clipped');
+  await assertBrowserScroll(page);await snapshot(page,'index-tts-mobile');
+  await page.setViewportSize({width:1366,height:768});await pick(page,'tts-one');assert.equal(await page.locator('#param-emotion_text').count(),0);
+  await pick(page,'tts-two');await waitValue(page,'#param-emotion_text','开心又激动，带着期待');
+}]);
+
+cases.push(['dedicated music and ASR inputs remove duplicate model settings',async(page,backend)=>{
+  Object.assign(backend.models.find(m=>m.id==='music-one'),{family:'minimax_music3',
+    profile:{send_seed:true},music_inputs:{duration:true,duration_default:20,duration_min:1},parameters:[
+      {name:'duration_sec',label:'时长',type:'number',default:20,level:'effect',scope:'request'},
+      {name:'seed',label:'随机种子',type:'int',default:0,level:'expert',scope:'request'},
+      {name:'temperature',label:'采样温度',type:'number',default:1,level:'expert',scope:'request'}]});
+  await task(page,'music');await pick(page,'music-one');
+  assert.equal(await page.locator('#common-options [data-input-key="duration"]').count(),1);
+  assert.equal(await page.locator('#param-duration_sec,#param-seed').count(),0);
+  await advanced(page);assert.equal(await page.locator('[data-input-key="seed"]').count(),1);
+  assert.equal(await page.locator('#expert-controls #param-temperature').count(),1);await page.keyboard.press('Escape');
+  backend.models.find(m=>m.id==='asr-one').parameters=[{name:'instruct',label:'音频指令',type:'text',level:'effect',scope:'request'}];
+  await task(page,'asr');await pick(page,'asr-one');
+  assert.equal(await page.locator('[data-input-key="context"]').count(),1);
+  assert.equal(await page.locator('#param-instruct').count(),0);
+}]);
+
 (async () => {
   const options = {headless:true};
   if (process.env.AUDIOCPP_BROWSER_EXECUTABLE) options.executablePath = process.env.AUDIOCPP_BROWSER_EXECUTABLE;

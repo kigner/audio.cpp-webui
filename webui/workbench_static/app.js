@@ -403,7 +403,24 @@ function languageLabel(value,fallback=value) {const key=String(value).toLowerCas
 function languageChoices(values,automatic='自动') {const seen=new Set(['','auto']);const choices=[{label:automatic,value:''}];for(const item of choicesOf(values)){const key=String(item.value).toLowerCase();if(seen.has(key))continue;seen.add(key);choices.push({label:languageLabel(key,item.label),value:item.value});}return choices;}
 
 const OPTION_CHOICE_NAMES={auto:'自动',default:'默认',native:'原始精度',none:'不启用',off:'关闭',on:'开启',true:'开启',false:'关闭',fixed:'固定',grow:'自动扩展',tiered:'分档',full:'完整',full_context:'完整上下文',streaming:'流式',cpu:'处理器',model:'跟随模型',base:'基础版',flash:'快速版',eager:'即时计算',flash_attention:'融合注意力',first_block_cache:'首块缓存',spectrum:'频谱加速',word_budget:'按字数预算',tag_aware:'按标签',endline:'按换行',japanese:'日语分段',vad:'按语音片段',verbatim:'逐字转写',intended:'清理后的文本',verbatimize:'按原文还原口语',greedy_search:'贪心搜索',modified_beam_search:'改进束搜索',low_latency:'低延迟',high_latency:'高延迟',very_high_latency:'较高延迟',low:'低',very_low:'很低',ultra_low:'极低',very_high:'很高',stable:'稳定',quick:'快速',exact:'精确',semantic:'语义',text:'文本',audio:'音频',edit:'编辑',editing:'编辑',instruct:'按指令',instruction_tts:'指令语音合成',zero_shot:'零样本克隆',cross_lingual:'跨语言',tts:'语音合成',tts_interleave:'交错语音合成',text_to_audio:'文字生成音频',long_form:'长音频',joint:'联合',independent:'独立',alternating:'交替',same:'保持一致',masked:'遮罩',edges:'边缘',melody:'旋律',segment:'分段',attribution:'归属',custom:'自定义',init_audio:'以源音频初始化',inpaint_audio:'局部重绘',happy:'开心',sad:'悲伤',angry:'愤怒',fearful:'恐惧',disgusted:'厌恶',surprised:'惊讶',neutral:'中性',expressive:'富有表现力',clear:'清晰',english_female:'英语女声',english_male:'英语男声',us_female:'美式女声',us_male:'美式男声',uk_female:'英式女声',uk_male:'英式男声',style_preserved_vc:'保留风格换声',style_converted_vc:'转换风格换声',style_preserved_svc:'保留风格歌声转换',style_converted_svc:'转换风格歌声转换',singing_style_conversion:'演唱风格转换',latin:'拉丁文字',pre_romanized:'已罗马化',quiet_energy:'低能量边界'};
-function visibleParameters() {const task=state.task,detail=state.detail||{};const dedicatedLanguage=(['tts','asr'].includes(task)&&detail.languages?.length)||(task==='analysis'&&modelTask(detail)==='align');return (detail.parameters||[]).filter(p=>!(dedicatedLanguage&&p.name==='language')&&!(task==='design'&&['instruction','instruct',detail.profile?.vdes_option_key].includes(p.name))&&!(task==='music'&&(['lyrics','duration'].includes(p.name)||detail.music_inputs?.text_role==='instruction'&&p.name===detail.profile?.edit_instruction_key)));}
+function visibleParameters() {
+  const task=state.task,detail=state.detail||{};
+  const dedicatedLanguage=(['tts','asr'].includes(task)&&detail.languages?.length)||(task==='analysis'&&modelTask(detail)==='align');
+  const dedicatedSeed=['tts','music','vc','processing','design'].includes(task)&&detail.profile?.send_seed!==false;
+  return (detail.parameters||[]).filter(p=>{
+    if(dedicatedLanguage&&(p.name==='language'||detail.family==='index_tts2'&&p.name==='lang'))return false;
+    if(dedicatedSeed&&p.name==='seed')return false;
+    if(task==='asr'&&detail.asr_inputs?.context&&['context','instruct'].includes(p.name))return false;
+    if(task==='design'&&['instruction','instruct',detail.profile?.vdes_option_key].includes(p.name))return false;
+    if(task==='music'){
+      if(['lyrics','duration'].includes(p.name))return false;
+      if(detail.music_inputs?.duration&&['duration_sec','duration_seconds'].includes(p.name))return false;
+      if(detail.family==='yue2'&&p.name==='style')return false;
+      if(detail.music_inputs?.text_role==='instruction'&&p.name===detail.profile?.edit_instruction_key)return false;
+    }
+    return true;
+  });
+}
 
 function field(label, input, help='', required=false) {
   const group=node('div','field-group'),labelEl=node('label','field-label',label);
@@ -763,12 +780,13 @@ function parameterControl(param) {
   else if(type==='bool'||type==='boolean') {input=node('input');input.type='checkbox';input.checked=!!current;}
   else if(choices?.length){input=node('select');const items=choicesOf(choices);for(const item of items)item.label=['language','lang','target_language'].includes(key)?languageLabel(item.value,item.label):OPTION_CHOICE_NAMES[item.value]||item.label;if(state.task==='music'&&key==='task_route'){const names={auto:'自动',text2music:'根据描述生成',cover:'翻唱',continuation:'续写',complete:'补全伴奏',lego:'添加声部',extract:'提取声部',repaint:'局部重绘',remix:'重混'};for(const item of items)item.label=names[item.value]||item.label;}if(current==null)items.unshift({label:'模型默认',value:''});fillSelect(input,items,current);}
   else if(['slider','number','int','float'].includes(type)){input=node('input');input.type=type==='slider'?'range':'number';const min=param.min??param.minimum,max=param.max??param.maximum;if(min!=null)input.min=min;if(max!=null)input.max=max;input.step=param.step??(type==='int'?1:'any');input.value=current??'';if(current==null)input.placeholder='模型默认';}
-  else{input=node('input');input.type='text';input.value=current==null?'':typeof current==='object'?JSON.stringify(current):current;input.placeholder='模型默认';}
+  else{input=node('input');input.type='text';input.value=current==null?'':typeof current==='object'?JSON.stringify(current):current;input.placeholder=param.placeholder||'模型默认';}
   input.id=`param-${key.replace(/[^\w-]/g,'-')}`;
   const label=(state.task==='music'?{task_route:'创作方式',audio_cover_strength:'贴近原曲'}[key]:'')||param.label||key;const help=param.help||param.info||param.description||'';let group;
   if(help){input.title=help;input.setAttribute('aria-description',help);}
   if(input.type==='checkbox'){group=node('div','field-group');const row=node('label','check-label');row.htmlFor=input.id;row.append(input,node('span','',label));group.append(row);}
   else group=field(label,input);
+  if(input.type==='text'&&['basic','effect'].includes(param.level))group.classList.add('common-text-control');
   if(param.scope&&param.scope!=='request'){const tag=node('span','runtime-tag','需重载');tag.title='更改后点击应用并重载模型';group.querySelector('label')?.append(tag);}
   let output;if(input.type==='range'){output=node('div','range-value',current);input.after(output);}
   input.addEventListener('input',()=>{

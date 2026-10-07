@@ -4010,10 +4010,9 @@ def _resolve_seed(seed):
     客户端消化；随机范围取 u32 全集，对所有族安全。返回 (seed, 消息后缀)——
     后缀把实际用的 seed 回显在结果里，方便复现。"""
     s = int(seed)
-    if s != -1:
-        return s, ""
-    s = random.randrange(0, 2 ** 32)
-    return s, f"🎲 seed={s}"
+    if s == -1:
+        s = random.randrange(0, 2 ** 32)
+    return s, _t("随机种子：{seed}", "Seed: {seed}", seed=s)
 
 
 def do_tts(model, text, language, uploaded_voice, builtin_voice,
@@ -4094,7 +4093,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         if options.get("emotion_text") and "use_emotion_text" not in options:
             options["use_emotion_text"] = True
 
-        seed, seed_note = _resolve_seed(seed)
+        seed, seed_note = _resolve_seed(options.pop("seed", seed))
         payload = {
             "model": model,
             "language": resolve_language(prof, language),
@@ -4102,6 +4101,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         }
         if not prof.get("send_seed", True):
             payload.pop("seed")
+            seed_note = ""
         if prof.get("send_max_tokens", True):
             payload["max_tokens"] = int(max_tokens)
         auto_vibevoice_max_tokens = (
@@ -4236,7 +4236,7 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     # Supertonic 等预置音色家族要求 voice 位于请求顶层，而不是 options。
     voice_preset = options.pop("voice", None)
 
-    seed, seed_note = _resolve_seed(seed)
+    seed, seed_note = _resolve_seed(options.pop("seed", seed))
     payload = {
         "model": model,
         "language": resolve_language(prof, language),
@@ -4248,6 +4248,7 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     }
     if not prof.get("send_seed", True):
         payload.pop("seed")
+        seed_note = ""
     if prof.get("send_max_tokens", True):
         payload["max_tokens"] = int(max_tokens)
     if voice_path and prof.get("accepts_voice_reference", True):
@@ -4803,7 +4804,7 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
                 "Disable Decode video, or use the upstream native UI for raw video-frame artifacts."))
         _ensure_with_options(model, GEN_TASKS, options)
 
-        seed, seed_note = _resolve_seed(seed)
+        seed, seed_note = _resolve_seed(options.pop("seed", seed))
         req = {"text": text, "seed": seed}
         family = entry.get("family") if entry else ""
         if family == "yue2":
@@ -4982,7 +4983,7 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
         req = {}
         if prof.get("send_seed", True):
             # 同一 seed 用于所有分段，保证各段结果一致可复现。
-            seed, seed_note = _resolve_seed(seed)
+            seed, seed_note = _resolve_seed(options.pop("seed", seed))
             req["seed"] = seed
         if not prof.get("model_as_target_voice") and prof.get("accepts_voice_reference", True):
             voice_path = target_upload or (
@@ -5363,10 +5364,11 @@ def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
         options = _merged_options(prof, adv_values, adv_options)
         _ensure_with_options(model, VDES_TASKS, options)
 
-        seed, seed_note = _resolve_seed(seed)
+        seed, seed_note = _resolve_seed(options.pop("seed", seed))
         payload = {"model": model, "input": text, "seed": seed}
         if not prof.get("send_seed", True):
             payload.pop("seed")
+            seed_note = ""
         if prof.get("send_max_tokens", True):
             payload["max_tokens"] = int(max_tokens)
         # 音色描述的落点按家族区分：qwen3_tts 走服务器的 instructions→instruction 映射；

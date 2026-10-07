@@ -304,6 +304,8 @@ body.workspace-mode #page-workspace #task-inputs [data-input-key=reference_text]
 #common-options input:not([type=checkbox]),#common-options select{flex:0 1 160px;width:160px;max-width:100%}
 #common-options input[type=number]{flex-basis:96px;width:96px}
 #common-options input[type=range],#common-options [data-input-key=language]{flex-basis:140px;width:140px}
+#common-options .common-text-control{flex:1 1 320px}
+#common-options .common-text-control input{flex:1 1 200px;width:auto;min-width:0}
 #common-options .range-value{flex:none}
 #common-options .field-row{gap:10px}
 #common-options .check-label{min-height:36px}

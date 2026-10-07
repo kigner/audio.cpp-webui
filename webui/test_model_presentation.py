@@ -45,6 +45,37 @@ class ModelPresentationTests(unittest.TestCase):
         self.assertEqual(self.details['lfm2-audio-jp']['languages'], ['japanese'])
         self.assertNotIn('voice', self.names('lfm2-audio-tts-jp'))
 
+    def test_model_defining_controls_are_common_and_runtime_stays_advanced(self):
+        expected = {
+            'index-tts2': {'emotion_text', 'emotion_alpha', 'use_emotion_text', 'duration_factor'},
+            'index-tts2.5': {'emotion_text', 'emotion_alpha', 'use_emotion_text'},
+            'neutts-2e': {'voice_id', 'emotion'},
+            'supertonic': {'voice', 'speaking_rate'},
+            'chatterbox': {'exaggeration'},
+            'qwen3-tts-1.7b-custom': {'speaker', 'instruction'},
+            'maya1': {'instruct'}, 'habibi-tts': {'dialect', 'speed'},
+            'ace-step': {'task_route', 'bpm', 'keyscale', 'timesignature', 'audio_cover_strength'},
+            'stable-audio-small-music': {'audio_input_kind'},
+            'kroko-asr': {'hotwords'}, 'canary-asr': {'target_language', 'pnc'},
+            'crisperwhisper': {'transcription_mode'},
+            'seed-vc': {'route', 'length_adjust', 'voice_anonymization'},
+            'vevo2': {'route', 'use_pitch_shift'}, 'rvc': {'semitone_shift', 'speaker_id'},
+            'muscriptor-small': {'instruments', 'output_format'},
+        }
+        for ident, names in expected.items():
+            common = {p['name'] for p in self.details[ident]['parameters'] if p['level'] != 'expert'}
+            self.assertTrue(names <= common, (ident, names - common))
+        for ident, detail in self.details.items():
+            for param in detail['parameters']:
+                if param['scope'] != 'request' or param['name'] in {
+                        'temperature', 'top_p', 'top_k', 'num_inference_steps', 'text_chunk_size'}:
+                    self.assertEqual(param['level'], 'expert', (ident, param['name']))
+        for ident in ('index-tts2', 'index-tts2.5'):
+            self.assertNotIn('lang', self.names(ident))
+            self.assertTrue(self.details[ident]['languages'])
+        for ident in ('dots-tts-soar', 'dots-tts-meanflow', 'dots-tts-edit'):
+            self.assertNotIn('instruct', self.names(ident))
+
     def test_firered_routes_do_not_expose_other_tasks(self):
         self.assertNotIn('instruction', self.names('firered-audio'))
         self.assertNotIn('num_inference_steps', self.names('firered-audio'))

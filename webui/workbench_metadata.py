@@ -31,6 +31,30 @@ FRIENDLY = {
     "voice": ("内置音色", "选择此模型支持的命名音色。", "basic"),
     "language": ("模型语言", "使用此模型的语言标识；自动时保留默认值。", "basic"),
     "instruction": ("表达风格", "描述语气或表达方式，仅对支持此功能的模型生效。", "effect"),
+    "instruct": ("声音指令", "描述希望生成的声音或当前音频任务。", "effect"),
+    "speaking_rate": ("语速", "调整当前模型的说话速度。", "effect"),
+    "lang": ("语言", "选择当前模型使用的语言。", "basic"),
+    "target_language": ("目标语言", "选择翻译后的语言；留空按模型默认处理。", "basic"),
+    "dialect": ("方言", "选择模型支持的方言。", "basic"),
+    "speaker_id": ("说话人", "选择多说话人模型中的音色编号。", "basic"),
+    "emotion": ("情感", "选择模型支持的情感。", "effect"),
+    "emotion_text": ("情感描述", "描述想要的情绪，填写后自动启用；留空沿用参考声音。", "effect"),
+    "emotion_alpha": ("情感强度", "调整情感表现的强弱。", "effect"),
+    "use_emotion_text": ("从朗读文本推断情感", "未填写情感描述时，从合成文本推断情绪。", "effect"),
+    "exaggeration": ("情感表现", "调整 Chatterbox 的情感表现程度。", "effect"),
+    "duration_sec": ("时长（秒）", "设置生成音频的目标时长。", "effect"),
+    "bpm": ("节奏 BPM", "每分钟节拍数；0 使用模型默认。", "basic"),
+    "keyscale": ("调性", "设置音乐调性。", "basic"),
+    "timesignature": ("拍号", "设置音乐拍号。", "basic"),
+    "negative_prompt": ("避免的内容", "描述不希望出现的声音或风格。", "effect"),
+    "hotwords": ("热词", "填写需要优先识别的人名、产品名或专业词汇。", "basic"),
+    "glossary": ("术语表", "填写翻译时需要使用的术语。", "basic"),
+    "context": ("上下文提示", "提供有助于识别的背景或专有名词。", "basic"),
+    "enable_itn": ("规范数字书写", "将口语中的数字等转换为常用书写形式。", "basic"),
+    "pnc": ("标点与大小写", "启用识别结果中的标点和大小写。", "basic"),
+    "punctuation": ("标点", "在识别结果中保留标点。", "basic"),
+    "transcription_mode": ("转写方式", "选择逐字记录或整理后的文字。", "basic"),
+    "instruments": ("乐器", "指定需要提取乐谱的乐器。", "basic"),
     "temperature": ("采样温度", "改变随机采样分布；建议保留此模型默认值。", "expert"),
     "top_p": ("累积概率采样", "限制候选范围；建议保留默认值。", "expert"),
     "top_k": ("候选数量", "限制采样候选数；不同模型含义和范围可能不同。", "expert"),
@@ -38,6 +62,18 @@ FRIENDLY = {
     "inference_steps": ("推理步数", "影响耗时和生成过程，建议使用模型默认值。", "expert"),
     "repetition_penalty": ("重复惩罚", "调整重复内容的抑制程度。", "expert"),
     "do_sample": ("随机采样", "关闭后使用模型支持的确定性选取策略。", "expert"),
+}
+
+# These names have a user-facing meaning only in the specified families.
+COMMON_FAMILY_PARAMETERS = {
+    "index_tts2": {"duration_factor", "interval_silence_ms"},
+    "stable_audio": {"audio_input_kind"},
+    "seed_vc": {"route", "length_adjust", "voice_anonymization", "auto_f0_adjust"},
+    "vevo2": {"route", "use_pitch_shift"},
+    "personaplex": {"system_prompt"},
+    "muscriptor": {"output_format"},
+    "vibeasr": {"output_format"},
+    "cosyvoice3": {"template_name"},
 }
 
 
@@ -104,6 +140,8 @@ def model_detail(backend, entry):
             continue
         scope = name.split("_options.", 1)[0] if "_options." in name else "request"
         label, help_text, level = FRIENDLY.get(name, (p.get("label", name), p.get("info", "使用模型默认值即可。"), "expert"))
+        if name in COMMON_FAMILY_PARAMETERS.get(family, set()):
+            level = "effect"
         if scope != "request":
             level = "expert"
             help_text = (help_text or "") + " 修改后需要重新加载模型。"
@@ -142,6 +180,10 @@ def parameter_applies(entry, name):
     family, task = entry['family'], entry.get('task')
     if name.startswith(('session_options.', 'load_options.')):
         return True
+    if family == 'index_tts2' and name == 'lang':
+        return False  # the main language control sends the backend's language key
+    if family == 'dots_tts' and name == 'instruct':
+        return False  # CLI alias for instruction, not a second user-facing input
     if family == 'lfm2_audio':
         asr = {'language', 'max_tokens', 'audio_chunk_mode', 'audio_chunk_seconds'}
         return name in asr if task == 'asr' else name not in {'audio_chunk_mode', 'audio_chunk_seconds'}
