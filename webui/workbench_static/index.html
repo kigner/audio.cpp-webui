@@ -6,10 +6,10 @@
   <meta name="color-scheme" content="light dark">
   <title>Aixora Audio</title>
   <link rel="icon" type="image/png" href="/workbench-static/aixora-audio-logo.png?v=audio-2">
-  <link rel="stylesheet" href="/workbench-static/app.css?v=aixora-common-26">
+  <link rel="stylesheet" href="/workbench-static/app.css?v=aixora-common-27">
   <link rel="stylesheet" href="/workbench-static/home.css?v=aixora-home-23">
   <link rel="stylesheet" href="/workbench-static/palettes.css?v=aixora-1">
-  <script type="module" src="/workbench-static/app.js?v=aixora-common-26"></script>
+  <script type="module" src="/workbench-static/app.js?v=aixora-common-27"></script>
 </head>
 <body>
   <svg class="icon-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -57,7 +57,6 @@
     <button id="sidebar-backdrop" class="drawer-backdrop sidebar-backdrop" type="button" aria-label="关闭导航" tabindex="-1" hidden></button>
     <main class="main-content">
       <div id="global-model-status" class="global-model-status" role="status" hidden></div>
-      <div id="recording-banner" class="recording-banner" role="status" aria-live="polite" hidden><span><span class="recording-dot" aria-hidden="true"></span><strong>麦克风正在录音</strong><span id="recording-elapsed"></span></span><button id="stop-all-recordings" class="button danger small-button">停止录音</button></div>
       <div id="active-job-banner" class="active-job-banner" role="status" hidden><span id="active-job-label"></span><button id="return-active-job" class="text-button" type="button">查看任务</button></div>
       <div id="connection-error" class="notice error" role="alert" hidden></div>
       <section id="page-home" class="page home-page active" aria-labelledby="home-title">
@@ -72,7 +71,7 @@
       </section>
       <section id="page-workspace" class="page workspace-page" data-task="tts" aria-labelledby="task-title" hidden>
         <header id="app-toolbar" class="app-toolbar">
-          <div id="workspace-heading-row" class="workspace-heading-row"><div id="workspace-navigation" class="workspace-navigation" hidden><button id="tools-back" class="icon-button" type="button" title="返回音频工具" aria-label="返回音频工具"><svg class="icon" aria-hidden="true"><use href="#icon-arrow-left"/></svg></button></div><h1 id="task-title">语音合成</h1><div class="workspace-model-actions"><button id="model-picker-trigger" class="model-picker-trigger" type="button" aria-haspopup="dialog" aria-controls="model-picker-popover" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-box"/></svg><span id="model-picker-label">选择语音合成模型</span><svg class="icon chevron" aria-hidden="true"><use href="#icon-chevron"/></svg></button><button id="parameter-toggle" class="button secondary small-button parameter-toggle" type="button" aria-label="模型设置" title="模型设置" aria-haspopup="dialog" aria-expanded="false" aria-controls="workspace-settings" hidden>模型设置</button><button id="workspace-load" class="button secondary small-button" type="button" disabled>加载模型</button><span id="workspace-load-status" class="workspace-load-status" role="status" aria-live="polite" hidden></span></div></div>
+          <div id="workspace-heading-row" class="workspace-heading-row"><div id="workspace-navigation" class="workspace-navigation" hidden><button id="tools-back" class="icon-button" type="button" title="返回音频工具" aria-label="返回音频工具"><svg class="icon" aria-hidden="true"><use href="#icon-arrow-left"/></svg></button></div><h1 id="task-title">语音合成</h1><div class="workspace-model-actions"><button id="model-picker-trigger" class="model-picker-trigger" type="button" aria-haspopup="dialog" aria-controls="model-picker-popover" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-box"/></svg><span id="model-picker-label">选择语音合成模型</span><svg class="icon chevron" aria-hidden="true"><use href="#icon-chevron"/></svg></button><button id="parameter-toggle" class="button secondary small-button parameter-toggle" type="button" aria-label="模型设置" title="模型设置" aria-haspopup="dialog" aria-expanded="false" aria-controls="workspace-settings" hidden><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></button><button id="workspace-load" class="button secondary small-button" type="button" disabled>加载模型</button><span id="workspace-load-status" class="workspace-load-status" role="status" aria-live="polite" hidden></span></div></div>
         </header>
         <div class="workspace-layout">
           <div class="workspace-operation card">

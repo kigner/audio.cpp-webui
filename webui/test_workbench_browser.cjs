@@ -234,12 +234,13 @@ async function task(page, id, label) {
     const models = {tts:'tts-one',asr:'asr-one',music:'music-one',vc:'voice-convert',design:'voice-design'};
     await pick(page, models[id]);
   }
-  if (label) await waitText(page, '#model-picker-label', label);
+  if (label) {await waitText(page, '#model-picker-label', label);await page.locator('#parameter-toggle').waitFor({state:'visible'});}
 }
 async function pick(page, id) {
   await page.locator('#model-picker-trigger').click();
   await page.locator(`#model-picker-list [data-model="${id}"] .model-row-load`).click();
   await page.waitForFunction(() => !document.querySelector('#model-picker-popover').matches(':popover-open'));
+  await page.waitForFunction(id => document.querySelector(`[data-load-model="${id}"]`)?.textContent==='已加载'&&!document.querySelector(`[data-load-model="${id}"]`)?.disabled,id);
   await page.locator('#workspace-grid').waitFor({state:'visible'});
 }
 async function advanced(page) {
@@ -363,10 +364,26 @@ const cases = [
     await page.getByRole('button',{name:'录音',exact:true}).click();
     await page.locator('.reference-upload-actions').getByRole('button',{name:'停止录音',exact:true}).waitFor();
     assert.equal(await page.locator('#run-button').isDisabled(),true);assert.equal(await height(),before);
+    assert.equal(await page.locator('#recording-banner').count(),0);
+    await page.waitForFunction(()=>parseInt(document.querySelector('.recording-time').textContent)>=1);
+    for(const width of [1440,1024,768,390,320]){
+      await page.setViewportSize({width,height:1000});
+      const controls=await page.locator('.reference-upload-actions').evaluate(el=>{
+        const box=e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+        return {row:box(el),items:[...el.querySelectorAll('.recording-start,.recording-time,.recording-stop')].map(box)};
+      });
+      for(let i=0;i<controls.items.length;i++){
+        const item=controls.items[i];assert.ok(item.left>=controls.row.left&&item.right<=controls.row.right+1,`Recording controls overflow at ${width}: ${JSON.stringify(controls)}`);
+        if(i)assert.ok(controls.items[i-1].right<=item.left&&Math.abs(controls.items[i-1].top-item.top)<12,`Recording controls must stay inline at ${width}`);
+      }
+      await assertBrowserScroll(page);await snapshot(page,`recording-inline-${width}`);
+    }
+    await page.setViewportSize({width:1440,height:1000});
     await page.locator('.reference-upload-actions').getByRole('button',{name:'停止录音',exact:true}).click();
     await page.locator('.reference-save').waitFor({state:'visible'});
     assert.equal(await page.evaluate(()=>window.stoppedReferenceTracks),1);
     assert.equal(backend.uploads.length,1);assert.ok(backend.uploads[0].name.startsWith('录音-'));
+    assert.equal(await page.locator('.recording-time').isVisible(),false);assert.equal(await page.locator('.recording-stop').isVisible(),false);
     assert.equal(await height(),before);assert.equal(await page.locator('.reference-upload-fields audio').isVisible(),true);
     await page.locator('[data-input-key="reference_text"]').fill('录音对应的原文');
     await page.locator('[data-input-key="text"]').fill('使用这段录音合成的新文本');
@@ -430,6 +447,7 @@ const cases = [
       assert.ok(await page.locator('.result-card').evaluate(el=>el.getBoundingClientRect().top-document.querySelector('.input-card').getBoundingClientRect().bottom<20),`${route}: unnecessary gap before results`);
       assert.ok(geometry.inputHeight>100,`${route}: input collapsed ${JSON.stringify(geometry)}`);
       if(route==='asr')assert.ok(geometry.resultHeight>=180,'ASR must reserve the empty result editor');
+      else if(route==='tts')assert.ok(geometry.resultHeight>=80&&geometry.resultHeight<=100,'TTS keeps its compact empty result card');
       else assert.ok(geometry.resultHeight>=140,`${route}: empty result card must reserve output space ${JSON.stringify(geometry)}`);
       await assertVisibleControl(page,'#run-button',`${route}: execution button is clipped by an ancestor`);
       assert.ok(await page.locator('.workspace-operation').evaluate(el=>el.getBoundingClientRect().width>=document.querySelector('#page-workspace').getBoundingClientRect().width*.9),`${route}: main card does not fill the workspace`);
@@ -550,6 +568,7 @@ const cases = [
     await waitText(page,'#apply-model-settings','应用并重载');
     assert.equal(await page.locator('#run-button').isDisabled(),true);
     await page.locator('#apply-model-settings').click();await page.waitForFunction(()=>!document.querySelector('#workspace-settings').matches(':popover-open'));
+    await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
     assert.equal(backend.status.server.model,'tts-one');assert.equal(backend.status.asr.configuration.load_options.threads,'2');
     assert.equal(await page.locator('#run-button').isEnabled(),true);
     backend.status.asr={model:null,managed:false};await page.reload();await task(page,'asr');
@@ -1040,6 +1059,7 @@ const cases = [
     await page.waitForFunction(()=>!document.querySelector('[data-load-model="tts-two"]').disabled);
     assert.equal(await page.locator('#run-button').isDisabled(),true);
     backend.loadGate=null;backend.loadError=false;
+    await page.locator('#model-picker-trigger').click();
     await page.locator('[data-load-model="tts-two"]').click();
     await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
     assert.equal(await page.locator('#run-button').isDisabled(),false);
@@ -1072,7 +1092,9 @@ const cases = [
     assert.equal(await page.locator('#task-title').textContent(),'语音合成');
     assert.equal(await page.locator('#workspace-settings').isVisible(),false);
     assert.equal(await page.locator('#task-title, #model-picker-trigger, #parameter-toggle, #workspace-load').evaluateAll(items=>items.every(item=>!item.closest('.card'))),true);
-    assert.equal(await page.locator('#parameter-toggle').textContent(),'模型设置');
+    assert.equal(await page.locator('#parameter-toggle').getAttribute('aria-label'),'模型设置');
+    assert.equal(await page.locator('#parameter-toggle svg').count(),1);
+    assert.equal(await page.locator('#parameter-toggle').textContent(),'');
     assert.equal(await page.locator('#workspace-load').isVisible(),false,'Loaded model must not leave a redundant toolbar button');
     assert.equal(await page.locator('#workspace-load-status').isVisible(),true,'The loaded model remains visible when its task is selected');
     const before=await page.locator('.workspace-operation').boundingBox();
@@ -1202,15 +1224,16 @@ const cases = [
     await page.locator('[data-load-model="tts-two"]').click();
     await waitText(page,'#model-picker-status','加载失败：Fixture detail failed');
     assert.equal(backend.loads.length,0);
-    assert.equal(await page.locator('#model-picker-popover').isVisible(),true);
+    assert.equal(await page.locator('#model-picker-popover').isVisible(),false);
     await page.waitForFunction(()=>!document.querySelector('[data-load-model="tts-two"]').disabled);
     backend.detailError=null;backend.loadNoModel=true;
+    await page.locator('#model-picker-trigger').click();
     await page.locator('[data-load-model="tts-two"]').click();
     await waitText(page,'#model-picker-status','尚未确认模型 tts-two 已加载');
     assert.equal(await page.locator('#workspace-grid').isVisible(),true);
     assert.equal(await page.locator('[data-load-model="tts-two"]').textContent(),'重试');
     await page.waitForFunction(()=>!document.querySelector('[data-load-model="tts-two"]').disabled);
-    backend.loadNoModel=false;await page.locator('[data-load-model="tts-two"]').click();
+    backend.loadNoModel=false;await page.locator('#model-picker-trigger').click();await page.locator('[data-load-model="tts-two"]').click();
     await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
   }],
   ['model dropdown previews selection without loading and explicit load uses that selection', async (page, backend) => {
@@ -1241,6 +1264,7 @@ const cases = [
     await waitText(page,'#model-picker-label','TTS Two');
     assert.equal(backend.loads.length,1);
     assert.equal(backend.loads[0].model,'tts-two');
+    await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
     await page.locator('#model-picker-trigger').click();
     assert.equal(await page.locator('[data-load-model="tts-two"]').textContent(),'已加载');
     assert.equal(await page.locator('[data-load-model="tts-one"]').textContent(),'加载');
@@ -1630,6 +1654,71 @@ cases.push(['dedicated music and ASR inputs remove duplicate model settings',asy
   await task(page,'asr');await pick(page,'asr-one');
   assert.equal(await page.locator('[data-input-key="context"]').count(),1);
   assert.equal(await page.locator('#param-instruct').count(),0);
+}]);
+
+cases.push(['UI updates keep model settings aligned and close both popovers as loading starts',async(page,backend)=>{
+  const entry=backend.models.find(item=>item.id==='tts-one');
+  entry.parameters.push(...Array.from({length:6},(_,i)=>({name:`extra_${i}`,label:`高级设置 ${i+1}`,type:'number',default:i,level:'expert',scope:'request'})));
+  await pick(page,'tts-one');await advanced(page);
+  for(const width of [1440,1024,768,390,320]){
+    await page.setViewportSize({width,height:900});
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const layout=await page.locator('#workspace-settings').evaluate(el=>{
+      const box=el.getBoundingClientRect(),fields=[...el.querySelectorAll('#expert-controls input')].map(input=>{const r=input.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width};});
+      return {left:box.left,right:box.right,width:box.width,fields,columns:getComputedStyle(el.querySelector('#expert-controls')).gridTemplateColumns.split(' ').length};
+    });
+    assert.ok(layout.left>=0&&layout.right<=width+1);assert.equal(layout.columns,width>560?2:1);
+    if(width>560){assert.ok(Math.abs(layout.fields[0].y-layout.fields[1].y)<2,'Paired settings must align');assert.ok(Math.abs(layout.fields[0].width-layout.fields[1].width)<2);}
+    await assertVisibleControl(page,'#apply-model-settings','Settings footer is clipped');await assertBrowserScroll(page);await snapshot(page,`model-settings-grid-${width}`);
+  }
+  await page.setViewportSize({width:1440,height:1000});await page.locator('#param-load_options-threads').fill('6');
+  backend.loadGate=deferred();await page.locator('#apply-model-settings').click();
+  await waitUntil(()=>backend.loads.length===2,'Settings reload did not start');
+  assert.equal(await page.locator('#workspace-settings').isVisible(),false,'Settings must close before reload completes');
+  assert.equal(await page.locator('#workspace-load-status').getAttribute('data-state'),'loading');
+  backend.loadGate.resolve();await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  backend.loadGate=deferred();await page.locator('#model-picker-trigger').click();await page.locator('[data-load-model="tts-two"]').click();
+  await waitUntil(()=>backend.loads.length===3,'Model load did not start');
+  assert.equal(await page.locator('#model-picker-popover').isVisible(),false,'Picker must close before loading completes');
+  backend.loadGate.resolve();await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+}]);
+
+cases.push(['UI updates separate warning link colors and discard results when changing model',async(page,backend)=>{
+  await page.locator('[data-input-key="text"]').fill('保留输入草稿');await page.locator('#run-button').click();
+  await waitUntil(()=>backend.requests.length===1,'Synthesis did not start');backend.finish('job-1','',['warning-result.wav']);
+  Object.assign(backend.jobs.get('job-1'),{status:'error',message:'音频生成不完整，请检查参数'});
+  await waitText(page,'#job-status','音频生成不完整');await page.locator('#job-status a[download]').waitFor();
+  for(const theme of ['light','dark'])for(const palette of ['classic','studio']){
+    await page.evaluate(({theme,palette})=>{document.documentElement.dataset.theme=theme;document.documentElement.dataset.palette=palette;},{theme,palette});
+    const colors=await page.locator('#job-status').evaluate(el=>({message:getComputedStyle(el).color,link:getComputedStyle(el.querySelector('a')).color}));
+    assert.notEqual(colors.message,colors.link,`${theme}/${palette}: warning colors leaked into the download link`);
+    await snapshot(page,`result-warning-link-${theme}-${palette}`);
+  }
+  const gate=deferred();backend.detailGates.set('tts-two',gate);
+  await page.locator('#model-picker-trigger').click();await page.locator('[data-model-select="tts-two"]').click();
+  assert.equal(await page.locator('#job-status').isVisible(),false);assert.equal(await page.locator('.result-card a[download],.result-card audio').count(),0);
+  assert.equal(await page.locator('#result-content').textContent(),'');
+  gate.resolve();backend.detailGates.delete('tts-two');await page.locator('#parameter-toggle').waitFor();await page.keyboard.press('Escape');
+  await page.locator('#model-picker-trigger').click();await page.locator('[data-model-select="tts-one"]').click();await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  assert.equal(await page.locator('#job-status').isVisible(),false);assert.equal(await page.locator('[data-input-key="text"]').inputValue(),'保留输入草稿');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===2,'Second synthesis did not start');
+  await page.locator('#model-picker-trigger').click();await page.locator('[data-model-select="tts-two"]').click();await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#active-job-banner').isVisible(),true,'Hidden running result must keep a task recovery entry');
+  await page.locator('#return-active-job').click();await page.locator('#cancel-job').waitFor();
+  assert.equal(await page.locator('#model-picker-label').textContent(),'TTS One');
+  await page.locator('#model-picker-trigger').click();await page.locator('[data-model-select="tts-two"]').click();await page.keyboard.press('Escape');
+  backend.finish('job-2','旧模型迟到的结果',['late-old-model.wav']);await page.waitForFunction(()=>!document.querySelector('#workspace-load').disabled);
+  assert.equal(await page.locator('#job-status').isVisible(),false);assert.equal(await page.locator('.result-card a[download],.result-card audio').count(),0);
+  assert.equal(await page.locator('#result-content').textContent(),'');
+  await pick(page,'tts-one');backend.submitGate=deferred();await page.locator('#run-button').click();
+  await waitUntil(()=>backend.requests.length===3,'Pending synthesis did not submit');
+  await page.locator('#model-picker-trigger').click();await page.locator('[data-model-select="tts-two"]').click();
+  await page.locator('[data-model-select="tts-one"]').click();await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#job-status').isVisible(),false);
+  backend.submitGate.resolve();await waitUntil(()=>backend.jobs.has('job-3'),'Pending task did not acknowledge');
+  backend.finish('job-3','切换前提交的结果',['late-ack.wav']);await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  assert.equal(await page.locator('#job-status').isVisible(),false);assert.equal(await page.locator('#result-content').textContent(),'');
 }]);
 
 (async () => {

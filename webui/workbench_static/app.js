@@ -41,6 +41,7 @@ function button(text, className, fn) { const n=node('button',className,text);n.t
 function replace(el, ...children) { el.replaceChildren(...children.filter(Boolean)); }
 function taskInfo() { const task=TASKS.find(t=>t.id===state.task);return state.tool?{...task,...state.tool}:task; }
 function workspace(key=state.key) { return state.workspaces[key] ||= {forms:{},options:{},model:null,result:null}; }
+function clearWorkspaceResult(key=state.key) {const current=workspace(key);if(current.result?.sourceUrl){URL.revokeObjectURL(current.result.sourceUrl);delete current.result.sourceUrl;}current.result=null;current.message='';current.resultEpoch=(current.resultEpoch||0)+1;if(key===state.key)stopStreamPlayback();}
 function formValues() { return workspace().forms; }
 function modelOptions(key=state.key,model=state.model) { return workspace(key).options[model||''] ||= {values:{},inputs:{},json:''}; }
 function fieldValues(key) {return ['language','context','detailed','dialogue','stream','duration','seed','max_tokens','builtin_voice'].includes(key)?modelOptions().inputs:formValues();}
@@ -114,7 +115,7 @@ async function navigate(route, updateHash=true, modelId) {
   if(page==='workspace'){
     state.task=task?.id||tool.task;state.tool=tool||null;state.key=route;state.analysisType=tool?.type||'';
     state.detailSeq++;state.detail=null;state.model=workspace().model;
-    if(modelId)workspace().model=state.model=modelId;
+    if(modelId){if(modelId!==state.model)clearWorkspaceResult();workspace().model=state.model=modelId;}
     $('page-workspace').dataset.task=state.task;$('page-workspace').dataset.tool=tool?.id||'';
     document.body.classList.add('workspace-mode');
     $('task-title').textContent=taskInfo().label;
@@ -167,8 +168,9 @@ function syncDrawers() {
 function positionModelSettings() {
   const panel=$('workspace-settings');if(!panel.matches(':popover-open'))return;
   const anchor=$('parameter-toggle').getBoundingClientRect(),top=anchor.bottom+8;
-  panel.style.width=`${Math.min(460,innerWidth-24)}px`;panel.style.top=`${top}px`;panel.style.setProperty('--settings-top',`${top}px`);
-  panel.style.left=`${Math.max(12,Math.min(anchor.right-panel.getBoundingClientRect().width,innerWidth-panel.getBoundingClientRect().width-12))}px`;
+  const leftEdge=matchMedia('(max-width:760px)').matches?12:Math.max(12,document.querySelector('.main-content').getBoundingClientRect().left+12);
+  panel.style.width=`${Math.min(720,innerWidth-leftEdge-12)}px`;panel.style.top=`${top}px`;panel.style.setProperty('--settings-top',`${top}px`);
+  panel.style.left=`${Math.max(leftEdge,Math.min(anchor.right-panel.getBoundingClientRect().width,innerWidth-panel.getBoundingClientRect().width-12))}px`;
 }
 function setParameters(open,focus=true) {
   const panel=$('workspace-settings');
@@ -214,7 +216,7 @@ window.addEventListener('keydown',event=>{
   event.preventDefault();controls[next].focus();
 },true);
 $('tools-back').addEventListener('click',()=>navigate('tools'));
-$('return-active-job').addEventListener('click',()=>{if(state.job)navigate(state.job.key);});
+$('return-active-job').addEventListener('click',async()=>{const record=state.job;if(!record)return;await navigate(record.key,true,record.model);if(state.job===record){if(record.sourceBlob&&!record.sourceUrl)record.sourceUrl=URL.createObjectURL(record.sourceBlob);workspace(record.key).result=record;renderWorkspaceResults();updateActiveJobBanner();}});
 $('end-realtime-session').addEventListener('click',()=>$('realtime-frame').contentWindow?.postMessage({type:'audiocpp:realtime-stop'},location.origin));
 $('browse-models').addEventListener('click',()=>{$('model-task-filter').value=state.task;renderLibrary();navigate('models');});
 fillSelect($('model-task-filter'),[{label:'所有用途',value:''},...TASKS.map(t=>({label:t.label,value:t.id}))],'');
@@ -253,7 +255,7 @@ async function selectModel(id, failOnError=false) {
   state.model=id;workspace().model=id;workspace().candidate=id;
   const prefs=preference('model-choices',{});prefs[key]=id;savePreference('model-choices',prefs);
   state.overrides=modelOptions().values;$('options-json').value=modelOptions().json;
-  if(changed){stopRecordings();state.detail=null;renderInputs();renderParameters();}
+  if(changed){stopRecordings();clearWorkspaceResult();state.detail=null;renderInputs();renderParameters();renderWorkspaceResults();updateActiveJobBanner();}
   updateRunButton();
   try {
     const detail=await api(`/models/${encodeURIComponent(id)}`);if(seq!==state.detailSeq||key!==state.key||id!==state.model)return;
@@ -372,6 +374,7 @@ function modelLoadBlockReason() {
 $('options-json').addEventListener('input',()=>{modelOptions().json=$('options-json').value;updateRunButton();if(state.task==='music')renderInputs();});
 async function loadModel(model) {
   const blocked=modelLoadBlockReason();if(blocked){showToast(blocked);return;}
+  closeModelPicker();if($('workspace-settings').matches(':popover-open'))setParameters(false);
   const key=state.key;workspace(key).loadError='';workspace(key).loadErrorModel=model;state.loading={model,key};updateRunButton();
   try{
     const detail=model===state.model&&state.detail?state.detail:await api(`/models/${encodeURIComponent(model)}`);
@@ -388,7 +391,7 @@ async function loadModel(model) {
 }
 function updateActiveJobBanner() {
   const record=state.job||state.pendingRecord;
-  $('active-job-banner').hidden=!record||state.page==='workspace'&&state.key===record.key;
+  $('active-job-banner').hidden=!record||state.page==='workspace'&&state.key===record.key&&state.model===record.model&&(workspace().result===record||state.pendingRecord===record&&(workspace().resultEpoch||0)===record.resultEpoch);
   if(record)$('active-job-label').textContent=`${record.label} · ${record.result?.message||'正在处理'}`;
 }
 function updateRealtimeBadge() {
@@ -397,8 +400,6 @@ function updateRealtimeBadge() {
   $('realtime-nav-status').textContent=state.realtime?.microphone?'通话中':'会话中';
 }
 function stopRecordings() {state.recordingEpoch=(state.recordingEpoch||0)+1;for(const recorder of state.recorders)if(recorder.state==='recording')recorder.stop();}
-function updateRecordingBanner() {const recording=[...state.recorders].filter(r=>r.state==='recording');$('recording-banner').hidden=!recording.length;if(recording.length){const started=Math.min(...recording.map(r=>r._started||Date.now()));$('recording-elapsed').textContent=` · ${formatDuration((Date.now()-started)/1000)}`;}}
-$('stop-all-recordings').addEventListener('click',stopRecordings);
 function languageLabel(value,fallback=value) {const key=String(value).toLowerCase();if(LANGUAGE_NAMES[key])return LANGUAGE_NAMES[key];try{return new Intl.DisplayNames(['zh-CN'],{type:'language'}).of(key)||fallback;}catch{return fallback;}}
 function languageChoices(values,automatic='自动') {const seen=new Set(['','auto']);const choices=[{label:automatic,value:''}];for(const item of choicesOf(values)){const key=String(item.value).toLowerCase();if(seen.has(key))continue;seen.add(key);choices.push({label:languageLabel(key,item.label),value:item.value});}return choices;}
 
@@ -488,8 +489,10 @@ function uploadInput(key,label,{required=false,help='',accept='audio/*,.wav,.mp3
   clear.addEventListener('click',()=>{waveform?.remove();waveform=null;});
   zone.append(file,controls);
   if(record){
-    const recordBtn=button('录音','button subtle small-button',async()=>{
-      if(recordBtn._recorder?.state==='recording'){recordBtn._recorder.stop();return;}
+    const recordingControls=node('div','recording-controls'),elapsed=node('span','recording-time','0 秒');elapsed.hidden=true;elapsed.setAttribute('role','timer');elapsed.setAttribute('aria-label','已录音时长');let recordingTimer;
+    const stop=button('','button subtle small-button recording-stop',()=>{if(recordBtn._recorder?.state==='recording')recordBtn._recorder.stop();});stop.append(node('span','recording-stop-icon'));stop.hidden=true;stop.title='停止录音';stop.setAttribute('aria-label','停止录音');
+    function resetRecording(){clearInterval(recordingTimer);const focused=document.activeElement===stop;elapsed.hidden=true;stop.hidden=true;recordBtn.disabled=false;recordBtn.textContent='录音';recordBtn.classList.remove('recording');if(focused)recordBtn.focus({preventScroll:true});}
+    const recordBtn=button('录音','button subtle small-button recording-start',async()=>{
       if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){showToast('此浏览器不支持录音，请使用 Chrome / Edge，或上传音频文件。');return;}
       if(state.recorders.size||state.recordingRequest){showToast('已有录音或麦克风权限请求正在进行。');return;}
       let stream,recorder;
@@ -498,14 +501,15 @@ function uploadInput(key,label,{required=false,help='',accept='audio/*,.wav,.mp3
         stream=await navigator.mediaDevices.getUserMedia({audio:true});
         if(request.epoch!==state.recordingEpoch||request.key!==state.key||request.model!==state.model||state.page!==request.page||!zone.isConnected){stream.getTracks().forEach(t=>t.stop());return;}
         const revision=(values[revisionKey]=(values[revisionKey]||0)+1),chunks=[];const supported=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));recorder=new MediaRecorder(stream,supported?{mimeType:supported}:{});
-        recorder._started=Date.now();recordBtn._recorder=recorder;state.recorders.add(recorder);recordBtn.textContent='停止录音';recordBtn.classList.add('recording');status.textContent='录音中…';controls.style.visibility='visible';updateRunButton();
+        recordBtn._recorder=recorder;state.recorders.add(recorder);
         recorder.addEventListener('dataavailable',event=>{if(event.data.size)chunks.push(event.data);});
-        recorder.addEventListener('stop',async()=>{stream.getTracks().forEach(t=>t.stop());state.recorders.delete(recorder);updateRecordingBanner();recordBtn.textContent='录音';recordBtn.classList.remove('recording');const type=recorder.mimeType||'audio/webm';const ext=type.includes('mp4')?'m4a':type.includes('ogg')?'ogg':'webm';if(chunks.length&&!recorder._failed)await upload(new Blob(chunks,{type}),`录音-${Date.now()}.${ext}`,revision);else{status.textContent='没有录制到音频，请重试。';}updateRunButton();});
-        recorder.addEventListener('error',()=>{recorder._failed=true;stream.getTracks().forEach(t=>t.stop());state.recorders.delete(recorder);updateRecordingBanner();recordBtn.textContent='重新录音';recordBtn.classList.remove('recording');status.textContent='录音中断，请重试。';updateRunButton();});recorder.start();updateRecordingBanner();
-      }catch(error){stream?.getTracks().forEach(t=>t.stop());if(recorder)state.recorders.delete(recorder);updateRecordingBanner();if(request.epoch===state.recordingEpoch)showToast(error.name==='NotAllowedError'?'录音需要麦克风权限，请在浏览器地址栏允许访问后重试。':'无法启动麦克风，请检查设备是否被占用。');}
-      finally{if(state.recordingRequest===request)state.recordingRequest=null;recordBtn.disabled=false;updateRunButton();}
+        recorder.addEventListener('stop',async()=>{stream.getTracks().forEach(t=>t.stop());state.recorders.delete(recorder);resetRecording();const type=recorder.mimeType||'audio/webm';const ext=type.includes('mp4')?'m4a':type.includes('ogg')?'ogg':'webm';if(chunks.length&&!recorder._failed)await upload(new Blob(chunks,{type}),`录音-${Date.now()}.${ext}`,revision);else{status.textContent=recorder._failed?'录音中断，请重试。':'没有录制到音频，请重试。';controls.style.visibility='visible';}updateRunButton();});
+        recorder.addEventListener('error',()=>{recorder._failed=true;stream.getTracks().forEach(t=>t.stop());state.recorders.delete(recorder);resetRecording();status.textContent='录音中断，请重试。';controls.style.visibility='visible';updateRunButton();});
+        recorder.start();const started=Date.now();elapsed.textContent='0 秒';elapsed.hidden=false;stop.hidden=false;recordBtn.classList.add('recording');recordingTimer=setInterval(()=>{elapsed.textContent=`${Math.floor((Date.now()-started)/1000)} 秒`;},250);stop.focus({preventScroll:true});updateRunButton();
+      }catch(error){stream?.getTracks().forEach(t=>t.stop());if(recorder)state.recorders.delete(recorder);resetRecording();if(request.epoch===state.recordingEpoch)showToast(error.name==='NotAllowedError'?'录音需要麦克风权限，请在浏览器地址栏允许访问后重试。':'无法启动麦克风，请检查设备是否被占用。');}
+      finally{if(state.recordingRequest===request)state.recordingRequest=null;recordBtn.disabled=recorder?.state==='recording'&&!recorder._failed;updateRunButton();}
     });
-    zone.append(recordBtn);
+    recordingControls.append(recordBtn,elapsed,stop);zone.append(recordingControls);
     if(ownerPage==='workspace'){const slot=node('div','audio-player-slot');slot.append(preview);zone.append(slot);}
     else zone.append(preview);
     if(values[`_${key}Blob`])waveform=attachWaveform(zone,preview,values[`_${key}Blob`],waveformOnDemand);
@@ -513,7 +517,7 @@ function uploadInput(key,label,{required=false,help='',accept='audio/*,.wav,.mp3
   if(waveformOnDemand){
     file.classList.add('sr-only');file.tabIndex=-1;
     const actions=node('div','upload-actions'),choose=button(record?'上传音频':'选择文件','button secondary small-button',()=>file.click());
-    const microphone=zone.querySelector('button.button');actions.append(file,choose);if(microphone)actions.append(microphone);
+    const microphone=zone.querySelector('.recording-controls');actions.append(file,choose);if(microphone)actions.append(microphone);
     zone.prepend(actions);
   }
   return field(label,zone,help,required);
@@ -854,22 +858,26 @@ function validateInputs(inputs,options={}) {
 }
 $('task-form').addEventListener('submit',async event=>{
   event.preventDefault();if(state.job||state.referenceJob||state.loading||state.submitting||state.runtime?.busy||state.runtime?.realtime_active||state.realtime?.active||!state.detail?.installed||state.model!==activeModelRuntime()?.model||runtimeSettingsState().pending||state.uploading||state.recorders.size)return;
-  const key=state.key;
+  const key=state.key,resultEpoch=workspace(key).resultEpoch||0;
   workspace(key).message='';
   try{
     const inputs=collectInputs();const options=collectOptions();validateInputs(inputs,options);runtimeOptions(options);const source=workspace(key).forms._audioBlob;
-    const record={key,task:state.task,model:state.model,label:`${taskInfo().label} · ${state.detail.label||state.model}`,stream:state.task==='tts'&&!!inputs.stream,lastAudioIndex:-1,result:{status:'queued',message:'正在准备任务…',artifacts:[]}};
+    const record={key,resultEpoch,task:state.task,model:state.model,label:`${taskInfo().label} · ${state.detail.label||state.model}`,stream:state.task==='tts'&&!!inputs.stream,lastAudioIndex:-1,result:{status:'queued',message:'正在准备任务…',artifacts:[]}};
     state.pendingRecord=record;
     renderWorkspaceResults();
     $('result-content').closest('.result-card').scrollIntoView({block:'nearest'});
     state.submitting=true;updateRunButton();
     updateActiveJobBanner();stopStreamPlayback();if(record.stream)beginStreamPlayback();
     const job=await api('/jobs',{method:'POST',body:{task:record.task,model:record.model,inputs,options}});record.id=job.id;
-    if(record.task==='vc'&&source){record.sourceBlob=source;record.sourceUrl=URL.createObjectURL(source);}
-    const previous=workspace(key).result;if(previous?.sourceUrl)URL.revokeObjectURL(previous.sourceUrl);
-    workspace(key).result=record;state.job=record;
+    if(record.task==='vc'&&source)record.sourceBlob=source;
+    if((workspace(key).resultEpoch||0)===resultEpoch){
+      if(record.sourceBlob)record.sourceUrl=URL.createObjectURL(record.sourceBlob);
+      const previous=workspace(key).result;if(previous?.sourceUrl)URL.revokeObjectURL(previous.sourceUrl);
+      workspace(key).result=record;
+    }
+    state.job=record;
     if(state.key===key)renderWorkspaceResults();updateActiveJobBanner();pollJob();
-  }catch(error){stopStreamPlayback();workspace(key).message=friendlyError(error);if(state.key!==key)showToast(friendlyError(error));}
+  }catch(error){stopStreamPlayback();if((workspace(key).resultEpoch||0)===resultEpoch)workspace(key).message=friendlyError(error);if(state.key!==key)showToast(friendlyError(error));}
   finally{state.submitting=false;state.pendingRecord=null;if(state.key===key)renderWorkspaceResults();updateRunButton();updateActiveJobBanner();}
 });
 function isAudioArtifact(artifact) {return artifact.kind==='audio'||/\.(wav|mp3|flac|ogg|m4a|webm)$/i.test(artifact.name||'');}
@@ -919,7 +927,7 @@ async function pollJob() {
   state.jobTimer=setTimeout(pollJob,1100);
 }
 function renderWorkspaceResults() {
-  const current=workspace(),record=state.pendingRecord?.key===state.key?state.pendingRecord:current.result;
+  const current=workspace(),pending=state.pendingRecord?.key===state.key&&state.pendingRecord.model===state.model&&state.pendingRecord.resultEpoch===(current.resultEpoch||0)?state.pendingRecord:null,record=pending||current.result;
   const card=$('result-content').closest('.result-card'),hasText=!!record?.result?.text;
   card.classList.toggle('has-result',!!record);card.classList.toggle('has-text',hasText);
   $('copy-result').hidden=!hasText;$('export-result').hidden=!hasText;
@@ -1083,6 +1091,5 @@ async function initialize() {
   await pollDownloads();
   setInterval(()=>{if(!document.hidden||state.downloads.some(activeDownload))pollDownloads();},2500);
   setInterval(()=>{if(!document.hidden)pollStatus();},7000);
-  setInterval(updateRecordingBanner,1000);
 }
 initialize();
