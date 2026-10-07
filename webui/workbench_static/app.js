@@ -406,7 +406,7 @@ function languageChoices(values,automatic='自动') {const seen=new Set(['','aut
 const OPTION_CHOICE_NAMES={auto:'自动',default:'默认',native:'原始精度',none:'不启用',off:'关闭',on:'开启',true:'开启',false:'关闭',fixed:'固定',grow:'自动扩展',tiered:'分档',full:'完整',full_context:'完整上下文',streaming:'流式',cpu:'处理器',model:'跟随模型',base:'基础版',flash:'快速版',eager:'即时计算',flash_attention:'融合注意力',first_block_cache:'首块缓存',spectrum:'频谱加速',word_budget:'按字数预算',tag_aware:'按标签',endline:'按换行',japanese:'日语分段',vad:'按语音片段',verbatim:'逐字转写',intended:'清理后的文本',verbatimize:'按原文还原口语',greedy_search:'贪心搜索',modified_beam_search:'改进束搜索',low_latency:'低延迟',high_latency:'高延迟',very_high_latency:'较高延迟',low:'低',very_low:'很低',ultra_low:'极低',very_high:'很高',stable:'稳定',quick:'快速',exact:'精确',semantic:'语义',text:'文本',audio:'音频',edit:'编辑',editing:'编辑',instruct:'按指令',instruction_tts:'指令语音合成',zero_shot:'零样本克隆',cross_lingual:'跨语言',tts:'语音合成',tts_interleave:'交错语音合成',text_to_audio:'文字生成音频',long_form:'长音频',joint:'联合',independent:'独立',alternating:'交替',same:'保持一致',masked:'遮罩',edges:'边缘',melody:'旋律',segment:'分段',attribution:'归属',custom:'自定义',init_audio:'以源音频初始化',inpaint_audio:'局部重绘',happy:'开心',sad:'悲伤',angry:'愤怒',fearful:'恐惧',disgusted:'厌恶',surprised:'惊讶',neutral:'中性',expressive:'富有表现力',clear:'清晰',english_female:'英语女声',english_male:'英语男声',us_female:'美式女声',us_male:'美式男声',uk_female:'英式女声',uk_male:'英式男声',style_preserved_vc:'保留风格换声',style_converted_vc:'转换风格换声',style_preserved_svc:'保留风格歌声转换',style_converted_svc:'转换风格歌声转换',singing_style_conversion:'演唱风格转换',latin:'拉丁文字',pre_romanized:'已罗马化',quiet_energy:'低能量边界'};
 function visibleParameters() {
   const task=state.task,detail=state.detail||{};
-  const dedicatedLanguage=(['tts','asr'].includes(task)&&detail.languages?.length)||(task==='analysis'&&modelTask(detail)==='align');
+  const dedicatedLanguage=task==='tts'||(task==='asr'&&detail.languages?.length)||(task==='analysis'&&modelTask(detail)==='align');
   const dedicatedSeed=['tts','music','vc','processing','design'].includes(task)&&detail.profile?.send_seed!==false;
   return (detail.parameters||[]).filter(p=>{
     if(dedicatedLanguage&&(p.name==='language'||detail.family==='index_tts2'&&p.name==='lang'))return false;
@@ -438,7 +438,7 @@ function textInput(key,label,{help='',placeholder='',required=false,rows=0,type=
 }
 function selectInput(key,label,choices,{help='',value=''}={}) { const values=fieldValues(key);const input=node('select');input.id=`input-${state.task}-${key}`;input.dataset.inputKey=key;fillSelect(input,choices,values[key]??value);input.addEventListener('change',()=>values[key]=input.value);return field(label,input,help); }
 function checkboxInput(key,label,help='') { const values=fieldValues(key);const group=node('div',`field-group${help?' field-inline-control':''}`);const row=node('label','check-label');const input=node('input');input.type='checkbox';input.dataset.inputKey=key;input.checked=!!values[key];input.addEventListener('change',()=>values[key]=input.checked);row.append(input,node('span','',label));group.append(row);if(help){input.title=help;input.setAttribute('aria-description',help);}return group; }
-// Keep waveform rendering available for later use without exposing it in the UI.
+// Input previews stay compact; TTS results explicitly enable their waveform.
 const WAVEFORM_PREVIEW_ENABLED=false;
 const waveformCache=new WeakMap();
 function waveformData(blob) {
@@ -452,8 +452,8 @@ function waveformData(blob) {
     return {peaks,duration:buffer.duration};
   })());return waveformCache.get(blob);
 }
-function attachWaveform(container,audio,blob,onDemand=false) {
-  if(!WAVEFORM_PREVIEW_ENABLED)return null;
+function attachWaveform(container,audio,blob,onDemand=false,enabled=WAVEFORM_PREVIEW_ENABLED) {
+  if(!enabled)return null;
   const panel=node('div','waveform-panel'),hint=node('span','muted small','正在读取波形…');panel.append(hint);container.append(panel);
   async function draw(source){try{
     if(!audio.readyState)await new Promise((resolve,reject)=>{const done=()=>{clearTimeout(timer);audio.removeEventListener('loadedmetadata',loaded);audio.removeEventListener('error',failed);};const loaded=()=>{done();resolve();},failed=()=>{done();reject(new Error('无法读取波形，仍可使用播放器试听。'));},timer=setTimeout(failed,10000);audio.addEventListener('loadedmetadata',loaded,{once:true});audio.addEventListener('error',failed,{once:true});});
@@ -461,12 +461,13 @@ function attachWaveform(container,audio,blob,onDemand=false) {
     const {peaks,duration}=await waveformData(source);if(!panel.isConnected)return;
     const canvas=node('canvas','audio-waveform');canvas.width=640;canvas.height=100;canvas.setAttribute('aria-hidden','true');
     const progress=node('input','waveform-position');progress.type='range';progress.min=0;progress.max=duration;progress.step=.01;progress.value=0;progress.setAttribute('aria-label','音频播放位置');
-    const time=node('span','muted small');
+    const time=node('span','muted small waveform-time');
     const paint=()=>{const ctx=canvas.getContext('2d'),style=getComputedStyle(panel),position=audio.currentTime||0;ctx.clearRect(0,0,640,100);for(let i=0;i<peaks.length;i++){const height=Math.max(1,peaks[i]*90);ctx.fillStyle=style.getPropertyValue(i/peaks.length<position/duration?'--accent':'--muted');ctx.fillRect(i*2,(100-height)/2,1,height);}progress.value=position;time.textContent=`${formatDuration(position)} / ${formatDuration(duration)}`;};
     progress.addEventListener('input',()=>{audio.currentTime=Number(progress.value);paint();});canvas.addEventListener('click',event=>{const bounds=canvas.getBoundingClientRect();audio.currentTime=Math.max(0,Math.min(duration,(event.clientX-bounds.left)/bounds.width*duration));paint();});audio.addEventListener('timeupdate',paint);replace(panel,canvas,progress,time);paint();
   }catch(error){hint.textContent=error.message||'无法读取波形，仍可使用播放器试听。';}}
-  if(blob&&!onDemand)draw(blob);
-  else{const load=button('显示波形','text-button small',async()=>{load.disabled=true;hint.textContent='正在读取波形…';try{if(blob)await draw(blob);else{const response=await fetch(audio.src);if(!response.ok)throw new Error('无法读取音频。');if(Number(response.headers.get('content-length'))>32*1024*1024){await response.body?.cancel();throw new Error('音频较大，请使用播放器定位。');}await draw(await response.blob());}}catch(error){hint.textContent=error.message;}finally{load.remove();}});hint.textContent='';panel.prepend(load);}
+  const loadWaveform=async()=>{try{if(blob)await draw(blob);else{const response=await fetch(audio.src);if(!response.ok)throw new Error('无法读取音频。');if(Number(response.headers.get('content-length'))>32*1024*1024){await response.body?.cancel();throw new Error('音频较大，请使用播放器定位。');}await draw(await response.blob());}}catch(error){hint.textContent=error.message||'无法读取波形，仍可使用播放器试听。';}};
+  if(!onDemand)void loadWaveform();
+  else{const load=button('显示波形','text-button small',async()=>{load.disabled=true;hint.textContent='正在读取波形…';await loadWaveform();load.remove();});hint.textContent='';panel.prepend(load);}
   return panel;
 }
 function uploadInput(key,label,{required=false,help='',accept='audio/*,.wav,.mp3,.flac,.m4a,.ogg,.webm',record=true,values=formValues(),onUploaded,onClear}={}) {
@@ -602,6 +603,14 @@ function layoutReferenceSources(container,controls,values,inputs,transcribe) {
   nameGroup.querySelector('.reference-save').textContent='保存到音频库';
   controls.classList.add('temporary-reference-editor');replace(zone,actions,player);
   replace(controls,heading,zone,textGroup,nameGroup);replace(upload,controls);
+  if(state.task==='tts'){
+    sources.classList.add('tts-reference-sources');
+    const libraryBody=node('div','reference-card-body'),toolbar=node('div','reference-library-toolbar');
+    toolbar.append(select,libraryHeading.querySelector('.reference-library-actions'));
+    libraryBody.append(toolbar,libraryPlayer,libraryTranscript);replace(library,libraryHeading,libraryBody);
+    const uploadBody=node('div','reference-card-body');uploadBody.append(zone,textGroup,nameGroup);
+    replace(controls,heading,uploadBody);
+  }
   sources._values=values;syncReferenceControls(values);
 }
 function setReferenceText(values,text) {
@@ -645,6 +654,14 @@ function syncReferenceControls(values) {
     const text=editor.querySelector('textarea');text.disabled=!temporary;text.style.visibility=temporary?'visible':'hidden';
     editor.querySelector('.reference-footer-slot').style.visibility=temporary?'visible':'hidden';
     editor.querySelector('.reference-actions').style.visibility=temporary?'visible':'hidden';
+    if(sources.classList.contains('tts-reference-sources')){
+      const transcribe=!sources.classList.contains('without-transcript');
+      sources.querySelector('.reference-library-fields .reference-media-slot').hidden=!values._referenceSource||temporary;
+      sources.querySelector('.reference-library-fields .reference-transcript-slot').hidden=!transcribe||!values._referenceSource||temporary;
+      editor.querySelector('.reference-media-slot').hidden=!temporary;
+      editor.querySelector('.reference-transcript-slot').hidden=!transcribe||!temporary;
+      editor.querySelector('.reference-footer-slot').hidden=!temporary;
+    }
     const uploadStatus=sources.querySelector('.upload-controls');uploadStatus.style.visibility=temporary||state.uploading||state.recorders.size?'visible':'hidden';
   }
   for(const panel of document.querySelectorAll('.reference-controls'))if(panel._values===values){
@@ -737,6 +754,8 @@ function musicInputCapabilities() {
 }
 function renderInputs() {
   stopRecordings();
+  const common=$('common-options'),commonHeading=$('common-options-heading');
+  document.querySelector('.task-action-bar').prepend(commonHeading,common);
   const container=$('task-inputs');replace(container);
   const detail=state.detail,profile=detail?.profile||{},task=state.task,actual=modelTask(detail||{});
   const primary=node('div','task-primary form-fields'),secondary=node('div','task-reference form-fields');
@@ -770,7 +789,7 @@ function renderInputs() {
     primary.append(uploadInput('audio','要分析的音频',{required:true}));
     if((actual||state.analysisType)==='align')secondary.append(textInput('transcript','音频原文',{rows:4,required:true}));
   }
-  if(task==='tts'&&secondary.childElementCount)container.append(secondary,primary);
+  if(task==='tts'){secondary.append(commonHeading,common);container.append(secondary,primary);}
   else{container.append(primary);if(secondary.childElementCount)container.append(secondary);}
   container.classList.toggle('single-input',!secondary.childElementCount);
   syncReferenceControls(formValues());
@@ -812,9 +831,9 @@ function renderParameters() {
   const settings=$('task-setting-inputs');replace(settings);
   if(state.task==='asr'&&state.detail?.asr_inputs?.context){const context=textInput('context',state.detail.asr_inputs.context_label||'专有名词',{placeholder:state.detail.asr_inputs.context_label==='音频指令'?'描述需要识别或理解的内容':'人名、品牌名或专业术语'});context.classList.add('asr-context');settings.append(context);}
   settings.append(...basic.filter(voice).map(parameterControl));
-  if(state.task==='tts'&&state.detail?.streaming)settings.append(checkboxInput('stream','边听边生成'));
+  if(state.task==='tts'&&state.detail?.streaming)settings.append(checkboxInput('stream','流式生成','开启时边生成边播放，关闭时离线生成。'));
   if(state.task==='asr'&&state.detail?.streaming)settings.append(checkboxInput('stream','流式转写'));
-  if(['tts','asr'].includes(state.task)&&state.detail?.languages?.length>1)settings.append(selectInput('language',state.task==='asr'?'识别语言':'语言',languageChoices(state.detail.languages)));
+  if(state.task==='tts'||state.task==='asr'&&state.detail?.languages?.length>1)settings.append(selectInput('language',state.task==='asr'?'识别语言':'语言',languageChoices(state.detail?.languages||[],state.detail?.languages?.length?'自动':'模型默认')));
   if(state.task==='asr'){
     if(state.detail?.asr_inputs?.details)settings.append(checkboxInput('detailed','详细结果','保存模型实际返回的分段与详细信息；仅支持离线识别。'));
     if(state.detail?.asr_inputs?.dialogue)settings.append(checkboxInput('dialogue','区分说话人','本地工作流：额外调用 Sortformer，再分段识别；对话最长 120 秒。'));
@@ -831,6 +850,7 @@ function renderParameters() {
   if(['tts','music','vc','processing','design'].includes(state.task)&&profile.send_seed!==false)$('expert-controls').append(textInput('seed','随机种子',{type:'number',min:-1,step:1,placeholder:'留空使用默认',help:'用于复现结果；-1 表示随机。'}));
   if(['tts','design'].includes(state.task)&&profile.send_max_tokens!==false)$('expert-controls').append(textInput('max_tokens','生成长度上限（max_tokens）',{type:'number',min:1,step:1,placeholder:'使用模型默认',help:'过小可能截断内容。'}));
   $('common-options').hidden=!settings.childElementCount&&!$('basic-controls').childElementCount&&!$('effect-controls').childElementCount;
+  $('common-options-heading').hidden=state.task!=='tts';
 }
 $('reset-options').addEventListener('click',()=>{const options=modelOptions();options.values={};options.inputs={};options.json='';state.overrides=options.values;$('options-json').value='';renderInputs();renderParameters();updateRunButton();showToast('已恢复默认参数；运行设置需应用后生效');});
 
@@ -951,7 +971,7 @@ function renderResult(job,record) {
   if(job.text||state.task==='asr'){const text=typeof job.text==='string'?job.text:JSON.stringify(job.text,null,2),box=node('textarea','result-text');box.value=record?.editedSource===text?record.editedText:text;box.setAttribute('aria-label',state.task==='asr'?'识别文字结果':'文字结果');box.spellcheck=false;box.readOnly=!record||!['done','error','cancelled'].includes(job.status);box.addEventListener('input',()=>{if(record){record.editedSource=text;record.editedText=box.value;}});children.push(box);}
   const files=node('div','result-files'),inlineAudio=singleAudioArtifact(job.artifacts);
   for(const artifact of job.artifacts||[]){const url=safeArtifactUrl(artifact.url);if(!url)continue;const item=node('div','artifact');if(artifact!==inlineAudio){const heading=node('div','artifact-heading');heading.append(artifactLink(artifact));item.append(heading);}
-    if(isAudioArtifact(artifact)){item.classList.add('audio-artifact');const audio=node('audio');audio.controls=true;audio.preload='metadata';audio.src=url;audio.setAttribute('aria-label',artifact.name||'生成音频');audio.addEventListener('play',stopStreamPlayback);item.append(audio);attachWaveform(item,audio);}files.append(item);
+    if(isAudioArtifact(artifact)){item.classList.add('audio-artifact');const audio=node('audio');audio.controls=true;audio.preload='metadata';audio.src=url;audio.setAttribute('aria-label',artifact.name||'生成音频');audio.addEventListener('play',stopStreamPlayback);item.append(audio);attachWaveform(item,audio,undefined,false,state.task==='tts');}files.append(item);
   }
   if(files.childElementCount)children.push(files);
   if(!job.text&&!files.childElementCount&&job.status==='done'&&state.task!=='asr')children.push(node('p','result-placeholder','未产生输出文件'));

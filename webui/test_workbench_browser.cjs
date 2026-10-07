@@ -285,14 +285,21 @@ async function snapshot(page, name) {
 }
 
 const cases = [
-  ['TTS reference workspace keeps library read-only and temporary editing aligned', async (page, backend) => {
+  ['TTS reference workspace expands the active source beside text and settings', async (page, backend) => {
     Object.assign(backend.models.find(item=>item.id==='tts-two'),{voice_mode:'reference',profile:{accepts_voice_reference:true,send_reference_text:true,send_seed:false,send_max_tokens:false}});
     await page.setViewportSize({width:1440,height:1000});await pick(page,'tts-two');
     backend.voices.push({name:'narrator.wav',label:'温暖男声',text:'欢迎来到声音工作台，这是一段用于试听和配音的参考语音。',url:`${API}/references/narrator.wav/audio`});
     await page.getByRole('button',{name:'刷新列表',exact:true}).click();
     const rects=()=>page.locator('.compact-reference-sources>div').evaluateAll(items=>items.map(el=>{const r=el.getBoundingClientRect();return {y:r.y,bottom:r.bottom,height:r.height,width:r.width};}));
     const empty=await rects();
-    assert.ok(Math.abs(empty[0].height-empty[1].height)<2&&Math.abs(empty[0].y-empty[1].y)<2);
+    assert.ok(empty[0].bottom<empty[1].y&&empty.every(panel=>panel.height<110),'Empty references must stack without reserved media rows');
+    assert.ok(await page.locator('.reference-library-fields').evaluate(el=>{
+      const r=selector=>el.querySelector(selector).getBoundingClientRect();
+      const label=r('.field-label'),body=r('.reference-card-body'),select=r('select'),actions=r('.reference-library-actions');
+      return label.bottom<=body.top&&select.right<=actions.left&&Math.abs(select.top-actions.top)<3;
+    }),'Library label belongs above its group, with actions to the right of the dropdown');
+    assert.ok(await page.locator('.reference-upload-fields').evaluate(el=>el.querySelector('.field-label').getBoundingClientRect().bottom<=el.querySelector('.reference-card-body').getBoundingClientRect().top),'Upload label belongs above its group');
+    await snapshot(page,'tts-empty-desktop');
     assert.equal(await page.locator('.reference-save').isVisible(),false);
     assert.equal(await page.locator('.reference-library-fields [data-input-key="reference_name"]').count(),0);
     await page.locator('[data-input-key="builtin_voice"]').selectOption('narrator.wav');
@@ -301,20 +308,23 @@ const cases = [
     assert.equal(await page.locator('[data-input-key="reference_text"]').inputValue(),'');
     assert.equal(await page.locator('[data-input-key="reference_text"]').isDisabled(),true);
     assert.equal(backend.referenceRequests.length,0);
-    assert.deepEqual(await rects(),empty,'Selection must use reserved rows without layout movement');
+    const selected=await rects();
+    assert.ok(selected[0].height>empty[0].height+60&&selected[1].height===empty[1].height,'Only the selected library source expands');
     await page.locator('[data-input-key="text"]').fill('让每一段文字，都有自然的声音。');
     const positions=await page.locator('#task-form').evaluate(el=>{
-      const r=s=>el.querySelector(s).getBoundingClientRect();return {references:r('.reference-sources').bottom,text:r('[data-input-key="text"]').top,textRight:r('[data-input-key="text"]').right,settings:r('.task-action-bar').top,settingsLeft:r('.task-action-bar').left,run:r('#run-button').right,right:r('.task-action-bar').right};
+      const r=s=>el.querySelector(s).getBoundingClientRect();return {references:r('.reference-sources').right,referencesBottom:r('.reference-sources').bottom,text:r('[data-input-key="text"]').bottom,textLeft:r('[data-input-key="text"]').left,heading:r('#common-options-heading').top,headingBottom:r('#common-options-heading').bottom,settings:r('#common-options').top,settingsRight:r('#common-options').right,runTop:r('#run-button').top,runLeft:r('#run-button').left};
     });
-    assert.ok(positions.references<positions.text&&positions.references<positions.settings&&positions.textRight<positions.settingsLeft);
-    assert.ok(Math.abs(positions.right-positions.run-15)<2,'Generate action must align with the settings panel padding');
+    assert.ok(positions.references<positions.textLeft&&positions.referencesBottom<positions.heading&&positions.headingBottom<positions.settings&&Math.abs(positions.settingsRight-positions.references)<2,'Common controls and their outside label follow the reference groups');
+    assert.ok(positions.runTop>positions.text&&positions.runTop-positions.text<28&&Math.abs(positions.textLeft-positions.runLeft)<2,'Generate action must immediately follow and align with the text field');
+    assert.equal(await page.locator('#common-options #common-options-heading').count(),0);
     await snapshot(page,'tts-library-desktop');
     await page.locator('.reference-upload-fields .reference-automatic input').uncheck();
     await upload(page,'#task-form [data-input-key="voice"]','uploaded-reference.wav');
     assert.equal(await page.locator('[data-reference-preview]').isVisible(),false);
     assert.equal(await page.locator('[data-input-key="builtin_voice"]').inputValue(),'');
     assert.equal(await page.locator('[data-reference-transcript]').inputValue(),'');
-    assert.deepEqual(await rects(),empty,'Uploading must use reserved player and save rows');
+    const uploaded=await rects();
+    assert.ok(uploaded[0].height===empty[0].height&&uploaded[1].height>empty[1].height+90,'Uploading collapses the library preview and expands the editor');
     await page.locator('[data-input-key="reference_text"]').fill('上传音频的原文，可以校正后保存。');
     await page.locator('[data-input-key="reference_name"]').fill('新录制的声音');
     assert.equal(await page.locator('.reference-upload-fields .reference-save').isVisible(),true);
@@ -329,7 +339,7 @@ const cases = [
     assert.equal(backend.referenceSaves[0].audio,'upload-1');assert.equal(backend.referenceSaves[0].source,'');
     assert.equal(backend.referenceSaves[0].text,'重新识别后的原文');
     assert.equal(await page.locator('.reference-save').isVisible(),false);
-    assert.deepEqual(await rects(),empty,'Saving to the library must preserve source positions');
+    const saved=await rects();assert.ok(saved[0].height>empty[0].height&&saved[1].height===empty[1].height,'Saving returns the upload group to its compact state');
     await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'Library generation not submitted');
     assert.equal(backend.requests[0].inputs.builtin_voice,'新录制的声音.wav');assert.equal(backend.requests[0].inputs.voice,undefined);
     assert.equal(backend.requests[0].inputs.reference_text,'重新识别后的原文');
@@ -347,7 +357,7 @@ const cases = [
     await page.evaluate(()=>window.scrollTo(0,0));await snapshot(page,'tts-library-mobile');
     await page.getByRole('button',{name:'管理音频',exact:true}).click();await page.locator('#reference-editor').waitFor({state:'visible'});
   }],
-  ['TTS recording stays in its reserved upload panel and becomes a temporary reference', async (page, backend) => {
+  ['TTS recording expands the upload panel when the temporary reference is ready', async (page, backend) => {
     Object.assign(backend.models.find(item=>item.id==='tts-two'),{voice_mode:'reference',profile:{accepts_voice_reference:true,send_reference_text:true,send_seed:false,send_max_tokens:false}});
     await pick(page,'tts-two');await page.locator('.reference-automatic input').uncheck();
     await page.evaluate(bytes=>{
@@ -384,7 +394,7 @@ const cases = [
     assert.equal(await page.evaluate(()=>window.stoppedReferenceTracks),1);
     assert.equal(backend.uploads.length,1);assert.ok(backend.uploads[0].name.startsWith('录音-'));
     assert.equal(await page.locator('.recording-time').isVisible(),false);assert.equal(await page.locator('.recording-stop').isVisible(),false);
-    assert.equal(await height(),before);assert.equal(await page.locator('.reference-upload-fields audio').isVisible(),true);
+    assert.ok(await height()>before+90);assert.equal(await page.locator('.reference-upload-fields audio').isVisible(),true);
     await page.locator('[data-input-key="reference_text"]').fill('录音对应的原文');
     await page.locator('[data-input-key="text"]').fill('使用这段录音合成的新文本');
     await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'Recorded reference did not submit');
@@ -445,8 +455,8 @@ const cases = [
       if(route==='tts'){
         assert.ok(await page.locator('.task-primary').evaluate(el=>{
           const text=el.querySelector('textarea').getBoundingClientRect(),settings=document.querySelector('.task-action-bar').getBoundingClientRect(),result=document.querySelector('.result-card').getBoundingClientRect();
-          return text.right<settings.left&&Math.abs(settings.left-result.left)<2&&settings.bottom<result.top&&Math.abs(text.bottom-result.bottom)<2;
-        }),'TTS text must fill the left column beside settings and results');
+          return text.bottom<settings.top&&Math.abs(text.left-settings.left)<2&&Math.abs(settings.left-result.left)<2&&settings.bottom<result.top;
+        }),'TTS text, settings and results must follow the same column');
       }else assert.ok(await page.locator('.task-primary').evaluate(el=>Math.abs(el.getBoundingClientRect().width-document.querySelector('#task-inputs').getBoundingClientRect().width)<2),`${route}: primary input must fill a row`);
       assert.equal(await page.locator('.reference-source-tabs,.reference-more').count(),0,`${route}: old reference tabs remain`);
       if(route!=='tts')assert.ok(await page.locator('.result-card').evaluate(el=>el.getBoundingClientRect().top-document.querySelector('.input-card').getBoundingClientRect().bottom<20),`${route}: unnecessary gap before results`);
@@ -672,7 +682,7 @@ const cases = [
     await referenceMore(page);await page.locator('#task-form .reference-upload-fields .reference-automatic input').uncheck();
     const emptyHeight=await page.locator('.reference-sources').evaluate(el=>el.getBoundingClientRect().height);
     await upload(page,'#task-form [data-input-key="voice"]','uploaded-reference.wav');
-    assert.ok(Math.abs(await page.locator('.reference-sources').evaluate(el=>el.getBoundingClientRect().height)-emptyHeight)<2,'Upload must use the reserved player space');
+    assert.ok(await page.locator('.reference-sources').evaluate(el=>el.getBoundingClientRect().height)>emptyHeight+90,'Upload expands for the player, transcript and save controls');
     await page.locator('[data-input-key="reference_text"]').fill('上传参考音频实际说出的文字');
     await page.locator('[data-input-key="text"]').fill('通过上传的参考音频生成这段新的语音');
     await page.locator('[data-input-key="language"]').selectOption('chinese');
@@ -696,8 +706,8 @@ const cases = [
     assert.equal(await page.locator('#result-content .artifact-heading').count(),0,'Single audio filename must share the completion message');
     assert.ok(await page.locator('.result-card').evaluate(el=>{
       const result=el.getBoundingClientRect(),text=document.querySelector('[data-input-key="text"]').getBoundingClientRect(),audio=el.querySelector('audio').getBoundingClientRect();
-      return result.height>=180&&result.height<=200&&Math.abs(text.bottom-result.bottom)<2&&audio.bottom<=result.bottom;
-    }),'TTS output must keep its reserved height and align with the editor bottom');
+      return result.height>=180&&result.height<=200&&text.bottom<result.top&&audio.bottom<=result.bottom;
+    }),'TTS output must keep its initial height below the editing controls');
     const downloadEvent=page.waitForEvent('download');await page.locator('#job-status a[download]').click();
     assert.equal((await downloadEvent).suggestedFilename(),'uploaded-reference-output.wav');
     await assertBrowserScroll(page);await snapshot(page,'regular-tts-uploaded-reference-result');
@@ -784,7 +794,8 @@ const cases = [
   ['dense advanced model settings scroll internally with a fixed apply footer', async (page, backend) => {
     const real=[...presetParameters('ace_step'),...presetParameters('rvc')];
     backend.models.find(item=>item.id==='tts-one').parameters=real.slice(0,27).map((param,index)=>({...param,name:`expert_${index}_${param.name}`,level:'expert'}));
-    await pick(page,'tts-one');await page.setViewportSize({width:1366,height:768});await advanced(page);
+    await pick(page,'tts-one');await page.setViewportSize({width:1366,height:768});
+    const pageHeight=await page.evaluate(()=>document.documentElement.scrollHeight);await advanced(page);
     assert.equal(await page.locator('#expert-controls > .field-group').count(),28,'27 realistic controls plus the seed should render');
     const content=await page.locator('.model-settings-content').evaluate(el=>({scroll:el.scrollHeight,client:el.clientHeight}));
     assert.ok(content.scroll>content.client,'Many advanced fields must scroll inside the popover');
@@ -792,7 +803,7 @@ const cases = [
     await page.locator('.model-settings-content').evaluate(el=>el.scrollTop=el.scrollHeight);
     await assertVisibleControl(page,'#options-json','Advanced JSON field cannot be reached');
     await assertVisibleControl(page,'#apply-model-settings','Advanced footer scrolled away');
-    assert.ok(await page.evaluate(()=>document.documentElement.scrollHeight<=innerHeight+1));await snapshot(page,'regular-model-settings-dense');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollHeight),pageHeight,'Advanced popover must not stretch the page');await snapshot(page,'regular-model-settings-dense');
   }],
   ['music edit instruction uses one main input without a duplicated advanced field', async (page, backend) => {
     Object.assign(backend.models.find(item=>item.id==='music-one'),{music_inputs:{lyrics:false,source_audio:true,require_source_audio:true,text_role:'instruction',text_label:'编辑指令'},profile:{require_source_audio:true,edit_instruction_key:'instruction',accepts_voice_reference:false,send_seed:false},parameters:[{name:'instruction',label:'表达风格',type:'text',default:'',level:'effect',scope:'request'}]});
@@ -984,10 +995,10 @@ const cases = [
     backend.voices.push({name:'saved.wav',label:'Saved reference',text:'已保存原文',url:`${API}/references/saved.wav/audio`});
     await page.locator('[data-route="references"]').click();await page.locator('[data-route="tts"]').click();await pick(page,'tts-two');
     const ordered=await page.locator('#task-form').evaluate(form=>{
-      const controls=['[data-input-key="builtin_voice"]','[data-input-key="voice"]','[data-input-key="text"]','#common-options','#run-button'].map(selector=>form.querySelector(selector));
+      const controls=['[data-input-key="builtin_voice"]','[data-input-key="voice"]','#common-options','[data-input-key="text"]','#run-button'].map(selector=>form.querySelector(selector));
       return controls.every((control,index)=>!index||!!(controls[index-1].compareDocumentPosition(control)&Node.DOCUMENT_POSITION_FOLLOWING));
     });
-    assert.equal(ordered,true,'Reference material, synthesis text, common settings and execution order');
+    assert.equal(ordered,true,'Reference material and common settings precede synthesis text and execution');
     assert.equal(await page.locator('[data-input-key="builtin_voice"] option').first().textContent(),'选择参考音频');
     await page.locator('#model-picker-trigger').click();
     assert.equal(await page.locator('#model-picker-status').isVisible(),false);
@@ -1120,7 +1131,7 @@ const cases = [
     assert.equal(await page.locator('#server-dot').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(38, 134, 91)');
     assert.deepEqual(await page.locator('#task-setting-inputs input,#task-setting-inputs select').evaluateAll(controls=>controls.map(el=>el.dataset.inputKey||el.id)),['param-speaker','stream','language']);
     const commonBoxes=await page.locator('#common-options').evaluate(el=>['#param-speaker','[data-input-key="stream"]','[data-input-key="language"]','#param-speed'].map(selector=>{const r=el.querySelector(selector).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};}));
-    for(let i=1;i<commonBoxes.length;i++){const before=commonBoxes[i-1],after=commonBoxes[i];assert.ok(after.top>=before.bottom||(before.right<after.left&&before.top<after.bottom&&after.top<before.bottom),'Common controls must keep voice, streaming, language, speed order while wrapping in the right column');}
+    for(let i=1;i<commonBoxes.length;i++){const before=commonBoxes[i-1],after=commonBoxes[i];assert.ok(after.top>=before.bottom||(before.right<after.left&&before.top<after.bottom&&after.top<before.bottom),'Common controls must keep voice, streaming, language, speed order while wrapping in the left column');}
     for(const width of [1440,390]){
       await page.setViewportSize({width,height:900});
       const pairs=await page.locator('#common-options .field-group').evaluateAll(groups=>groups.flatMap(group=>{const label=group.querySelector('.field-label'),control=group.querySelector('input,select');if(!label||!control)return [];const a=label.getBoundingClientRect(),b=control.getBoundingClientRect();return [{inline:a.right<=b.left&&a.top<b.bottom&&b.top<a.bottom}];}));
@@ -1464,6 +1475,35 @@ const cases = [
     assert.equal(await page.locator('#result-content audio').count(),0,'ASR must not duplicate the input audio in its text result');
     await waitText(page, '#task-inputs', 'next-draft.wav');
   }],
+  ['TTS output waveform appears with playback and seeks through the generated audio', async (page, backend) => {
+    const audio=wav();
+    for(let i=0;i<1600;i++)audio.writeInt16LE(Math.round(24000*Math.sin(i*.12)*(.15+.85*i/1600)),44+i*2);
+    await page.route(`${ORIGIN}${API}/files/job-1-0`,route=>{
+      const range=route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/);
+      const start=range?Number(range[1]):0,end=range?.[2]?Math.min(Number(range[2]),audio.length-1):audio.length-1;
+      const headers={'accept-ranges':'bytes','content-length':String(end-start+1)};
+      if(range)headers['content-range']=`bytes ${start}-${end}/${audio.length}`;
+      return route.fulfill({status:range?206:200,headers,contentType:'audio/wav',body:audio.subarray(start,end+1)});
+    });
+    assert.equal(await page.locator('#result-content .waveform-panel').count(),0);
+    await page.locator('[data-input-key="text"]').fill('生成后显示音频声波。');
+    await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'TTS waveform request was not submitted');
+    backend.finish('job-1','',['waveform-result.wav']);
+    await page.locator('#result-content .audio-waveform').waitFor({state:'visible'});
+    assert.equal(await page.getByRole('button',{name:'显示波形',exact:true}).count(),0,'Output waveform must load without another click');
+    assert.equal(await page.locator('#result-content audio').isVisible(),true);
+    const waveform=await page.locator('#result-content .audio-waveform').evaluate(canvas=>{
+      const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+      const box=canvas.getBoundingClientRect(),audio=document.querySelector('#result-content audio').getBoundingClientRect();
+      return {painted:pixels.filter((value,index)=>index%4===3&&value>0).length,above:box.bottom<=audio.top};
+    });
+    assert.ok(waveform.painted>3000&&waveform.above,'Real sample peaks must render above the playback bar');
+    const canvas=page.locator('#result-content .audio-waveform'),bounds=await canvas.boundingBox();
+    await canvas.click({position:{x:bounds.width*.6,y:bounds.height/2}});
+    await page.waitForFunction(()=>{const audio=document.querySelector('#result-content audio');return Math.abs(audio.currentTime/audio.duration-.6)<.03;});
+    await snapshot(page,'tts-waveform-result');
+    await pick(page,'tts-two');assert.equal(await page.locator('#result-content .waveform-panel').count(),0,'Changing models must discard the previous waveform');
+  }],
   ['waveform preview stays hidden while uploaded audio remains playable and replaceable', async (page) => {
     await task(page, 'vc', 'Voice conversion');
     await page.locator('[data-input-key="audio"]').setInputFiles({name:'waveform.wav', mimeType:'audio/wav', buffer:wav(2000)});
@@ -1607,6 +1647,21 @@ cases.push(['model-specific common controls are rebuilt on every selection',asyn
   await task(page,'tts');await pick(page,'tts-one');
   assert.equal(await page.locator('#common-options [data-input-key="language"]').count(),1);
   assert.equal(await page.locator('#common-options [data-input-key="detailed"]').count(),0);
+  Object.assign(backend.models.find(m=>m.id==='tts-two'),{languages:['japanese'],streaming:false,parameters:[]});
+  await pick(page,'tts-two');
+  assert.deepEqual(await page.locator('#common-options [data-input-key="language"] option').allTextContents(),['自动','日语']);
+  assert.equal(await page.locator('#common-options [data-input-key="stream"]').count(),0);
+  await page.locator('[data-input-key="language"]').selectOption('japanese');
+  await page.locator('[data-input-key="text"]').fill('単一言語のモデル');await page.locator('#run-button').click();
+  await waitUntil(()=>backend.requests.length===1,'Single-language TTS did not submit');
+  assert.equal(backend.requests[0].inputs.language,'japanese');assert.equal(backend.requests[0].inputs.stream,undefined);
+  backend.finish('job-1','',['japanese.wav']);await waitText(page,'#job-status','japanese.wav');
+  await pick(page,'tts-one');
+  backend.models.find(m=>m.id==='tts-two').languages=[];await pick(page,'tts-two');
+  assert.deepEqual(await page.locator('#common-options [data-input-key="language"] option').allTextContents(),['模型默认']);
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===2,'Default-language TTS did not submit');
+  assert.equal(backend.requests[1].inputs.language,undefined,'Model default must not send an unsupported language');
+  backend.finish('job-2','',['default.wav']);await waitText(page,'#job-status','default.wav');
   await task(page,'asr');
   assert.equal(await page.locator('#common-options [data-input-key="language"]').count(),0);
   assert.equal(await page.locator('#common-options #param-speaker').count(),0);
@@ -1618,6 +1673,7 @@ cases.push(['IndexTTS emotion controls stay beside generation with one language 
   Object.assign(backend.models.find(m=>m.id==='tts-two'),{family:'index_tts2',label:'IndexTTS2',parameters,
     streaming:false,voice_mode:'reference',profile:{accepts_voice_reference:true,require_voice:true,send_reference_text:false,send_seed:true,send_max_tokens:false}});
   await page.setViewportSize({width:1366,height:768});await pick(page,'tts-two');
+  assert.ok(await page.locator('.reference-sources>div').evaluateAll(items=>items.every(el=>el.getBoundingClientRect().height<110)),'Models without transcripts must not reserve reference rows');
   for(const name of Object.keys(labels))assert.equal(await page.locator(`#common-options #param-${name}`).count(),1,name);
   assert.equal(await page.locator('#param-lang').count(),0);
   assert.equal(await page.locator('[data-input-key="language"]').count(),1);
@@ -1640,6 +1696,7 @@ cases.push(['IndexTTS emotion controls stay beside generation with one language 
   backend.finish('job-1','',['emotion.wav']);backend.jobs.get('job-1').message='生成完成，用时 2.3s。随机种子：42';
   await waitText(page,'#job-status','随机种子：42');await waitText(page,'#job-status','emotion.wav');
   await snapshot(page,'index-tts-result-seed');
+  await page.locator('#toast').waitFor({state:'hidden'});
   await page.setViewportSize({width:390,height:844});
   for(const selector of ['#param-emotion_text','#param-emotion_alpha','#run-button'])await assertVisibleControl(page,selector,'Narrow IndexTTS control clipped');
   await assertBrowserScroll(page);await snapshot(page,'index-tts-mobile');

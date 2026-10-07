@@ -506,27 +506,33 @@ body.workspace-mode #page-workspace .result-card .card-heading{min-height:32px}
   #task-inputs .compact-reference-sources .reference-upload-actions>.recording-controls{min-width:max-content}
   .recording-controls>.recording-stop{width:26px;padding:0}
 }
-/* TTS keeps the reference row above a full-height editor and a settings/result column.
-   Flatten layout boxes only: controls remain inside the existing form. */
+/* TTS references expand independently beside the text, settings and results. */
+#task-inputs .tts-reference-sources{grid-template-columns:minmax(0,1fr);align-items:start;gap:16px}
+#task-inputs .tts-reference-sources>div,#task-inputs .tts-reference-sources.without-transcript>div{grid-template-rows:none;gap:6px;padding:0;border:0;background:transparent}
+#task-inputs .tts-reference-sources .reference-card-body{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;gap:10px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft);min-width:0}
+#task-inputs .tts-reference-sources .reference-library-toolbar{display:flex;align-items:center;gap:8px;min-width:0}
+#task-inputs .tts-reference-sources .reference-library-toolbar>select{flex:1;min-width:0;width:0}
+#task-inputs .tts-reference-sources .reference-library-actions{flex:none;flex-wrap:nowrap;gap:4px}
+#task-inputs .tts-reference-sources .reference-library-actions .button{padding-inline:6px}
+body.workspace-mode #page-workspace[data-task=tts] .task-action-bar{flex-direction:column;align-items:flex-start;gap:12px;margin-top:12px;padding:0;border:0}
+body.workspace-mode #page-workspace[data-task=tts] #common-options{flex:none;align-content:start;padding:12px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft)}
+#page-workspace[data-task=tts] #common-options-heading{margin:4px 0 -4px;font-size:13px;color:var(--text);font-weight:550}
+body.workspace-mode #page-workspace[data-task=tts] .generate-row{margin:0;align-self:flex-start}
 body.workspace-mode #page-workspace[data-task=tts] .result-card{min-height:180px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft)}
 body.workspace-mode #page-workspace[data-task=tts] .result-content{flex:1;min-height:0;padding:0;border:0;background:transparent}
 body.workspace-mode #page-workspace[data-task=tts] .result-title>.job-status{flex:1 1 180px;margin-left:0;padding:0}
 body.workspace-mode #page-workspace[data-task=tts] .result-files .audio-artifact{flex-wrap:wrap}
-body.workspace-mode #page-workspace[data-task=tts] .audio-artifact>.waveform-panel{flex-basis:100%}
+body.workspace-mode #page-workspace[data-task=tts] .audio-artifact>.waveform-panel{flex-basis:100%;order:-1;margin:0}
+body.workspace-mode #page-workspace[data-task=tts] .result-content .audio-waveform{height:52px}
+body.workspace-mode #page-workspace[data-task=tts] .waveform-position,body.workspace-mode #page-workspace[data-task=tts] .waveform-time{display:none}
 @media(min-width:961px){
-  body.workspace-mode #page-workspace[data-task=tts] .workspace-layout,
-  body.workspace-mode #page-workspace[data-task=tts] .workspace-operation{flex:1}
-  body.workspace-mode #page-workspace[data-task=tts] #workspace-grid{display:grid;flex:1;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:auto minmax(180px,1fr) auto;grid-template-areas:"references references" "text settings" "text result";gap:16px}
-  body.workspace-mode #page-workspace[data-task=tts] #workspace-grid:has(#task-inputs.single-input){grid-template-rows:minmax(180px,1fr) auto;grid-template-areas:"text settings" "text result"}
+  body.workspace-mode #page-workspace[data-task=tts] #workspace-grid{display:grid;flex:none;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:auto auto auto;grid-template-areas:"references text" "references settings" "references result";align-content:start;align-items:start;gap:16px}
+  body.workspace-mode #page-workspace[data-task=tts] #workspace-grid:has(#task-inputs.single-input){grid-template-columns:minmax(0,1fr);grid-template-areas:"text" "settings" "result"}
   body.workspace-mode #page-workspace[data-task=tts] .input-card,
   body.workspace-mode #page-workspace[data-task=tts] #task-form,
   body.workspace-mode #page-workspace[data-task=tts] #task-inputs{display:contents}
-  body.workspace-mode #page-workspace[data-task=tts] #task-inputs>.task-reference{grid-area:references}
-  body.workspace-mode #page-workspace[data-task=tts] #task-inputs>.task-primary{grid-area:text;align-self:stretch}
-  body.workspace-mode #page-workspace[data-task=tts] .task-primary>.field-group{display:flex;flex-direction:column;flex:1;min-height:0}
-  body.workspace-mode #page-workspace[data-task=tts] #task-inputs textarea.large-text{flex:1;height:0;min-height:300px}
-  body.workspace-mode #page-workspace[data-task=tts] .task-action-bar{grid-area:settings;flex-direction:column;align-items:stretch;gap:14px;margin:0;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft)}
-  body.workspace-mode #page-workspace[data-task=tts] #common-options{align-content:flex-start}
-  body.workspace-mode #page-workspace[data-task=tts] .generate-row{margin:auto 0 0;align-self:flex-end}
+  body.workspace-mode #page-workspace[data-task=tts] #task-inputs>.task-reference{grid-area:references;align-self:start}
+  body.workspace-mode #page-workspace[data-task=tts] #task-inputs>.task-primary{grid-area:text}
+  body.workspace-mode #page-workspace[data-task=tts] .task-action-bar{grid-area:settings;margin:0}
   body.workspace-mode #page-workspace[data-task=tts] .result-card{grid-area:result}
 }

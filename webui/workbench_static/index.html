@@ -6,10 +6,10 @@
   <meta name="color-scheme" content="light dark">
   <title>Aixora Audio</title>
   <link rel="icon" type="image/png" href="/workbench-static/aixora-audio-logo.png?v=audio-2">
-  <link rel="stylesheet" href="/workbench-static/app.css?v=aixora-workspace-edge-30">
+  <link rel="stylesheet" href="/workbench-static/app.css?v=aixora-workspace-edge-32">
   <link rel="stylesheet" href="/workbench-static/home.css?v=aixora-home-23">
   <link rel="stylesheet" href="/workbench-static/palettes.css?v=aixora-1">
-  <script type="module" src="/workbench-static/app.js?v=aixora-common-27"></script>
+  <script type="module" src="/workbench-static/app.js?v=aixora-common-29"></script>
 </head>
 <body>
   <svg class="icon-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -77,7 +77,7 @@
           <div class="workspace-operation card">
             <div id="workspace-start" class="workspace-start" hidden></div>
             <div id="workspace-grid" class="workspace-grid workspace-main">
-            <section class="card input-card" aria-labelledby="input-heading"><div class="card-heading"><h2 id="input-heading">文本与声音</h2></div><form id="task-form"><div id="task-inputs" class="form-fields"></div><div class="task-action-bar"><div id="common-options" class="common-options"><div id="task-setting-inputs" class="form-fields"></div><div id="basic-controls" class="form-fields"></div><div id="effect-controls" class="form-fields"></div></div><div class="generate-row"><button type="submit" id="run-button" class="button primary" disabled>生成语音</button><span id="run-hint" class="muted small" role="status" hidden></span></div></div></form></section>
+            <section class="card input-card" aria-labelledby="input-heading"><div class="card-heading"><h2 id="input-heading">文本与声音</h2></div><form id="task-form"><div id="task-inputs" class="form-fields"></div><div class="task-action-bar"><h3 id="common-options-heading" hidden>常用设置</h3><div id="common-options" class="common-options"><div id="task-setting-inputs" class="form-fields"></div><div id="basic-controls" class="form-fields"></div><div id="effect-controls" class="form-fields"></div></div><div class="generate-row"><button type="submit" id="run-button" class="button primary" disabled>生成语音</button><span id="run-hint" class="muted small" role="status" hidden></span></div></div></form></section>
             <section class="card result-card" aria-labelledby="result-heading"><div class="card-heading"><div class="result-title"><h2 id="result-heading">生成结果</h2><div id="job-status" class="job-status idle" role="status" aria-live="polite" hidden></div><button id="cancel-job" class="button subtle small-button" type="button" hidden>停止任务</button></div><div class="result-actions"><button id="copy-result" class="button secondary small-button" type="button" hidden>复制文字</button><button id="export-result" class="button secondary small-button" type="button" hidden>导出文本</button><button id="stop-stream-playback" class="button subtle small-button" type="button" hidden>停止试听</button></div></div><div id="result-content" class="result-content"></div></section>
             </div>
           </div>
