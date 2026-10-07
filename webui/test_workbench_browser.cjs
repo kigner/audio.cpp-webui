@@ -117,13 +117,17 @@ function fixture() {
       const file=pathname.slice('/realtime/'.length)||'index.html';
       const root=path.join(__dirname,'realtime_static'),full=path.resolve(root,file);
       if(!full.startsWith(root+path.sep))throw new Error(`Unsafe realtime path: ${file}`);
-      // Use the real markup/styles and presentation controls without inference/session scripts.
+      // Load the real UI modules. Merely opening settings/history must not start inference.
       let body=await fs.readFile(full);
-      if(file==='index.html')body=Buffer.from(body.toString('utf8').replace(/<script[^>]+src="[^"]+"[^>]*><\/script>/g,'')+'<script type="module" src="scene.js"></script>');
+      if(file==='index.html'&&state.staleRealtimeDocument&&!url.search) {
+        // Model the cached pre-library document: the new script cannot find its
+        // reference refresh button. A new iframe URL must bypass this document.
+        body=Buffer.from(body.toString('utf8').replace('id="tts-reference-refresh"','id="legacy-reference-refresh"'));
+      }
       const contentType={'.html':'text/html','.js':'application/javascript','.css':'text/css','.png':'image/png'}[path.extname(full)]||'application/octet-stream';
       return route.fulfill({status:200,contentType,body});
     }
-    if(pathname==='/api/realtime/config'||pathname==='/config')return json({});
+    if(pathname==='/api/realtime/config'||pathname==='/config')return json({api_base:'/api/realtime',tts_models:[],asr_models:[]});
     if (pathname === `${API}/catalog`) return json({version:'browser-fixture', models,
       tasks:[{id:'tts', types:['tts','clon']}, {id:'asr', types:['asr']},
         {id:'music', types:['gen']}, {id:'vc',types:['vc']}, {id:'design',types:['vdes']},
@@ -843,6 +847,26 @@ const cases = [
     await page.locator('#page-scenarios').waitFor();
     assert.equal(await page.locator('#end-realtime-session').isVisible(),true,'Catalog navigation should retain the active call controls');
   }],
+  ['realtime iframe bypasses stale markup and opens settings and history after reload', async (page, backend) => {
+    backend.staleRealtimeDocument=true;
+    await page.goto(`${ORIGIN}/#scenarios/realtime-chat`);
+    const frame=page.frameLocator('#realtime-frame');
+    for(let attempt=0;attempt<2;attempt++) {
+      await frame.locator('#call-more summary').click();
+      await frame.getByRole('button',{name:'对话设置',exact:true}).click();
+      await frame.locator('#settings-modal[open]').waitFor();
+      await frame.getByRole('tab',{name:'声音',exact:true}).click();
+      await frame.locator('#tts-reference-refresh').waitFor();
+      await frame.getByRole('button',{name:'取消',exact:true}).click();
+      await frame.locator('#call-more summary').click();
+      await frame.getByRole('button',{name:'对话记录',exact:true}).click();
+      await frame.locator('#chat-panel.open').waitFor();
+      assert.equal(await frame.locator('#chat-panel').evaluate(el=>el.inert),false);
+      await frame.getByRole('button',{name:'关闭对话记录',exact:true}).click();
+      if(!attempt)await page.reload();
+    }
+    assert.equal(backend.requests.length,0,'Opening panels must not activate models or submit jobs');
+  }],
   ['buttons keep consistent semantics, focus and themes across pages and realtime', async page => {
     const style=el=>{const s=getComputedStyle(el);return {radius:s.borderRadius,height:s.minHeight,font:s.fontSize,background:s.backgroundColor,color:s.color};};
     await page.locator('[data-route="references"]').click();
@@ -855,7 +879,7 @@ const cases = [
     await page.locator('[data-route="scenarios"]').click();await page.locator('[data-scenario="realtime-chat"]').click();
     const frame=page.frameLocator('#realtime-frame');
     await frame.locator('#call-more summary').click();await frame.locator('#settings-btn').click();
-    await frame.locator('#settings-modal').evaluate(el=>el.showModal());
+    await frame.locator('#settings-modal[open]').waitFor();
     for(const palette of ['classic','studio'])for(const theme of ['light','dark']) {
       await page.evaluate(({palette,theme})=>{document.documentElement.dataset.palette=palette;document.documentElement.dataset.theme=theme;document.querySelector('#realtime-frame').contentWindow.postMessage({type:'audiocpp:theme',palette,theme},location.origin);},{palette,theme});
       await frame.locator('html').evaluate((el,{palette,theme})=>{el.dataset.palette=palette;el.dataset.theme=theme;},{palette,theme});

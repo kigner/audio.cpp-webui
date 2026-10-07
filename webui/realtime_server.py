@@ -63,6 +63,18 @@ logger = logging.getLogger("realtime.server")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "realtime_static")
 
+
+class RealtimeStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # These files are updated in place, including JS module dependencies.
+        # Revalidate even iframe documents and 304 responses so an old DOM is
+        # never reused with a newer script. Scene images keep normal caching.
+        if os.path.splitext(path)[1].lower() in {"", ".html", ".js", ".css"}:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 ModelCatalogProvider = Callable[[], list[dict[str, Any]]]
 ManagedTtsLoader = Callable[[str, str], str]
 SessionLease = Callable[[str, Optional[dict[str, Any]]], None]
@@ -639,7 +651,7 @@ def create_app(
 
     # Serve static orb frontend
     if os.path.isdir(STATIC_DIR):
-        app.mount(static_prefix, StaticFiles(directory=STATIC_DIR, html=True), name="realtime-static")
+        app.mount(static_prefix, RealtimeStaticFiles(directory=STATIC_DIR, html=True), name="realtime-static")
 
     return app
 

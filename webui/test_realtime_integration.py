@@ -20,6 +20,21 @@ def _config():
 
 
 class IntegratedRealtimeTests(unittest.TestCase):
+    def test_frontend_revalidates_documents_and_modules_including_304(self):
+        with TestClient(create_app(_models, api_prefix="/api/realtime")) as client:
+            for path in ("", "index.html", "main.js?v=scene-5", "ui/chat.js", "scene.css"):
+                with self.subTest(path=path):
+                    url = f"/realtime/{path}"
+                    response = client.get(url)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.headers["cache-control"], "no-cache")
+                    cached = client.get(url, headers={"If-None-Match": response.headers["etag"]})
+                    self.assertEqual(cached.status_code, 304)
+                    self.assertEqual(cached.headers["cache-control"], "no-cache")
+            image = client.get("/realtime/scenes/window-light.png")
+            self.assertEqual(image.status_code, 200)
+            self.assertNotIn("cache-control", image.headers)
+
     def test_namespaced_routes_keep_gradio_config_free_and_hide_secret(self):
         with patch.dict(os.environ, {"AUDIOCPP_LLM_API_KEY": "private-test-key"}):
             app = create_app(_models, api_prefix="/api/realtime")
