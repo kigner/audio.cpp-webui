@@ -24,6 +24,7 @@ class ReferenceLibrary:
         with self.lock:
             texts = self.b._load_voice_texts() if hasattr(self.b, "_load_voice_texts") else {}
             return [{"name": name, "label": Path(name).stem,
+                     "voice_ref": str((Path(self.b.PROMPTS_DIR) / name).resolve()),
                      "text": texts.get(Path(name).stem, ""),
                      "url": "/api/workbench/references/" + quote(name, safe="") + "/audio"}
                     for name in self.b.builtin_voices() if name != "(none)"]

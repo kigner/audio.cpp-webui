@@ -5456,6 +5456,11 @@ def realtime_tts_models():
     Streaming-capable entries are intentionally first; catalog order remains
     stable inside each group so existing downstream model ordering is preserved.
     """
+    try:
+        from .realtime_voices import voice_metadata
+    except ImportError:
+        from realtime_voices import voice_metadata
+
     models = []
     for entry in catalog_models():
         if entry.get("task") not in TTS_TASKS or not entry.get("installed"):
@@ -5492,6 +5497,8 @@ def realtime_tts_models():
             "stream_sample_rate": int(profile.get("stream_sample_rate") or 0),
             "realtime_defaults": defaults,
             "realtime_auto_mode": realtime_auto_mode,
+            **voice_metadata(entry, profile, params_for(entry["id"]),
+                             MODEL_SPECS.get(family, {})),
         })
     return sorted(models, key=lambda model: not model["supports_streaming"])
 

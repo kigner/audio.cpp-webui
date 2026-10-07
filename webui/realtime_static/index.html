@@ -6,7 +6,7 @@
     <title>实时语音聊天 · Aixora Audio</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="workbench.css?v=scene-5" />
-    <link rel="stylesheet" href="scene.css?v=scene-6" />
+<link rel="stylesheet" href="scene.css?v=scene-7" />
   </head>
   <body class="booting">
     <div class="scene-background" aria-hidden="true"></div>
@@ -154,7 +154,7 @@
           <header class="modal-header"><h2>对话设置</h2><button class="icon-btn" value="close" aria-label="关闭">×</button></header>
         <nav class="scene-settings-tabs" role="tablist" aria-label="对话设置分类"><button type="button" role="tab" data-settings-tab="scene">场景</button><button type="button" role="tab" data-settings-tab="llm">对话</button><button type="button" role="tab" data-settings-tab="tts">声音</button><button type="button" role="tab" data-settings-tab="asr">识别</button><button type="button" role="tab" data-settings-tab="connection">连接</button></nav>
         <div class="tab-panels">
-            <section id="settings-scene" class="settings-section" data-settings-panel="scene"><h3>聊天背景</h3><div class="scene-options"><button type="button" class="scene-option" data-scene-choice="window"><span class="scene-thumb scene-thumb-window"></span><strong>窗边</strong></button><button type="button" class="scene-option" data-scene-choice="quiet"><span class="scene-thumb scene-thumb-quiet"></span><strong>静谧</strong></button></div><p class="scene-setting-help">静态背景，无口型动画。</p><h3 class="scene-preference-title">画面显示</h3><label class="scene-check"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label></section>
+            <section id="settings-scene" class="settings-section" data-settings-panel="scene"><h3>聊天背景</h3><div class="scene-options"><button type="button" class="scene-option" data-scene-choice="window"><span class="scene-thumb scene-thumb-window"></span><strong>窗边</strong></button><button type="button" class="scene-option" data-scene-choice="bedroom"><span class="scene-thumb scene-thumb-bedroom"></span><strong>卧室</strong></button><button type="button" class="scene-option" data-scene-choice="living-room"><span class="scene-thumb scene-thumb-living-room"></span><strong>客厅</strong></button><button type="button" class="scene-option" data-scene-choice="quiet"><span class="scene-thumb scene-thumb-quiet"></span><strong>静谧</strong></button></div><p class="scene-setting-help">静态背景，无口型动画。</p><h3 class="scene-preference-title">画面显示</h3><label class="scene-check"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label></section>
           <section id="settings-asr" class="settings-section">
               <h3>语音识别</h3>
               <div class="field-row"><label class="field"><span>识别模型</span><input id="asr-model" list="asr-model-list" autocomplete="off" placeholder="选择或输入模型名" /><datalist id="asr-model-list"></datalist></label><label class="field"><span>识别语言</span><input id="asr-language" placeholder="自动识别，或填 zh / en" /></label></div>
@@ -170,8 +170,14 @@
               <h3>语音合成</h3>
             <label class="field"><span>声音模型</span><select id="tts-model"><option value="">正在读取已安装模型…</option></select></label>
               <small id="tts-model-capability"></small>
-            <div class="field-row"><label class="field"><span>音色名称 <small>模型支持时填写</small></span><input id="tts-voice" autocomplete="off" placeholder="使用模型默认音色" /></label><label class="field"><span>参考音频路径 <small>克隆声音时使用</small></span><input id="tts-voice-ref" autocomplete="off" placeholder="voice/demo_01_man.wav" /></label></div>
-              <label class="field"><span>参考音频中的原话 <small>部分克隆模型必填</small></span><input id="tts-ref-text" autocomplete="off" /></label>
+            <label class="field"><span>音色名称</span><select id="tts-voice"><option value="">模型未提供内置音色列表</option></select></label>
+            <div id="tts-reference-fields">
+              <div class="reference-library-heading"><span>参考音频库</span><button type="button" id="tts-reference-refresh" class="btn plain">刷新</button></div>
+              <label class="field"><span class="sr-only">参考音频</span><select id="tts-voice-ref"><option value="">不使用参考音频</option></select></label>
+              <small id="tts-reference-status" role="status"></small>
+              <audio id="tts-reference-preview" controls preload="none" aria-label="参考音频试听" hidden></audio>
+              <label class="field"><span>参考音频中的原话</span><textarea id="tts-ref-text" rows="3"></textarea><small id="tts-reference-text-hint">从参考音频库自动填入，可修改</small></label>
+            </div>
           </section>
           <details class="advanced-settings">
               <summary>高级设置</summary>
@@ -188,7 +194,7 @@
       </form>
     </dialog>
 
-    <script type="module" src="main.js?v=scene-5"></script>
-    <script type="module" src="scene.js?v=scene-5"></script>
+<script type="module" src="main.js?v=scene-7"></script>
+<script type="module" src="scene.js?v=scene-7"></script>
   </body>
 </html>

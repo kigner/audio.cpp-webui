@@ -97,6 +97,9 @@ function loadSettings() {
 let envDefaults = {};
 /** @type {Array<Record<string, any>>} */
 let availableTtsModels = [];
+let referenceVoices = [];
+let referenceLibraryReady = false;
+let referenceLibraryRequest = 0;
 
 const ENV_SETTING_KEYS = {
   ttsUrl: "tts_server",
@@ -171,6 +174,11 @@ function appConfigFromSettings(s) {
   /** @type {Record<string, any>} */
   const ttsOptions = {};
   const meta = ttsModelMeta(s.ttsModel);
+  const voice = meta ? meta.voices?.find(item => item.value === s.ttsVoice)?.value || "" : s.ttsVoice;
+  if (voice && meta?.voice_parameter) {
+    ttsOptions[meta.voice_parameter] = meta.voice_value_type === "number" ? Number(voice) : voice;
+  }
+  const acceptsReference = meta?.accepts_voice_reference !== false;
   if (meta?.family === "dots_tts") {
     const inferenceSteps = Number(s.ttsInferenceSteps);
     const mergeSteps = Number(s.ttsVocoderMergeSteps);
@@ -195,9 +203,9 @@ function appConfigFromSettings(s) {
     // browser's jitter-buffer behavior matches the backend session mode.
     tts_playback_mode: effectivePlayback,
     tts_options: ttsOptions,
-    tts_voice: s.ttsVoice,
-    tts_voice_ref: s.ttsVoiceRef,
-    tts_reference_text: s.ttsRefText,
+    tts_voice: meta?.voice_parameter ? "" : voice,
+    tts_voice_ref: acceptsReference ? s.ttsVoiceRef : "",
+    tts_reference_text: acceptsReference && s.ttsVoiceRef ? s.ttsRefText : "",
     asr_server: s.asrUrl,
     asr_model: s.asrModel,
     asr_language: s.asrLanguage,
@@ -359,7 +367,8 @@ function ttsModelLabel(model) {
 function renderTtsModelOptions() {
   const select = /** @type {HTMLSelectElement | null} */ (settingsFields.ttsModel);
   if (!select) return;
-  const currentValue = select.value;
+  const editing = settingsModal?.open;
+  const currentValue = editing ? select.value : settings.ttsModel;
   select.innerHTML = "";
   if (!availableTtsModels.length) {
     const option = document.createElement("option");
@@ -367,7 +376,7 @@ function renderTtsModelOptions() {
     option.textContent = "未检测到本地已安装的 TTS 模型";
     select.append(option);
     select.disabled = true;
-    settings.ttsModel = "";
+    if (!editing) settings.ttsModel = "";
     return;
   }
   select.disabled = false;
@@ -386,13 +395,89 @@ function renderTtsModelOptions() {
     : installedIds.has(envDefaults.tts_model)
       ? envDefaults.tts_model
       : availableTtsModels[0].id;
-  settings.ttsModel = selected;
+  if (!editing) settings.ttsModel = selected;
   select.value = selected;
   select.title = select.selectedOptions[0]?.title || select.selectedOptions[0]?.textContent || "";
 }
 
-function syncTtsSettingsUi(applyModelDefaults = false) {
+function renderVoiceOptions(reset = false) {
   const meta = ttsModelMeta(settingsFields.ttsModel?.value || settings.ttsModel);
+  const select = settingsFields.ttsVoice;
+  const current = reset ? "" : select.value;
+  const voices = meta?.voices || [];
+  select.replaceChildren(new Option(voices.length ? "模型默认音色" : "模型未提供内置音色列表", ""));
+  for (const voice of voices) select.add(new Option(voice.label, voice.value));
+  select.value = voices.some(voice => voice.value === current) ? current : "";
+  select.disabled = !voices.length;
+}
+
+function renderReferenceOptions(current = settingsFields.ttsVoiceRef.value) {
+  const select = settingsFields.ttsVoiceRef;
+  const normalized = String(current).replaceAll("\\", "/").toLowerCase();
+  const selected = referenceVoices.find(voice => [voice.voice_ref, `voice/${voice.name}`]
+    .some(path => path?.replaceAll("\\", "/").toLowerCase() === normalized));
+  select.replaceChildren(new Option(referenceLibraryReady ? "不使用参考音频" : "参考音频库暂不可用", ""));
+  for (const voice of referenceVoices) select.add(new Option(voice.label || voice.name, voice.voice_ref));
+  if (current && !selected) select.add(new Option("已保存的参考音频（未在库中）", current));
+  select.value = selected?.voice_ref || current;
+  updateReferencePreview();
+}
+
+function updateReferencePreview() {
+  const voice = referenceVoices.find(item => item.voice_ref === settingsFields.ttsVoiceRef.value);
+  const preview = document.getElementById("tts-reference-preview");
+  const url = voice?.url || "";
+  if ((preview.getAttribute("src") || "") !== url) {
+    preview.pause();
+    if (url) preview.setAttribute("src", url);
+    else preview.removeAttribute("src");
+    preview.load();
+  }
+  preview.hidden = !voice || settingsFields.ttsVoiceRef.disabled;
+}
+
+async function refreshReferenceLibrary() {
+  const request = ++referenceLibraryRequest;
+  try {
+    const response = await fetch(new URL("../api/workbench/voices", location.href), {cache: "no-store"});
+    if (!response.ok) throw new Error("reference library unavailable");
+    const data = await response.json();
+    if (!Array.isArray(data.voices)) throw new Error("invalid reference library");
+    if (request !== referenceLibraryRequest) return;
+    referenceVoices = data.voices.filter(voice => voice.name && voice.voice_ref);
+    referenceLibraryReady = true;
+    document.getElementById("tts-reference-status").textContent = referenceVoices.length ? "" : "参考音频库为空，请先在语音合成中添加。";
+  } catch {
+    if (request !== referenceLibraryRequest) return;
+    document.getElementById("tts-reference-status").textContent = "参考音频库读取失败，请重试。";
+  }
+  renderReferenceOptions();
+}
+
+settingsFields.ttsVoiceRef.addEventListener("change", () => {
+  const voice = referenceVoices.find(item => item.voice_ref === settingsFields.ttsVoiceRef.value);
+  settingsFields.ttsRefText.value = voice?.text || "";
+  // A reference and a preset are alternative voice sources.
+  if (voice) settingsFields.ttsVoice.value = "";
+  updateReferencePreview();
+});
+settingsFields.ttsVoice.addEventListener("change", () => {
+  if (!settingsFields.ttsVoice.value) return;
+  settingsFields.ttsVoiceRef.value = "";
+  settingsFields.ttsRefText.value = "";
+  updateReferencePreview();
+});
+document.getElementById("tts-reference-refresh").addEventListener("click", () => void refreshReferenceLibrary());
+
+function syncTtsSettingsUi(applyModelDefaults = false, resetVoice = false) {
+  const meta = ttsModelMeta(settingsFields.ttsModel?.value || settings.ttsModel);
+  renderVoiceOptions(resetVoice);
+  const acceptsReference = meta?.accepts_voice_reference !== false;
+  document.getElementById("tts-reference-fields").hidden = !acceptsReference;
+  settingsFields.ttsVoiceRef.disabled = !acceptsReference;
+  settingsFields.ttsRefText.disabled = !acceptsReference;
+  document.getElementById("tts-reference-text-hint").textContent = meta?.requires_reference_text ? "此模型使用参考音频时需要原文" : "从参考音频库自动填入，可修改";
+  updateReferencePreview();
   const playback = /** @type {HTMLSelectElement | null} */ (settingsFields.ttsPlaybackMode);
   const source = settingsFields.ttsServerSource?.value || settings.ttsServerSource;
   const urlInput = /** @type {HTMLInputElement | null} */ (settingsFields.ttsUrl);
@@ -444,7 +529,7 @@ settingsFields.ttsModel?.addEventListener("change", () => {
     settingsFields.ttsModel.selectedOptions[0]?.title
     || settingsFields.ttsModel.selectedOptions[0]?.textContent
     || "";
-  syncTtsSettingsUi(true);
+  syncTtsSettingsUi(true, true);
 });
 settingsFields.ttsServerSource?.addEventListener("change", () => syncTtsSettingsUi(false));
 settingsFields.ttsPlaybackMode?.addEventListener("change", () => syncTtsSettingsUi(false));
@@ -770,7 +855,7 @@ async function doStart(textOnly = false) {
     const c = new S2sWsRealtimeClient({
       directUrl: new URL(`${realtimeApiBase}/v1/realtime`, window.location.origin).href.replace(/^http/, "ws"),
       instructions: settings.instructions,
-      voice: settings.ttsVoice,
+      voice: appConfigFromSettings(settings).tts_voice,
       appConfig: appConfigFromSettings(settings),
       textOnly,
       acquireMic: acquireMicStream,
@@ -916,7 +1001,10 @@ realtimeNoticeSettings.addEventListener("click", () => settingsBtn.click());
 // ── Settings modal ─────────────────────────────────────────────────────
 function fillSettingsForm() {
   renderTtsModelOptions();
+  renderVoiceOptions();
+  renderReferenceOptions(settings.ttsVoiceRef);
   for (const [k, el] of Object.entries(settingsFields)) {
+    if (k === "ttsVoiceRef") continue; // Already resolved against the library above.
     if (el) el.value = k === "llmKey" ? "" : settings[k] ?? "";
   }
   if (settingsFields.llmKey) settingsFields.llmKey.placeholder =
@@ -940,6 +1028,7 @@ settingsBtn?.addEventListener("click", () => {
   syncGateUi();
   settingsModal?.showModal();
   void refreshEnvDefaults();
+  void refreshReferenceLibrary();
 });
 
 settingsForm?.addEventListener("submit", (e) => {
@@ -948,6 +1037,7 @@ settingsForm?.addEventListener("submit", (e) => {
 });
 
 settingsModal?.addEventListener("close", () => {
+  document.getElementById("tts-reference-preview").pause();
   const rv = settingsModal.returnValue;
   if (rv !== "save") return;
   const previous = settings;
@@ -1010,8 +1100,7 @@ setState("idle");
 chat.renderEmptyState();
 // Pull env defaults (TTS/ASR/LLM URLs, voice_ref, ...) from the backend so the
 // Settings panel pre-fills with what run_realtime.bat configured. Non-blocking;
-// if a session is already starting it still works (env defaults are also the
-// backend's fallback for empty browser fields).
+// Omitted fields retain backend defaults; explicit empty voice fields clear them.
 void refreshEnvDefaults();
 // Strip booting class after first paint
 requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("booting")));

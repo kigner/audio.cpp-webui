@@ -908,10 +908,8 @@ class RealtimePipeline:
     def configure(self, cfg: dict[str, Any]) -> None:
         """Apply per-session config pushed from the browser (session.update).
 
-        Empty-string values are treated as "no override" so the env defaults
-        (set in run_realtime.bat) survive — e.g. qwen3-tts-Base requires a
-        voice_ref; an empty browser field must not clobber the env-provided
-        reference audio path.
+        Omitted fields preserve defaults. Explicit empty voice fields clear
+        the previous selection when the user switches or removes a reference.
         """
         def val(key: str) -> Optional[str]:
             v = cfg.get(key)
@@ -926,12 +924,9 @@ class RealtimePipeline:
             self._tts.configure(server_url=val("tts_server"))
             if val("tts_model"):
                 self._tts_model = val("tts_model")
-            if val("tts_voice"):
-                self._tts_voice = val("tts_voice")
-            if val("tts_voice_ref"):
-                self._tts_voice_ref = val("tts_voice_ref")
-            if val("tts_reference_text"):
-                self._tts_reference_text = val("tts_reference_text")
+            for key in ("tts_voice", "tts_voice_ref", "tts_reference_text"):
+                if isinstance(cfg.get(key), str):
+                    setattr(self, "_" + key, cfg[key])
             if isinstance(cfg.get("tts_streaming"), bool):
                 self._tts_streaming = cfg["tts_streaming"]
             if isinstance(cfg.get("tts_stream_sample_rate"), (int, float)):

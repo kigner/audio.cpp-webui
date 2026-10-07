@@ -4,16 +4,17 @@ const dialog = byId('settings-modal');
 const settingsButton = byId('settings-btn');
 const embedded = window.parent !== window;
 const KEY = 'audiocpp-scene-appearance';
+const sceneNames = {window:'窗边 · 日间',bedroom:'卧室 · 暖灯', 'living-room':'客厅 · 午后',quiet:'静谧 · 无人物'};
 function readAppearance() {
   try { return {scene:'window',captions:true,...JSON.parse(localStorage.getItem(KEY)||'{}')}; }
   catch { return {scene:'window',captions:true}; }
 }
 let appearance = readAppearance();
 function applyAppearance() {
-  if(!['window','quiet'].includes(appearance.scene))appearance.scene='window';
+  if(!Object.hasOwn(sceneNames,appearance.scene))appearance.scene='window';
   document.body.dataset.scene = appearance.scene;
   document.body.classList.toggle('captions-hidden',!appearance.captions);
-  byId('scene-location').textContent=appearance.scene==='window'?'窗边 · 日间':'静谧 · 无人物';
+  byId('scene-location').textContent=sceneNames[appearance.scene];
   byId('scene-captions').checked=!!appearance.captions;
   document.querySelectorAll('[data-scene-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.sceneChoice===appearance.scene)));
 }
