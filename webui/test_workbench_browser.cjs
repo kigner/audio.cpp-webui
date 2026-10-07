@@ -304,10 +304,10 @@ const cases = [
     assert.deepEqual(await rects(),empty,'Selection must use reserved rows without layout movement');
     await page.locator('[data-input-key="text"]').fill('让每一段文字，都有自然的声音。');
     const positions=await page.locator('#task-form').evaluate(el=>{
-      const r=s=>el.querySelector(s).getBoundingClientRect();return {references:r('.reference-sources').bottom,text:r('[data-input-key="text"]').top,textBottom:r('[data-input-key="text"]').bottom,settings:r('.task-action-bar').top,run:r('#run-button').right,right:el.getBoundingClientRect().right};
+      const r=s=>el.querySelector(s).getBoundingClientRect();return {references:r('.reference-sources').bottom,text:r('[data-input-key="text"]').top,textRight:r('[data-input-key="text"]').right,settings:r('.task-action-bar').top,settingsLeft:r('.task-action-bar').left,run:r('#run-button').right,right:r('.task-action-bar').right};
     });
-    assert.ok(positions.references<positions.text&&positions.textBottom<positions.settings);
-    assert.ok(Math.abs(positions.run-positions.right)<2,'Generate action must align with the right edge');
+    assert.ok(positions.references<positions.text&&positions.references<positions.settings&&positions.textRight<positions.settingsLeft);
+    assert.ok(Math.abs(positions.right-positions.run-15)<2,'Generate action must align with the settings panel padding');
     await snapshot(page,'tts-library-desktop');
     await page.locator('.reference-upload-fields .reference-automatic input').uncheck();
     await upload(page,'#task-form [data-input-key="voice"]','uploaded-reference.wav');
@@ -437,17 +437,22 @@ const cases = [
       assert.equal(await page.locator('#run-button').isDisabled(),true);
       if(['tts','music','design'].includes(route))await waitValue(page,'[data-input-key="text"]',`${route} preparation before load`);
       const geometry=await page.locator('#page-workspace').evaluate(el=>{
-        const input=el.querySelector('.input-card').getBoundingClientRect(),run=el.querySelector('#run-button').getBoundingClientRect(),result=el.querySelector('.result-card').getBoundingClientRect();
+        const input=el.querySelector(el.dataset.task==='tts'?'.task-primary':'.input-card').getBoundingClientRect(),run=el.querySelector('#run-button').getBoundingClientRect(),result=el.querySelector('.result-card').getBoundingClientRect();
         return {page:document.documentElement.scrollHeight,viewport:innerHeight,inputHeight:input.height,runBottom:run.bottom,resultHeight:result.height};
       });
       await assertBrowserScroll(page);
       assert.equal(await page.locator('.input-card>.card-heading').isVisible(),false,`${route}: redundant input heading remains`);
-      assert.ok(await page.locator('.task-primary').evaluate(el=>Math.abs(el.getBoundingClientRect().width-document.querySelector('#task-inputs').getBoundingClientRect().width)<2),`${route}: primary input must fill a row`);
+      if(route==='tts'){
+        assert.ok(await page.locator('.task-primary').evaluate(el=>{
+          const text=el.querySelector('textarea').getBoundingClientRect(),settings=document.querySelector('.task-action-bar').getBoundingClientRect(),result=document.querySelector('.result-card').getBoundingClientRect();
+          return text.right<settings.left&&Math.abs(settings.left-result.left)<2&&settings.bottom<result.top&&Math.abs(text.bottom-result.bottom)<2;
+        }),'TTS text must fill the left column beside settings and results');
+      }else assert.ok(await page.locator('.task-primary').evaluate(el=>Math.abs(el.getBoundingClientRect().width-document.querySelector('#task-inputs').getBoundingClientRect().width)<2),`${route}: primary input must fill a row`);
       assert.equal(await page.locator('.reference-source-tabs,.reference-more').count(),0,`${route}: old reference tabs remain`);
-      assert.ok(await page.locator('.result-card').evaluate(el=>el.getBoundingClientRect().top-document.querySelector('.input-card').getBoundingClientRect().bottom<20),`${route}: unnecessary gap before results`);
+      if(route!=='tts')assert.ok(await page.locator('.result-card').evaluate(el=>el.getBoundingClientRect().top-document.querySelector('.input-card').getBoundingClientRect().bottom<20),`${route}: unnecessary gap before results`);
       assert.ok(geometry.inputHeight>100,`${route}: input collapsed ${JSON.stringify(geometry)}`);
       if(route==='asr')assert.ok(geometry.resultHeight>=180,'ASR must reserve the empty result editor');
-      else if(route==='tts')assert.ok(geometry.resultHeight>=80&&geometry.resultHeight<=100,'TTS keeps its compact empty result card');
+      else if(route==='tts')assert.ok(geometry.resultHeight>=180&&geometry.resultHeight<=200,'TTS reserves status, audio and waveform space from the start');
       else assert.ok(geometry.resultHeight>=140,`${route}: empty result card must reserve output space ${JSON.stringify(geometry)}`);
       await assertVisibleControl(page,'#run-button',`${route}: execution button is clipped by an ancestor`);
       assert.ok(await page.locator('.workspace-operation').evaluate(el=>el.getBoundingClientRect().width>=document.querySelector('#page-workspace').getBoundingClientRect().width*.9),`${route}: main card does not fill the workspace`);
@@ -461,8 +466,8 @@ const cases = [
   ['result header preserves real task stages, cancellation and an empty output card', async (page, backend) => {
     await page.setViewportSize({width:1366,height:768});await task(page,'tts','TTS One');
     await page.locator('[data-input-key="text"]').fill('第一段是开场白。第二段介绍产品。第三段是结束语。');
-    const blank=await page.locator('#result-content').evaluate(el=>({height:el.getBoundingClientRect().height,background:getComputedStyle(el).backgroundColor}));
-    assert.ok(blank.height>=32&&blank.height<=56);assert.notEqual(blank.background,'rgba(0, 0, 0, 0)');
+    const blank=await page.locator('.result-card').evaluate(el=>({height:el.getBoundingClientRect().height,background:getComputedStyle(el).backgroundColor}));
+    assert.ok(blank.height>=180&&blank.height<=200);assert.notEqual(blank.background,'rgba(0, 0, 0, 0)');
     assert.equal(await page.locator('#job-status').isVisible(),false);await snapshot(page,'tts-result-idle');
     backend.submitGate=deferred();await page.locator('#run-button').click();
     await waitText(page,'#job-status','正在准备任务');assert.equal(await page.locator('#cancel-job').isVisible(),false);
@@ -473,7 +478,7 @@ const cases = [
     }
     assert.equal(await page.locator('#job-status').getAttribute('data-state'),'running');
     assert.ok(await page.locator('#job-status').evaluate(el=>{const label=document.querySelector('#result-heading').getBoundingClientRect(),status=el.getBoundingClientRect(),stop=document.querySelector('#cancel-job').getBoundingClientRect();return label.right<=status.left&&status.right<=stop.left&&status.top<stop.bottom&&stop.top<status.bottom;}),'Task status and stop must follow the result label');
-    assert.equal(await page.locator('#result-content').evaluate(el=>el.getBoundingClientRect().height),blank.height);
+    assert.equal(await page.locator('.result-card').evaluate(el=>el.getBoundingClientRect().height),blank.height);
     await assertBrowserScroll(page);await snapshot(page,'tts-result-progress');
     await assertVisibleControl(page,'#cancel-job','Stop action clipped in the desktop result header');
     await page.locator('#cancel-job').click();assert.equal(await page.locator('#cancel-job').isDisabled(),true);
@@ -689,7 +694,10 @@ const cases = [
     await assertVisibleControl(page,'#run-button','TTS execute button clipped after output');
     await assertVisibleControl(page,'#result-content audio','TTS current output player clipped');
     assert.equal(await page.locator('#result-content .artifact-heading').count(),0,'Single audio filename must share the completion message');
-    assert.ok(await page.locator('#result-content').evaluate(el=>el.getBoundingClientRect().height<64),'Audio output keeps unnecessary vertical space');
+    assert.ok(await page.locator('.result-card').evaluate(el=>{
+      const result=el.getBoundingClientRect(),text=document.querySelector('[data-input-key="text"]').getBoundingClientRect(),audio=el.querySelector('audio').getBoundingClientRect();
+      return result.height>=180&&result.height<=200&&Math.abs(text.bottom-result.bottom)<2&&audio.bottom<=result.bottom;
+    }),'TTS output must keep its reserved height and align with the editor bottom');
     const downloadEvent=page.waitForEvent('download');await page.locator('#job-status a[download]').click();
     assert.equal((await downloadEvent).suggestedFilename(),'uploaded-reference-output.wav');
     await assertBrowserScroll(page);await snapshot(page,'regular-tts-uploaded-reference-result');
@@ -1112,7 +1120,7 @@ const cases = [
     assert.equal(await page.locator('#server-dot').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(38, 134, 91)');
     assert.deepEqual(await page.locator('#task-setting-inputs input,#task-setting-inputs select').evaluateAll(controls=>controls.map(el=>el.dataset.inputKey||el.id)),['param-speaker','stream','language']);
     const commonBoxes=await page.locator('#common-options').evaluate(el=>['#param-speaker','[data-input-key="stream"]','[data-input-key="language"]','#param-speed'].map(selector=>{const r=el.querySelector(selector).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};}));
-    for(let i=1;i<commonBoxes.length;i++){const before=commonBoxes[i-1],after=commonBoxes[i];assert.ok(before.right<after.left&&before.top<after.bottom&&after.top<before.bottom,'Common controls must follow voice, streaming, language, speed on one row');}
+    for(let i=1;i<commonBoxes.length;i++){const before=commonBoxes[i-1],after=commonBoxes[i];assert.ok(after.top>=before.bottom||(before.right<after.left&&before.top<after.bottom&&after.top<before.bottom),'Common controls must keep voice, streaming, language, speed order while wrapping in the right column');}
     for(const width of [1440,390]){
       await page.setViewportSize({width,height:900});
       const pairs=await page.locator('#common-options .field-group').evaluateAll(groups=>groups.flatMap(group=>{const label=group.querySelector('.field-label'),control=group.querySelector('input,select');if(!label||!control)return [];const a=label.getBoundingClientRect(),b=control.getBoundingClientRect();return [{inline:a.right<=b.left&&a.top<b.bottom&&b.top<a.bottom}];}));

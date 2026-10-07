@@ -210,8 +210,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 body.workspace-mode .main-content{display:flex;flex-direction:column;min-height:100dvh;overflow:visible}
 body.workspace-mode .active-job-banner{flex:none}
 #page-workspace{display:flex;flex-direction:column;width:100%;min-width:0;margin:0}
-body.workspace-mode #page-workspace{flex:1;min-height:0;overflow:visible;padding:20px 24px}
-#page-workspace .app-toolbar{flex:none;align-items:center;margin-bottom:14px;min-height:38px}
+body.workspace-mode #page-workspace{flex:1;min-height:0;overflow:visible;padding:0;background:var(--sidebar)}
+#page-workspace .app-toolbar{flex:none;align-items:center;margin:0;padding:20px 24px 14px;min-height:38px;background:var(--sidebar)}
 #page-workspace .workspace-heading-row{align-items:center;gap:18px}
 #page-workspace .workspace-heading-row h1{margin:0;font-size:19px}
 #page-workspace .workspace-model-actions{align-items:center;gap:8px;flex-wrap:wrap}
@@ -223,8 +223,8 @@ body.workspace-mode #page-workspace{flex:1;min-height:0;overflow:visible;padding
 #workspace-load-status{display:flex;align-items:center;gap:7px;flex:0 1 auto;margin-left:auto;max-width:100%;font-size:13px;text-align:right}
 #workspace-load-status>.icon{width:17px;height:17px}
 #workspace-load-status>span{min-width:0;overflow-wrap:anywhere}
-#page-workspace .workspace-layout{display:flex;flex-direction:column;align-items:stretch;width:100%;flex:none;min-height:0;gap:0}
-#page-workspace .workspace-operation{display:flex;flex-direction:column;align-self:stretch;width:100%;flex:none;min-height:0;padding:18px;overflow:visible}
+#page-workspace .workspace-layout{display:flex;flex-direction:column;align-items:stretch;width:100%;flex:1;min-height:0;gap:0}
+#page-workspace .workspace-operation{display:flex;flex-direction:column;align-self:stretch;width:100%;flex:1;min-height:0;padding:18px 42px 38px 18px;border-radius:14px 0 0 0;box-shadow:none;overflow:visible}
 #page-workspace #workspace-grid{display:flex;flex-direction:column;align-items:stretch;width:100%;flex:none;min-height:0;padding:0;gap:14px;grid-template-columns:none}
 #page-workspace .workspace-main>.card{min-height:0}
 #page-workspace .input-card,#page-workspace .result-card,#page-workspace #task-form,#page-workspace #result-content{width:100%;align-self:stretch}
@@ -384,8 +384,9 @@ body.workspace-mode #page-workspace #task-inputs [data-input-key=reference_text]
 .model-settings-footer .button{flex:none;margin-left:auto}
 @media(max-width:960px), (max-height:640px){
   body.workspace-mode .main-content{height:auto;min-height:100dvh;overflow:visible}
-  body.workspace-mode #page-workspace{min-height:100dvh;overflow:visible;padding:16px}
-  body.workspace-mode #page-workspace .workspace-operation{overflow:visible;padding:16px}
+  body.workspace-mode #page-workspace{min-height:100dvh;overflow:visible;padding:0}
+  #page-workspace .app-toolbar{padding:16px 16px 14px}
+  body.workspace-mode #page-workspace .workspace-operation{overflow:visible;padding:16px 32px 32px 16px}
   #page-workspace .input-card{overflow:visible}
   #page-workspace #task-form{flex:none}
   #task-inputs,#page-workspace[data-task=asr] #task-inputs{flex:none;min-height:min-content;max-height:none;overflow:visible}
@@ -504,4 +505,28 @@ body.workspace-mode #page-workspace .result-card .card-heading{min-height:32px}
   .recording-start{min-width:40px}
   #task-inputs .compact-reference-sources .reference-upload-actions>.recording-controls{min-width:max-content}
   .recording-controls>.recording-stop{width:26px;padding:0}
+}
+/* TTS keeps the reference row above a full-height editor and a settings/result column.
+   Flatten layout boxes only: controls remain inside the existing form. */
+body.workspace-mode #page-workspace[data-task=tts] .result-card{min-height:180px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft)}
+body.workspace-mode #page-workspace[data-task=tts] .result-content{flex:1;min-height:0;padding:0;border:0;background:transparent}
+body.workspace-mode #page-workspace[data-task=tts] .result-title>.job-status{flex:1 1 180px;margin-left:0;padding:0}
+body.workspace-mode #page-workspace[data-task=tts] .result-files .audio-artifact{flex-wrap:wrap}
+body.workspace-mode #page-workspace[data-task=tts] .audio-artifact>.waveform-panel{flex-basis:100%}
+@media(min-width:961px){
+  body.workspace-mode #page-workspace[data-task=tts] .workspace-layout,
+  body.workspace-mode #page-workspace[data-task=tts] .workspace-operation{flex:1}
+  body.workspace-mode #page-workspace[data-task=tts] #workspace-grid{display:grid;flex:1;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:auto minmax(180px,1fr) auto;grid-template-areas:"references references" "text settings" "text result";gap:16px}
+  body.workspace-mode #page-workspace[data-task=tts] #workspace-grid:has(#task-inputs.single-input){grid-template-rows:minmax(180px,1fr) auto;grid-template-areas:"text settings" "text result"}
+  body.workspace-mode #page-workspace[data-task=tts] .input-card,
+  body.workspace-mode #page-workspace[data-task=tts] #task-form,
+  body.workspace-mode #page-workspace[data-task=tts] #task-inputs{display:contents}
+  body.workspace-mode #page-workspace[data-task=tts] #task-inputs>.task-reference{grid-area:references}
+  body.workspace-mode #page-workspace[data-task=tts] #task-inputs>.task-primary{grid-area:text;align-self:stretch}
+  body.workspace-mode #page-workspace[data-task=tts] .task-primary>.field-group{display:flex;flex-direction:column;flex:1;min-height:0}
+  body.workspace-mode #page-workspace[data-task=tts] #task-inputs textarea.large-text{flex:1;height:0;min-height:300px}
+  body.workspace-mode #page-workspace[data-task=tts] .task-action-bar{grid-area:settings;flex-direction:column;align-items:stretch;gap:14px;margin:0;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft)}
+  body.workspace-mode #page-workspace[data-task=tts] #common-options{align-content:flex-start}
+  body.workspace-mode #page-workspace[data-task=tts] .generate-row{margin:auto 0 0;align-self:flex-end}
+  body.workspace-mode #page-workspace[data-task=tts] .result-card{grid-area:result}
 }
