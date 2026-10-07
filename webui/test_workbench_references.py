@@ -157,7 +157,53 @@ class ReferenceTests(unittest.TestCase):
         self.backend._server_proc.terminate.assert_not_called()
         self.assertEqual(self.backend._loaded_mode, "streaming")
 
+    def test_asr_page_reuses_resident_runtime_with_all_inputs(self):
+        self.backend._loaded_id = "tts"
+        ident = self.client.post("/api/workbench/jobs", json={"task": "asr", "model": "qwen3-asr",
+            "inputs": {"audio": self.upload(), "context": "Aixora", "language": "Chinese", "detailed": True},
+            "options": {"max_tokens": 800}}).json()["id"]
+        job = self.wait_job(ident)
+        self.assertEqual(job["status"], "done")
+        call = self.backend.do_asr_with_details.call_args
+        self.assertEqual(call.args[2:6], ("Chinese", "Aixora", False, False))
+        self.assertEqual(call.args[6], {"max_tokens": 800})
+        self.assertTrue(call.args[8])
+        self.assertIs(call.kwargs["asr_runtime"], self.asr)
+        self.assertNotIn("asr_runtime", job)
+        self.backend._ensure_with_options.assert_not_called()
+        self.assertEqual(self.backend._loaded_id, "tts")
+
+    def test_cancelling_asr_page_targets_resident_instead_of_main_model(self):
+        self.backend._server_proc = Mock()
+        self.backend._server_proc.poll.return_value = None
+        started, finish = threading.Event(), threading.Event()
+        def recognize(*args, **kwargs):
+            started.set()
+            finish.wait(3)
+            yield "", "", None, None
+        self.backend.do_asr_with_details.side_effect = recognize
+        ident = self.client.post("/api/workbench/jobs", json={"task": "asr", "model": "qwen3-asr",
+            "inputs": {"audio": self.upload()}}).json()["id"]
+        try:
+            self.assertTrue(started.wait(2))
+            self.client.post(f"/api/workbench/jobs/{ident}/cancel")
+            self.asr.cancel.assert_called_once()
+            self.backend._server_proc.terminate.assert_not_called()
+        finally:
+            finish.set()
+        self.assertEqual(self.wait_job(ident)["status"], "cancelled")
+
+    def test_resident_asr_settings_reload_the_separate_service(self):
+        self.backend._loaded_id = "tts"
+        response = self.client.post("/api/workbench/models/qwen3-asr/load",
+                                    json={"options": {"load_options.threads": 2}})
+        self.assertEqual(response.status_code, 200)
+        self.backend._ensure_with_options.assert_called_once_with("qwen3-asr", ("asr",),
+            {"load_options.threads": 2}, runtime=self.asr)
+        self.assertEqual(self.backend._loaded_id, "tts")
+
     def test_asr_failure_releases_job_without_touching_main_model(self):
+        self.backend.SERVER_BACKEND = "cuda"
         self.backend._server_proc = Mock()
         self.backend._server_proc.poll.return_value = None
         self.backend._loaded_id = "tts"
@@ -165,6 +211,9 @@ class ReferenceTests(unittest.TestCase):
         ident = self.client.post("/api/workbench/reference-transcriptions", json={"audio": self.upload()}).json()["id"]
         self.assertEqual(self.wait_job(ident)["status"], "error")
         self.backend._ensure_with_options.assert_not_called()
+        self.backend.unload_model.assert_not_called()
+        self.backend._server_proc.terminate.assert_not_called()
+        self.asr.unload.assert_not_called()
         self.assertFalse(self.app.state.workbench.status()["busy"])
 
     def test_task_classification_keeps_conversion_and_processing_distinct(self):
@@ -203,47 +252,49 @@ class ReferenceTests(unittest.TestCase):
             finish.set()
         self.assertEqual(self.wait_job(ident)["status"], "cancelled")
 
-    def test_gpu_reference_scene_releases_main_only_when_budget_does_not_fit(self):
+    def test_gpu_reference_recognition_preserves_main_model_regardless_of_catalog_budget(self):
         self.backend.SERVER_BACKEND = "cuda"
-        self.backend.LOCAL_VRAM_GB = 8
         self.backend._loaded_id = "tts"
         self.backend._server_proc = Mock()
         self.backend._server_proc.poll.return_value = None
-        self.entries[0]["min_vram_gb"] = 2
-        self.entries[1]["min_vram_gb"] = 3
-        self.assertFalse(self.app.state.workbench.prepare_reference_memory("qwen3-asr"))
-        self.backend.unload_model.assert_not_called()
-        self.entries[0]["min_vram_gb"] = 6
-        self.assertTrue(self.app.state.workbench.prepare_reference_memory("qwen3-asr"))
-        self.backend.unload_model.assert_called_once()
+        token = self.upload()
+        for tts_size, asr_size, capacity in ((2, 3, 8), (6, 3, 8), (None, 3, 8), (6, None, 8), (6, 3, None)):
+            with self.subTest(tts=tts_size, asr=asr_size, capacity=capacity):
+                self.backend.LOCAL_VRAM_GB = capacity
+                self.entries[0]["min_vram_gb"] = tts_size
+                self.entries[1]["min_vram_gb"] = asr_size
+                result = self.client.post("/api/workbench/reference-transcriptions", json={"audio": token})
+                self.assertEqual(result.status_code, 200)
+                job = self.wait_job(result.json()["id"])
+                self.assertEqual((job["status"], job["text"]), ("done", "参考原话"))
+                self.assertEqual(self.asr.transcribe.call_args.args[0], "qwen3-asr")
+                self.backend.unload_model.assert_not_called()
+                self.backend._ensure_with_options.assert_not_called()
+                self.backend._server_proc.terminate.assert_not_called()
+                self.asr.unload.assert_not_called()
+                self.assertEqual(self.client.get("/api/workbench/status").json()["server"]["model"], "tts")
 
-    def test_other_scene_load_releases_asr_and_realtime_keeps_it(self):
+    def test_model_load_keeps_resident_asr_regardless_of_catalog_budget(self):
         work = self.app.state.workbench
         self.backend._ensure_with_options.side_effect = lambda model, *_: work.before_load(model)
         self.backend.SERVER_BACKEND = "cuda"
-        self.backend.LOCAL_VRAM_GB = 8
-        self.entries[0]["min_vram_gb"] = 6
         self.entries[1]["min_vram_gb"] = 3
-        self.assertEqual(self.client.post("/api/workbench/models/tts/load", json={}).status_code, 200)
-        self.asr.unload.assert_called_once()
-        self.asr.unload.reset_mock()
+        for tts_size, capacity in ((2, 8), (6, 8), (None, 8), (6, None)):
+            with self.subTest(tts=tts_size, capacity=capacity):
+                self.backend.LOCAL_VRAM_GB = capacity
+                self.entries[0]["min_vram_gb"] = tts_size
+                result = self.client.post("/api/workbench/models/tts/load", json={})
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(result.json()["asr"]["model"], "qwen3-asr")
+                self.asr.unload.assert_not_called()
         work.lease("call", {"tts_model": "tts", "tts_server_source": "managed"})
         work.before_load("tts")
         self.asr.unload.assert_not_called()
         self.assertEqual(self.client.post("/api/workbench/unload-all", json={}).status_code, 409)
         work.lease("call", None)
 
-    def test_small_models_and_cpu_scenes_keep_resident_asr(self):
-        work = self.app.state.workbench
-        self.backend.SERVER_BACKEND = "cuda"
-        self.backend.LOCAL_VRAM_GB = 8
-        self.entries[0]["min_vram_gb"] = 2
-        self.entries[1]["min_vram_gb"] = 3
-        work.before_load("tts")
-        self.asr.unload.assert_not_called()
-        self.entries[0]["backend"] = "cpu"
-        self.entries[0].pop("min_vram_gb")
-        work.before_load("tts")
+    def test_cpu_scene_keeps_resident_asr(self):
+        self.app.state.workbench.before_load("tts")
         self.asr.unload.assert_not_called()
 
     def test_unload_all_releases_both_services_and_is_blocked_during_jobs(self):

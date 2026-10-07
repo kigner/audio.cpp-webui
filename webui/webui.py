@@ -53,6 +53,10 @@ from urllib.parse import quote, urlparse
 import numpy as np
 import requests
 import gradio as gr
+try:
+    from .parameter_i18n import localize_parameter
+except ImportError:
+    from parameter_i18n import localize_parameter
 
 try:
     from ui_i18n import (
@@ -651,6 +655,20 @@ def _detect_vram_gb():
 
 
 LOCAL_VRAM_GB = _detect_vram_gb()
+
+
+def _detect_gpu_name():
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+        cards = [line.rsplit(",", 1) for line in result.stdout.splitlines() if "," in line]
+        return max(cards, key=lambda card: float(card[1]))[0].strip() if cards else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+LOCAL_GPU_NAME = _detect_gpu_name()
 
 
 def _vram_shortfall(entry):
@@ -1756,25 +1774,36 @@ ERROR_HINTS_EN = [
 
 
 def _extract_server_message(text):
+    raw = (text or "").strip()
     try:
-        return json.loads(text)["error"]["message"] or text
-    except Exception:
-        return (text or "").strip()
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+        else:
+            message = error if isinstance(error, str) else data.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return raw
 
 
 def server_error(entry, status, text, extra=None):
     """Build a friendly gr.Error from a non-200 server response."""
     msg = _extract_server_message(text)
+    log_message = msg[:2000] + ("…" if len(msg) > 2000 else "")
+    _ui_log(f"server {status}: {log_message or '(empty response)'}")
     language = get_language()
     hints = ERROR_HINTS_EN if language == "en" else ERROR_HINTS
     hint = next((h for pat, h in hints if pat.search(msg)), None)
     if hint:
         hint = _t(hint, hint, language)
-    parts = [f"❌ server {status}"]
+    visible_message = msg[:400] + ("…" if len(msg) > 400 else "")
+    parts = [f"❌ server {status}：{visible_message}"]
     if hint:
         parts.append("💡 " + hint)
-    else:
-        parts[0] = f"❌ server {status}：{msg[:400]}"
     if extra:
         parts.append(extra)
     if entry and not hint:
@@ -2414,7 +2443,7 @@ def params_for(model_id):
                 continue
             local.append(_spec_param_control(option, name, scope))
             names.add(name)
-    return local
+    return [localize_parameter(p) for p in local]
 
 
 _OPTION_PRESETS = {
@@ -2778,6 +2807,7 @@ def _wait_health(timeout):
 
 
 _workbench_runtime_guard = None
+_workbench_runtime_ready = None
 
 
 def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=None,
@@ -3919,7 +3949,18 @@ def _merged_options(prof, adv_values, adv_options):
     return options
 
 
-def _ensure_with_options(model, tasks, options, **kwargs):
+def _tts_reference_text_required(entry, prof, has_reference, options):
+    required = (prof.get("require_reference_text") or
+                (prof.get("require_reference_text_with_voice") and has_reference))
+    # Qwen Base's x-vector mode still needs audio, but does not consume its transcript.
+    x_vector = options.get("x_vector_only_mode", False)
+    if (entry and entry.get("family") == "qwen3_tts" and
+            (x_vector is True or str(x_vector) in {"true", "1", "yes", "on"})):
+        return False
+    return bool(required)
+
+
+def _ensure_with_options(model, tasks, options, runtime=None, **kwargs):
     """Keep load/session settings out of request options and reload when changed."""
     for scope in ("session_options", "load_options"):
         values = options.pop(scope, {})
@@ -3935,7 +3976,13 @@ def _ensure_with_options(model, tasks, options, **kwargs):
             values = {k: (json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v)
                       for k, v in values.items()}
             kwargs[scope] = {**(kwargs.get(scope) or {}), **values}
-    return ensure_model_loaded(model, tasks, **kwargs)
+    if runtime is not None:
+        message = runtime.load(model, **kwargs)
+    else:
+        message = ensure_model_loaded(model, tasks, **kwargs)
+    if _workbench_runtime_ready is not None:
+        _workbench_runtime_ready(model)
+    return message
 
 
 def _run_task(entry, model, req, timeout, log_label):
@@ -3999,20 +4046,21 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
                 "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
                 "This model requires a voice reference: upload/record one or pick a built-in voice."))
         has_reference = bool(uploaded_voice or (builtin_voice and builtin_voice != "(none)"))
-        if (prof.get("require_reference_text") or
-                (prof.get("require_reference_text_with_voice") and has_reference)) and not (reference_text or "").strip():
+        options = _merged_options(prof, adv_values, adv_options)
+        if _tts_reference_text_required(entry, prof, has_reference, options) and not (reference_text or "").strip():
             raise gr.Error(_t(
                 "该模型必须填写与参考音频一致的参考文本。",
                 "This model requires the transcript matching the reference audio."))
 
         # 加载/模式切换（可能几十秒）单独计时：状态栏的"用时"只含合成本身，
         # 不报加载会让它看起来远小于实际等待时间。
-        options = _merged_options(prof, adv_values, adv_options)
         if entry and entry.get("family") == "auk" and not has_reference and not options.get("duration_sec"):
             raise gr.Error(_t("AuK 无参考音频时，请在高级参数填写 duration_sec。",
                               "AuK needs duration_sec in Advanced options when no reference is supplied."))
         t_load = time.time()
+        progress(0, desc=_t("正在准备模型…", "Preparing model…"))
         _ensure_with_options(model, TTS_TASKS, options)
+        progress(0, desc=_t("声音合成中…", "Synthesizing audio…"))
         load_s = time.time() - t_load
         load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                         seconds=load_s) if load_s >= 1.0 else "")
@@ -4079,10 +4127,11 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         t_start = time.time()
         blobs = []
         for i, chunk in enumerate(chunks):
-            if len(chunks) > 1:
-                progress((i, len(chunks)), desc=_t("合成 {index}/{total} 段…",
-                                                   "Synthesizing {index}/{total}…",
-                                                   index=i + 1, total=len(chunks)))
+            progress((i, len(chunks)), desc=(_t(
+                "声音合成中… 第 {index}/{total} 段 · 已完成 {done} 段",
+                "Synthesizing audio… part {index}/{total} · {done} completed",
+                index=i + 1, total=len(chunks), done=i) if len(chunks) > 1 else
+                _t("声音合成中…", "Synthesizing audio…")))
             payload["input"] = chunk
             if auto_vibevoice_max_tokens:
                 payload["max_tokens"] = _vibevoice_text_max_tokens(chunk, int(max_tokens))
@@ -4105,6 +4154,10 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
                        index=i + 1, count=len(chunks), chars=len(chunk),
                        seconds=time.time() - t_chunk))
 
+        progress((len(chunks), len(chunks)), desc=(_t(
+            "正在合并音频… 已完成 {total}/{total} 段",
+            "Merging audio… {total}/{total} parts completed", total=len(chunks)) if len(chunks) > 1 else
+            _t("正在保存音频…", "Saving audio…")))
         out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_{int(time.time()*1000)}.wav")
         if len(blobs) == 1:
             with open(out, "wb") as f:
@@ -4152,15 +4205,16 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
             "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
             "This model requires a voice reference: upload/record one or pick a built-in voice."))
     has_reference = bool(uploaded_voice or (builtin_voice and builtin_voice != "(none)"))
-    if (prof.get("require_reference_text") or
-            (prof.get("require_reference_text_with_voice") and has_reference)) and not (reference_text or "").strip():
+    options = _merged_options(prof, adv_values, adv_options)
+    if _tts_reference_text_required(entry, prof, has_reference, options) and not (reference_text or "").strip():
         raise gr.Error(_t(
             "该模型必须填写与参考音频一致的参考文本。",
             "This model requires the transcript matching the reference audio."))
 
-    options = _merged_options(prof, adv_values, adv_options)
     t_load = time.time()
+    yield None, None, _t("⏳ 正在准备模型…", "⏳ Preparing model…")
     _ensure_with_options(model, TTS_TASKS, options, mode="streaming")
+    yield None, None, _t("⏳ 声音合成中…", "⏳ Synthesizing audio…")
     load_s = time.time() - t_load
     load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                     seconds=load_s) if load_s >= 1.0 else "")
@@ -4225,6 +4279,11 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     for i, chunk in enumerate(chunks):
         seg_note = (_t("（{index}/{total} 段）", " ({index}/{total})",
                        index=i + 1, total=len(chunks)) if len(chunks) > 1 else "")
+        yield None, None, (_t(
+            "⏳ 声音合成中… 第 {index}/{total} 段 · 已完成 {done} 段",
+            "⏳ Synthesizing audio… part {index}/{total} · {done} completed",
+            index=i + 1, total=len(chunks), done=i) if len(chunks) > 1 else
+            _t("⏳ 声音合成中…", "⏳ Synthesizing audio…"))
         payload["input"] = chunk
         t_chunk = time.time()
         try:
@@ -4255,7 +4314,7 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
                         out_arr = _flush()
                         done_s = sum(a.size for a in all_parts) / sr
                         yield ((sr, out_arr), None,
-                               _t("⏳ 流式生成中{segment}…已生成 {seconds:.1f}s",
+                               _t("⏳ 声音合成中{segment}…已生成 {seconds:.1f}s 音频",
                                   "⏳ Streaming{segment}… {seconds:.1f}s generated",
                                   segment=seg_note, seconds=done_s))
                 elif etype == "speech.audio.done":
@@ -4274,6 +4333,7 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
         yield (sr, tail), None, _t("⏳ 流式生成收尾…", "⏳ Finishing stream…")
     if not all_parts:
         raise gr.Error(_t("流式生成没有产出音频。", "Streaming produced no audio."))
+    yield None, None, _t("⏳ 正在保存音频…", "⏳ Saving audio…")
     out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_stream_{int(time.time() * 1000)}.wav")
     with wave.open(out, "wb") as w:
         w.setnchannels(1)
@@ -4358,13 +4418,13 @@ def _iter_sse_events(response):
         yield event
 
 
-def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR"):
+def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR", server_url=None, cancel=None):
     """流式转写一个 WAV（server 需已按 mode=streaming 加载）：产出
     (累计文本, 是否最终, ttft_ms)。整个文件一个请求——增量出字本身就解决了
     离线路径靠分段缓解的"长音频干等"问题。"""
     payload = {"model": model, "audio": wav_path, "stream": True, **extras}
     try:
-        r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload,
+        r = requests.post(f"{server_url or SERVER}/v1/audio/transcriptions", json=payload,
                           stream=True, timeout=900)
     except requests.RequestException as e:
         _ui_log(_t("{tag} 失败：无法连接 server",
@@ -4377,6 +4437,8 @@ def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR"):
             raise server_error(entry, r.status_code, r.text)
         text = ""
         for event in _iter_sse_events(r):
+            if cancel is not None and cancel.is_set():
+                raise RuntimeError("识别任务已取消。")
             etype = event.get("type")
             if etype == "transcript.text.delta":
                 delta = event.get("delta") or ""
@@ -4398,7 +4460,7 @@ def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR"):
     raise gr.Error(_t("流式转写未收到最终结果。", "Streaming transcription returned no final result."))
 
 
-def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR", details=None):
+def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR", details=None, server_url=None, cancel=None):
     """转写一个 WAV 文件（调用方已加载好 ASR 模型）：超过单次上限（见 qwen3_asr
     profile：8G 卡显存实测取 60s）时在静音处切段逐段转写再拼接；短音频/非 PCM
     WAV（测不出时长）走单请求。extras 是可选的 language/text/options 请求字段。
@@ -4417,11 +4479,13 @@ def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR", details
     texts = []
     offset_seconds = 0.0
     for i, chunk in enumerate(chunks):
+        if cancel is not None and cancel.is_set():
+            raise RuntimeError("识别任务已取消。")
         t_chunk = time.time()
         payload = {"model": model, "audio": chunk, **extras}
         try:
             route = "/v1/audio/transcriptions/details" if details is not None else "/v1/audio/transcriptions"
-            r = requests.post(SERVER + route, json=payload, timeout=900)
+            r = requests.post((server_url or SERVER) + route, json=payload, timeout=900)
         except requests.RequestException as e:
             _ui_log(_t("{tag} 失败：无法连接 server",
                        "{tag} failed: cannot connect to server", tag=tag))
@@ -4469,7 +4533,7 @@ def _prepare_asr_input(audio_path, prof, stream=False):
 
 
 def do_asr(model, audio_path, language="", context="", dialogue=False, stream=False,
-           adv_values=None, adv_options="", detail_results=None):
+           adv_values=None, adv_options="", detail_results=None, *, asr_runtime=None, cancel=None):
     """生成器：非流式路径只 yield 一次最终结果（行为与旧版 return 完全一致——
     Gradio 对生成器处理器逐次刷新输出）；流式路径边收 SSE 增量边 yield。"""
     try:
@@ -4481,6 +4545,8 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
             raise gr.Error(_t("详细结果仅支持普通离线转写，请关闭流式和对话模式。",
                               "Detailed results require offline transcription without dialogue mode."))
         options = _merged_options(prof, adv_values, adv_options)
+        runtime_args = {"runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
+        route_args = {"server_url": asr_runtime.server_url, "cancel": cancel} if asr_runtime is not None else {}
         audio_path = _prepare_asr_input(audio_path, prof, stream=stream and not dialogue)
         # 可选转写参数：留空不发，请求体和原来完全一致（qwen3_asr 从 text_input
         # 读 context/language，其它族忽略；server 端 build_openai_transcription_request
@@ -4496,13 +4562,14 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
             extras["options"] = options
         if dialogue:
             # 对话模式走 Sortformer 切段 + 逐段离线转写，与流式互斥（勾了也忽略）。
-            yield _asr_dialogue(model, audio_path, extras)
+            dialogue_args = {"asr_runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
+            yield _asr_dialogue(model, audio_path, extras, **dialogue_args)
             return
         if stream and prof.get("supports_streaming"):
             yield "", _t("⏳ 转写中…模型切换时可能需要重新加载。",
                           "⏳ Transcribing… model switches may require a reload.")
             t_load = time.time()
-            _ensure_with_options(model, ASR_TASKS, options, mode="streaming")
+            _ensure_with_options(model, ASR_TASKS, options, mode="streaming", **runtime_args)
             load_s = time.time() - t_load
             load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                             seconds=load_s) if load_s >= 1.0 else "")
@@ -4515,7 +4582,7 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
             dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
             last_yield = 0.0
             for text, is_final, ttft in _asr_transcribe_stream(
-                    model, entry, audio_path, extras):
+                    model, entry, audio_path, extras, **route_args):
                 if is_final:
                     elapsed = time.time() - t_start
                     ttft_note = (_t("，首字 {seconds:.1f}s", ", first text {seconds:.1f}s",
@@ -4543,7 +4610,7 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
         yield "", _t("⏳ 转写中…模型切换时可能需要重新加载。",
                       "⏳ Transcribing… model switches may require a reload.")
         t_load = time.time()
-        _ensure_with_options(model, ASR_TASKS, options)
+        _ensure_with_options(model, ASR_TASKS, options, **runtime_args)
         load_s = time.time() - t_load
         load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                         seconds=load_s) if load_s >= 1.0 else "")
@@ -4553,7 +4620,7 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
                    model=model, extras_note=extras_note))
         t_start = time.time()
         detail_args = {"details": detail_results} if detail_results is not None else {}
-        text, dur, n = _asr_transcribe_wav(model, entry, prof, audio_path, extras, **detail_args)
+        text, dur, n = _asr_transcribe_wav(model, entry, prof, audio_path, extras, **detail_args, **route_args)
         elapsed = time.time() - t_start
         dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
         parts_note = (_t("，{count} 段", ", {count} parts", count=n) if n > 1 else "")
@@ -4605,10 +4672,11 @@ def _first_installed_model(task):
 
 
 def do_asr_with_details(model, audio_path, language, context, dialogue, stream,
-                        adv_values, adv_options, detailed):
+                        adv_values, adv_options, detailed, *, asr_runtime=None, cancel=None):
     details = [] if detailed else None
+    runtime_args = {"asr_runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
     for transcript, message in do_asr(model, audio_path, language, context, dialogue,
-                                      stream, adv_values, adv_options, details):
+                                      stream, adv_values, adv_options, details, **runtime_args):
         path = None
         if details:
             path = os.path.join(OUTPUT_DIR, f"audiocpp_asr_{time.time_ns()}.json")
@@ -4617,7 +4685,7 @@ def do_asr_with_details(model, audio_path, language, context, dialogue, stream,
         yield transcript, message, details or None, path
 
 
-def _asr_dialogue(model, wav_path, extras):
+def _asr_dialogue(model, wav_path, extras, *, asr_runtime=None, cancel=None):
     """对话模式：Sortformer 说话人分离 → 按说话人合并/切段 → 逐段 ASR →
     带说话人标签和时间戳的对话稿。server 一次只驻留一个模型，所以先换载 diar
     再换回 ASR（每次自动换载 ~5s）。"""
@@ -4672,7 +4740,9 @@ def _asr_dialogue(model, wav_path, extras):
                "speaker diarization done: {turns} turns → merged into {merged} segments; switching back to {model} for per-segment transcription",
                turns=len(turns), merged=len(merged), model=model))
 
-    _ensure_with_options(model, ASR_TASKS, extras.get("options", {}))
+    runtime_args = {"runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
+    route_args = {"server_url": asr_runtime.server_url, "cancel": cancel} if asr_runtime is not None else {}
+    _ensure_with_options(model, ASR_TASKS, extras.get("options", {}), **runtime_args)
     pad = int(DIALOGUE_PAD_S * sr)
     speakers, lines = [], []
     for idx, (spk, s, e) in enumerate(merged, 1):
@@ -4685,7 +4755,7 @@ def _asr_dialogue(model, wav_path, extras):
             ww.setframerate(sr)
             ww.writeframes(samples[a:b].tobytes())
         text, _, _ = _asr_transcribe_wav(model, entry, prof, seg_path, extras,
-                                         tag=f"对话段 {idx}/{len(merged)}")
+                                         tag=f"对话段 {idx}/{len(merged)}", **route_args)
         if spk not in speakers:
             speakers.append(spk)
         label = _t("说话人{index}", "Speaker {index}", index=speakers.index(spk) + 1)

@@ -103,6 +103,42 @@ class UpstreamWebUIContractTests(unittest.TestCase):
             session_options={"yue2.ar_lora": "D:/adapter.safetensors"},
             load_options={"mem_saver": "true"})
 
+    def test_tts_progress_follows_loading_actual_chunks_and_merge(self):
+        response = mock.Mock(status_code=200, content=b"RIFF")
+        events = []
+        def progress(value, desc=None):
+            events.append((value, desc))
+        def post(*args, **kwargs):
+            self.assertIn("声音合成中", events[-1][1])
+            self.assertEqual(events[-1][0], (len(requests_seen), 3))
+            requests_seen.append(kwargs["json"]["input"])
+            return response
+        requests_seen = []
+        with mock.patch.object(app, "_split_tts_chunks", return_value=["第一段", "第二段", "第三段"]), \
+                mock.patch.object(app.requests, "post", side_effect=post), \
+                mock.patch.object(app, "_concat_wavs") as merge:
+            _, message = app.do_tts("pocket-tts", "测试长文本", "", "reference.wav", "(none)", "参考文本", 1234, 1200, {}, "", progress)
+        self.assertIn("✅", message)
+        self.assertIn("准备模型", events[0][1])
+        self.assertEqual(requests_seen, ["第一段", "第二段", "第三段"])
+        self.assertEqual(events[-1][0], (3, 3))
+        self.assertIn("合并音频", events[-1][1])
+        merge.assert_called_once()
+
+    def test_stream_tts_reports_working_stage_before_waiting_for_first_audio(self):
+        with mock.patch.object(app, "_split_tts_chunks", return_value=["第一段", "第二段"]), \
+                mock.patch.object(app.requests, "post") as post:
+            stream = app.do_tts_stream("pocket-tts", "你好，长文本合成。", "", "reference.wav", "(none)", "参考文本", 1234, 1200, {}, "")
+            try:
+                self.assertIn("准备模型", next(stream)[2])
+                self.loaded.assert_not_called()
+                self.assertIn("声音合成中", next(stream)[2])
+                self.loaded.assert_called_once()
+                self.assertIn("1/2", next(stream)[2])
+                post.assert_not_called()
+            finally:
+                stream.close()
+
     def test_asr_context_options_and_detail_route(self):
         response = mock.Mock(status_code=200, text="")
         result = {"text": "hello", "words": [{"word": "hello", "start_sample": 0, "end_sample": 16000}],
@@ -120,6 +156,62 @@ class UpstreamWebUIContractTests(unittest.TestCase):
         self.assertTrue(payload["options"]["preserve_punctuation"])
         self.assertEqual(outputs[-1][2][0]["result"]["words"], result["words"])
         self.assertTrue(Path(outputs[-1][3]).is_file())
+
+    def test_resident_asr_offline_and_details_keep_language_context_and_options(self):
+        runtime = mock.Mock(server_url="http://127.0.0.1:8081")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"text": "Aixora", "words": [{"word": "Aixora"}]}
+        for detailed in (False, True):
+            with self.subTest(detailed=detailed), mock.patch.object(app.requests, "post", return_value=response) as post:
+                outputs = list(app.do_asr_with_details("qwen3-asr", "speech.wav", "English", "Aixora",
+                    False, False, {"max_tokens": 700, "load_options.use_gpu": True}, "", detailed, asr_runtime=runtime))
+                self.assertEqual(outputs[-1][0], "Aixora")
+                suffix = "/details" if detailed else ""
+                self.assertEqual(post.call_args.args[0], runtime.server_url + "/v1/audio/transcriptions" + suffix)
+                payload = post.call_args.kwargs["json"]
+                self.assertEqual(payload["language"], "English")
+                self.assertEqual(payload["text"], "Aixora")
+                self.assertEqual(payload["options"], {"max_tokens": 700})
+                runtime.load.assert_called_with("qwen3-asr", cancel=None, load_options={"use_gpu": "true"})
+                if detailed:
+                    self.assertTrue(Path(outputs[-1][3]).is_file())
+        self.loaded.assert_not_called()
+
+    def test_resident_asr_stream_uses_dedicated_server(self):
+        runtime = mock.Mock(server_url="http://127.0.0.1:8081")
+        response = mock.MagicMock(status_code=200)
+        events = [{"type": "transcript.text.delta", "delta": "hello"},
+                  {"type": "transcript.text.done", "text": "hello world"}]
+        with mock.patch.object(app.requests, "post", return_value=response) as post, \
+                mock.patch.object(app, "_iter_sse_events", return_value=iter(events)):
+            outputs = list(app.do_asr("qwen3-asr", "speech.wav", stream=True, asr_runtime=runtime))
+        self.assertEqual(outputs[-1][0], "hello world")
+        runtime.load.assert_called_once_with("qwen3-asr", mode="streaming", cancel=None)
+        self.assertEqual(post.call_args.args[0], runtime.server_url + "/v1/audio/transcriptions")
+        self.assertTrue(post.call_args.kwargs["stream"])
+        self.loaded.assert_not_called()
+
+    def test_resident_asr_dialogue_only_loads_diarization_on_main_server(self):
+        runtime = mock.Mock(server_url="http://127.0.0.1:8081")
+        source = str(Path(self.output) / "dialogue.wav")
+        with wave.open(source, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16000)
+            audio.writeframes(b"\0\0" * 16000)
+        diar = {"id": "sortformer", "family": "sortformer_diar"}
+        turns = {"speaker_turns": [{"speaker_id": "0", "start_sample": 0, "end_sample": 16000}]}
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"text": "dialogue text"}
+        with mock.patch.object(app, "_first_installed_model", return_value=diar), \
+                mock.patch.object(app, "_run_task", return_value=turns), \
+                mock.patch.object(app.requests, "post", return_value=response) as post:
+            outputs = list(app.do_asr("qwen3-asr", source, dialogue=True, asr_runtime=runtime))
+        self.assertIn("dialogue text", outputs[-1][0])
+        self.loaded.assert_called_once_with("sortformer", ("diar",), session_options=None)
+        runtime.load.assert_called_once_with("qwen3-asr", cancel=None)
+        self.assertEqual(post.call_args.args[0], runtime.server_url + "/v1/audio/transcriptions")
+        Path(post.call_args.kwargs["json"]["audio"]).unlink()
 
     def test_lfm2_asr_language_matches_selected_checkpoint(self):
         response = mock.Mock(status_code=200, text="")

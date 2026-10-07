@@ -110,21 +110,28 @@ class Workbench:
             if self.leases and any(cfg.get("tts_server_source") == "managed" and cfg.get("tts_model") != model
                                    for cfg in self.leases.values()):
                 raise RuntimeError("实时聊天正在使用模型，请先结束通话。")
-            # Keep the resident recognizer for small/CPU tasks. Larger or unknown
-            # GPU budgets need the memory; voice chat explicitly leases both.
-            if self.asr and not self.leases:
-                resident = self.asr.status().get("model")
-                if resident and not self.models_fit_together(self.b.catalog_by_id(model), self.b.catalog_by_id(resident)):
-                    self.asr.unload()
+            if job:
+                job["message"] = "正在准备模型…"
 
-    def models_fit_together(self, *entries):
-        if any(entry is None for entry in entries):
-            return False
-        if any(entry.get("backend", self.b.SERVER_BACKEND) == "cpu" for entry in entries):
-            return True
-        sizes = [entry.get("min_vram_gb") for entry in entries]
-        capacity = self.b.LOCAL_VRAM_GB
-        return bool(capacity and all(size is not None for size in sizes) and sum(sizes) + .5 <= capacity)
+    def after_load(self, model):
+        messages = {"tts": "声音合成中…", "asr": "语音识别中…", "music": "音乐与音效生成中…",
+                    "design": "声音设计中…", "vc": "声音转换中…", "processing": "音频处理中…",
+                    "separation": "音轨分离中…", "analysis": "音频分析中…"}
+        with self.lock:
+            job = self.jobs.get(getattr(self.local, "operation", None))
+            if job and self.active_job == job["id"]:
+                self.progress(0, desc=messages.get(job["task"], "正在处理…"))
+
+    def progress(self, value, desc=None):
+        """Bridge task progress to the owning job, never to another page's task."""
+        with self.lock:
+            job = self.jobs.get(getattr(self.local, "operation", None))
+            if not job or self.active_job != job["id"]:
+                return
+            if job["cancel"].is_set():
+                raise RuntimeError("任务已取消。")
+            if desc:
+                job["message"] = clean_message(desc)
 
     def reference_asr(self):
         if self.asr is None:
@@ -134,19 +141,6 @@ class Workbench:
                 from workbench_asr import ManagedASR
             self.asr = ManagedASR(self.b)
         return self.asr
-
-    def prepare_reference_memory(self, model):
-        """Release an idle main GPU model if the catalog's combined budget won't fit."""
-        b = self.b
-        proc = getattr(b, "_server_proc", None)
-        current = b.catalog_by_id(getattr(b, "_loaded_id", None))
-        target = self.entry(model)
-        if proc is None or proc.poll() is not None or not current:
-            return False
-        if not self.models_fit_together(current, target):
-            b.unload_model()
-            return True
-        return False
 
     def lease(self, ident, config):
         with self.lock:
@@ -178,7 +172,8 @@ class Workbench:
                                "load_options": dict(getattr(self.b, "_loaded_load_options", None) or {}) if managed else {},
                                "session_options": dict(getattr(self.b, "_loaded_session_options", None) or {}) if managed else {},
                                "mode": getattr(self.b, "_loaded_mode", None) if managed else None}},
-                "hardware": {"vram_gb": self.b.LOCAL_VRAM_GB, "backend": self.b.SERVER_BACKEND},
+                "hardware": {"vram_gb": self.b.LOCAL_VRAM_GB, "backend": self.b.SERVER_BACKEND,
+                             "name": getattr(self.b, "LOCAL_GPU_NAME", None)},
                 "asr": self.asr.status() if self.asr and callable(getattr(self.asr, "status", None)) else {"model": None, "managed": False},
                 "busy": bool(busy), "job": busy, "realtime_active": realtime}
 
@@ -235,6 +230,9 @@ class Workbench:
                "artifacts": [], "audio_segments": [], "started": time.monotonic(), "cancel": threading.Event()}
         if reference_audio:
             job["reference_audio"] = reference_audio
+        elif request.task == "asr" and self.asr and self.asr.status().get("model") == request.model:
+            job["asr_runtime"] = True
+            job["dialogue"] = bool(request.inputs.get("dialogue"))
         self.jobs[ident] = job
         threading.Thread(target=self._run, args=(job, request), daemon=True, name="workbench-job").start()
         return {"id": ident}
@@ -243,7 +241,7 @@ class Workbench:
         value = self.jobs.get(ident)
         if value is None:
             raise HTTPException(404, "任务不存在或服务已重新启动。")
-        return {key: val for key, val in value.items() if key not in {"cancel", "started", "audio_segments", "reference_audio"}} | {
+        return {key: val for key, val in value.items() if key not in {"cancel", "started", "audio_segments", "reference_audio", "asr_runtime", "dialogue"}} | {
             "audio_segments": [part for part in value["audio_segments"] if part["index"] > after],
             "elapsed": round(value.get("elapsed", time.monotonic() - value["started"]), 1)}
 
@@ -258,9 +256,10 @@ class Workbench:
                 return self.job(ident)
             job["cancel"].set()
             job["message"] = "正在停止任务…"
-            if job.get("reference_audio"):
+            if job.get("reference_audio") or job.get("asr_runtime"):
                 self.reference_asr().cancel()
-                return self.job(ident)
+                if not job.get("dialogue"):
+                    return self.job(ident)
             # Stop only the process owned by this WebUI; never kill a foreign server.
             proc = getattr(self.b, "_server_proc", None)
             if proc is not None and proc.poll() is None:
@@ -308,21 +307,20 @@ class Workbench:
                             break
                 else:
                     path, final_message = b.do_tts(model, text, language, voice, builtin,
-                                                 ref_text, seed, max_tokens, opts, "")
+                                                 ref_text, seed, max_tokens, opts, "", progress=self.progress)
                     paths.append(path)
             elif req.task == "asr":
                 if job.get("reference_audio"):
-                    freed = self.prepare_reference_memory(model)
+                    # Reference ASR owns a separate resident server; leave the main model intact.
                     job["message"] = "正在使用 Qwen3-ASR 0.6B 识别参考文本…"
                     job["text"] = self.reference_asr().transcribe(model, audio, job["cancel"])
-                    final_message = "✅ 参考文本识别完成，Qwen3-ASR 保持驻留。"
-                    if freed:
-                        final_message += " 已释放当前模型内存，运行任务时会自动重新加载。"
+                    final_message = "✅"
                 else:
+                    runtime_args = {"asr_runtime": self.asr, "cancel": job["cancel"]} if job.get("asr_runtime") else {}
                     for transcript, message, _details, path in b.do_asr_with_details(
                             model, audio, language, str(values.get("context") or ""),
                             bool(values.get("dialogue")), bool(values.get("stream")), opts, "",
-                            bool(values.get("detailed"))):
+                            bool(values.get("detailed")), **runtime_args):
                         job.update(text=transcript, message=clean_message(message))
                         final_message = message
                         if path:
@@ -436,6 +434,7 @@ def create_workbench_app(backend, *, realtime=True, download_manager=None, asr_m
     app.state.shutdown_callback = None
     app.state.shutting_down = False
     backend._workbench_runtime_guard = work.before_load
+    backend._workbench_runtime_ready = work.after_load
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
@@ -625,8 +624,10 @@ def create_workbench_app(backend, *, realtime=True, download_manager=None, asr_m
         work.reserve(ident)
         try:
             options = dict(request.options)
-            message = backend._ensure_with_options(model, TASKS[task_for(entry)][1], options)
-            work.external_model = model
+            runtime_args = {"runtime": work.asr} if task_for(entry) == "asr" and work.asr and work.asr.status().get("model") == model else {}
+            message = backend._ensure_with_options(model, TASKS[task_for(entry)][1], options, **runtime_args)
+            if not runtime_args:
+                work.external_model = model
         except Exception as error:
             loader_error = getattr(getattr(backend, "gr", None), "Error", None)
             if loader_error is not None and isinstance(error, loader_error):

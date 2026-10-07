@@ -133,6 +133,44 @@ class ManagedASRTests(unittest.TestCase):
         process.terminate.assert_called_once()
         self.backend._stop_server.assert_not_called()
 
+    def test_mode_and_runtime_options_reload_only_the_resident_server(self):
+        manager = self.manager()
+        self.entries[0]["profile"]["supports_streaming"] = True
+        manager._status = Mock(side_effect=[(False, set()), (True, {"asr-model"})])
+        manager._port_open = Mock(return_value=False)
+        first, second = self.fake_process(), self.fake_process()
+        with patch("workbench_asr.subprocess.Popen", side_effect=[first, second]) as popen:
+            manager.load("asr-model")
+            manager._status = Mock(return_value=(True, {"asr-model"}))
+            manager.load("asr-model")
+            popen.assert_called_once()
+            manager.load("asr-model", mode="streaming", session_options={"asr_family.arena_mb": "128"})
+            self.assertEqual(popen.call_count, 2)
+            config = json.loads(Path(manager._config_path).read_text(encoding="utf-8"))["models"][0]
+            self.assertEqual(config["mode"], "streaming")
+            self.assertEqual(config["session_options"]["asr_family.arena_mb"], "128")
+            self.assertEqual(manager.status()["configuration"]["session_options"], {"asr_family.arena_mb": "128"})
+            first.terminate.assert_called_once()
+            self.backend._server_proc.terminate.assert_not_called()
+
+    def test_cancelled_page_job_cannot_restart_the_resident_server(self):
+        manager = self.manager()
+        cancel = threading.Event()
+        cancel.set()
+        with patch("workbench_asr.subprocess.Popen") as popen:
+            with self.assertRaisesRegex(RuntimeError, "取消"):
+                manager.load("asr-model", cancel=cancel)
+        popen.assert_not_called()
+
+    def test_external_resident_does_not_silently_ignore_mode_or_runtime_changes(self):
+        manager = self.manager()
+        manager._status = Mock(return_value=(True, {"external-asr"}))
+        with patch("workbench_asr.subprocess.Popen") as popen:
+            for options in ({"mode": "streaming"}, {"load_options": {"mmap": "false"}}):
+                with self.subTest(options=options), self.assertRaisesRegex(RuntimeError, "外部识别服务"):
+                    manager.load("external-asr", **options)
+            popen.assert_not_called()
+
     def test_remote_nested_or_main_tts_addresses_are_not_managed(self):
         for address in ("https://example.invalid", "http://localhost:8081/api", "http://127.0.0.1:8088",
                         "http://localhost:8081/?key=test", "http://user:pass@localhost:8081"):
@@ -168,11 +206,11 @@ class ManagedASRTests(unittest.TestCase):
         original = manager._model_config
         errors = []
 
-        def prepare(entry):
+        def prepare(entry, *args):
             entered.set()
             if not resume.wait(3):
                 raise TimeoutError("test did not release the configuration")
-            return original(entry)
+            return original(entry, *args)
 
         def load():
             try:

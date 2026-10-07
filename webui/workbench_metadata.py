@@ -1,4 +1,12 @@
 """Presentation metadata for the local audio workbench; model specs stay authoritative."""
+import json
+from pathlib import Path
+try:
+    from .parameter_i18n import localize_parameter
+except ImportError:
+    from parameter_i18n import localize_parameter
+
+MODEL_INFO = json.loads((Path(__file__).parent / 'configs/model_info.json').read_text(encoding='utf-8'))
 TASKS = {
     "tts": ("语音合成", ("tts", "clon")),
     "asr": ("语音识别", ("asr",)),
@@ -46,16 +54,25 @@ def public_model(backend, entry):
     ids = [entry.get("download_id"), *entry.get("additional_download_ids", [])]
     known = [sizes.get(key) for key in ids]
     profile = backend.profile_for(entry)
+    info = MODEL_INFO['models'].get(entry['id'], {})
+    memory = info.get('memory_range_gb')
     return {
         "id": entry["id"], "label": entry["label"], "family": entry["family"],
         "task": task_for(entry), "model_task": entry.get("ui_task", entry.get("task")),
         "installed": bool(entry.get("installed")), "incomplete": bool(entry.get("incomplete")),
         "installable": not entry.get("manual_install") and backend._webui_can_install_package(package),
         "manual_install": bool(entry.get("manual_install")),
-        "min_vram_gb": entry.get("min_vram_gb"),
-        "size_bytes": sum(known) if known and all(x is not None for x in known) else None,
+        "min_vram_gb": entry.get("min_vram_gb") or (memory[0] if memory and info.get('memory_device') != 'ram' else None),
+        "memory_range_gb": memory, "memory_device": info.get('memory_device', 'vram'),
+        "memory_basis": info.get('memory_basis', ''),
+        "size_bytes": (info.get('size_bytes') if len(ids) > 1 and info.get('size_bytes') else
+                       sum(known) if known and all(x is not None for x in known) else info.get('size_bytes')),
+        "size_estimate_gb": info.get('size_estimate_gb'), "size_kind": info.get('size_kind'),
+        "size_note": info.get('size_note', ''), "sources": info.get('sources', []),
+        "original_sources": info.get('original_sources', []),
+        "info_checked_at": MODEL_INFO['checked_at'] if info else None,
         "missing": entry.get("missing_files", []),
-        "description": profile.get("input_hint", ""),
+        "description": info.get('description') or profile.get("input_hint", ""),
         "download_id": entry.get("download_id"), "source": f"https://huggingface.co/{repo}" if repo else "",
         "backend": entry.get("backend", backend.SERVER_BACKEND),
         "format": package.get("format", ""), "precision": package.get("precision", ""),
@@ -70,8 +87,10 @@ def model_detail(backend, entry):
     params = []
     family, ident = entry["family"], entry["id"].lower()
     for raw in backend.params_for(entry["id"]):
-        p = dict(raw)
+        p = localize_parameter(raw)
         name = p["name"]
+        if not parameter_applies(entry, name):
+            continue
         if family == "minimax_h3" and name == "return_video":
             continue
         if family == "sam_audio" and name in {"image", "video", "image_path", "video_path", "reference_image_path", "reference_video_path"}:
@@ -81,7 +100,7 @@ def model_detail(backend, entry):
                 continue
             if name == "instruction" and not any(x in ident for x in ("custom", "design")):
                 continue
-        if family == "f5_tts" and name == "dialect" and "habibi" not in ident:
+        if family == "f5_tts" and name in {"dialect", "strip_diacritics"} and "habibi" not in ident:
             continue
         scope = name.split("_options.", 1)[0] if "_options." in name else "request"
         label, help_text, level = FRIENDLY.get(name, (p.get("label", name), p.get("info", "使用模型默认值即可。"), "expert"))
@@ -93,22 +112,78 @@ def model_detail(backend, entry):
         params.append(p)
     package = backend.SPEC_PACKAGE_BY_ID.get(entry.get("download_id"), {})
     profile = {key: value for key, value in prof.items() if not callable(value)}
+    spec = getattr(backend, 'MODEL_SPECS', {}).get(family, {})
     result.update(
         parameters=params, profile=profile,
-        languages=list(prof.get("lang_map", {})) or backend.LANGS,
+        languages=model_languages(entry, spec, prof, params),
         speakers=[], streaming=bool(prof.get("supports_streaming")),
         voice_mode="rvc" if prof.get("model_as_target_voice") else (
             "reference" if prof.get("accepts_voice_reference", True) else "builtin"),
         accepts_voice_reference=prof.get("accepts_voice_reference", True),
         require_voice=bool(prof.get("require_voice")),
         requires_reference_text=bool(prof.get("require_reference_text")),
-        files=list(package.get("required_files", [])),
+        files=list(dict.fromkeys(file for package_id in [entry.get('download_id'), *entry.get('additional_download_ids', [])]
+                                 for file in backend.SPEC_PACKAGE_BY_ID.get(package_id, {}).get('required_files', []))),
         install_path=entry.get("abs_path", ""),
         requirements="显存数值为估算；文件大小未知时会显示为待确认。已有模型和未完成下载会保留。",
     )
     if result["task"] == "music":
         result["music_inputs"] = music_inputs(backend, entry, prof, params)
+    if result['task'] == 'asr':
+        offline = 'offline' in spec.get('modes', ['offline'])
+        result['asr_inputs'] = {'context': family in {'qwen3_asr', 'audio_flamingo', 'samsone'},
+                                'context_label': '音频指令' if family in {'audio_flamingo', 'samsone'} else '专有名词',
+                                'details': offline, 'dialogue': offline}
     return result
+
+
+def parameter_applies(entry, name):
+    """Family contracts can describe several tasks; hide parameters for other tasks."""
+    family, task = entry['family'], entry.get('task')
+    if name.startswith(('session_options.', 'load_options.')):
+        return True
+    if family == 'lfm2_audio':
+        asr = {'language', 'max_tokens', 'audio_chunk_mode', 'audio_chunk_seconds'}
+        return name in asr if task == 'asr' else name not in {'audio_chunk_mode', 'audio_chunk_seconds'}
+    if family == 'firered_audio':
+        if name == 'template_name':
+            return False  # the selected entry binds its route
+        if task == 'asr':
+            return name in {'language', 'max_new_tokens'}
+        if name in {'max_new_tokens', 'enable_thinking', 'top_k', 'top_p', 'temperature'}:
+            return False
+        if name == 'instruction':
+            return task == 'vdes'
+    if family == 'fireredtts3':
+        if name == 'template_name':
+            return False
+        if name == 'instruction':
+            return task == 'vdes'
+    if family == 'crisperwhisper' and task == 'align':
+        return name not in {'transcription_mode', 'return_timestamps'}
+    if family == 'auk' and task == 'gen' and name == 'instruct':
+        return False  # editing instructions travel through text
+    if family == 'qwen3_tts' and name == 'x_vector_only_mode':
+        return task != 'vdes' and 'custom' not in entry['id']
+    return True
+
+
+def model_languages(entry, spec, profile, parameters):
+    mapping = profile.get('lang_map', {})
+    if mapping:
+        # Keep accepted legacy input keys while suppressing duplicate language aliases.
+        seen, result = set(), []
+        for key, value in mapping.items():
+            if value not in seen:
+                seen.add(value)
+                result.append(key)
+        return result
+    option = next((p for p in parameters if p['name'] == 'language'), None)
+    if option is None:
+        return []
+    languages = option.get('choices') or spec.get('languages', [])
+    languages = [value for value in languages if value not in {'auto', 'multilingual', 'zh dialects'}]
+    return languages
 
 
 def music_inputs(backend, entry, profile, parameters):

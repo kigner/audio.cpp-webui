@@ -99,7 +99,7 @@ class WorkbenchTests(unittest.TestCase):
     def test_uploaded_id_and_generated_file_are_scoped(self):
         ident = self.upload()
         seen = {}
-        def generate(*args):
+        def generate(*args, progress=None):
             seen["args"] = args
             out = Path(self.temp.name) / "result.wav"
             out.write_bytes(b"RIFF")
@@ -133,7 +133,7 @@ class WorkbenchTests(unittest.TestCase):
 
     def test_running_job_blocks_second_job_and_releases_on_error(self):
         entered, finish = threading.Event(), threading.Event()
-        def fail(*args):
+        def fail(*args, progress=None):
             entered.set()
             finish.wait(3)
             return None, "❌ 测试错误"
@@ -160,6 +160,45 @@ class WorkbenchTests(unittest.TestCase):
         job = self.wait_job(response.json()["id"])
         self.assertEqual(job["status"], "done")
         self.assertEqual({item["name"] for item in job["artifacts"]}, {"data.json", "score.mid", "score.musicxml"})
+
+    def test_offline_tts_reports_live_chunk_progress_and_cancel_does_not_resume(self):
+        entered, finish = threading.Event(), threading.Event()
+        def generate(*args, progress):
+            self.b._workbench_runtime_guard("tts")
+            self.b._workbench_runtime_ready("tts")
+            work = self.app.state.workbench
+            self.assertEqual(work.job(work.active_job)["message"], "声音合成中…")
+            progress((1, 3), desc="声音合成中… 第 2/3 段 · 已完成 1 段")
+            entered.set()
+            finish.wait(3)
+            progress((2, 3), desc="声音合成中… 第 3/3 段")
+            self.fail("Cancelled task continued to the next chunk")
+        self.b.do_tts = generate
+        ident = self.client.post("/api/workbench/jobs", json={"task":"tts", "model":"tts"}).json()["id"]
+        try:
+            self.assertTrue(entered.wait(2))
+            job = self.client.get(f"/api/workbench/jobs/{ident}").json()
+            self.assertEqual(job["status"], "running")
+            self.assertIn("第 2/3 段", job["message"])
+            self.client.post(f"/api/workbench/jobs/{ident}/cancel")
+        finally:
+            finish.set()
+        self.assertEqual(self.wait_job(ident)["status"], "cancelled")
+
+    def test_other_tasks_report_their_working_stage_after_model_is_ready(self):
+        for task, message in (("asr", "语音识别中…"), ("music", "音乐与音效生成中…"),
+                              ("vc", "声音转换中…"), ("design", "声音设计中…")):
+            with self.subTest(task=task):
+                work = self.app.state.workbench
+                work.reserve("test-stage")
+                work.jobs["test-stage"] = {"id":"test-stage", "task":task, "cancel":threading.Event()}
+                try:
+                    self.b._workbench_runtime_guard("tts")
+                    self.assertEqual(work.jobs["test-stage"]["message"], "正在准备模型…")
+                    self.b._workbench_runtime_ready("tts")
+                    self.assertEqual(work.jobs["test-stage"]["message"], message)
+                finally:
+                    work.release("test-stage")
 
     def test_stream_audio_keeps_model_rate_and_cursor_prevents_replay(self):
         import base64

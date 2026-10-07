@@ -44,6 +44,7 @@ class ManagedASR:
         self._config_path = None
         self._config_key = None
         self._model_id = None
+        self._runtime_options = {}
         self._log_file = None
         self._http = requests.Session()
         self._http.trust_env = False
@@ -70,13 +71,15 @@ class ManagedASR:
             })
         return result
 
-    def _model_config(self, entry):
+    def _model_config(self, entry, mode="offline", load_options=None, session_options=None):
         family = entry["family"]
         spec = getattr(self.backend, "MODEL_SPECS", {}).get(family, {})
-        if spec.get("modes") and "offline" not in spec["modes"]:
-            raise ValueError("此模型不支持实时对话需要的分段离线识别。")
+        if mode not in {"offline", "streaming"} or (spec.get("modes") and mode not in spec["modes"]):
+            raise ValueError("此识别模型不支持所选运行模式。")
+        if mode == "streaming" and not self.backend.profile_for(entry).get("supports_streaming"):
+            raise ValueError("此识别模型不支持流式转写。")
         model = {"id": entry["id"], "family": family,
-                 "path": self.backend._server_model_path(entry), "task": "asr", "mode": "offline"}
+                 "path": self.backend._server_model_path(entry), "task": "asr", "mode": mode}
         for key in ("config", "weight"):
             if entry.get(key) is not None:
                 model[key] = entry[key]
@@ -90,6 +93,7 @@ class ManagedASR:
             options.update(nested)
             options.update({name[len(key) + 1:]: value for name, value in defaults.items()
                             if name.startswith(key + ".")})
+            options.update((load_options if scope == "load" else session_options) or {})
             contract = spec.get("options", {}).get(scope)
             if contract is not None:
                 allowed = {item["name"] for item in contract}
@@ -125,20 +129,22 @@ class ManagedASR:
         except OSError:
             return False
 
-    def load(self, model_id, mode="offline"):
+    def load(self, model_id, mode="offline", load_options=None, session_options=None, cancel=None):
         if not self.can_manage:
             raise ValueError("自动识别服务只支持独立的本机 HTTP 根地址；不能使用主声音服务端口。")
-        if mode != "offline":
-            raise ValueError("实时对话的识别服务使用分段离线模式。")
         with self._lock:
             if self._closed.is_set():
                 raise RuntimeError("识别服务正在退出，不能再加载模型。")
+            if cancel is not None and cancel.is_set():
+                raise RuntimeError("识别任务已取消。")
             self._cancel.clear()
             owned_alive = self._proc is not None and self._proc.poll() is None
             if not owned_alive:
                 self._close_locked()
                 healthy, ids = self._status()
                 if healthy and model_id in ids:
+                    if mode != "offline" or load_options or session_options:
+                        raise RuntimeError("外部识别服务不能由工作台修改运行模式或加载参数，请在该服务中配置。")
                     self._model_id = model_id
                     return f"已复用识别服务：{model_id}"
                 if healthy or self._port_open():
@@ -146,11 +152,14 @@ class ManagedASR:
             entry = next((item for item in self._entries() if item["id"] == model_id), None)
             if entry is None:
                 raise ValueError("识别模型未安装或文件不完整，请先到模型中心安装。")
-            config = self._model_config(entry)
+            config = self._model_config(entry, mode, load_options, session_options)
             config_key = json.dumps(config, ensure_ascii=False, sort_keys=True)
+            runtime_options = {"load_options": dict(load_options or {}),
+                               "session_options": dict(session_options or {})}
             if owned_alive and self._config_key == config_key:
                 healthy, ids = self._status()
                 if healthy and model_id in ids:
+                    self._runtime_options = runtime_options
                     return f"识别模型已就绪：{entry.get('label', model_id)}"
             if not os.path.isfile(self.backend.SERVER_EXE):
                 raise FileNotFoundError("找不到语音识别服务程序，请检查应用运行文件。")
@@ -163,7 +172,7 @@ class ManagedASR:
                 self._log_file = self.log_path.open("ab")
                 command = [self.backend.SERVER_EXE, "--config", self._config_path,
                            "--no-ui", "--host", self.host, "--port", str(self.port)]
-                if self._closed.is_set() or self._cancel.is_set():
+                if self._closed.is_set() or self._cancel.is_set() or (cancel is not None and cancel.is_set()):
                     raise RuntimeError("识别服务正在退出，不能再加载模型。")
                 self._proc = subprocess.Popen(
                     command, cwd=self.backend.BUNDLE_ROOT, stdin=subprocess.DEVNULL,
@@ -176,6 +185,7 @@ class ManagedASR:
                     healthy, ids = self._status()
                     if healthy and model_id in ids and self._proc.poll() is None:
                         self._model_id = model_id
+                        self._runtime_options = runtime_options
                         return f"识别模型已就绪：{entry.get('label', model_id)}"
                     self._cancel.wait(0.25)
                 raise RuntimeError("识别模型加载已取消或超时，请查看 realtime_asr.log。")
@@ -185,9 +195,11 @@ class ManagedASR:
 
     def status(self):
         proc = self._proc
+        config_key = self._config_key
         alive = proc is not None and proc.poll() is None
         return {"model": self._model_id if alive or proc is None else None,
-                "managed": alive}
+                "managed": alive, "configuration": {"managed": alive,
+                    **self._runtime_options, "mode": json.loads(config_key)["models"][0]["mode"] if config_key else None}}
 
     def transcribe(self, model_id, audio_path, cancel=None):
         """Keep the loaded model after recognition; never change the main server."""
@@ -264,6 +276,7 @@ class ManagedASR:
             self._config_path = None
         self._config_key = None
         self._model_id = None
+        self._runtime_options = {}
 
     def close(self):
         """Stop only the process created by this instance, never a port owner."""
