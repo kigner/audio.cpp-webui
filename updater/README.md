@@ -44,6 +44,31 @@ Generate the one-time overlay patch for existing `0.2.0` bundles with:
   -PublicKeyPath C:\release-tools\audio-cpp.pub
 ```
 
+### Windows UTF-8 path gate before the next release
+
+The 2026-10-08 audit found that the existing portable CPU executables lack the
+UTF-8 process manifest. They can open a Chinese-named config file, but the
+server misreads a Chinese model path supplied inside JSON. The portable CUDA
+executables contain the manifest and passed the same directory lookup probe.
+The source now decodes server-config and model-load JSON paths explicitly as
+UTF-8; existing executables require rebuilding to receive that change.
+
+Before the next release (no rebuild was requested for the 2026-10-08 fix):
+
+- Rebuild the CPU and CUDA `audiocpp_cli`, `audiocpp_server`, and `audiocpp_gguf`
+  targets. CMake already embeds `tools/cmake/audiocpp_utf8.manifest` through
+  `audiocpp_use_utf8_codepage`; retain that configuration.
+- Inspect all six resulting EXEs for an embedded `activeCodePage` of `UTF-8`
+  before synchronizing them into portable `cpu/` and `gpu/`. Console `chcp 65001`
+  alone does not satisfy this check.
+- Build and run `server_config_test` on Windows with a non-UTF-8 system code
+  page. Keep that test target without the application UTF-8 manifest so it
+  exercises explicit JSON decoding. It covers Chinese names and spaces,
+  relative/absolute paths, literal UTF-8 and JSON Unicode escapes.
+- Validate the rebuilt bundle under a Chinese directory: model loading from
+  config JSON and `/v1/models/load`, reference-audio input and output writing,
+  on both CPU and CUDA. Check source/destination hashes before packaging.
+
 Generate signed stable update assets after building and testing the portable
 CPU/CUDA executables with:
 

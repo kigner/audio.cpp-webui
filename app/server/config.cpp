@@ -14,7 +14,9 @@
 namespace minitts::server {
 namespace {
 
-std::filesystem::path resolve_path(const std::filesystem::path & base, const std::filesystem::path & path) {
+std::filesystem::path resolve_path(const std::filesystem::path & base, const std::string & utf8_path) {
+    // JSON strings are UTF-8, independent of the Windows process code page.
+    const auto path = std::filesystem::u8path(utf8_path);
     return path.is_absolute() ? path : base / path;
 }
 

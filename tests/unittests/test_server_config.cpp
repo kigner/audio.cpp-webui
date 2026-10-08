@@ -107,6 +107,51 @@ void test_builtin_utility_model_paths() {
         "builtin utility selector is forwarded");
 }
 
+void test_utf8_config_paths() {
+    using engine::io::json::stringify_string;
+    const std::string utf8_name = u8"\u4e2d\u6587 \u6a21\u578b";
+#ifdef _WIN32
+    // Build the fixture with native UTF-16 so a legacy code page cannot hide a
+    // broken UTF-8 conversion by creating the same incorrectly decoded name.
+    const std::filesystem::path native_name(L"\u4e2d\u6587 \u6a21\u578b");
+#else
+    const std::filesystem::path native_name(utf8_name);
+#endif
+    const auto root = make_temp_root() / native_name;
+    const auto model_dir = root / native_name;
+    std::filesystem::create_directories(model_dir);
+    const auto voice_path = write_config(model_dir, "voice.wav", "path fixture");
+
+    // Cover literal UTF-8, JSON Unicode escapes (Python's default), and an
+    // absolute path. The test executable intentionally has no UTF-8 manifest.
+    for (const std::string & path_json : {
+             stringify_string(utf8_name),
+             std::string(R"JSON("\u4e2d\u6587 \u6a21\u578b")JSON"),
+             stringify_string(model_dir.generic_u8string())}) {
+        const auto voice_json = stringify_string(engine::io::json::parse(path_json).as_string() + "/voice.wav");
+        const auto config_path = write_config(root, "server-utf8.json",
+            R"JSON({"backend":"cpu","voice_dir":)JSON" + path_json +
+            R"JSON(,"model_spec_override":)JSON" + path_json +
+            R"JSON(,"models":[{"id":"utf8","family":"qwen3_tts","path":)JSON" + path_json +
+            R"JSON(,"model_spec_override":)JSON" + path_json +
+            R"JSON(,"default_voice_preset":{"voice_ref":)JSON" + voice_json +
+            R"JSON(},"voice_presets":{"named":{"voice_ref":)JSON" + voice_json + "}}}]}");
+        for (bool parallel : {false, true}) {
+            const auto config = minitts::server::load_server_config(config_path, parallel);
+            const auto & model = config.models.at(0);
+            require(model.path == model_dir, "UTF-8 model path is preserved");
+            require(std::filesystem::is_directory(model.path), "UTF-8 model directory exists");
+            require(config.voice_dir == model_dir, "UTF-8 voice directory is preserved");
+            require(config.model_spec_override == model_dir, "UTF-8 global spec path is preserved");
+            require(model.model_spec_override == model_dir, "UTF-8 model spec path is preserved");
+            require(model.default_voice_preset->voice_ref == voice_path, "UTF-8 default voice path is preserved");
+            require(model.voice_presets.at("named").voice_ref == voice_path, "UTF-8 named voice path is preserved");
+            require(std::filesystem::is_regular_file(*model.default_voice_preset->voice_ref),
+                "UTF-8 reference file exists");
+        }
+    }
+}
+
 void test_default_preset_name() {
     const auto root = make_temp_root();
     const auto config_path = write_config(
@@ -659,6 +704,7 @@ int main() {
         test_model_slots();
         test_inline_default_and_named_presets();
         test_builtin_utility_model_paths();
+        test_utf8_config_paths();
         test_default_preset_name();
         test_default_request_options();
         test_missing_default_preset_name_is_rejected();

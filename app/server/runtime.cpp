@@ -245,13 +245,13 @@ ServerModelConfig model_config_from_json(
     bool lazy) {
     ServerModelConfig model;
     model.id = engine::io::json::require_string(body, "id");
-    model.path = resolve_path(request_base, engine::io::json::require_string(body, "path"));
+    model.path = resolve_path(request_base, std::filesystem::u8path(engine::io::json::require_string(body, "path")));
     model.family = engine::io::json::require_string(body, "family");
     model.task = engine::io::json::optional_string(body, "task", model.task);
     model.mode = engine::io::json::optional_string(body, "mode", model.mode);
     model.lazy = lazy;
     if (const auto * value = body.find("model_spec_override")) {
-        model.model_spec_override = resolve_path(request_base, value->as_string());
+        model.model_spec_override = resolve_path(request_base, std::filesystem::u8path(value->as_string()));
     }
     if (const auto * value = body.find("config")) {
         model.config_id = value->as_string();
