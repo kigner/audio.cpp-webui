@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN" data-character="illustration">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>暖灯夜话 · 人物动态预览</title>
+  <link rel="icon" href="/workbench-static/aixora-audio-logo.png" />
+  <link rel="stylesheet" href="avatar/preview.css" /><link rel="stylesheet" href="companion/preview.css" />
+</head>
+<body>
+  <header><a href="../#realtime">← 工作台</a><strong>人物动态预览</strong><a href="./?companion=1">进入实时聊天</a></header>
+  <main>
+    <section id="character" aria-label="夜晚卧室中的虚拟恋人"><p id="character-status">正在准备画面…</p></section>
+    <section class="controls" aria-label="语音和动作">
+      <div class="companion-title"><span>暖灯夜话</span><label class="listening"><input id="listen-mode" type="checkbox" checked />倾听表情</label></div>
+      <div class="actions"><button id="generate" disabled>听她说</button><button id="replay" disabled class="secondary">重播</button><button id="stop" class="secondary" disabled>停止播放</button></div>
+      <p id="status" role="status" aria-live="polite">正在准备本地声音…</p>
+      <details><summary>声音与动作设置</summary>
+        <label>本地声音模型<select id="tts-model" disabled><option>读取当前模型…</option></select></label>
+        <label id="voice-field" hidden>声音<select id="tts-voice"></select></label>
+        <label id="reference-field">参考音色<select id="reference-voice"><option value="demo_02_woman.wav" selected>内置女声</option><option value="(none)">模型默认声音</option></select></label>
+        <label>她说的话<textarea id="test-text" rows="3" maxlength="240">你回来啦。今天过得怎么样？慢慢说，我在听。累了的话，就先靠一会儿吧。</textarea></label>
+        <div class="options"><label><input id="natural-motion" type="checkbox" checked />呼吸、眨眼、肩部与头部动作</label><label>音画补偿 <input id="lip-delay" type="range" min="0" max="180" step="10" value="90" /><output id="delay-value">90 ms</output></label></div>
+        <div class="metrics"><span id="fps">— FPS</span><span id="viseme">等待声音</span></div>
+        <label>播放已有音频<input id="audio-file" type="file" accept="audio/*" /></label>
+      </details>
+    </section>
+  </main>
+  <script type="module" src="avatar/preview.js"></script>
+</body>
+</html>

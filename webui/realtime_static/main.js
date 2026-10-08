@@ -12,6 +12,7 @@
 import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js";
 import { ChatView } from "./ui/chat.js?v=scene-1";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
+import {loadCharacters, saveCharacters, normalizeCharacters, currentCharacter, DEFAULT_ANIMATION} from "./companion/profile.js";
 
 // ── Settings (persisted in localStorage) ───────────────────────────────
 const DEFAULT_RT_URL = new URL("/v1/realtime", window.location.href).href.replace(/^http/, "ws");
@@ -32,8 +33,6 @@ const STORAGE = {
   ttsInferenceSteps: "audiocpp.tts.inferenceSteps",
   ttsVocoderMergeSteps: "audiocpp.tts.vocoderMergeSteps",
   ttsVoice: "audiocpp.tts.voice",
-  ttsVoiceRef: "audiocpp.tts.voiceRef",
-  ttsRefText: "audiocpp.tts.refText",
   asrUrl: "audiocpp.asr.url",
   asrModel: "audiocpp.asr.model",
   asrLanguage: "audiocpp.asr.language",
@@ -58,8 +57,6 @@ const DEFAULTS = {
   ttsInferenceSteps: "",
   ttsVocoderMergeSteps: "",
   ttsVoice: "",
-  ttsVoiceRef: "",
-  ttsRefText: "",
   asrUrl: "http://127.0.0.1:8081",
   asrModel: "qwen3-asr",
   asrLanguage: "",
@@ -88,7 +85,7 @@ function loadSettings() {
     }
     s[k] = v === null ? def : v;
   }
-  return s;
+  return {...s, characters: loadCharacters()};
 }
 
 /** Env defaults fetched from the realtime server's /config endpoint. Empty
@@ -107,8 +104,6 @@ const ENV_SETTING_KEYS = {
   ttsServerSource: "tts_server_source",
   ttsPlaybackMode: "tts_playback_mode",
   ttsVoice: "tts_voice",
-  ttsVoiceRef: "tts_voice_ref",
-  ttsRefText: "tts_reference_text",
   asrUrl: "asr_server",
   asrModel: "asr_model",
   asrLanguage: "asr_language",
@@ -167,6 +162,11 @@ function saveSettings(s) {
     if (k === "rtUrl") continue;
     localStorage.setItem(STORAGE[k], String(s[k] ?? ""));
   }
+  s.characters = saveCharacters(s.characters);
+}
+
+function characterInstructions(s) {
+  return `${s.instructions}\n当前对话角色名是${JSON.stringify(currentCharacter(s.characters).name)}。以这个名字称呼自己。`;
 }
 
 /** Build the `audiocpp` config block sent inside session.update. */
@@ -179,6 +179,8 @@ function appConfigFromSettings(s) {
     ttsOptions[meta.voice_parameter] = meta.voice_value_type === "number" ? Number(voice) : voice;
   }
   const acceptsReference = meta?.accepts_voice_reference !== false;
+  const role = currentCharacter(s.characters);
+  const reference = acceptsReference && !voice ? role.referenceAudio : "";
   if (meta?.family === "dots_tts") {
     const inferenceSteps = Number(s.ttsInferenceSteps);
     const mergeSteps = Number(s.ttsVocoderMergeSteps);
@@ -204,19 +206,30 @@ function appConfigFromSettings(s) {
     tts_playback_mode: effectivePlayback,
     tts_options: ttsOptions,
     tts_voice: meta?.voice_parameter ? "" : voice,
-    tts_voice_ref: acceptsReference ? s.ttsVoiceRef : "",
-    tts_reference_text: acceptsReference && s.ttsVoiceRef ? s.ttsRefText : "",
+    tts_voice_ref: reference,
+    tts_reference_text: reference ? role.referenceText : "",
     asr_server: s.asrUrl,
     asr_model: s.asrModel,
     asr_language: s.asrLanguage,
     llm_base_url: s.llmUrl,
     llm_model: s.llmModel,
     ...(s.llmKey ? { llm_api_key: s.llmKey } : {}),
-    instructions: s.instructions,
+    instructions: characterInstructions(s),
   };
 }
 
 let settings = loadSettings();
+let characterDraft = structuredClone(settings.characters);
+let referenceUploadBusy = false;
+let characterEditEpoch = 0;
+const liveCharacterReady = import("./companion/live.js")
+  .then(module => module.mountLiveCharacter(currentCharacter(settings.characters)))
+  .catch(error => {
+    console.error("角色加载失败", error);
+    window.dispatchEvent(new CustomEvent("character-error", {detail: `角色画面加载失败：${error.message}`}));
+    return null;
+  });
+export async function liveCharacterStats() {return (await liveCharacterReady)?.stats();}
 
 // ── State machine ──────────────────────────────────────────────────────
 const STATE_CLASS = {
@@ -292,8 +305,6 @@ const settingsFields = {
   ttsInferenceSteps: $("#tts-inference-steps"),
   ttsVocoderMergeSteps: $("#tts-vocoder-merge-steps"),
   ttsVoice: $("#tts-voice"),
-  ttsVoiceRef: $("#tts-voice-ref"),
-  ttsRefText: $("#tts-ref-text"),
   asrUrl: $("#asr-url"),
   asrModel: $("#asr-model"),
   asrLanguage: $("#asr-language"),
@@ -305,6 +316,68 @@ const settingsFields = {
 };
 const ttsModelCapability = $("#tts-model-capability");
 const ttsDotsOptions = $("#tts-dots-options");
+const referenceFields = {audio: $("#tts-voice-ref"), text: $("#tts-ref-text")};
+const characterSelect = $("#character-select");
+const characterName = $("#character-name");
+
+function applyCharacterProfile(role) {
+  document.body.dataset.character = role.id;
+  document.getElementById("scene-location").textContent = role.name;
+  chat?.setAssistantName(role.name);
+  void liveCharacterReady.then(controller => controller?.setCharacter(role)).catch(error => showRealtimeError(error));
+}
+
+function readCharacterForm() {
+  const role = currentCharacter(characterDraft);
+  role.name = characterName.value.trim() || (role.id === "system" ? "系统" : "小暖");
+  role.referenceAudio = referenceFields.audio.value;
+  role.referenceText = referenceFields.text.value;
+  for (const input of document.querySelectorAll("[data-animation]")) {
+    role.animation[input.dataset.animation] = input.type === "checkbox" ? input.checked : Number(input.value);
+  }
+  characterDraft = normalizeCharacters(characterDraft);
+  return currentCharacter(characterDraft);
+}
+
+function fillCharacterForm() {
+  const role = currentCharacter(characterDraft);
+  characterSelect.replaceChildren(...Object.values(characterDraft.roles).map(item => new Option(item.name, item.id)));
+  characterSelect.value = role.id;
+  characterName.value = role.name;
+  referenceFields.text.value = role.referenceText;
+  renderReferenceOptions(role.referenceAudio);
+  document.getElementById("character-portrait").classList.toggle("system", role.id === "system");
+  document.getElementById("character-portrait").setAttribute("aria-label", role.id === "system" ? "空白画面" : "暖灯卧室角色");
+  document.getElementById("character-portrait-label").textContent = role.id === "system" ? "空白画面" : "默认角色";
+  document.getElementById("character-advanced").hidden = role.id === "system";
+  for (const input of document.querySelectorAll("[data-animation]")) {
+    if (input.type === "checkbox") input.checked = role.animation[input.dataset.animation];
+    else input.value = role.animation[input.dataset.animation];
+  }
+  updateAnimationLabels();
+}
+
+function updateAnimationLabels() {
+  document.getElementById("character-strength-value").textContent = `${document.querySelector('[data-animation="strength"]').value}×`;
+  document.getElementById("character-delay-value").textContent = `${document.querySelector('[data-animation="delayMs"]').value} ms`;
+}
+
+characterSelect.addEventListener("change", () => {
+  readCharacterForm(); characterDraft.activeId = characterSelect.value;
+  fillCharacterForm(); applyCharacterProfile(currentCharacter(characterDraft));
+});
+characterName.addEventListener("input", () => {
+  const role = readCharacterForm();
+  characterSelect.selectedOptions[0].textContent = role.name;
+  applyCharacterProfile(role);
+});
+for (const input of document.querySelectorAll("[data-animation]")) {
+  input.addEventListener("input", () => {updateAnimationLabels(); applyCharacterProfile(readCharacterForm());});
+}
+document.getElementById("character-animation-reset").addEventListener("click", () => {
+  readCharacterForm(); currentCharacter(characterDraft).animation = {...DEFAULT_ANIMATION};
+  fillCharacterForm(); applyCharacterProfile(currentCharacter(characterDraft));
+});
 
 function ttsModelMeta(modelId) {
   return availableTtsModels.find((model) => model.id === modelId) || null;
@@ -411,8 +484,8 @@ function renderVoiceOptions(reset = false) {
   select.disabled = !voices.length;
 }
 
-function renderReferenceOptions(current = settingsFields.ttsVoiceRef.value) {
-  const select = settingsFields.ttsVoiceRef;
+function renderReferenceOptions(current = referenceFields.audio.value) {
+  const select = referenceFields.audio;
   const normalized = String(current).replaceAll("\\", "/").toLowerCase();
   const selected = referenceVoices.find(voice => [voice.voice_ref, `voice/${voice.name}`]
     .some(path => path?.replaceAll("\\", "/").toLowerCase() === normalized));
@@ -420,11 +493,12 @@ function renderReferenceOptions(current = settingsFields.ttsVoiceRef.value) {
   for (const voice of referenceVoices) select.add(new Option(voice.label || voice.name, voice.voice_ref));
   if (current && !selected) select.add(new Option("已保存的参考音频（未在库中）", current));
   select.value = selected?.voice_ref || current;
+  if (selected && current !== selected.voice_ref && !referenceFields.text.value) referenceFields.text.value = selected.text || "";
   updateReferencePreview();
 }
 
 function updateReferencePreview() {
-  const voice = referenceVoices.find(item => item.voice_ref === settingsFields.ttsVoiceRef.value);
+  const voice = referenceVoices.find(item => item.voice_ref === referenceFields.audio.value);
   const preview = document.getElementById("tts-reference-preview");
   const url = voice?.url || "";
   if ((preview.getAttribute("src") || "") !== url) {
@@ -433,7 +507,7 @@ function updateReferencePreview() {
     else preview.removeAttribute("src");
     preview.load();
   }
-  preview.hidden = !voice || settingsFields.ttsVoiceRef.disabled;
+  preview.hidden = !voice;
 }
 
 async function refreshReferenceLibrary() {
@@ -446,36 +520,97 @@ async function refreshReferenceLibrary() {
     if (request !== referenceLibraryRequest) return;
     referenceVoices = data.voices.filter(voice => voice.name && voice.voice_ref);
     referenceLibraryReady = true;
-    document.getElementById("tts-reference-status").textContent = referenceVoices.length ? "" : "参考音频库为空，请先在语音合成中添加。";
+    document.getElementById("tts-reference-status").textContent = referenceVoices.length ? "" : "音频库为空，可上传参考音频。";
   } catch {
     if (request !== referenceLibraryRequest) return;
     document.getElementById("tts-reference-status").textContent = "参考音频库读取失败，请重试。";
   }
-  renderReferenceOptions();
+  if (!settingsModal.open) {
+    for (const role of Object.values(settings.characters.roles)) {
+      const normalized = role.referenceAudio.replaceAll("\\", "/").toLowerCase();
+      const voice = referenceVoices.find(item => [item.voice_ref, `voice/${item.name}`].some(path => path.replaceAll("\\", "/").toLowerCase() === normalized));
+      if (voice && role.referenceAudio !== voice.voice_ref) {
+        role.referenceAudio = voice.voice_ref;
+        if (!role.referenceText) role.referenceText = voice.text || "";
+      }
+    }
+    characterDraft = structuredClone(settings.characters);
+    referenceFields.text.value = currentCharacter(characterDraft).referenceText;
+    renderReferenceOptions(currentCharacter(characterDraft).referenceAudio);
+  } else renderReferenceOptions();
 }
 
-settingsFields.ttsVoiceRef.addEventListener("change", () => {
-  const voice = referenceVoices.find(item => item.voice_ref === settingsFields.ttsVoiceRef.value);
-  settingsFields.ttsRefText.value = voice?.text || "";
+referenceFields.audio.addEventListener("change", () => {
+  const voice = referenceVoices.find(item => item.voice_ref === referenceFields.audio.value);
+  referenceFields.text.value = voice?.text || "";
   // A reference and a preset are alternative voice sources.
   if (voice) settingsFields.ttsVoice.value = "";
   updateReferencePreview();
+  syncTtsSettingsUi(false);
 });
 settingsFields.ttsVoice.addEventListener("change", () => {
-  if (!settingsFields.ttsVoice.value) return;
-  settingsFields.ttsVoiceRef.value = "";
-  settingsFields.ttsRefText.value = "";
-  updateReferencePreview();
+  syncTtsSettingsUi(false);
 });
 document.getElementById("tts-reference-refresh").addEventListener("click", () => void refreshReferenceLibrary());
+
+async function uploadCharacterAudio() {
+  const input = document.getElementById("character-audio-upload");
+  const file = input.files[0];
+  if (!file || referenceUploadBusy) return;
+  const status = document.getElementById("tts-reference-status");
+  const owner = characterDraft.activeId;
+  const editEpoch = characterEditEpoch;
+  referenceLibraryRequest++;
+  referenceUploadBusy = true; input.disabled = true;
+  document.getElementById("settings-save").disabled = true;
+  status.textContent = "正在上传并加入音频库…";
+  const request = async (path, body) => {
+    const response = await fetch(new URL(`../api/workbench/${path}`, location.href), {
+      method: "POST", ...(body instanceof FormData ? {body} : {headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw Object.assign(new Error(data.detail || "参考音频保存失败。"), {status: response.status});
+    return data;
+  };
+  try {
+    const form = new FormData(); form.append("file", file);
+    const upload = await request("uploads", form);
+    const name = file.name.replace(/\.[^.]+$/, "") || "参考音频";
+    let result;
+    try {result = await request("references", {audio: upload.id, name, text: ""});}
+    catch (error) {
+      if (error.status !== 409) throw error;
+      result = await request("references", {audio: upload.id, name: `${name}-${Date.now()}`, text: ""});
+    }
+    referenceLibraryRequest++;
+    referenceVoices = result.voices;
+    referenceLibraryReady = true;
+    const voice = referenceVoices.find(item => item.name === result.name);
+    if (!voice) throw new Error("音频已保存，请刷新音频库后重新选择。");
+    // Library storage is immediate; the role association follows the dialog's save/cancel.
+    if (settingsModal.open && editEpoch === characterEditEpoch) {
+      const role = characterDraft.roles[owner];
+      role.referenceAudio = voice.voice_ref; role.referenceText = voice.text || "";
+      if (characterDraft.activeId === owner) {
+        fillCharacterForm(); settingsFields.ttsVoice.value = ""; syncTtsSettingsUi(false);
+      }
+    }
+    status.textContent = "已加入音频库。";
+  } catch (error) {status.textContent = error.message;}
+  finally {
+    referenceUploadBusy = false; input.disabled = false; input.value = "";
+    document.getElementById("settings-save").disabled = false;
+  }
+}
+document.getElementById("character-audio-upload").addEventListener("change", () => void uploadCharacterAudio());
 
 function syncTtsSettingsUi(applyModelDefaults = false, resetVoice = false) {
   const meta = ttsModelMeta(settingsFields.ttsModel?.value || settings.ttsModel);
   renderVoiceOptions(resetVoice);
   const acceptsReference = meta?.accepts_voice_reference !== false;
-  document.getElementById("tts-reference-fields").hidden = !acceptsReference;
-  settingsFields.ttsVoiceRef.disabled = !acceptsReference;
-  settingsFields.ttsRefText.disabled = !acceptsReference;
+  document.getElementById("character-voice-hint").textContent = !acceptsReference
+    ? "当前声音模型使用内置音色，角色参考音频会保留。"
+    : settingsFields.ttsVoice.value ? "当前使用模型内置音色；选择角色参考音频可切换声音。" : "";
   document.getElementById("tts-reference-text-hint").textContent = meta?.requires_reference_text ? "此模型使用参考音频时需要原文" : "从参考音频库自动填入，可修改";
   updateReferencePreview();
   const playback = /** @type {HTMLSelectElement | null} */ (settingsFields.ttsPlaybackMode);
@@ -837,6 +972,7 @@ async function doStart(textOnly = false) {
     }
     try {
       await refreshEnvDefaults();
+      await refreshReferenceLibrary();
       if (attempt !== connectionAttempt) return;
       if (!realtimeConfigReady) throw new Error("实时服务尚未就绪，请重启应用后重试。");
       setCaption("正在准备对话模型…", "muted");
@@ -852,9 +988,11 @@ async function doStart(textOnly = false) {
       throw err;
     }
     const gateThreshold = Number(settings.noiseGate) || GATE_DEFAULT_DB;
+    const liveCharacter = await liveCharacterReady;
+    if (attempt !== connectionAttempt) return;
     const c = new S2sWsRealtimeClient({
       directUrl: new URL(`${realtimeApiBase}/v1/realtime`, window.location.origin).href.replace(/^http/, "ws"),
-      instructions: settings.instructions,
+      instructions: characterInstructions(settings),
       voice: appConfigFromSettings(settings).tts_voice,
       appConfig: appConfigFromSettings(settings),
       textOnly,
@@ -863,6 +1001,7 @@ async function doStart(textOnly = false) {
       ...(audioContext ? { audioContext } : {}),
     });
     client = c;
+    liveCharacter?.attachClient(c);
     c.addEventListener("queue", (e) => {
       const { position, queueId } = /** @type {CustomEvent} */ (e).detail;
       if (queueId) queuedTicketId = queueId;
@@ -1000,13 +1139,15 @@ realtimeNoticeSettings.addEventListener("click", () => settingsBtn.click());
 
 // ── Settings modal ─────────────────────────────────────────────────────
 function fillSettingsForm() {
+  characterEditEpoch++;
+  characterDraft = structuredClone(settings.characters);
   renderTtsModelOptions();
   renderVoiceOptions();
-  renderReferenceOptions(settings.ttsVoiceRef);
   for (const [k, el] of Object.entries(settingsFields)) {
-    if (k === "ttsVoiceRef") continue; // Already resolved against the library above.
     if (el) el.value = k === "llmKey" ? "" : settings[k] ?? "";
   }
+  fillCharacterForm();
+  document.getElementById("character-advanced").open = false;
   if (settingsFields.llmKey) settingsFields.llmKey.placeholder =
     settings.llmKey || envDefaults.llm_api_key_set ? "已配置；留空保留，输入新密钥替换" : "填写服务商提供的 API Key";
   syncTtsSettingsUi(
@@ -1020,6 +1161,8 @@ function readSettingsForm() {
     if (k === "rtUrl" || (k === "llmKey" && !el?.value)) continue;
     if (el) s[k] = el.value;
   }
+  readCharacterForm();
+  s.characters = structuredClone(characterDraft);
   return s;
 }
 
@@ -1039,11 +1182,16 @@ settingsForm?.addEventListener("submit", (e) => {
 settingsModal?.addEventListener("close", () => {
   document.getElementById("tts-reference-preview").pause();
   const rv = settingsModal.returnValue;
-  if (rv !== "save") return;
+  if (rv !== "save") {
+    characterDraft = structuredClone(settings.characters);
+    applyCharacterProfile(currentCharacter(settings.characters));
+    return;
+  }
   const previous = settings;
   const next = readSettingsForm();
   settings = next;
   saveSettings(next);
+  applyCharacterProfile(currentCharacter(settings.characters));
   hideRealtimeError();
   syncGateUi();
   syncTtsSettingsUi(false);
@@ -1094,6 +1242,7 @@ window.addEventListener("message", (event) => {
 
 // ── Init ───────────────────────────────────────────────────────────────
 chat = new ChatView();
+applyCharacterProfile(currentCharacter(settings.characters));
 initGateArc();
 syncGateUi();
 setState("idle");
@@ -1102,5 +1251,7 @@ chat.renderEmptyState();
 // Settings panel pre-fills with what run_realtime.bat configured. Non-blocking;
 // Omitted fields retain backend defaults; explicit empty voice fields clear them.
 void refreshEnvDefaults();
+void refreshReferenceLibrary();
+window.addEventListener("character-error", event => showRealtimeError(event.detail));
 // Strip booting class after first paint
 requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("booting")));

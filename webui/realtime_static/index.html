@@ -6,14 +6,16 @@
     <title>实时语音聊天 · Aixora Audio</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="workbench.css?v=scene-5" />
-<link rel="stylesheet" href="scene.css?v=scene-7" />
+<link rel="stylesheet" href="scene.css?v=character-1" />
+    <link rel="stylesheet" href="companion/live.css?v=character-1" />
   </head>
   <body class="booting">
+    <div id="live-character-stage" aria-hidden="true"></div>
     <div class="scene-background" aria-hidden="true"></div>
     <div class="scene-shade" aria-hidden="true"></div>
     <div id="app">
       <header class="topbar">
-        <div class="scene-heading"><button id="scene-back" class="scene-button" type="button" aria-label="返回场景应用" title="返回场景应用">←</button><span id="scene-location" hidden></span><span id="scene-connection" class="scene-connection" data-state="checking" hidden>检查连接</span></div>
+        <div class="scene-heading"><button id="scene-back" class="scene-button" type="button" aria-label="返回工作台" title="返回工作台">←</button><span id="scene-location">小暖</span><span id="scene-connection" class="scene-connection" data-state="checking" hidden>检查连接</span></div>
         <div class="brand">
           <div class="ident">
             <div class="ident-head">
@@ -22,13 +24,13 @@
           </div>
         </div>
         <div class="topbar-right">
-          <button id="scene-picker" class="scene-button" type="button">场景</button>
+          <button id="scene-picker" class="scene-button" type="button">角色</button>
           <button id="scene-fullscreen" class="scene-button" type="button" aria-label="全屏聊天">⛶ <span>全屏</span></button>
           <button id="chat-btn" class="icon-btn" title="对话记录" aria-label="对话记录">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span id="chat-badge" class="chat-badge" aria-hidden="true"></span>
           </button>
-          <button id="settings-btn" class="icon-btn" title="对话设置" aria-label="对话设置">
+          <button id="settings-btn" class="icon-btn" title="会话参数" aria-label="会话参数">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c0 .66.39 1.25 1 1.51H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
         </div>
@@ -151,10 +153,38 @@
 
     <dialog id="settings-modal" class="modal">
       <form method="dialog" class="modal-content">
-          <header class="modal-header"><h2>对话设置</h2><button class="icon-btn" value="close" aria-label="关闭">×</button></header>
-        <nav class="scene-settings-tabs" role="tablist" aria-label="对话设置分类"><button type="button" role="tab" data-settings-tab="scene">场景</button><button type="button" role="tab" data-settings-tab="llm">对话</button><button type="button" role="tab" data-settings-tab="tts">声音</button><button type="button" role="tab" data-settings-tab="asr">识别</button><button type="button" role="tab" data-settings-tab="connection">连接</button></nav>
+          <header class="modal-header"><h2>会话参数</h2><button class="icon-btn" value="close" aria-label="关闭">×</button></header>
+        <nav class="scene-settings-tabs" role="tablist" aria-label="会话参数分类"><button type="button" role="tab" data-settings-tab="character">角色</button><button type="button" role="tab" data-settings-tab="llm">对话</button><button type="button" role="tab" data-settings-tab="tts">声音</button><button type="button" role="tab" data-settings-tab="asr">识别</button><button type="button" role="tab" data-settings-tab="connection">连接</button></nav>
         <div class="tab-panels">
-            <section id="settings-scene" class="settings-section" data-settings-panel="scene"><h3>聊天背景</h3><div class="scene-options"><button type="button" class="scene-option" data-scene-choice="window"><span class="scene-thumb scene-thumb-window"></span><strong>窗边</strong></button><button type="button" class="scene-option" data-scene-choice="bedroom"><span class="scene-thumb scene-thumb-bedroom"></span><strong>卧室</strong></button><button type="button" class="scene-option" data-scene-choice="living-room"><span class="scene-thumb scene-thumb-living-room"></span><strong>客厅</strong></button><button type="button" class="scene-option" data-scene-choice="quiet"><span class="scene-thumb scene-thumb-quiet"></span><strong>静谧</strong></button></div><p class="scene-setting-help">静态背景，无口型动画。</p><h3 class="scene-preference-title">画面显示</h3><label class="scene-check"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label></section>
+          <section id="settings-character" class="settings-section" data-settings-panel="character">
+            <label class="field"><span>角色</span><select id="character-select"><option value="companion">小暖</option><option value="system">系统</option></select></label>
+            <div id="character-portrait" class="character-portrait" aria-label="暖灯卧室角色"><span id="character-portrait-label">默认角色</span></div>
+            <label class="field"><span>角色名</span><input id="character-name" maxlength="40" autocomplete="off" /></label>
+            <div id="tts-reference-fields">
+              <div class="reference-library-heading"><span>角色参考音频</span><button type="button" id="tts-reference-refresh" class="btn plain">刷新列表</button></div>
+              <label class="field"><span class="sr-only">参考音频库</span><select id="tts-voice-ref"><option value="">不使用参考音频</option></select></label>
+              <label class="character-upload btn plain">上传参考音频<input id="character-audio-upload" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.aiff,.aif,.wma" /></label>
+              <small id="tts-reference-status" role="status"></small>
+              <small id="character-voice-hint"></small>
+              <audio id="tts-reference-preview" controls preload="none" aria-label="角色参考音频试听" hidden></audio>
+              <label class="field"><span>参考音频中的原话</span><textarea id="tts-ref-text" rows="2"></textarea><small id="tts-reference-text-hint">从音频库自动填入，可修改</small></label>
+            </div>
+            <label class="scene-check"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label>
+            <details id="character-advanced" class="character-advanced">
+              <summary>高级设置</summary>
+              <div class="character-animation-options">
+                <label class="scene-check"><input data-animation="mouth" type="checkbox" checked />跟随语音的口型</label>
+                <label class="scene-check"><input data-animation="blink" type="checkbox" checked />自然眨眼</label>
+                <label class="scene-check"><input data-animation="breath" type="checkbox" checked />轻微呼吸</label>
+                <label class="scene-check"><input data-animation="listening" type="checkbox" checked />倾听表情</label>
+                <label class="scene-check"><input data-animation="head" type="checkbox" checked />头部动作</label>
+                <label class="scene-check"><input data-animation="shoulders" type="checkbox" checked />肩部动作</label>
+              </div>
+              <label class="field"><span>动作幅度 <output id="character-strength-value">1×</output></span><input data-animation="strength" type="range" min="0.25" max="1.5" step="0.25" value="1" /></label>
+              <label class="field"><span>音画补偿 <output id="character-delay-value">90 ms</output></span><input data-animation="delayMs" type="range" min="0" max="180" step="10" value="90" /></label>
+              <button id="character-animation-reset" type="button" class="btn plain">恢复推荐值</button>
+            </details>
+          </section>
           <section id="settings-asr" class="settings-section">
               <h3>语音识别</h3>
               <div class="field-row"><label class="field"><span>识别模型</span><input id="asr-model" list="asr-model-list" autocomplete="off" placeholder="选择或输入模型名" /><datalist id="asr-model-list"></datalist></label><label class="field"><span>识别语言</span><input id="asr-language" placeholder="自动识别，或填 zh / en" /></label></div>
@@ -171,13 +201,6 @@
             <label class="field"><span>声音模型</span><select id="tts-model"><option value="">正在读取已安装模型…</option></select></label>
               <small id="tts-model-capability"></small>
             <label class="field"><span>音色名称</span><select id="tts-voice"><option value="">模型未提供内置音色列表</option></select></label>
-            <div id="tts-reference-fields">
-              <div class="reference-library-heading"><span>参考音频库</span><button type="button" id="tts-reference-refresh" class="btn plain">刷新</button></div>
-              <label class="field"><span class="sr-only">参考音频</span><select id="tts-voice-ref"><option value="">不使用参考音频</option></select></label>
-              <small id="tts-reference-status" role="status"></small>
-              <audio id="tts-reference-preview" controls preload="none" aria-label="参考音频试听" hidden></audio>
-              <label class="field"><span>参考音频中的原话</span><textarea id="tts-ref-text" rows="3"></textarea><small id="tts-reference-text-hint">从参考音频库自动填入，可修改</small></label>
-            </div>
           </section>
           <details class="advanced-settings">
               <summary>高级设置</summary>
@@ -194,7 +217,7 @@
       </form>
     </dialog>
 
-<script type="module" src="main.js?v=scene-7"></script>
-<script type="module" src="scene.js?v=scene-7"></script>
+<script type="module" src="main.js?v=character-1"></script>
+<script type="module" src="scene.js?v=character-1"></script>
   </body>
 </html>

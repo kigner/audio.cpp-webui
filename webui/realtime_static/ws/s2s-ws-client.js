@@ -290,6 +290,7 @@ export class S2sWsRealtimeClient extends EventTarget {
     this._playbackNode?.port.postMessage({ kind: "clear" });
     this._clearPlaybackState();
     this._aiSpeaking = false;
+    this.dispatchEvent(new CustomEvent("playback-state", { detail: { kind: "clear" } }));
   }
 
   _configurePlaybackNode() {
@@ -749,6 +750,9 @@ export class S2sWsRealtimeClient extends EventTarget {
 
     this._visualiser = new OrbVisualiser(micAnalyser, outAnalyser, () => this._aiSpeaking);
     this._visualiser.start();
+    this.dispatchEvent(new CustomEvent("audio-output", {
+      detail: { context: ctx, source: playbackNode, output: outAnalyser },
+    }));
   }
 
   /** @param {string} connectUrl */
@@ -783,6 +787,7 @@ export class S2sWsRealtimeClient extends EventTarget {
    * @param {{ kind: string; responseId?: string; queuedMs?: number; played?: number }} data
    */
   _onPlaybackMessage(data) {
+    this.dispatchEvent(new CustomEvent("playback-state", { detail: data }));
     if (data?.kind === "started") {
       this._aiSpeaking = true;
       this._markAudible();
@@ -1312,6 +1317,7 @@ export class S2sWsRealtimeClient extends EventTarget {
   }
 
   async close() {
+    this.dispatchEvent(new Event("audio-output-closed"));
     // Abort a queue wait in progress: flag it and wake the poll sleep so
     // `_pollQueue` throws "aborted" and connect() unwinds cleanly.
     this._closed = true;

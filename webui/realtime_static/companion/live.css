@@ -1,0 +1,26 @@
+#live-character-stage { position: fixed; inset: 0; pointer-events: none; z-index: 1; }
+#live-character-stage canvas { display: block; width: 100%; height: 100%; }
+.scene-background { z-index: 0; }
+.scene-shade { z-index: 2; }
+#app { z-index: 3; }
+.call-controls { z-index: 30; }
+body[data-character="companion"] .scene-shade { background: linear-gradient(180deg,#18100b30,transparent 22%,transparent 72%,#18100b70); }
+body[data-character="system"] .scene-shade { background: none; }
+#scene-location { visibility: visible; }
+#settings-modal { inset: 0 auto 0 0; margin: 0; width: min(440px,100vw); max-width: 100vw; height: 100dvh; max-height: 100dvh; border-left: 0; border-right: 1px solid var(--border); border-radius: 0 16px 16px 0; box-shadow: 20px 0 80px #0003; }
+.character-portrait { position: relative; height: 155px; margin: 4px 0 18px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: url('./assets/scene.png') 30% 20% / 150% auto no-repeat; }
+.character-portrait > span { position: absolute; bottom: 10px; left: 12px; padding: 4px 8px; border-radius: 6px; background: #24160ece; color: #fff0df; font-size: 12px; }
+.character-portrait.system { background: var(--bg); }
+.character-portrait.system > span { background: none; color: var(--text-dim); }
+.character-upload { position: relative; cursor: pointer; overflow: hidden; margin: 0 0 12px; }
+.character-upload input { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
+.character-upload:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
+#character-voice-hint { display: block; color: var(--text-dim); margin-bottom: 12px; font-size: 12px; line-height: 1.6; }
+#character-voice-hint:empty { display: none; }
+.character-advanced { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+.character-advanced > summary { cursor: pointer; font-size: 13.5px; color: var(--text-dim); padding: 4px 0; }
+.character-animation-options { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 10px; margin: 20px 0; }
+.character-advanced .field output { float: right; color: var(--text-dim); }
+.character-advanced .field input[type="range"] { width: 100%; padding: 4px 0; accent-color: var(--accent); }
+.scene-check input { accent-color: var(--accent); }
+@media (max-width: 660px) { #settings-modal { border-radius: 0; } }

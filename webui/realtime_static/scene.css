@@ -9,10 +9,7 @@ body {
   margin: 0; height: 100dvh; overflow: hidden; background: #20222d; color: var(--text);
 }
 .scene-background, .scene-shade { position: fixed; inset: 0; pointer-events: none; }
-.scene-background { background: #222820 url("scenes/window-light.png") 70% center / cover no-repeat; }
-body[data-scene="bedroom"] .scene-background { background-image: url("scenes/bedroom-evening.png"); }
-body[data-scene="living-room"] .scene-background { background-image: url("scenes/living-room-afternoon.png"); }
-body[data-scene="quiet"] .scene-background { background: radial-gradient(ellipse at 70% 30%, #424967, transparent 65%), linear-gradient(145deg, #202536, #2d3248 60%, #3c3a53); }
+.scene-background { background: var(--bg); }
 .scene-shade { background: linear-gradient(180deg, #050b09a6 0, transparent 26%, transparent 57%, #050b09c9 100%), linear-gradient(90deg, #070e0b70, transparent 66%); }
 #app { position: relative; display: block; width: 100%; max-width: none; height: 100dvh; min-height: 0; margin: 0; }
 .topbar, .embedded .topbar { position: relative; z-index: 20; padding: 24px 32px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
@@ -103,22 +100,10 @@ body:has(.chat-panel.open) .bubble-stack { visibility: hidden; }
 .setup-heading .btn { margin-top: 14px; }
 .setup-cards { grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .setup-card { background: #ffffff05; padding: 12px 14px; }
-.scene-options { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.scene-option { overflow: hidden; padding: 0 0 14px; border: 1px solid #ffffff25; border-radius: 12px; text-align: left; background: #ffffff05; color: #f2f4ff; cursor: pointer; }
-.scene-option[aria-pressed="true"] { border-color: #abb5ff; box-shadow: 0 0 0 1px #abb5ff; }
-.scene-thumb { display: block; aspect-ratio: 16 / 10; margin-bottom: 13px; }
-.scene-thumb-window { background: url("scenes/window-light.png") 70% center / cover; }
-.scene-thumb-bedroom { background: url("scenes/bedroom-evening.png") 70% center / cover; }
-.scene-thumb-living-room { background: url("scenes/living-room-afternoon.png") 70% center / cover; }
 .reference-library-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 13.5px; }
 #tts-reference-status { display: block; margin-bottom: 10px; }
 #tts-reference-status:empty { display: none; }
 #tts-reference-preview { display: block; width: 100%; height: 36px; margin-bottom: 16px; }
-.scene-thumb-quiet { background: radial-gradient(ellipse at 65% 25%, #626b97, transparent 80%), #30394f; }
-.scene-option strong, .scene-option small { display: block; margin: 0 13px; font: inherit; font-size: 13.5px; }
-.scene-option small { font-size: 12.6px; color: #adb5d1; margin-top: 5px; }
-.scene-setting-help { font-size: 12.6px; line-height: 1.9; color: #adb4d0; margin: 18px 0; }
-.scene-preference-title { margin-top: 34px !important; }
 .scene-check { display: flex; gap: 10px; align-items: center; font-size: 13.5px; }
 .scene-check input { width: 16px; height: 16px; accent-color: #abb5ff; }
 @media (max-width: 1000px) {
@@ -197,12 +182,9 @@ html[data-theme="light"] #settings-modal .field textarea { color: #262a3d; backg
 html[data-theme="light"] #settings-modal .field select option { color: #262a3d; background: #fff; }
 html[data-theme="light"] #settings-modal .scene-settings-tabs button { color: #626981; }
 html[data-theme="light"] #settings-modal .scene-settings-tabs button[aria-selected="true"] { background: #6366f119; color: #5658ce; }
-html[data-theme="light"] #settings-modal .scene-option { color: #262a3d; background: #fff; border-color: #d5d9e7; }
 html[data-theme="light"] #settings-modal .btn.plain,
 html[data-theme="light"] #settings-modal .icon-btn { color: #59617b; border-color: #d5d9e7; }
-html[data-theme="light"] #settings-modal .scene-setting-help,
-html[data-theme="light"] #settings-modal .modal-header p,
-html[data-theme="light"] #settings-modal .scene-option small { color: #626981; }
+html[data-theme="light"] #settings-modal .modal-header p { color: #626981; }
 @media (max-width: 760px) {
   body { --scene-edge: max(14px, env(safe-area-inset-left)); --dock-bottom: max(16px, env(safe-area-inset-bottom)); }
   .call-controls { gap: 8px; padding: 12px; grid-template-columns: auto minmax(40px, 1fr) auto auto; }
@@ -216,7 +198,6 @@ html[data-theme="light"] #settings-modal .scene-option small { color: #626981; }
 }
 
 html[data-palette="studio"] body { --bg: #1b1c1e; --bg-elev: #242628; --bg-elev-2: #2c2e30; --border: #40403c; --border-strong: #6f6655; --text: #eeeae2; --text-dim: #b4ada1; --text-faint: #b4ada1; --accent: #e2b267; --accent-2: #c28e4d; --speaking: #e2b267; }
-html[data-palette="studio"] body[data-scene="quiet"] .scene-background { background: radial-gradient(ellipse at 70% 30%, #62513d, transparent 65%), linear-gradient(145deg, #202123, #34302b 60%, #4b3b2e); }
 html[data-palette="studio"] .call-controls, html[data-palette="studio"] .chat-panel-inner, html[data-palette="studio"] #call-more-menu { background: #242628ed; border-color: #a28a6445; }
 html[data-palette="studio"] .circle-core, html[data-palette="studio"] .btn.primary { background: #e2b267; border-color: #e2b267; color: #261e12; box-shadow: none; }
 html[data-palette="studio"] .circle-indicator { color: #261e12; }
@@ -226,8 +207,8 @@ html[data-palette="studio"] .call-controls > .scene-button[aria-expanded="true"]
 html[data-palette="studio"] #settings-modal { background: #242628; --bg-elev: #242628; --bg: #1b1c1e; --text: #eeeae2; --text-dim: #b4ada1; --border: #40403c; --border-strong: #6f6655; --accent: #e2b267; color: var(--text); }
 html[data-palette="studio"][data-theme="light"] #settings-modal { background: #fffdf8; --bg-elev: #fffdf8; --bg: #f3f0e9; --text: #363631; --text-dim: #716a5e; --border: #dcd5c7; --border-strong: #bdb29d; --accent: #8b571d; }
 html[data-palette="studio"] #settings-modal .modal-footer { background: var(--bg-elev); border-color: var(--border); }
-html[data-palette="studio"] #settings-modal .field input, html[data-palette="studio"] #settings-modal .field select, html[data-palette="studio"] #settings-modal .field textarea, html[data-palette="studio"] #settings-modal .field select option, html[data-palette="studio"] #settings-modal .scene-option { background: var(--bg-elev); color: var(--text); border-color: var(--border-strong); }
-html[data-palette="studio"] #settings-modal .scene-setting-help, html[data-palette="studio"] #settings-modal .modal-header p, html[data-palette="studio"] #settings-modal .scene-option small, html[data-palette="studio"] #settings-modal .scene-settings-tabs button, html[data-palette="studio"] #settings-modal .btn.plain, html[data-palette="studio"] #settings-modal .icon-btn { color: var(--text-dim); }
+html[data-palette="studio"] #settings-modal .field input, html[data-palette="studio"] #settings-modal .field select, html[data-palette="studio"] #settings-modal .field textarea, html[data-palette="studio"] #settings-modal .field select option { background: var(--bg-elev); color: var(--text); border-color: var(--border-strong); }
+html[data-palette="studio"] #settings-modal .modal-header p, html[data-palette="studio"] #settings-modal .scene-settings-tabs button, html[data-palette="studio"] #settings-modal .btn.plain, html[data-palette="studio"] #settings-modal .icon-btn { color: var(--text-dim); }
 html[data-palette="studio"] #settings-modal .scene-settings-tabs button[aria-selected="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 html[data-palette="studio"] button:focus-visible, html[data-palette="studio"] summary:focus-visible, html[data-palette="studio"] textarea:focus-visible { outline-color: var(--accent); }
 html[data-palette="studio"] #settings-modal .field input:focus, html[data-palette="studio"] #settings-modal .field select:focus, html[data-palette="studio"] #settings-modal .field textarea:focus { border-color: var(--accent); outline-color: color-mix(in srgb, var(--accent) 25%, transparent); }

@@ -1,0 +1,65 @@
+{
+  "tileSize": 418,
+  "sceneCrop": [
+    0,
+    0,
+    1353,
+    941
+  ],
+  "transforms": [
+    {
+      "scale": 0.67,
+      "offsetX": 487.55,
+      "offsetY": 114.85,
+      "correlation": 0.9709253675515154
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 487.725,
+      "offsetY": 114.075,
+      "correlation": 0.8488417982108813
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 487.725,
+      "offsetY": 113.075,
+      "correlation": 0.8770064833947367
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 488.725,
+      "offsetY": 115.075,
+      "correlation": 0.9725072786723071
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 488.725,
+      "offsetY": 115.075,
+      "correlation": 0.9722860665689481
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 488.725,
+      "offsetY": 115.075,
+      "correlation": 0.9738920207173185
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 488.725,
+      "offsetY": 115.075,
+      "correlation": 0.9720047641200906
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 488.725,
+      "offsetY": 115.075,
+      "correlation": 0.9729396664459231
+    },
+    {
+      "scale": 0.665,
+      "offsetX": 488.725,
+      "offsetY": 115.075,
+      "correlation": 0.9740904760877694
+    }
+  ]
+}

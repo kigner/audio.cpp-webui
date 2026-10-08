@@ -4,22 +4,16 @@ const dialog = byId('settings-modal');
 const settingsButton = byId('settings-btn');
 const embedded = window.parent !== window;
 const KEY = 'audiocpp-scene-appearance';
-const sceneNames = {window:'窗边 · 日间',bedroom:'卧室 · 暖灯', 'living-room':'客厅 · 午后',quiet:'静谧 · 无人物'};
 function readAppearance() {
-  try { return {scene:'window',captions:true,...JSON.parse(localStorage.getItem(KEY)||'{}')}; }
-  catch { return {scene:'window',captions:true}; }
+  try { return {captions:JSON.parse(localStorage.getItem(KEY)||'{}').captions!==false}; }
+  catch { return {captions:true}; }
 }
 let appearance = readAppearance();
 function applyAppearance() {
-  if(!Object.hasOwn(sceneNames,appearance.scene))appearance.scene='window';
-  document.body.dataset.scene = appearance.scene;
   document.body.classList.toggle('captions-hidden',!appearance.captions);
-  byId('scene-location').textContent=sceneNames[appearance.scene];
   byId('scene-captions').checked=!!appearance.captions;
-  document.querySelectorAll('[data-scene-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.sceneChoice===appearance.scene)));
 }
 applyAppearance();
-document.querySelectorAll('[data-scene-choice]').forEach(button=>button.addEventListener('click',()=>{appearance.scene=button.dataset.sceneChoice;applyAppearance();}));
 byId('scene-captions').addEventListener('change',event=>{appearance.captions=event.target.checked;applyAppearance();});
 dialog.addEventListener('close',()=>{
   if(dialog.returnValue==='save'){try{localStorage.setItem(KEY,JSON.stringify(appearance));}catch{}}
@@ -46,9 +40,9 @@ document.querySelector('.scene-settings-tabs').addEventListener('keydown',event=
   const index=event.key==='Home'?0:event.key==='End'?tabs.length-1:(current+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
   event.preventDefault();selectSettingsTab(tabs[index].dataset.settingsTab);tabs[index].focus();
 });
-selectSettingsTab('llm');
+selectSettingsTab('character');
 settingsButton.addEventListener('click',()=>{dialog.returnValue='';appearance=readAppearance();applyAppearance();});
-byId('scene-picker').addEventListener('click',()=>{settingsButton.click();selectSettingsTab('scene');});
+byId('scene-picker').addEventListener('click',()=>{settingsButton.click();selectSettingsTab('character');});
 document.querySelectorAll('[data-setup]').forEach(button=>button.addEventListener('click',()=>selectSettingsTab(button.dataset.setup.replace('settings-',''))));
 
 // Keep overlays outside the transformed control dock, so they anchor to the scene.

@@ -41,6 +41,7 @@ export class ChatView {
     this._bubbleStack = $("#bubble-stack");
 
     this._panelOpen = false;
+    this._assistantName = "助手";
     this._scrollQueued = false;
 
     // ── User transcript state (keyed by item_id) ───────────────────────────
@@ -76,6 +77,8 @@ export class ChatView {
   }
 
   // ── Panel ───────────────────────────────────────────────────────────────
+
+  setAssistantName(name) { this._assistantName = String(name || "助手"); }
 
   _openPanel() {
     this._panelOpen = true;
@@ -125,7 +128,7 @@ export class ChatView {
   _buildMessageEl({ container, prefix, role, text, partial = false }) {
     const el = document.createElement("div");
     el.className = `${container} ${role}`;
-    const label = role === "user" ? "你" : "助手";
+    const label = role === "user" ? "你" : escHtml(this._assistantName);
     el.innerHTML = `<div class="${prefix}-role">${label}</div><div class="${prefix}-body${partial ? " partial" : ""}">${escHtml(text)}</div>`;
     return el;
   }

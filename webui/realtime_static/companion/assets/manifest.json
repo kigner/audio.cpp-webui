@@ -1,0 +1,23 @@
+{
+  "purpose": "User-approved default realtime character, driven by the existing TTS player; also available in the standalone preview",
+  "date": "2026-10-08",
+  "tool": "image_gen.imagegen (built-in)",
+  "scene": {
+    "file": "scene.png",
+    "source": "exec-41bd82a5-8bbe-44e8-9d94-7e484a206ab5.png",
+    "dimensions": [1672, 941],
+    "approved_image_preserved": true,
+    "runtime_scene_crop": [0, 0, 1353, 941]
+  },
+  "face_atlas": {
+    "file": "face-atlas.png",
+    "source": "exec-1c780b83-b572-4ae6-9dc0-0928ea023394.png",
+    "dimensions": [1254, 1254],
+    "layout": "3 x 3, 418px cells",
+    "states": ["original", "closed blink", "half blink", "aa", "E/I", "O", "U", "M/B/P closed", "listening smile"],
+    "prompt": "Edit supporting animation asset for the provided approved illustration. Use ONLY the main large woman's face in the LEFT bedroom scene as the identity and pose reference; do not use the three right-side portraits. She is an adult age 28-32. Produce ONE precise 3 by 3 animation atlas, nine equally sized square cells, NO gaps, NO borders, NO text, NO labels. Every cell must contain an identical closely cropped portrait of that same face from upper forehead to chin with the SAME exact head angle, eye placement, face proportions, nose position, lip position, camera position, crop scale, hairstyle, warm lamp illumination and skin color. Face fills the square, dark brown hair at edges; neck and shoulders mostly outside the crop. This is intended for pixel-aligned local eye and lip patches, so do not vary composition, facial identity or head tilt across cells. Changes should be limited to eyelids and mouth. Row 1 left: original attentive soft smile, eyes open, lips relaxed; row 1 middle: BOTH eyes fully closed in a natural blink, same relaxed lips; row 1 right: BOTH eyelids halfway closed, same relaxed lips. Row 2 left: eyes original open, speaking vowel A/aa mouth naturally open with dark inner mouth and subtle teeth; row 2 middle: eyes original open, speaking E/I mouth moderately wide and shallow with upper teeth lightly visible; row 2 right: eyes original open, speaking O mouth rounded medium opening. Row 3 left: eyes original open, speaking U mouth softly pursed and rounded with small opening; row 3 middle: eyes original open, M/B/P lips pressed gently together, fully closed, no teeth; row 3 right: eyes original open, closed-mouth affectionate listening smile with just slightly raised lip corners. Preserve beautiful mature high-end 2D romantic anime illustration, refined lines and shading; no 3D rendering, no photorealism, no room scene, no body pose, no additional characters. All nine portraits use the EXACT SAME tilted face and very consistent pixel placement."
+  },
+  "registration": "face-registration.json; numeric image analysis only, no Python image edits",
+  "animation": "WebGL2 local eye/lip replacement, compact head/shoulder/breath deformation, smooth listening tilt and TTS-driven speaking nods",
+  "audio": "Existing PCM player + vendored HeadAudio; five visual mouth classes, Chinese fine alignment requires visual acceptance"
+}
