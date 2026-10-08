@@ -10,7 +10,7 @@
  */
 
 import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js";
-import { ChatView } from "./ui/chat.js?v=roles-5";
+import { ChatView } from "./ui/chat.js?v=chat-fade-1";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
 import {loadCharacters, saveCharacters, normalizeCharacters, currentCharacter, DEFAULT_ANIMATION, CHARACTER_DEFAULTS} from "./companion/profile.js";
 
@@ -1153,6 +1153,7 @@ async function doStart(textOnly = false) {
     });
     c.addEventListener("status", (e) => { if (client === c) onClientStatus(/** @type {CustomEvent} */ (e).detail.status); });
     c.addEventListener("transcript", (e) => { if (client === c) chat.onTranscript(/** @type {CustomEvent} */ (e).detail); });
+    c.addEventListener("audio-chunk", (e) => { if (client === c) chat.onAudioChunk(/** @type {CustomEvent} */ (e).detail); });
     c.addEventListener("response-finished", (e) => { if (client === c) chat.onResponseFinished(/** @type {CustomEvent} */ (e).detail); });
     c.addEventListener("error", (e) => { if (client === c) { void doStop().then(() => onFatalError(/** @type {CustomEvent} */ (e).detail.error)); } });
     c.addEventListener("server-error", (e) => {
@@ -1195,6 +1196,7 @@ async function doStop() {
     micStream = null;
   }
   paintInputLevel(0);
+  chat.reset({ dismiss: true });
   muted = false;
   micBtn.classList.remove("muted");
   queueBar.hidden = true;

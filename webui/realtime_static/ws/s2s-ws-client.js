@@ -336,6 +336,7 @@ export class S2sWsRealtimeClient extends EventTarget {
     }
 
     const rid = this._ensurePlaybackResponse(responseId);
+    if (samples.length) this.dispatchEvent(new CustomEvent("audio-chunk", { detail: { responseId: rid } }));
     const mode = this._playbackMode();
     const bufferSentence = mode === "smooth" ||
       (mode === "auto" && this._adaptivePlayback !== "stream");

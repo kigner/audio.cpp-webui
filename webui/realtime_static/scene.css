@@ -32,7 +32,7 @@ body {
 #settings-btn::after { content: "设置"; font-size: 13.5px; }
 #settings-btn { padding: 9px 13px; }
 .stage { display: block; position: static; padding: 0; min-height: 0; }
-.call-controls { position: fixed; bottom: max(28px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 15; display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 28px; width: max-content; max-width: calc(100% - 40px); min-height: 0; padding: 16px 28px; border: 1px solid #ffffff30; border-radius: 24px; background: #242633df; backdrop-filter: blur(24px); box-shadow: 0 16px 64px #0004; }
+.call-controls { position: fixed; bottom: max(28px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 15; display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 28px; width: max-content; max-width: calc(100% - 40px); min-height: 0; padding: 16px 28px; border: 1px solid #ffffff30; border-radius: 24px; background: #24263380; backdrop-filter: blur(12px); box-shadow: 0 16px 64px #0003; }
 .orb-wrap, .orb-wrap.live { display: flex; flex-direction: row; gap: 14px; margin: 0; }
 .circle { width: 62px; height: 62px; flex: 0 0 62px; }
 .circle-core { width: 100%; height: 100%; background: #abb5ff; color: #252348; border: 0; box-shadow: 0 0 0 5px #a9b4ff18; }
@@ -54,9 +54,11 @@ body {
 .scene-waveform i:nth-child(3n + 1) { --bar: 19px; }
 .scene-waveform i:first-child, .scene-waveform i:last-child { --bar: 7px; opacity: .5; }
 .bubble-stack { display: flex; flex-direction: column; justify-content: flex-end; position: fixed; top: auto; right: auto; bottom: 155px; left: clamp(24px, 5vw, 96px); width: min(44vw, 560px); max-height: 48vh; overflow: hidden; gap: 12px; z-index: 12; }
-.bubble { flex-shrink: 0; padding: 14px 18px; border: 1px solid #ffffff1a; border-radius: 14px; background: #252735cf; backdrop-filter: blur(20px); box-shadow: none; color: #f5f6ff; transform: translateY(8px); }
-.bubble.user, .bubble.assistant { align-self: flex-start; background: #252735cf; color: #f5f6ff; max-width: 100%; }
-.bubble.user { background: #33364ad9; }
+.bubble { flex-shrink: 0; padding: 14px 18px; border: 1px solid #ffffff1a; border-radius: 14px; background: #25273566; backdrop-filter: blur(10px); box-shadow: none; color: #f5f6ff; transform: translateY(8px); }
+.bubble.in { transform: none; }
+.bubble.out { transform: translateY(-4px); transition: opacity .75s ease, transform .75s ease; }
+.bubble.user, .bubble.assistant { align-self: flex-start; background: #25273566; color: #f5f6ff; max-width: 100%; }
+.bubble.user { background: #33364a70; }
 .bubble-role { color: #bbc3f4; font-size: 12.6px; }
 .bubble-body { font-size: 14.4px; line-height: 1.8; }
 .captions-hidden .bubble-stack { display: none; }
@@ -64,25 +66,30 @@ body {
 .chat-panel { position: fixed; inset: 90px auto 146px var(--scene-edge, 28px); width: min(400px, calc(100% - 40px)); display: block; opacity: 0; visibility: hidden; pointer-events: none; z-index: 25; transform: translateX(-12px); transition: opacity .2s, transform .2s, visibility .2s; }
 .chat-panel.open { opacity: 1; visibility: visible; pointer-events: auto; transform: none; }
 body:has(.chat-panel.open) .bubble-stack { visibility: hidden; }
-.chat-panel-inner { display: flex; flex-direction: column; position: static; width: 100%; height: 100%; min-height: 0; max-height: none; border: 1px solid #ffffff2b; border-radius: 18px; background: #252735f0; backdrop-filter: blur(24px); box-shadow: 0 12px 48px #0003; transform: none; }
+.chat-panel-inner { display: flex; flex-direction: column; position: static; width: 100%; height: 100%; min-height: 0; max-height: none; border: 1px solid #ffffff2b; border-radius: 18px; background: #252735a6; backdrop-filter: blur(12px); box-shadow: 0 12px 48px #0003; transform: none; }
 .chat-panel-header { flex-shrink: 0; padding: 18px 20px; border-bottom: 1px solid #ffffff1a; }
 .chat-history { flex: 1; min-height: 0; max-height: none; overflow-y: auto; padding: 18px; }
 .hist-msg { background: #ffffff08; border: 1px solid #ffffff10; padding: 13px 15px; }
 .hist-msg.assistant { background: #abb5ff0a; }
-.hist-body { color: #f0f3fc; font-size: 14.4px; }
+.hist-body { color: #f0f3fc; font-size: 14.4px; background: transparent; border: 0; padding: 0; }
 .hist-role { color: #b7c0ee; }
 #settings-modal { position: fixed; inset: 0 0 0 auto; width: min(520px, 100vw); max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid #ffffff28; border-radius: 20px 0 0 20px; background: #252735; color: #f4f5fc; box-shadow: -20px 0 80px #0003; }
 #settings-modal::backdrop { background: #06100a55; backdrop-filter: blur(3px); }
 #settings-modal .modal-content { display: flex; flex-direction: column; height: 100%; max-height: none; overflow: hidden; padding: 0; }
-#settings-modal .modal-header { flex-shrink: 0; padding: 26px 28px 22px; background: none; border-bottom: 1px solid #ffffff14; }
+#settings-modal .modal-header { flex-shrink: 0; padding: 12px 24px 6px; margin: 0; background: none; border-bottom: 0; }
+#settings-modal .modal-header .icon-btn { width: 32px; height: 32px; min-height: 32px; padding: 0; }
 .modal-header h2 { font-size: 18px; }
 .modal-header p { color: #adb4d0; }
-.scene-settings-tabs { display: flex; flex-shrink: 0; gap: 6px; padding: 15px 24px; border-bottom: 1px solid #ffffff14; }
+.scene-settings-tabs { display: flex; flex-shrink: 0; gap: 6px; padding: 6px 24px 10px; border-bottom: 1px solid #ffffff14; }
 .scene-settings-tabs button { flex: 1; padding: 10px 8px; border: 0; border-radius: 9px; background: transparent; color: #b4bcd4; font: inherit; font-size: 13.5px; cursor: pointer; }
 .scene-settings-tabs button[aria-selected="true"] { background: #abb5ff1a; color: #ced3ff; font-weight: 600; }
-#settings-modal .tab-panels { flex: 1; min-height: 0; overflow-y: auto; padding: 0 28px 24px; }
+#settings-modal .tab-panels { flex: 1; min-height: 0; overflow-y: auto; padding: 0 24px 16px; scrollbar-width: thin; scrollbar-color: transparent transparent; }
+#settings-modal .tab-panels:hover, #settings-modal .tab-panels:focus-within { scrollbar-color: var(--border-strong) transparent; }
+#settings-modal .tab-panels::-webkit-scrollbar { width: 6px; }
+#settings-modal .tab-panels::-webkit-scrollbar-thumb { background: transparent; border-radius: 6px; }
+#settings-modal .tab-panels:hover::-webkit-scrollbar-thumb, #settings-modal .tab-panels:focus-within::-webkit-scrollbar-thumb { background: var(--border-strong); }
 [data-settings-panel][hidden], [hidden] { display: none !important; }
-.settings-section { padding: 24px 0 4px; border: 0; }
+.settings-section { padding: 16px 0 4px; border: 0; }
 .settings-section h3 > span { display: none; }
 .settings-section h3 small { display: block; margin: 7px 0 0; font-size: 12.6px; }
 .field-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
@@ -130,8 +137,8 @@ body:has(.chat-panel.open) .bubble-stack { visibility: hidden; }
   .bubble-body { font-size: 14.4px; }
   .chat-panel { top: 106px; bottom: 137px; }
   #settings-modal { border-radius: 16px 0 0 16px; }
-  #settings-modal .modal-header { padding: 22px; }
-  .scene-settings-tabs { padding: 12px 18px; }
+  #settings-modal .modal-header { padding: 12px 20px 6px; }
+  .scene-settings-tabs { padding: 6px 16px 10px; }
   #settings-modal .tab-panels { padding: 0 22px 20px; }
   .modal-footer { padding: 16px 22px; }
 }
@@ -159,11 +166,11 @@ body[data-microphone="on"] .call-status .scene-waveform { display: flex; justify
 .call-more { position: relative; }
 .call-more summary { display: grid; place-items: center; min-width: 38px; min-height: 38px; border: 1px solid #ffffff29; border-radius: 12px; background: #ffffff09; cursor: pointer; list-style: none; letter-spacing: 2px; }
 .call-more summary::-webkit-details-marker { display: none; }
-#call-more-menu { position: absolute; right: 0; bottom: calc(100% + 18px); display: flex; flex-direction: column; gap: 4px; min-width: 150px; padding: 8px; border: 1px solid #ffffff30; border-radius: 14px; background: #262939f5; box-shadow: 0 12px 36px #0004; backdrop-filter: blur(20px); }
+#call-more-menu { position: absolute; right: 0; bottom: calc(100% + 18px); display: flex; flex-direction: column; gap: 4px; min-width: 150px; padding: 8px; border: 1px solid #ffffff30; border-radius: 14px; background: #262939b8; box-shadow: 0 12px 36px #0004; backdrop-filter: blur(12px); }
 #call-more-menu button { width: 100%; min-height: 40px; display: flex; justify-content: flex-start; gap: 10px; padding: 10px 12px; border: 0; border-radius: 9px; background: transparent; color: #e5e9fa; }
 #call-more-menu button:hover { background: #abb5ff20; }
 #call-more-menu #chat-btn::after { display: inline; content: "对话记录"; }
-#call-more-menu #settings-btn::after { display: inline; content: "会话参数"; }
+#call-more-menu #settings-btn::after { display: inline; content: "聊天设置"; }
 .text-composer { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid #ffffff24; }
 .text-composer textarea { resize: none; width: 100%; min-height: 40px; max-height: 144px; box-sizing: border-box; padding: 10px 12px; border: 1px solid #ffffff25; border-radius: 10px; background: #171a2780; color: #f4f5fc; font: inherit; font-size: 14.4px; line-height: 1.5; }
 .text-composer textarea::placeholder { color: #adb4d0; font-size: 12.6px; }
@@ -177,7 +184,7 @@ body[data-microphone="on"] .call-status .scene-waveform { display: flex; justify
 .chat-panel { bottom: calc(var(--dock-height, 82px) + var(--dock-bottom) + 20px); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 button:focus-visible, summary:focus-visible, textarea:focus-visible { outline: 2px solid #a6b2ff; outline-offset: 3px; }
-html[data-theme="light"] #settings-modal { background: #f5f6fb; color: #262a3d; --text: #262a3d; --text-dim: #626981; --text-faint: #737b92; --border: #d9ddea; }
+html[data-theme="light"] #settings-modal { color-scheme: light; background: #f5f6fb; color: #262a3d; --text: #262a3d; --text-dim: #626981; --text-faint: #737b92; --border: #d9ddea; }
 html[data-theme="light"] #settings-modal .modal-footer { background: #f5f6fb; border-color: #d9ddea; }
 html[data-theme="light"] #settings-modal .field input,
 html[data-theme="light"] #settings-modal .field select,
@@ -201,10 +208,11 @@ html[data-theme="light"] #settings-modal .modal-header p { color: #626981; }
 }
 
 html[data-palette="studio"] body { --bg: #1b1c1e; --bg-elev: #242628; --bg-elev-2: #2c2e30; --border: #40403c; --border-strong: #6f6655; --text: #eeeae2; --text-dim: #b4ada1; --text-faint: #b4ada1; --accent: #e2b267; --accent-2: #c28e4d; --speaking: #e2b267; }
-html[data-palette="studio"] .call-controls, html[data-palette="studio"] .chat-panel-inner, html[data-palette="studio"] #call-more-menu { background: #242628ed; border-color: #a28a6445; }
+html[data-palette="studio"] .call-controls { background: #24262880; border-color: #a28a6445; }
+html[data-palette="studio"] .chat-panel-inner, html[data-palette="studio"] #call-more-menu { background: #242628a6; border-color: #a28a6445; }
 html[data-palette="studio"] .circle-core, html[data-palette="studio"] .btn.primary { background: #e2b267; border-color: #e2b267; color: #261e12; box-shadow: none; }
 html[data-palette="studio"] .circle-indicator { color: #261e12; }
-html[data-palette="studio"] .bubble.user, html[data-palette="studio"] .bubble.assistant { background: #292a2ddb; }
+html[data-palette="studio"] .bubble.user, html[data-palette="studio"] .bubble.assistant { background: #292a2d66; }
 html[data-palette="studio"] .bubble-role, html[data-palette="studio"] .hist-role, html[data-palette="studio"] .bubble.user .bubble-role, html[data-palette="studio"] .bubble.assistant .bubble-role { color: #e2b267; }
 html[data-palette="studio"] .call-controls > .scene-button[aria-expanded="true"] { background: #e2b26720; border-color: #e2b26788; color: #e2b267; }
 html[data-palette="studio"] #settings-modal { background: #242628; --bg-elev: #242628; --bg: #1b1c1e; --text: #eeeae2; --text-dim: #b4ada1; --border: #40403c; --border-strong: #6f6655; --accent: #e2b267; color: var(--text); }

@@ -6,7 +6,7 @@
     <title>实时语音聊天 · Aixora Audio</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="workbench.css?v=scene-5" />
-<link rel="stylesheet" href="scene.css?v=microphone-1" />
+<link rel="stylesheet" href="scene.css?v=chat-fade-1" />
     <link rel="stylesheet" href="companion/live.css?v=roles-5" />
   </head>
   <body class="booting">
@@ -29,7 +29,7 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span id="chat-badge" class="chat-badge" aria-hidden="true"></span>
           </button>
-          <button id="settings-btn" class="icon-btn" title="会话参数" aria-label="会话参数">
+          <button id="settings-btn" class="icon-btn" title="聊天设置" aria-label="聊天设置">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c0 .66.39 1.25 1 1.51H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
         </div>
@@ -154,8 +154,8 @@
 
     <dialog id="settings-modal" class="modal">
       <form method="dialog" class="modal-content">
-          <header class="modal-header"><h2>会话参数</h2><button class="icon-btn" value="close" aria-label="关闭">×</button></header>
-        <nav class="scene-settings-tabs" role="tablist" aria-label="会话参数分类"><button type="button" role="tab" data-settings-tab="character">角色</button><button type="button" role="tab" data-settings-tab="llm">对话</button><button type="button" role="tab" data-settings-tab="tts">声音</button><button type="button" role="tab" data-settings-tab="asr">识别</button><button type="button" role="tab" data-settings-tab="connection">连接</button></nav>
+          <header class="modal-header"><h2>聊天设置</h2><button class="icon-btn" value="close" aria-label="关闭">×</button></header>
+        <nav class="scene-settings-tabs" role="tablist" aria-label="聊天设置分类"><button type="button" role="tab" data-settings-tab="character">角色</button><button type="button" role="tab" data-settings-tab="llm">对话</button><button type="button" role="tab" data-settings-tab="tts">声音</button><button type="button" role="tab" data-settings-tab="asr">识别</button><button type="button" role="tab" data-settings-tab="connection">连接</button></nav>
         <div class="tab-panels">
           <section id="settings-character" class="settings-section" data-settings-panel="character">
             <div id="character-grid" class="character-grid" role="group" aria-label="选择角色"></div>
@@ -227,7 +227,7 @@
       </form>
     </dialog>
 
-<script type="module" src="main.js?v=roles-5"></script>
+<script type="module" src="main.js?v=chat-fade-1"></script>
 <script type="module" src="scene.js?v=roles-5"></script>
   </body>
 </html>

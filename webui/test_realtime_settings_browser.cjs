@@ -400,6 +400,20 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     delete models.find(model=>model.id==='supertonic').voices[0].url;
     await open();
     await page.waitForFunction(()=>document.querySelector('#tts-reference-preview').hidden);
+    assert.equal(await page.locator('.modal-header h2').textContent(),'聊天设置');
+    assert.equal(await page.locator('#settings-btn').getAttribute('aria-label'),'聊天设置');
+    for(const viewport of [{width:1440,height:900},{width:1000,height:740},{width:390,height:844}]){
+      await page.setViewportSize(viewport);
+      const layout=await page.evaluate(()=>{
+        const header=document.querySelector('#settings-modal .modal-header').getBoundingClientRect();
+        const tabs=document.querySelector('.scene-settings-tabs').getBoundingClientRect();
+        const panels=document.querySelector('#settings-modal .tab-panels');
+        return {headerHeight:header.height,topHeight:tabs.bottom,scrollHeight:panels.scrollHeight,clientHeight:panels.clientHeight};
+      });
+      assert(layout.headerHeight<=52&&layout.topHeight<=108,'settings heading and tabs stay compact');
+      assert(layout.scrollHeight<=layout.clientHeight+1,'default preset settings fit without scrolling');
+    }
+    await page.setViewportSize({width:1440,height:900});
     if(screenshots)await page.screenshot({path:path.join(screenshots,'lily-builtin-settings.png')});
     await page.locator('.modal-footer [value="close"]').click();
     console.log('PASS six thumbnails in two rows and role-specific model/reference request contracts');
@@ -451,34 +465,84 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     // Use the public chat event API on the real DOM, independent of cloud/model availability.
     await page.setViewportSize({width:1440,height:900});
     await page.reload();await page.waitForSelector('#live-character-stage canvas');
+    await page.clock.install();
     await page.evaluate(async()=>{
-      const {ChatView}=await import('/realtime/ui/chat.js?v=roles-5');window.speechTest=new ChatView();speechTest.setAssistantName('Lily');
+      const {ChatView}=await import('/realtime/ui/chat.js?v=chat-fade-1');window.speechTest=new ChatView();speechTest.setAssistantName('Lily');
       speechTest.onTranscript({role:'user',text:'你好',partial:false,itemId:'user-1'});
-      speechTest.onTranscript({role:'assistant',text:'你好，今天有什么想和我分享的吗？我会在这里听你慢慢说。',partial:false,responseId:'spoken-1'});
-      speechTest.onResponseFinished({responseId:'spoken-1',status:'completed'});
+      speechTest.onTranscript({role:'user',text:'输入框发来的文字',partial:false,itemId:'typed-1'});
     });
+    await page.clock.fastForward(7000);
+    assert.equal(await page.locator('.bubble.user:not(.out)').count(),2,'microphone and typed text wait for a reply');
+    await page.evaluate(()=>speechTest.onTranscript({role:'assistant',text:'',partial:true,responseId:'spoken-1'}));
+    assert.equal(await page.locator('.bubble.user:not(.out)').count(),2,'empty reply does not hide user text');
+    await page.evaluate(()=>{
+      speechTest.onTranscript({role:'assistant',text:'你好，今天有什么想和我分享的吗？我会在这里听你慢慢说。不论是今天遇到的小事，还是最近一直放在心里的想法，你都可以从最想说的地方开始。',partial:false,responseId:'spoken-1'});
+    });
+    assert.equal(await page.locator('.bubble.user:not(.out)').count(),0,'first reply fades all pending user text');
+    assert.equal(await page.locator('.bubble-role, .hist-msg.user .hist-role, .hist-msg.assistant .hist-role').count(),0,'messages have no visible speaker names');
+    await page.clock.runFor(1000);
     assert.equal(await page.locator('#bubble-stack').evaluate(el=>el.parentElement===document.body),true);
     const bubbles=await page.locator('#bubble-stack').boundingBox();
     const chatDock=await page.locator('.call-controls').boundingBox();
     assert(bubbles.x<100&&bubbles.width===560,'chat text uses the original left-side layout');
     assert(Math.abs(bubbles.y+bubbles.height-(chatDock.y-22))<1,'chat text remains above the bottom controls');
     assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),1);
+    const surfaces=await page.evaluate(()=>['.bubble.assistant','.call-controls','.chat-panel-inner'].map(selector=>getComputedStyle(document.querySelector(selector)).backgroundColor));
+    assert(surfaces.every(color=>color.startsWith('rgba(')&&Number(color.split(',').at(-1).replace(')',''))<.7),'chat surfaces are translucent');
     if(screenshots){
       await page.waitForFunction(()=>[...document.querySelectorAll('.bubble.in')].every(el=>Number(getComputedStyle(el).opacity)===1));
       await page.screenshot({path:path.join(screenshots,'restored-chat-text.png')});
     }
-    await page.waitForTimeout(6500);
-    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0,'reply fades on the original timer without waiting for audio');
+    await page.clock.fastForward(6500);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),1,'reply waits for its audio first chunk');
+    await page.evaluate(()=>{
+      speechTest.onAudioChunk({responseId:'spoken-1'});
+      speechTest.onResponseFinished({responseId:'spoken-1',status:'completed'});
+    });
+    await page.clock.fastForward(6500);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),1,'long replies get more reading time');
+    await page.clock.fastForward(14000);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0);
     assert.equal(await page.locator('.hist-msg.assistant').count(),1,'conversation history keeps the reply');
+    await page.evaluate(()=>{
+      speechTest.onTranscript({role:'assistant',text:'在的',partial:false,responseId:'short'});
+      speechTest.onAudioChunk({responseId:'short'});
+    });
+    await page.clock.fastForward(1000);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),1);
+    await page.evaluate(()=>{
+      speechTest.onAudioChunk({responseId:'short'});
+      speechTest.onResponseFinished({responseId:'short',status:'completed'});
+    });
+    await page.clock.fastForward(500);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0,'short acknowledgements fade in 1-2 seconds, without later chunks extending the timer');
+    await page.evaluate(()=>{
+      speechTest.onAudioChunk({responseId:'early-audio'});
+      speechTest.onTranscript({role:'assistant',text:'好的',partial:false,responseId:'early-audio'});
+    });
+    await page.clock.fastForward(1500);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0,'audio arriving before transcript still arms the reading timer');
+    await page.evaluate(()=>{
+      speechTest.onTranscript({role:'assistant',text:'在的',partial:true,responseId:'growing'});
+      speechTest.onAudioChunk({responseId:'growing'});
+    });
+    await page.clock.fastForward(1000);
+    await page.evaluate(()=>speechTest.onTranscript({role:'assistant',text:'在的，你可以慢慢说，我会认真听你分享今天发生的事情。',partial:false,responseId:'growing'}));
+    await page.clock.fastForward(1000);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),1,'new streamed text gets additional reading time');
+    await page.clock.fastForward(20000);
+    await page.evaluate(()=>speechTest.onTranscript({role:'assistant',text:'没有收到音频的回复',partial:false,responseId:'silent'}));
+    await page.clock.fastForward(31000);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0,'stalled synthesis has a bounded fallback');
     await page.evaluate(()=>{
       speechTest.onTranscript({role:'assistant',text:'即将被打断的内容',partial:true,responseId:'cancelled'});
       speechTest.reset({dismiss:true});
     });
     assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0);
-    console.log('PASS original chat text placement, timer and history');
+    console.log('PASS chat placement, transparency, hidden names, reply-triggered user fade and adaptive audio-triggered reply fade');
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>window.micRequests),0);
-    console.log('Realtime settings browser: 17/17 passed');
+    console.log('Realtime settings browser: all checks passed');
   } catch(error) {
     console.error(JSON.stringify({consoleErrors,errors,ui:await page.evaluate(()=>({character:document.body.dataset.character,dialogOpen:document.getElementById('settings-modal').open,returnValue:document.getElementById('settings-modal').returnValue,saved:localStorage.getItem('audiocpp.realtime.characters')}))}));throw error;
   } finally {await browser.close();}

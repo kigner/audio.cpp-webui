@@ -58,6 +58,22 @@ test('cancel clears playback immediately and rejects obsolete completion', () =>
   assert.equal(client._status, 'connected');
 });
 
+test('audio chunk notification arrives before sentence buffering and ignores stale generations', () => {
+  const client = clientForText();
+  client._playbackNode = { port: { postMessage() {} } };
+  const chunks = [];
+  client.addEventListener('audio-chunk', event => chunks.push(event.detail.responseId));
+  const delta = Buffer.alloc(8).toString('base64');
+  client.sendText('question');
+  message(client, { type: 'user.text.accepted', generation: 2, request_id: 1 });
+  message(client, { type: 'response.output_audio.delta', generation: 1, delta, response_id: 'stale' });
+  message(client, { type: 'response.output_audio.delta', generation: 2, delta: '', response_id: 'empty' });
+  assert.deepEqual(chunks, []);
+  message(client, { type: 'response.output_audio.delta', generation: 2, delta, response_id: 'current' });
+  assert.deepEqual(chunks, ['current']);
+  assert.equal(client._bufferedPlayback.length, 1, 'notification does not wait for playback or a complete sentence');
+});
+
 test('late microphone permission after ending session releases its track', async () => {
   const client = clientForText();
   let stopped = false;
