@@ -10,7 +10,7 @@
  */
 
 import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js";
-import { ChatView } from "./ui/chat.js?v=scene-1";
+import { ChatView } from "./ui/chat.js?v=roles-5";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
 import {loadCharacters, saveCharacters, normalizeCharacters, currentCharacter, DEFAULT_ANIMATION, CHARACTER_DEFAULTS} from "./companion/profile.js";
 
@@ -87,7 +87,9 @@ function loadSettings() {
     }
     s[k] = v === null ? def : v;
   }
-  return {...s, characters: loadCharacters()};
+  const characters = loadCharacters();
+  const role = currentCharacter(characters);
+  return {...s, characters, ttsModel: role.ttsModel || s.ttsModel, ttsVoice: role.ttsVoice};
 }
 
 /** Env defaults fetched from the realtime server's /config endpoint. Empty
@@ -139,6 +141,8 @@ async function refreshEnvDefaults() {
             : [];
           // Apply: any field the user hasn't set in localStorage takes the env value.
           for (const k of Object.keys(DEFAULTS)) {
+            if (k === "ttsModel" && currentCharacter(settings.characters).ttsModel) continue;
+            if (k === "ttsVoice") continue;
             const envKey = ENV_SETTING_KEYS[k];
             if (envKey && envDefaults[envKey] != null && localStorage.getItem(STORAGE[k]) === null) {
               settings[k] = String(envDefaults[envKey]);
@@ -321,12 +325,11 @@ const settingsFields = {
 const ttsModelCapability = $("#tts-model-capability");
 const ttsDotsOptions = $("#tts-dots-options");
 const referenceFields = {audio: $("#tts-voice-ref"), text: $("#tts-ref-text")};
-const characterSelect = $("#character-select");
+const characterGrid = $("#character-grid");
 const characterName = $("#character-name");
 
 function applyCharacterProfile(role) {
   document.body.dataset.character = role.id;
-  document.getElementById("scene-location").textContent = role.name;
   chat?.setAssistantName(role.name);
   void liveCharacterReady.then(controller => controller?.setCharacter(role)).catch(error => showRealtimeError(error));
 }
@@ -336,6 +339,8 @@ function readCharacterForm() {
   role.name = characterName.value.trim() || CHARACTER_DEFAULTS[role.id].name;
   role.referenceAudio = referenceFields.audio.value;
   role.referenceText = referenceFields.text.value;
+  role.ttsModel = settingsFields.ttsModel.value;
+  role.ttsVoice = settingsFields.ttsVoice.value;
   for (const input of document.querySelectorAll("[data-animation]")) {
     role.animation[input.dataset.animation] = input.type === "checkbox" ? input.checked : Number(input.value);
   }
@@ -345,21 +350,46 @@ function readCharacterForm() {
 
 function fillCharacterForm() {
   const role = currentCharacter(characterDraft);
-  characterSelect.replaceChildren(...Object.values(characterDraft.roles).map(item => new Option(item.name, item.id)));
-  characterSelect.value = role.id;
+  renderCharacterGrid();
   characterName.value = role.name;
+  document.getElementById("character-name-status").textContent = "";
+  const model = role.ttsModel || settingsFields.ttsModel.value || settings.ttsModel;
+  if (model && !Array.from(settingsFields.ttsModel.options).some(option => option.value === model)) {
+    settingsFields.ttsModel.add(new Option(`${model}（未安装）`, model));
+  }
+  settingsFields.ttsModel.value = model;
+  renderVoiceOptions(true);
+  // Preserve an uninstalled model's preset until its metadata becomes available.
+  if (role.ttsVoice && !Array.from(settingsFields.ttsVoice.options).some(option => option.value === role.ttsVoice)) {
+    settingsFields.ttsVoice.add(new Option(role.ttsVoice, role.ttsVoice));
+  }
+  settingsFields.ttsVoice.value = role.ttsVoice;
   referenceFields.text.value = role.referenceText;
   renderReferenceOptions(role.referenceAudio);
-  document.getElementById("character-portrait").classList.toggle("system", role.id === "system");
-  document.getElementById("character-portrait").dataset.character = role.id;
-  document.getElementById("character-portrait").setAttribute("aria-label", role.id === "system" ? "空白画面" : `${role.name}角色预览`);
-  document.getElementById("character-portrait-label").textContent = role.id === "system" ? "空白画面" : role.name;
-  document.getElementById("character-advanced").hidden = role.id === "system";
+  document.getElementById("character-animation-controls").hidden = !CHARACTER_DEFAULTS[role.id].visual;
   for (const input of document.querySelectorAll("[data-animation]")) {
     if (input.type === "checkbox") input.checked = role.animation[input.dataset.animation];
     else input.value = role.animation[input.dataset.animation];
   }
   updateAnimationLabels();
+  syncTtsSettingsUi(false);
+}
+
+function renderCharacterGrid() {
+  characterGrid.replaceChildren(...Object.values(characterDraft.roles).map(role => {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "character-card";
+    button.dataset.characterId = role.id;
+    button.setAttribute("aria-pressed", String(role.id === characterDraft.activeId));
+    const portrait = document.createElement("span");
+    portrait.className = `character-portrait${role.id === "system" ? " system" : ""}`;
+    portrait.dataset.character = role.id;
+    portrait.setAttribute("aria-hidden", "true");
+    if (role.id === "system") portrait.textContent = "◌";
+    const name = document.createElement("span"); name.textContent = role.name;
+    button.append(portrait, name);
+    return button;
+  }));
 }
 
 function updateAnimationLabels() {
@@ -367,14 +397,20 @@ function updateAnimationLabels() {
   document.getElementById("character-delay-value").textContent = `${document.querySelector('[data-animation="delayMs"]').value} ms`;
 }
 
-characterSelect.addEventListener("change", () => {
-  readCharacterForm(); characterDraft.activeId = characterSelect.value;
+characterGrid.addEventListener("click", event => {
+  const button = event.target.closest("[data-character-id]");
+  if (!button || button.dataset.characterId === characterDraft.activeId) return;
+  readCharacterForm(); characterDraft.activeId = button.dataset.characterId;
   fillCharacterForm(); applyCharacterProfile(currentCharacter(characterDraft));
 });
-characterName.addEventListener("input", () => {
+document.getElementById("character-name-save").addEventListener("click", () => {
   const role = readCharacterForm();
-  characterSelect.selectedOptions[0].textContent = role.name;
+  settings.characters.roles[role.id].name = role.name;
+  settings.characters = saveCharacters(settings.characters);
+  characterName.value = role.name;
+  renderCharacterGrid();
   applyCharacterProfile(role);
+  document.getElementById("character-name-status").textContent = "角色名称已保存";
 });
 for (const input of document.querySelectorAll("[data-animation]")) {
   input.addEventListener("input", () => {updateAnimationLabels(); applyCharacterProfile(readCharacterForm());});
@@ -454,7 +490,10 @@ function renderTtsModelOptions() {
     option.textContent = "未检测到本地已安装的 TTS 模型";
     select.append(option);
     select.disabled = true;
-    if (!editing) settings.ttsModel = "";
+    if (currentValue) {
+      select.add(new Option(`${currentValue}（未安装）`, currentValue));
+      select.value = currentValue;
+    }
     return;
   }
   select.disabled = false;
@@ -466,13 +505,10 @@ function renderTtsModelOptions() {
     select.append(option);
   }
   const installedIds = new Set(availableTtsModels.map((model) => model.id));
-  const selected = installedIds.has(currentValue)
-    ? currentValue
-    : installedIds.has(settings.ttsModel)
-    ? settings.ttsModel
-    : installedIds.has(envDefaults.tts_model)
+  const selected = currentValue || (installedIds.has(envDefaults.tts_model)
       ? envDefaults.tts_model
-      : availableTtsModels[0].id;
+      : availableTtsModels[0].id);
+  if (!installedIds.has(selected)) select.add(new Option(`${selected}（未安装）`, selected));
   if (!editing) settings.ttsModel = selected;
   select.value = selected;
   select.title = select.selectedOptions[0]?.title || select.selectedOptions[0]?.textContent || "";
@@ -481,19 +517,18 @@ function renderTtsModelOptions() {
 function renderVoiceOptions(reset = false) {
   const meta = ttsModelMeta(settingsFields.ttsModel?.value || settings.ttsModel);
   const select = settingsFields.ttsVoice;
-  const current = reset ? "" : select.value;
+  const current = reset ? "" : select.value || (!settingsModal.open ? settings.ttsVoice : "");
   const voices = meta?.voices || [];
   select.replaceChildren(new Option(voices.length ? "模型默认音色" : "模型未提供内置音色列表", ""));
   for (const voice of voices) select.add(new Option(voice.label, voice.value));
-  select.value = voices.some(voice => voice.value === current) ? current : "";
+  if (!meta && current) select.add(new Option(current, current));
+  select.value = !meta || voices.some(voice => voice.value === current) ? current : "";
   select.disabled = !voices.length;
 }
 
 function renderReferenceOptions(current = referenceFields.audio.value) {
   const select = referenceFields.audio;
-  const normalized = String(current).replaceAll("\\", "/").toLowerCase();
-  const selected = referenceVoices.find(voice => [voice.voice_ref, `voice/${voice.name}`]
-    .some(path => path?.replaceAll("\\", "/").toLowerCase() === normalized));
+  const selected = findReferenceVoice(current);
   select.replaceChildren(new Option(referenceLibraryReady ? "不使用参考音频" : "参考音频库暂不可用", ""));
   for (const voice of referenceVoices) select.add(new Option(voice.label || voice.name, voice.voice_ref));
   if (current && !selected) select.add(new Option("已保存的参考音频（未在库中）", current));
@@ -513,7 +548,45 @@ function updateReferencePreview() {
     preview.load();
   }
   preview.hidden = !voice;
+
+  const meta = ttsModelMeta(settingsFields.ttsModel.value);
+  const preset = settingsFields.ttsVoice.value;
+  const builtin = meta?.voices?.find(item => item.value === preset);
+  const presetOnly = meta?.accepts_voice_reference === false || settingsFields.ttsModel.value === "supertonic";
+  const builtinPreview = document.getElementById("character-builtin-preview");
+  const builtinUrl = presetOnly ? builtin?.url || builtin?.preview_url || "" : "";
+  if ((builtinPreview.getAttribute("src") || "") !== builtinUrl) {
+    builtinPreview.pause();
+    if (builtinUrl) builtinPreview.setAttribute("src", builtinUrl);
+    else builtinPreview.removeAttribute("src");
+    builtinPreview.load();
+  }
+  builtinPreview.hidden = !builtinUrl || Boolean(builtinPreview.error);
+  if (presetOnly) preview.pause();
+  const builtinField = document.getElementById("character-builtin-field");
+  const builtinSelect = document.getElementById("character-builtin-voice");
+  builtinField.hidden = !presetOnly;
+  builtinSelect.replaceChildren(...Array.from(settingsFields.ttsVoice.options, option => new Option(option.text, option.value)));
+  builtinSelect.value = preset;
+  builtinSelect.disabled = settingsFields.ttsVoice.disabled;
+  document.getElementById("tts-reference-fields").hidden = presetOnly;
 }
+
+function findReferenceVoice(current) {
+  const normalized = String(current).replaceAll("\\", "/").toLowerCase();
+  // Stable factory ids accept both ref_w1 and the shipped ref-w1 filename.
+  const libraryKey = value => String(value).split("/").pop().replace(/\.[^.]+$/, "").replaceAll("-", "_").toLowerCase();
+  return referenceVoices.find(voice => voice.voice_ref.replaceAll("\\", "/").toLowerCase() === normalized
+    || (normalized.startsWith("voice/") && libraryKey(voice.name) === libraryKey(normalized)));
+}
+
+document.getElementById("character-builtin-preview").addEventListener("error", event => {
+  event.currentTarget.hidden = true;
+});
+document.getElementById("character-builtin-voice").addEventListener("change", event => {
+  settingsFields.ttsVoice.value = event.currentTarget.value;
+  syncTtsSettingsUi(false);
+});
 
 async function refreshReferenceLibrary() {
   const request = ++referenceLibraryRequest;
@@ -532,8 +605,7 @@ async function refreshReferenceLibrary() {
   }
   if (!settingsModal.open) {
     for (const role of Object.values(settings.characters.roles)) {
-      const normalized = role.referenceAudio.replaceAll("\\", "/").toLowerCase();
-      const voice = referenceVoices.find(item => [item.voice_ref, `voice/${item.name}`].some(path => path.replaceAll("\\", "/").toLowerCase() === normalized));
+      const voice = findReferenceVoice(role.referenceAudio);
       if (voice && role.referenceAudio !== voice.voice_ref) {
         role.referenceAudio = voice.voice_ref;
         if (!role.referenceText) role.referenceText = voice.text || "";
@@ -562,6 +634,7 @@ async function uploadCharacterAudio() {
   const input = document.getElementById("character-audio-upload");
   const file = input.files[0];
   if (!file || referenceUploadBusy) return;
+  readCharacterForm();
   const status = document.getElementById("tts-reference-status");
   const owner = characterDraft.activeId;
   const editEpoch = characterEditEpoch;
@@ -596,6 +669,7 @@ async function uploadCharacterAudio() {
     if (settingsModal.open && editEpoch === characterEditEpoch) {
       const role = characterDraft.roles[owner];
       role.referenceAudio = voice.voice_ref; role.referenceText = voice.text || "";
+      role.ttsVoice = "";
       if (characterDraft.activeId === owner) {
         fillCharacterForm(); settingsFields.ttsVoice.value = ""; syncTtsSettingsUi(false);
       }

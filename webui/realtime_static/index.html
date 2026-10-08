@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="workbench.css?v=scene-5" />
 <link rel="stylesheet" href="scene.css?v=microphone-1" />
-    <link rel="stylesheet" href="companion/live.css?v=lily-1" />
+    <link rel="stylesheet" href="companion/live.css?v=roles-5" />
   </head>
   <body class="booting">
     <div id="live-character-stage" aria-hidden="true"></div>
@@ -15,7 +15,7 @@
     <div class="scene-shade" aria-hidden="true"></div>
     <div id="app">
       <header class="topbar">
-        <div class="scene-heading"><button id="scene-back" class="scene-button" type="button" aria-label="返回工作台" title="返回工作台">←</button><span id="scene-location">小暖</span><span id="scene-connection" class="scene-connection" data-state="checking" hidden>检查连接</span></div>
+        <div class="scene-heading"><button id="scene-back" class="scene-button" type="button" aria-label="返回工作台" title="返回工作台">←</button><span id="scene-connection" class="scene-connection" data-state="checking" hidden>检查连接</span></div>
         <div class="brand">
           <div class="ident">
             <div class="ident-head">
@@ -158,9 +158,13 @@
         <nav class="scene-settings-tabs" role="tablist" aria-label="会话参数分类"><button type="button" role="tab" data-settings-tab="character">角色</button><button type="button" role="tab" data-settings-tab="llm">对话</button><button type="button" role="tab" data-settings-tab="tts">声音</button><button type="button" role="tab" data-settings-tab="asr">识别</button><button type="button" role="tab" data-settings-tab="connection">连接</button></nav>
         <div class="tab-panels">
           <section id="settings-character" class="settings-section" data-settings-panel="character">
-            <label class="field"><span>角色</span><select id="character-select"><option value="companion">小暖</option><option value="system">系统</option></select></label>
-            <div id="character-portrait" class="character-portrait" aria-label="暖灯卧室角色"><span id="character-portrait-label">默认角色</span></div>
-            <label class="field"><span>角色名</span><input id="character-name" maxlength="40" autocomplete="off" /></label>
+            <div id="character-grid" class="character-grid" role="group" aria-label="选择角色"></div>
+            <div id="character-builtin-field" class="character-reference-row" hidden>
+              <audio id="character-builtin-preview" controls preload="metadata" aria-label="模型内置音色试听" hidden></audio>
+              <label class="field"><span class="sr-only">模型内置音色</span><select id="character-builtin-voice" aria-label="模型内置音色"></select></label>
+            </div>
+            <div class="character-name-row field"><label for="character-name">角色</label><input id="character-name" maxlength="40" autocomplete="off" /><button id="character-name-save" type="button" class="btn plain">保存</button></div>
+            <small id="character-name-status" role="status"></small>
             <div id="tts-reference-fields">
               <div class="reference-library-heading"><span>角色参考音频</span><button type="button" id="tts-reference-refresh" class="btn plain">刷新列表</button></div>
               <label class="field"><span class="sr-only">参考音频库</span><select id="tts-voice-ref"><option value="">不使用参考音频</option></select></label>
@@ -170,9 +174,10 @@
               <audio id="tts-reference-preview" controls preload="none" aria-label="角色参考音频试听" hidden></audio>
               <label class="field"><span>参考音频中的原话</span><textarea id="tts-ref-text" rows="2"></textarea><small id="tts-reference-text-hint">从音频库自动填入，可修改</small></label>
             </div>
-            <label class="scene-check"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label>
             <details id="character-advanced" class="character-advanced">
               <summary>高级设置</summary>
+              <label class="scene-check character-caption-option"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label>
+              <div id="character-animation-controls">
               <div class="character-animation-options">
                 <label class="scene-check"><input data-animation="mouth" type="checkbox" checked />跟随语音的口型</label>
                 <label class="scene-check"><input data-animation="blink" type="checkbox" checked />自然眨眼</label>
@@ -184,6 +189,7 @@
               <label class="field"><span>动作幅度 <output id="character-strength-value">1×</output></span><input data-animation="strength" type="range" min="0.25" max="1.5" step="0.25" value="1" /></label>
               <label class="field"><span>音画补偿 <output id="character-delay-value">90 ms</output></span><input data-animation="delayMs" type="range" min="0" max="180" step="10" value="90" /></label>
               <button id="character-animation-reset" type="button" class="btn plain">恢复推荐值</button>
+              </div>
             </details>
           </section>
           <section id="settings-asr" class="settings-section">
@@ -221,7 +227,7 @@
       </form>
     </dialog>
 
-<script type="module" src="main.js?v=settings-key-1"></script>
-<script type="module" src="scene.js?v=character-layout-2"></script>
+<script type="module" src="main.js?v=roles-5"></script>
+<script type="module" src="scene.js?v=roles-5"></script>
   </body>
 </html>

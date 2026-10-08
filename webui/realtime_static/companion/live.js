@@ -19,13 +19,13 @@ export async function mountLiveCharacter(profile) {
   function connectOutput() {
     const turn = ++epoch;
     bridge?.dispose(); bridge = null;
-    if (!output || profile.id === 'system' || disposed) return;
+    if (!output || !CHARACTER_DEFAULTS[profile.id].visual || disposed) return;
     const currentOutput = output;
     // Finish/dispose an earlier attachment before rewiring the same audio source.
     attachment = attachment.then(async () => {
-      if (turn !== epoch || disposed || profile.id === 'system') return;
+      if (turn !== epoch || disposed || !CHARACTER_DEFAULTS[profile.id].visual) return;
       await characterReady;
-      if (turn !== epoch || disposed || profile.id === 'system' || !character) return;
+      if (turn !== epoch || disposed || !CHARACTER_DEFAULTS[profile.id].visual || !character) return;
       const next = await attachLipSync(currentOutput.context, currentOutput.source, currentOutput.output, character, {delayMs: profile.animation.delayMs});
       if (turn !== epoch || disposed) {next.dispose(); return;}
       next.setDelay(profile.animation.delayMs);
@@ -48,9 +48,10 @@ export async function mountLiveCharacter(profile) {
       backdrop.style.removeProperty('--scene-top');
     }
     document.body.dataset.character = profile.id;
+    document.body.dataset.staticScene = String(Boolean(definition.static));
     if (stage.hidden) {
       epoch++; bridge?.dispose(); bridge = null;
-      character?.resetMouth(); character?.setSpeaking(false);
+      character?.dispose(); character = null; characterUrl = null; characterLayout = null;
       return;
     }
     const url = new URL(definition.visual,import.meta.url).href;
@@ -85,7 +86,7 @@ export async function mountLiveCharacter(profile) {
       client.addEventListener('playback-state', ({detail}) => {
         if (activeClient !== client) return;
         if (['clear', 'drained', 'underrun'].includes(detail?.kind)) bridge?.clear();
-        if (detail?.kind === 'started' && profile.id !== 'system') character?.setSpeaking(true);
+        if (detail?.kind === 'started' && CHARACTER_DEFAULTS[profile.id].visual) character?.setSpeaking(true);
       });
       client.addEventListener('audio-output-closed', () => {
         if (activeClient !== client) return;

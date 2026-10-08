@@ -5,13 +5,17 @@ export const DEFAULT_ANIMATION = Object.freeze({
   listening: true, strength: 1, delayMs: 90,
 });
 export const CHARACTER_DEFAULTS = Object.freeze({
-  companion: {name: '小暖', referenceAudio: 'voice/demo_02_woman.wav',
+  companion: {name: '小暖', referenceId: 'demo_02_woman', referenceAudio: 'voice/demo_02_woman.wav', ttsModel: 'voxcpm1',
     visual: './assets/character.json', background: './backgrounds/bedroom-private.png'},
-  baijie: {name: '白洁', referenceAudio: 'voice/demo_02_woman.wav',
+  baijie: {name: '白洁', referenceId: 'ref_w1', referenceAudio: 'voice/ref-w1.wav', ttsModel: 'voxcpm1',
     visual: './assets/baijie/character.json', background: './backgrounds/baijie-living-room.png'},
-  lily: {name: 'Lily', referenceAudio: 'voice/demo_02_woman.wav',
+  lily: {name: 'Lily', referenceId: 'F1', referenceAudio: '', ttsModel: 'supertonic', ttsVoice: 'F1',
     visual: './assets/lily/character.json', background: './backgrounds/lily-living-room.png'},
-  system: {name: '系统', referenceAudio: ''},
+  office: {name: '办公室', referenceId: 'ref_w1', referenceAudio: 'voice/ref-w1.wav', ttsModel: 'voxcpm1',
+    background: './backgrounds/office-day.png', static: true},
+  living: {name: '客厅', referenceId: 'demo_02_woman', referenceAudio: 'voice/demo_02_woman.wav', ttsModel: 'voxcpm1',
+    background: './backgrounds/living-day.png', static: true},
+  system: {name: '纯净', referenceAudio: ''},
 });
 
 export function normalizeAnimation(value = {}) {
@@ -31,14 +35,20 @@ export function normalizeCharacters(value = {}) {
   const roles = {};
   for (const [id, defaults] of Object.entries(CHARACTER_DEFAULTS)) {
     const saved = value?.roles?.[id] || {};
+    // Migrate only the old shared factory voice; keep explicit clears and custom audio.
+    const oldDefault = value?.version !== 2 && ['baijie', 'lily'].includes(id)
+      && /(?:^|[/\\])demo_02_woman\.wav$/i.test(saved.referenceAudio || '');
     roles[id] = {
-      id, name: String(saved.name || defaults.name).trim().slice(0, 40) || defaults.name,
-      referenceAudio: String(saved.referenceAudio ?? defaults.referenceAudio),
-      referenceText: String(saved.referenceText || ''),
+      id, name: String(value?.version !== 2 && id === 'system' && saved.name === '系统' ? defaults.name : saved.name || defaults.name).trim().slice(0, 40) || defaults.name,
+      referenceId: defaults.referenceId || '',
+      referenceAudio: String(oldDefault ? defaults.referenceAudio : saved.referenceAudio ?? defaults.referenceAudio),
+      referenceText: oldDefault ? '' : String(saved.referenceText || ''),
+      ttsModel: String(saved.ttsModel ?? defaults.ttsModel ?? ''),
+      ttsVoice: String(saved.ttsVoice ?? defaults.ttsVoice ?? ''),
       animation: normalizeAnimation(saved.animation),
     };
   }
-  return {activeId: Object.hasOwn(roles, value?.activeId) ? value.activeId : 'companion', roles};
+  return {version: 2, activeId: Object.hasOwn(roles, value?.activeId) ? value.activeId : 'companion', roles};
 }
 
 export function loadCharacters(storage = localStorage) {
@@ -49,7 +59,9 @@ export function loadCharacters(storage = localStorage) {
   // Preserve an existing user voice on the first migration; new users get the tested female voice.
   const legacyReference = storage.getItem('audiocpp.tts.voiceRef');
   return normalizeCharacters({roles: {companion: {
-    ...(legacyReference ? {referenceAudio: legacyReference} : {}),
+    ...(legacyReference ? {referenceAudio: legacyReference,
+      ttsModel: storage.getItem('audiocpp.tts.model') || CHARACTER_DEFAULTS.companion.ttsModel,
+      ttsVoice: storage.getItem('audiocpp.tts.voice') || ''} : {}),
     referenceText: legacyReference ? storage.getItem('audiocpp.tts.refText') || '' : '',
   }}});
 }

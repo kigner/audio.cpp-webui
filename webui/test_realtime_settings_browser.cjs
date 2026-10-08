@@ -21,15 +21,23 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
   const reference = {name:'示例.wav',label:'示例女声',text:'你好，今天过得怎么样？',
     voice_ref:'D:/fixture/voice/示例.wav',url:'/api/workbench/references/example/audio'};
   const female = {name:'demo_02_woman.wav',label:'内置女声',text:'默认角色的参考原文',voice_ref:'D:/fixture/voice/demo_02_woman.wav',url:'/api/workbench/references/female/audio'};
-  let voices = [reference,female];
+  const baijieVoice = {name:'ref-w1.wav',label:'白洁参考音频',text:'白洁的原文',voice_ref:'D:/fixture/voice/ref-w1.wav',url:'/api/workbench/references/baijie/audio'};
+  let voices = [reference,female,baijieVoice];
   const uploads = [], referenceSaves = [], requests = [];
   const models = [
+    {id:'voxcpm1',family:'voxcpm1',label:'VoxCPM1',voices:[],accepts_voice_reference:true,requires_reference_text:true},
+    {id:'supertonic',family:'supertonic',label:'Supertonic 3',voice_parameter:'voice',accepts_voice_reference:false,voices:[{label:'F1',value:'F1'},{label:'F2',value:'F2'}]},
     {id:'clone',family:'qwen3_tts',label:'Qwen Base',voices:[],accepts_voice_reference:true,requires_reference_text:true},
     {id:'preset',family:'magpie_tts',label:'Preset TTS',voice_parameter:'voice_id',accepts_voice_reference:false,
       voices:[{label:'Aria',value:'Aria'},{label:'Jason',value:'Jason'}]},
     {id:'cached',family:'pocket_tts',label:'Pocket',voices:[{label:'Alba',value:'alba'}],accepts_voice_reference:true}
   ];
   const config = {api_base:'/api/realtime',tts_model:'clone',tts_models:models,asr_models:[]};
+  const sample = Buffer.alloc(44+4800);
+  sample.write('RIFF');sample.writeUInt32LE(sample.length-8,4);sample.write('WAVEfmt ',8);
+  sample.writeUInt32LE(16,16);sample.writeUInt16LE(1,20);sample.writeUInt16LE(1,22);
+  sample.writeUInt32LE(24000,24);sample.writeUInt32LE(48000,28);sample.writeUInt16LE(2,32);sample.writeUInt16LE(16,34);
+  sample.write('data',36);sample.writeUInt32LE(4800,40);
   await page.addInitScript(() => {
     if (!localStorage.getItem('fixture-initialized')) {
       localStorage.setItem('audiocpp.tts.model','clone');
@@ -59,7 +67,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
       activations.push(route.request().postDataJSON());
       return route.fulfill({status:503,json:{detail:'Fixture: activation intentionally stopped'}});
     }
-    if (url.pathname.startsWith('/api/workbench/references/')) return route.fulfill({status:204});
+    if (url.pathname.startsWith('/api/workbench/references/')) return route.fulfill({body:sample,contentType:'audio/wav'});
     const relative = decodeURIComponent(url.pathname).replace(/^\//,'');
     const filename = relative.startsWith('realtime/') ? path.join(__dirname,'realtime_static',relative.slice(9)||'index.html') :
       relative.startsWith('workbench/') ? path.join(__dirname,'workbench_static',relative.slice(10)) : '';
@@ -74,6 +82,10 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     await page.locator('#settings-btn').click();
     await page.locator('[data-settings-tab="character"]').click();
     await page.waitForFunction(() => document.querySelector('#tts-voice-ref').options.length > 1);
+  };
+  const selectCharacter = id => page.locator(`[data-character-id="${id}"]`).click();
+  const selectReference = async value => {
+    await page.locator('#tts-voice-ref').selectOption(value);
   };
   const save = () => page.locator('#settings-save').click();
   const selectModel = async value => {
@@ -98,7 +110,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
   };
   try {
     await page.goto('http://127.0.0.1:17781/realtime/');
-    await page.waitForFunction(() => document.querySelector('#tts-model').options.length === 3);
+    await page.waitForFunction(() => document.querySelector('#tts-model').options.length === 5);
     await page.waitForSelector('#live-character-stage canvas');
     assert.equal(await page.locator('#scene-picker').count(),0,'character selection belongs in session settings');
     await page.locator('#call-more summary').click();
@@ -119,7 +131,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     assert.equal(await page.locator('#llm-key').getAttribute('type'),'password');
     assert.match(await page.locator('#llm-key-status').textContent(),/已保存在此浏览器/);
     await page.locator('.modal-footer [value="close"]').click();
-    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===3);
+    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===5);
     await openLlm();
     assert.equal(await page.locator('#llm-key').inputValue(),firstKey);
     await page.locator('.modal-footer [value="close"]').click();
@@ -152,7 +164,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
 
     config.llm_api_key_set = true;
     await page.evaluate(()=>localStorage.removeItem('audiocpp.llm.key'));
-    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===3);
+    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===5);
     await openLlm();
     assert.equal(await page.locator('#llm-key').inputValue(),'');
     assert.match(await page.locator('#llm-key-status').textContent(),/使用启动配置中的密钥/);
@@ -162,29 +174,37 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     console.log('PASS server-only key shows its source without sending a fake masked credential');
 
     await open();
-    let bounds = await page.locator('#settings-modal').boundingBox();assert.equal(bounds.x,0);assert.ok(bounds.width<=440);
-    assert.equal(await page.locator('#character-select').inputValue(),'companion');
+    let bounds = await page.locator('#settings-modal').boundingBox();assert.equal(bounds.x,0);assert.equal(bounds.width,560);
+    assert.equal(await page.locator('.character-card[aria-pressed="true"]').getAttribute('data-character-id'),'companion');
     assert.equal(await page.locator('#character-advanced').evaluate(el=>el.open),false);
     assert.equal(await page.locator('[data-scene-choice]').count(),0);
     console.log('PASS default animated role, collapsed animation controls and left parameter drawer');
     assert.equal(await page.locator('#tts-voice').isDisabled(),true);
     assert.equal(await page.locator('#tts-voice-ref').inputValue(),reference.voice_ref);
     assert.equal(await page.locator('#tts-ref-text').inputValue(),'保存的原文');
-    await page.locator('#tts-voice-ref').selectOption('');
+    assert.equal(await page.locator('#tts-voice-ref').isVisible(),true,'library selection is directly available');
+    assert.equal(await page.locator('.character-upload').isVisible(),true,'upload remains alongside library selection');
+    assert.equal(await page.locator('#tts-ref-text').isVisible(),true,'library transcripts remain editable');
+    assert.equal(await page.locator('#character-reference-replace').count(),0);
+    await selectReference('');
     assert.equal(await page.locator('#tts-ref-text').inputValue(),'');
-    await page.locator('#tts-voice-ref').selectOption(reference.voice_ref);
+    await selectReference(reference.voice_ref);
     assert.equal(await page.locator('#tts-ref-text').inputValue(),reference.text);
     assert.equal(await page.locator('#tts-reference-preview').getAttribute('src'),reference.url);
+    const editedReferenceText = `${reference.text}（已校正）`;
+    await page.locator('#tts-ref-text').fill(editedReferenceText);
+    await page.locator('#tts-reference-refresh').click();
+    assert.equal(await page.locator('#tts-ref-text').inputValue(),editedReferenceText);
     await save();
     let payload = await send();
     assert.equal(payload.tts_voice_ref,reference.voice_ref);
-    assert.equal(payload.tts_reference_text,reference.text);
+    assert.equal(payload.tts_reference_text,editedReferenceText);
     assert.equal(payload.tts_voice,'');
     console.log('PASS reference library selection, transcript, preview, legacy path migration and request');
 
     await open();
     await selectModel('preset');
-    assert.equal(await page.locator('#tts-reference-fields').isHidden(),false);
+    assert.equal(await page.locator('#tts-reference-fields').isHidden(),true);
     assert.equal(await page.locator('#tts-voice-ref').inputValue(),reference.voice_ref);
     assert.deepEqual(await page.locator('#tts-voice option').evaluateAll(items=>items.map(item=>item.value)),['','Aria','Jason']);
     await selectVoice('Jason');
@@ -208,14 +228,14 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
 
     await open();
     await selectModel('clone');
-    await page.locator('#tts-voice-ref').selectOption(reference.voice_ref);
+    await selectReference(reference.voice_ref);
     await save();
     await open();
     libraryFails = true;
     await page.locator('#tts-reference-refresh').click();
     await page.waitForFunction(()=>document.querySelector('#tts-reference-status').textContent.includes('失败'));
     assert.equal(await page.locator('#tts-voice-ref').inputValue(),reference.voice_ref);
-    await page.locator('#tts-voice-ref').selectOption('');
+    await selectReference('');
     await page.locator('.modal-footer [value="close"]').click();
     libraryFails = false;
     await open();
@@ -225,7 +245,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     await page.locator('.modal-footer [value="close"]').click();
     await open();
     assert.equal(await page.locator('#tts-model').inputValue(),'clone');
-    await page.locator('#tts-voice-ref').selectOption('');
+    await selectReference('');
     await save();
     payload = await send();
     assert.equal(payload.tts_voice_ref,'');
@@ -233,7 +253,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     console.log('PASS refresh failure, cancel and explicit clear preserve correct state');
 
     await page.reload();
-    await page.waitForFunction(() => document.querySelector('#tts-model').options.length === 3);
+    await page.waitForFunction(() => document.querySelector('#tts-model').options.length === 5);
     await open();
     await page.locator('#character-name').fill('晚晴');
     await page.locator('#character-advanced summary').click();
@@ -250,14 +270,14 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     payload = await send();assert.equal(payload.tts_voice_ref,uploaded.voice_ref);assert.equal(payload.tts_reference_text,'上传音频的原文');assert.ok(payload.instructions.includes('晚晴'));
     const roles = await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')));
     assert.equal(roles.roles.companion.name,'晚晴');assert.equal(roles.roles.companion.animation.head,false);assert.equal(roles.roles.companion.animation.delayMs,120);
-    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===3);
+    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===5);
     await open();assert.equal(await page.locator('#character-name').inputValue(),'晚晴');
     assert.equal(await page.locator('#character-advanced').evaluate(el=>el.open),false);
-    await page.locator('#character-select').selectOption('system');
-    assert.equal(await page.locator('#character-name').inputValue(),'系统');assert.equal(await page.locator('#tts-voice-ref').inputValue(),'');
+    await selectCharacter('system');
+    assert.equal(await page.locator('#character-name').inputValue(),'纯净');assert.equal(await page.locator('#tts-voice-ref').inputValue(),'');
     await save();assert.equal(await page.locator('#live-character-stage').isHidden(),true);
     assert.equal(await page.locator('.scene-background').evaluate(el=>el.style.backgroundImage),'');
-    payload = await send();assert.equal(payload.tts_voice_ref,'');assert.ok(payload.instructions.includes('系统'));
+    payload = await send();assert.equal(payload.tts_voice_ref,'');assert.ok(payload.instructions.includes('纯净'));
     console.log('PASS auto-upload library registration, duplicate-name protection, role persistence and blank system role');
     await page.locator('#call-more summary').click();
     await page.locator('#chat-btn').click();
@@ -268,7 +288,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     const screenshots = process.env.AUDIOCPP_BROWSER_SCREENSHOTS;
     if (screenshots) {await fs.mkdir(screenshots,{recursive:true});await page.screenshot({path:path.join(screenshots,'system-history.png')});}
     await open();
-    await page.locator('#character-select').selectOption('companion');
+    await selectCharacter('companion');
     assert.equal(await page.locator('#character-name').inputValue(),'晚晴');
     assert.equal(await page.locator('#tts-voice-ref').inputValue(),uploaded.voice_ref);
     await page.locator('#character-advanced summary').click();
@@ -279,8 +299,8 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     await page.locator('.modal-footer [value="close"]').click();
     await page.waitForFunction(()=>document.body.dataset.character==='system');
     assert.equal(await page.locator('body').getAttribute('data-character'),'system');
-    await open();await page.locator('#character-select').selectOption('companion');await save();
-    assert.equal(await page.locator('#scene-location').textContent(),'晚晴');
+    await open();await selectCharacter('companion');await save();
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')).roles[document.body.dataset.character].name),'晚晴');
     if (screenshots) await page.screenshot({path:path.join(screenshots,'companion-history.png')});
     await open();
     if (screenshots) await page.screenshot({path:path.join(screenshots,'character-settings.png')});
@@ -292,60 +312,173 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     await open();bounds = await page.locator('#settings-modal').boundingBox();assert.equal(bounds.x,0);assert.equal(bounds.width,390);
     await page.locator('.modal-footer [value="close"]').click();
     await page.evaluate(()=>{localStorage.removeItem('audiocpp.realtime.characters');localStorage.removeItem('audiocpp.tts.voiceRef');localStorage.removeItem('audiocpp.tts.refText');});
-    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===3);
-    await open();assert.equal(await page.locator('#character-select').inputValue(),'companion');
+    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===5);
+    await open();assert.equal(await page.locator('.character-card[aria-pressed="true"]').getAttribute('data-character-id'),'companion');
     assert.equal(await page.locator('#character-name').inputValue(),'小暖');assert.equal(await page.locator('#tts-voice-ref').inputValue(),female.voice_ref);
     assert.equal(await page.locator('#tts-ref-text').inputValue(),female.text);
     await page.locator('#character-advanced summary').click();
     for(const key of ['mouth','blink','breath','listening','head','shoulders'])assert.equal(await page.locator(`[data-animation="${key}"]`).isChecked(),true);
     assert.ok(requests.every(request=>!request.includes('/scenes/')));
     console.log('PASS role cancel, animation reset/defaults, tested female voice and responsive left drawer');
-    await page.locator('#character-select').selectOption('baijie');
+    await selectCharacter('baijie');
     assert.equal(await page.locator('#character-name').inputValue(),'白洁');
-    assert.equal(await page.locator('#character-portrait').getAttribute('data-character'),'baijie');
+    assert.equal(await page.locator('.character-card[aria-pressed="true"]').getAttribute('data-character-id'),'baijie');
     await page.locator('#character-name').fill('');await save();
     await page.waitForFunction(async()=>{
       const module=await import([...document.scripts].find(s=>s.src.includes('/main.js')).src);
       return (await module.liveCharacterStats())?.characterId==='baijie'&&document.querySelector('.scene-background').style.backgroundSize;
     });
-    assert.equal(await page.locator('#scene-location').textContent(),'白洁','blank names retain the selected role default');
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')).roles[document.body.dataset.character].name),'白洁','blank names retain the selected role default');
     await page.setViewportSize({width:1920,height:1080});await page.waitForTimeout(250);
     if(screenshots)await page.screenshot({path:path.join(screenshots,'baijie-live.png')});
     const sceneSize=await page.locator('.scene-background').evaluate(el=>el.style.backgroundSize);
-    await open();await page.locator('#character-select').selectOption('system');await save();
-    await open();await page.locator('#character-select').selectOption('baijie');await save();
+    await open();await selectCharacter('system');await save();
+    await open();await selectCharacter('baijie');await save();
     await page.waitForFunction(()=>document.querySelector('.scene-background').style.backgroundSize);
     assert.equal(await page.locator('.scene-background').evaluate(el=>el.style.backgroundSize),sceneSize);
     await page.reload();await page.waitForSelector('#live-character-stage canvas');
-    assert.equal(await page.locator('#scene-location').textContent(),'白洁');
-    await open();await page.locator('#character-select').selectOption('companion');await save();
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')).roles[document.body.dataset.character].name),'白洁');
+    await open();await selectCharacter('companion');await save();
     await page.waitForFunction(()=>document.body.dataset.character==='companion');
-    assert.equal(await page.locator('#scene-location').textContent(),'小暖');
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')).roles[document.body.dataset.character].name),'小暖');
     await page.waitForFunction(()=>document.querySelector('.scene-background').style.backgroundSize==='');
     console.log('PASS Baijie selection, thumbnail, persistence and scene layout across role switches');
-    await open();await page.locator('#character-select').selectOption('lily');
+    await open();await selectCharacter('lily');
     assert.equal(await page.locator('#character-name').inputValue(),'Lily');
-    assert.equal(await page.locator('#character-portrait').getAttribute('data-character'),'lily');
+    assert.equal(await page.locator('.character-card[aria-pressed="true"]').getAttribute('data-character-id'),'lily');
     await page.locator('#character-name').fill('');await save();
     await page.waitForFunction(()=>document.querySelector('#live-character-stage canvas')?.getAttribute('aria-label')==='Lily 透明人物'&&document.querySelector('.scene-background').style.backgroundSize);
-    assert.equal(await page.locator('#scene-location').textContent(),'Lily');
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')).roles[document.body.dataset.character].name),'Lily');
     assert.match(await page.locator('.scene-background').evaluate(el=>el.style.backgroundImage),/lily-living-room\.png/);
     await page.waitForTimeout(150);
     if(screenshots)await page.screenshot({path:path.join(screenshots,'lily-live.png')});
     for(const id of ['baijie','system','lily']){
-      await open();await page.locator('#character-select').selectOption(id);await save();
+      await open();await selectCharacter(id);await save();
       await page.waitForFunction(id=>document.body.dataset.character===id,id);
     }
     await page.waitForFunction(()=>document.querySelector('#live-character-stage canvas')?.getAttribute('aria-label')==='Lily 透明人物'&&document.querySelector('.scene-background').style.backgroundSize);
     await page.reload();await page.waitForSelector('#live-character-stage canvas');
-    assert.equal(await page.locator('#scene-location').textContent(),'Lily');
-    await open();assert.equal(await page.locator('#character-select').inputValue(),'lily');
-    assert.equal(await page.locator('#tts-voice-ref').inputValue(),female.voice_ref);
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')).roles[document.body.dataset.character].name),'Lily');
+    await open();assert.equal(await page.locator('.character-card[aria-pressed="true"]').getAttribute('data-character-id'),'lily');
+    assert.equal(await page.locator('#tts-voice-ref').inputValue(),'');
+    assert.equal(await page.locator('#tts-model').inputValue(),'supertonic');
+    assert.equal(await page.locator('#tts-voice').inputValue(),'F1');
     await page.locator('.modal-footer [value="close"]').click();
     console.log('PASS Lily selection, preview, default name/voice and persistence across role switches');
+
+    assert.equal(await page.locator('#scene-location').count(),0,'no role name in the scene header');
+    await open();
+    assert.equal(await page.locator('.character-card').count(),6);
+    const cards=await page.locator('.character-card').evaluateAll(items=>items.map(item=>({id:item.dataset.characterId,x:item.getBoundingClientRect().x,y:item.getBoundingClientRect().y})));
+    assert.equal(cards[0].y,cards[2].y);assert.equal(cards[3].y,cards[5].y);assert(cards[3].y>cards[0].y);
+    assert.equal(await page.locator('#scene-captions').evaluate(el=>el.closest('details').id),'character-advanced');
+    assert.equal(await page.locator('#character-builtin-preview').isHidden(),true,'F1 has no playable sample');
+    assert.equal(await page.locator('#character-builtin-voice').inputValue(),'F1');
+    assert.equal(await page.locator('#tts-reference-fields').isHidden(),true);
+    await page.locator('#character-builtin-voice').selectOption('F2');
+    assert.equal(await page.locator('#tts-voice').inputValue(),'F2');
+    await page.locator('#character-builtin-voice').selectOption('F1');
+    assert.equal(await page.locator('#tts-voice-ref').isHidden(),true);
+    await selectCharacter('baijie');
+    assert.equal(await page.locator('#tts-model').inputValue(),'voxcpm1');
+    assert.equal(await page.locator('#tts-voice-ref').isVisible(),true);
+    assert.equal(await page.locator('#tts-reference-fields').isVisible(),true);
+    assert.equal(await page.locator('#tts-voice-ref').inputValue(),baijieVoice.voice_ref);
+    assert.equal(await page.locator('#tts-reference-preview').getAttribute('src'),baijieVoice.url);
+    assert.equal(await page.locator('#tts-ref-text').isVisible(),true);
+    await save();payload=await send();
+    assert.equal(payload.tts_model,'voxcpm1');assert.equal(payload.tts_reference_text,baijieVoice.text);
+    await open();await selectCharacter('lily');await save();payload=await send();
+    assert.equal(payload.tts_model,'supertonic');assert.equal(payload.tts_options.voice,'F1');assert.equal(payload.tts_voice_ref,'');
+    models.find(model=>model.id==='supertonic').voices[0].url=female.url;
+    await open();
+    await page.waitForFunction(url=>document.querySelector('#character-builtin-preview').getAttribute('src')===url&&document.querySelector('#character-builtin-preview').readyState>=1,female.url);
+    assert.equal(await page.locator('#character-builtin-preview').isVisible(),true,'a playable preset sample gets a player');
+    assert.equal(await page.locator('#tts-voice-ref').isHidden(),true);
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'preset-sample-fixture.png')});
+    await page.locator('.modal-footer [value="close"]').click();
+    delete models.find(model=>model.id==='supertonic').voices[0].url;
+    await open();
+    await page.waitForFunction(()=>document.querySelector('#tts-reference-preview').hidden);
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'lily-builtin-settings.png')});
+    await page.locator('.modal-footer [value="close"]').click();
+    console.log('PASS six thumbnails in two rows and role-specific model/reference request contracts');
+
+    await open();await selectCharacter('office');
+    assert.equal(await page.locator('#character-animation-controls').isHidden(),true);
+    assert.equal(await page.locator('#character-advanced').isHidden(),false);
+    await page.locator('#character-name').fill('晴岚');await page.locator('#character-name-save').click();
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('audiocpp.realtime.characters')).roles.office.name),'晴岚');
+    await save();
+    assert.equal(await page.locator('#live-character-stage canvas').count(),0,'static scenes release the animated renderer');
+    assert.match(await page.locator('.scene-background').evaluate(el=>el.style.backgroundImage),/office-day/);
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'office-live.png')});
+    payload=await send();assert.equal(payload.tts_model,'voxcpm1');assert(payload.instructions.includes('晴岚'));
+    await open();await page.locator('#character-name').fill('办公室');await page.locator('#character-name-save').click();
+    await page.locator('.modal-footer [value="close"]').click();
+    await open();await selectCharacter('living');await save();
+    assert.equal(await page.locator('#live-character-stage canvas').count(),0);
+    assert.match(await page.locator('.scene-background').evaluate(el=>el.style.backgroundImage),/living-day/);
+    payload=await send();assert.equal(payload.tts_model,'voxcpm1');assert.equal(payload.tts_voice_ref,female.voice_ref);
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'living-live.png')});
+    await open();
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'six-role-settings.png')});
+    await page.locator('.modal-footer [value="close"]').click();
+    console.log('PASS name save and both static scenes retain chat without a WebGL renderer');
+
+    for(const viewport of [{width:1440,height:900},{width:1920,height:1080},{width:1000,height:740}]){
+      await page.setViewportSize(viewport);
+      const dock=await page.locator('.call-controls').boundingBox();
+      assert(Math.abs(dock.x+dock.width-viewport.width/2)<1,'dock ends at the screen midpoint');
+      assert(dock.x>=0);
+    }
+    await open();await selectCharacter('lily');await save();
+    await page.waitForFunction(async()=>{
+      const module=await import([...document.scripts].find(s=>s.src.includes('/main.js')).src);
+      return (await module.liveCharacterStats())?.characterId==='lily'&&document.querySelector('#live-character-stage canvas');
+    });
+    for(const viewport of [{width:1440,height:900},{width:1920,height:1080},{width:1000,height:740}]){
+      await page.setViewportSize(viewport);await page.waitForTimeout(150);
+      const state=await page.evaluate(async()=>{
+        const module=await import([...document.scripts].find(s=>s.src.includes('/main.js')).src);
+        return module.liveCharacterStats();
+      });
+      const left=state.bounds.x+589/1672*state.bounds.width,right=state.bounds.x+1658/1672*state.bounds.width;
+      assert(left>=viewport.width/2-.1);assert(right<=viewport.width);assert(right-left<=viewport.width/2);
+    }
+    console.log('PASS toolbar midpoint and complete Lily silhouette in the right half at three desktop sizes');
+
+    // Use the public chat event API on the real DOM, independent of cloud/model availability.
+    await page.setViewportSize({width:1440,height:900});
+    await page.reload();await page.waitForSelector('#live-character-stage canvas');
+    await page.evaluate(async()=>{
+      const {ChatView}=await import('/realtime/ui/chat.js?v=roles-5');window.speechTest=new ChatView();speechTest.setAssistantName('Lily');
+      speechTest.onTranscript({role:'user',text:'你好',partial:false,itemId:'user-1'});
+      speechTest.onTranscript({role:'assistant',text:'你好，今天有什么想和我分享的吗？我会在这里听你慢慢说。',partial:false,responseId:'spoken-1'});
+      speechTest.onResponseFinished({responseId:'spoken-1',status:'completed'});
+    });
+    assert.equal(await page.locator('#bubble-stack').evaluate(el=>el.parentElement===document.body),true);
+    const bubbles=await page.locator('#bubble-stack').boundingBox();
+    const chatDock=await page.locator('.call-controls').boundingBox();
+    assert(bubbles.x<100&&bubbles.width===560,'chat text uses the original left-side layout');
+    assert(Math.abs(bubbles.y+bubbles.height-(chatDock.y-22))<1,'chat text remains above the bottom controls');
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),1);
+    if(screenshots){
+      await page.waitForFunction(()=>[...document.querySelectorAll('.bubble.in')].every(el=>Number(getComputedStyle(el).opacity)===1));
+      await page.screenshot({path:path.join(screenshots,'restored-chat-text.png')});
+    }
+    await page.waitForTimeout(6500);
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0,'reply fades on the original timer without waiting for audio');
+    assert.equal(await page.locator('.hist-msg.assistant').count(),1,'conversation history keeps the reply');
+    await page.evaluate(()=>{
+      speechTest.onTranscript({role:'assistant',text:'即将被打断的内容',partial:true,responseId:'cancelled'});
+      speechTest.reset({dismiss:true});
+    });
+    assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0);
+    console.log('PASS original chat text placement, timer and history');
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>window.micRequests),0);
-    console.log('Realtime settings browser: 13/13 passed');
+    console.log('Realtime settings browser: 17/17 passed');
   } catch(error) {
     console.error(JSON.stringify({consoleErrors,errors,ui:await page.evaluate(()=>({character:document.body.dataset.character,dialogOpen:document.getElementById('settings-modal').open,returnValue:document.getElementById('settings-modal').returnValue,saved:localStorage.getItem('audiocpp.realtime.characters')}))}));throw error;
   } finally {await browser.close();}

@@ -31,9 +31,11 @@ class IntegratedRealtimeTests(unittest.TestCase):
                     cached = client.get(url, headers={"If-None-Match": response.headers["etag"]})
                     self.assertEqual(cached.status_code, 304)
                     self.assertEqual(cached.headers["cache-control"], "no-cache")
-            image = client.get("/realtime/scenes/window-light.png")
-            self.assertEqual(image.status_code, 200)
-            self.assertNotIn("cache-control", image.headers)
+            for name in ("office-day.png", "living-day.png"):
+                with self.subTest(image=name):
+                    image = client.get(f"/realtime/companion/backgrounds/{name}")
+                    self.assertEqual(image.status_code, 200)
+                    self.assertNotIn("cache-control", image.headers)
 
     def test_namespaced_routes_keep_gradio_config_free_and_hide_secret(self):
         with patch.dict(os.environ, {"AUDIOCPP_LLM_API_KEY": "private-test-key"}):

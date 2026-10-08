@@ -156,6 +156,10 @@ export async function createCharacter(container, assetUrl = new URL('./assets/ch
       const [left,,right]=assets.sceneLayout.subjectBounds;
       scale=Math.min(width>=900?width/scene.width:(width-16)/(right-left),height/scene.height);
       x=width>=900?width-scene.width*scale:width/2-(left+right)/2*scale;
+      if(width>=900&&assets.sceneLayout.maxWidthFraction){
+        scale=Math.min(scale,width*assets.sceneLayout.maxWidthFraction/(right-left));
+        x=width-inset-right*scale;
+      }
     }
     bounds={x,y:height-scene.height*scale,width:scene.width*scale,height:scene.height*scale};
     onLayout?.(assets.sceneLayout?{...bounds}:null);

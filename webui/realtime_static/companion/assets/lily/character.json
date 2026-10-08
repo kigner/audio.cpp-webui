@@ -3,7 +3,7 @@
   "label": "Lily 透明人物",
   "faceAtlas": "face-atlas.png",
   "registration": "face-registration.json",
-  "sceneLayout": {"subjectBounds": [589, 0, 1658, 941]},
+  "sceneLayout": {"subjectBounds": [589, 0, 1658, 941], "maxWidthFraction": 0.47},
   "rig": {
     "headRegion": [1240, 131, 175, 178],
     "leftShoulderRegion": [1093, 330, 74, 150],
