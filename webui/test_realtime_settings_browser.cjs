@@ -323,9 +323,29 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     assert.equal(await page.locator('#scene-location').textContent(),'小暖');
     await page.waitForFunction(()=>document.querySelector('.scene-background').style.backgroundSize==='');
     console.log('PASS Baijie selection, thumbnail, persistence and scene layout across role switches');
+    await open();await page.locator('#character-select').selectOption('lily');
+    assert.equal(await page.locator('#character-name').inputValue(),'Lily');
+    assert.equal(await page.locator('#character-portrait').getAttribute('data-character'),'lily');
+    await page.locator('#character-name').fill('');await save();
+    await page.waitForFunction(()=>document.querySelector('#live-character-stage canvas')?.getAttribute('aria-label')==='Lily 透明人物'&&document.querySelector('.scene-background').style.backgroundSize);
+    assert.equal(await page.locator('#scene-location').textContent(),'Lily');
+    assert.match(await page.locator('.scene-background').evaluate(el=>el.style.backgroundImage),/lily-living-room\.png/);
+    await page.waitForTimeout(150);
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'lily-live.png')});
+    for(const id of ['baijie','system','lily']){
+      await open();await page.locator('#character-select').selectOption(id);await save();
+      await page.waitForFunction(id=>document.body.dataset.character===id,id);
+    }
+    await page.waitForFunction(()=>document.querySelector('#live-character-stage canvas')?.getAttribute('aria-label')==='Lily 透明人物'&&document.querySelector('.scene-background').style.backgroundSize);
+    await page.reload();await page.waitForSelector('#live-character-stage canvas');
+    assert.equal(await page.locator('#scene-location').textContent(),'Lily');
+    await open();assert.equal(await page.locator('#character-select').inputValue(),'lily');
+    assert.equal(await page.locator('#tts-voice-ref').inputValue(),female.voice_ref);
+    await page.locator('.modal-footer [value="close"]').click();
+    console.log('PASS Lily selection, preview, default name/voice and persistence across role switches');
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>window.micRequests),0);
-    console.log('Realtime settings browser: 12/12 passed');
+    console.log('Realtime settings browser: 13/13 passed');
   } catch(error) {
     console.error(JSON.stringify({consoleErrors,errors,ui:await page.evaluate(()=>({character:document.body.dataset.character,dialogOpen:document.getElementById('settings-modal').open,returnValue:document.getElementById('settings-modal').returnValue,saved:localStorage.getItem('audiocpp.realtime.characters')}))}));throw error;
   } finally {await browser.close();}

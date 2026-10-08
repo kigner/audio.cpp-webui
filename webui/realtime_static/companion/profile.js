@@ -9,6 +9,8 @@ export const CHARACTER_DEFAULTS = Object.freeze({
     visual: './assets/character.json', background: './backgrounds/bedroom-private.png'},
   baijie: {name: '白洁', referenceAudio: 'voice/demo_02_woman.wav',
     visual: './assets/baijie/character.json', background: './backgrounds/baijie-living-room.png'},
+  lily: {name: 'Lily', referenceAudio: 'voice/demo_02_woman.wav',
+    visual: './assets/lily/character.json', background: './backgrounds/lily-living-room.png'},
   system: {name: '系统', referenceAudio: ''},
 });
 

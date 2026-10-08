@@ -1,0 +1,21 @@
+{
+  "image": "character.png",
+  "label": "Lily 透明人物",
+  "faceAtlas": "face-atlas.png",
+  "registration": "face-registration.json",
+  "sceneLayout": {"subjectBounds": [589, 0, 1658, 941]},
+  "rig": {
+    "headRegion": [1240, 131, 175, 178],
+    "leftShoulderRegion": [1093, 330, 74, 150],
+    "rightShoulderRegion": [1415, 340, 80, 151],
+    "chestRegion": [1250, 370, 165, 180],
+    "headPivot": [1255, 235],
+    "shoulderGate": [210, 260],
+    "leftEyeRegion": [141, 191, 47, 26],
+    "rightEyeRegion": [237, 153, 53, 27],
+    "mouthRegion": [222, 270, 75, 54],
+    "skinSamples": [[158, 252], [286, 238], [248, 310], [282, 281]],
+    "maskAngle": 0.32,
+    "motionScale": 0.5
+  }
+}
