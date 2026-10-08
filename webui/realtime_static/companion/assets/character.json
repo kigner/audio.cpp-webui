@@ -1,0 +1,7 @@
+{
+  "image": "character.png",
+  "label": "小暖透明人物",
+  "faceAtlas": "face-atlas.png",
+  "registration": "face-registration.json",
+  "referenceTransform": [-171.76119402985074, 187.0149253731343, 1.0895522388059702]
+}

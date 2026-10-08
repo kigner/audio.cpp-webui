@@ -1,10 +1,13 @@
 import {attachLipSync} from '../avatar/audio-bridge.js';
 import {createCharacter} from './character.js';
+import {CHARACTER_DEFAULTS} from './profile.js';
 
 export async function mountLiveCharacter(profile) {
   const stage = document.getElementById('live-character-stage');
+  const backdrop = document.querySelector('.scene-background');
   let character, bridge, activeClient, output, epoch = 0, disposed = false;
   let characterReady;
+  let characterUrl;
   let attachment = Promise.resolve();
   function connectOutput() {
     const turn = ++epoch;
@@ -15,7 +18,7 @@ export async function mountLiveCharacter(profile) {
     attachment = attachment.then(async () => {
       if (turn !== epoch || disposed || profile.id === 'system') return;
       await characterReady;
-      if (turn !== epoch || disposed || profile.id === 'system') return;
+      if (turn !== epoch || disposed || profile.id === 'system' || !character) return;
       const next = await attachLipSync(currentOutput.context, currentOutput.source, currentOutput.output, character, {delayMs: profile.animation.delayMs});
       if (turn !== epoch || disposed) {next.dispose(); return;}
       next.setDelay(profile.animation.delayMs);
@@ -29,16 +32,27 @@ export async function mountLiveCharacter(profile) {
   }
   async function setCharacter(next) {
     profile = next;
-    stage.hidden = profile.id === 'system';
+    const definition = CHARACTER_DEFAULTS[profile.id];
+    stage.hidden = !definition.visual;
+    backdrop.style.backgroundImage = definition.background ? `url("${new URL(definition.background,import.meta.url).href}")` : '';
     document.body.dataset.character = profile.id;
     if (stage.hidden) {
       epoch++; bridge?.dispose(); bridge = null;
       character?.resetMouth(); character?.setSpeaking(false);
       return;
     }
-    if (!characterReady) characterReady = createCharacter(stage).then(value => character = value);
+    const url = new URL(definition.visual,import.meta.url).href;
+    if (characterUrl !== url) {
+      characterUrl = url;
+      epoch++; bridge?.dispose(); bridge = null;
+      character?.dispose(); character = null;
+      characterReady = createCharacter(stage,url).then(value => {
+        if (disposed || characterUrl !== url) {value.dispose();return;}
+        character = value;
+      });
+    }
     await characterReady;
-    if (disposed || profile.id === 'system') return;
+    if (disposed || profile !== next || stage.hidden || !character) return;
     character.setAnimationSettings(profile.animation);
     character.setListening(true);
     if (bridge) bridge.setDelay(profile.animation.delayMs);

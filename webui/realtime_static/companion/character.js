@@ -1,4 +1,4 @@
-// Original illustration + generated eye/lip deltas; no replacement 3D head.
+// Independent transparent character layer; the room is rendered by the host.
 import {normalizeAnimation} from './profile.js';
 const MOUTHS = {aa:0,E:1,I:1,ih:1,SS:1,TH:1,CH:1,FF:1,DD:1,RR:1,kk:1,nn:4,O:2,oh:2,U:3,ou:3,PP:4};
 const VERTEX = `#version 300 es
@@ -9,8 +9,11 @@ const FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 uv;
 out vec4 color;
-uniform sampler2D sceneTexture, faceTexture;
+uniform sampler2D characterTexture, faceTexture;
 uniform vec4 crop;
+uniform vec2 imageSize;
+uniform vec3 referenceTransform;
+uniform bool animated;
 uniform vec3 faceMap[9];
 uniform float mouth[5], blink, listening, breath, headAngle;
 uniform vec2 headOffset, shoulderLift;
@@ -18,10 +21,23 @@ vec2 rotate(vec2 p,float a){float c=cos(a),s=sin(a);return mat2(c,s,-s,c)*p;}
 float region(vec2 p,vec2 center,vec2 radius){return 1.-smoothstep(.5,1.,length((p-center)/radius));}
 float featherMask(vec2 p,vec2 center,vec2 radius){float r=length(rotate(p-center,.24)/radius);return 1.-smoothstep(.70,1.,r);}
 vec3 face(vec2 p,int cell){vec3 m=faceMap[cell];vec2 local=(p-m.xy)/m.z;vec2 grid=vec2(float(cell%3),float(cell/3));return texture(faceTexture,(clamp(local,vec2(1.),vec2(417.))+grid*418.)/1254.).rgb;}
+vec3 mouthSkinDelta(vec2 local,int cell){
+  vec2 p=faceMap[0].xy+local*faceMap[0].z;
+  return texture(characterTexture,(p*referenceTransform.z+referenceTransform.xy)/imageSize).rgb-face(p,cell);
+}
+vec3 mouthFace(vec2 p,int cell){
+  // Match surrounding skin, excluding the lips so opening the mouth cannot
+  // affect the correction or leave the neutral mouth's outline behind.
+  vec3 correction=(mouthSkinDelta(vec2(175.,295.),cell)+mouthSkinDelta(vec2(350.,250.),cell)
+    +mouthSkinDelta(vec2(290.,348.),cell)+mouthSkinDelta(vec2(300.,225.),cell))*.25;
+  return clamp(face(p,cell)+correction,0.,1.);
+}
 void main(){
-  vec2 p=crop.xy+uv*crop.zw;
+  vec2 pixel=crop.xy+uv*crop.zw;
+  vec2 p=(pixel-referenceTransform.xy)/referenceTransform.z;
   // All face samples use the same deformed coordinates as the illustration.
   // Compact masks confine movement to the character instead of warping the room.
+  if(animated){
   float headMask=region(p,vec2(610.,230.),vec2(255.,330.));
   float leftShoulder=region(p,vec2(427.,470.),vec2(126.,245.))*smoothstep(310.,355.,p.y);
   float rightShoulder=region(p,vec2(929.,456.),vec2(126.,230.))*smoothstep(310.,355.,p.y);
@@ -30,7 +46,13 @@ void main(){
   p+=(rotate(p-pivot,-headAngle)-(p-pivot)-headOffset)*headMask;
   p.y+=shoulderLift.x*leftShoulder+shoulderLift.y*rightShoulder+breath*chest;
   p.x+=.12*(shoulderLift.x*leftShoulder-shoulderLift.y*rightShoulder);
-  vec3 base=texture(sceneTexture,p/vec2(1672.,941.)).rgb;
+  }
+  pixel=p*referenceTransform.z+referenceTransform.xy;
+  if(any(lessThan(pixel,vec2(0.)))||any(greaterThan(pixel,imageSize))){color=vec4(0.);return;}
+  vec4 portrait=texture(characterTexture,pixel/imageSize);
+  if(portrait.a<.001){color=vec4(0.);return;}
+  vec3 base=portrait.rgb;
+  if(animated){
   vec3 m=faceMap[0];vec2 local=(p-m.xy)/m.z;
   float eyes=max(featherMask(local,vec2(127.,155.),vec2(69.,37.)),featherMask(local,vec2(312.,88.),vec2(67.,38.)));
   float lips=featherMask(local,vec2(265.,286.),vec2(110.,70.));
@@ -43,15 +65,16 @@ void main(){
   if(lips>.001){
     int selected=0;float strength=0.;
     for(int i=0;i<5;i++){if(mouth[i]>strength){selected=i;strength=mouth[i];}}
-    if(strength>.15)base=mix(base,face(p,selected+3),lips);
-    else base=mix(base,face(p,8),listening*.45*lips);
+    if(strength>.15)base=mix(base,mouthFace(p,selected+3),lips);
+    else base=mix(base,mouthFace(p,8),listening*.45*lips);
   }
-  color=vec4(clamp(base,0.,1.),1.);
+  }
+  color=vec4(clamp(base,0.,1.)*portrait.a,portrait.a);
 }`;
 
-async function loadImage(name) {
+async function loadImage(url) {
   const image = new Image(); image.decoding = 'async';
-  image.src = new URL(`./assets/${name}`, import.meta.url).href;
+  image.src = url;
   await image.decode(); return image;
 }
 function compile(gl, type, source) {
@@ -59,14 +82,19 @@ function compile(gl, type, source) {
   if (!gl.getShaderParameter(shader,gl.COMPILE_STATUS)) {const error=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(error);}
   return shader;
 }
-export async function createCharacter(container) {
+export async function createCharacter(container, assetUrl = new URL('./assets/character.json', import.meta.url)) {
+  const response=await fetch(assetUrl);
+  if(!response.ok)throw new Error('人物素材配置无法读取。');
+  const assets=await response.json();
+  const animated=Boolean(assets.faceAtlas&&assets.registration);
   const [scene,atlas,registration] = await Promise.all([
-    loadImage('scene.png'),loadImage('face-atlas.png'),
-    fetch(new URL('./assets/face-registration.json',import.meta.url)).then(r=>{if(!r.ok)throw new Error('表情素材无法读取。');return r.json();})
+    loadImage(new URL(assets.image,assetUrl).href),
+    animated?loadImage(new URL(assets.faceAtlas,assetUrl).href):null,
+    animated?fetch(new URL(assets.registration,assetUrl)).then(r=>{if(!r.ok)throw new Error('表情素材无法读取。');return r.json();}):null,
   ]);
-  const canvas=document.createElement('canvas');canvas.setAttribute('aria-label','暖灯卧室中的虚拟恋人');
-  canvas.style.cssText='display:block;width:100%;height:100%;object-fit:cover';
-  const gl=canvas.getContext('webgl2',{alpha:false,antialias:false,powerPreference:'low-power',preserveDrawingBuffer:true});
+  const canvas=document.createElement('canvas');canvas.setAttribute('aria-label',assets.label||'透明人物');
+  canvas.style.cssText='display:block;width:100%;height:100%';
+  const gl=canvas.getContext('webgl2',{alpha:true,premultipliedAlpha:true,antialias:false,powerPreference:'low-power',preserveDrawingBuffer:true});
   if(!gl)throw new Error('浏览器没有可用的 WebGL2 渲染器。');
   const shaders=[compile(gl,gl.VERTEX_SHADER,VERTEX),compile(gl,gl.FRAGMENT_SHADER,FRAGMENT)];
   const program=gl.createProgram();shaders.forEach(s=>gl.attachShader(program,s));gl.linkProgram(program);
@@ -75,15 +103,18 @@ export async function createCharacter(container) {
   const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
   const position=gl.getAttribLocation(program,'position');gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
-  const textures=[scene,atlas].map((image,index)=>{
+  const textures=[scene,...(atlas?[atlas]:[])].map((image,index)=>{
     const texture=gl.createTexture();gl.activeTexture(gl.TEXTURE0+index);gl.bindTexture(gl.TEXTURE_2D,texture);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
     gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,image);return texture;
   });
   const location=Object.fromEntries(['crop','mouth','blink','listening','breath','headAngle','headOffset','shoulderLift'].map(key=>[key,gl.getUniformLocation(program,key)]));
-  gl.uniform1i(gl.getUniformLocation(program,'sceneTexture'),0);gl.uniform1i(gl.getUniformLocation(program,'faceTexture'),1);
-  gl.uniform3fv(gl.getUniformLocation(program,'faceMap[0]'),new Float32Array(registration.transforms.flatMap(t=>[t.offsetX,t.offsetY,t.scale])));
+  gl.uniform1i(gl.getUniformLocation(program,'characterTexture'),0);gl.uniform1i(gl.getUniformLocation(program,'faceTexture'),atlas?1:0);
+  gl.uniform2f(gl.getUniformLocation(program,'imageSize'),scene.width,scene.height);
+  gl.uniform3fv(gl.getUniformLocation(program,'referenceTransform'),new Float32Array(assets.referenceTransform||[0,0,1]));
+  gl.uniform1i(gl.getUniformLocation(program,'animated'),animated);
+  if(registration)gl.uniform3fv(gl.getUniformLocation(program,'faceMap[0]'),new Float32Array(registration.transforms.flatMap(t=>[t.offsetX,t.offsetY,t.scale])));
   container.append(canvas);
   const gpuExtension=gl.getExtension('WEBGL_debug_renderer_info');
   const gpu=gl.getParameter(gpuExtension?gpuExtension.UNMASKED_RENDERER_WEBGL:gl.RENDERER);
@@ -93,15 +124,20 @@ export async function createCharacter(container) {
   let frameId=0,nextFrame=0,last=0,time=0,nextBlink=2.6,blinkStart=-1,blinks=0,fps=0,frames=0,fpsStart=performance.now();
   let currentBlink=0,currentBreath=0,currentAngle=0,listenAmount=0,speakingAmount=0,speechAccent=0;
   const headOffset=new Float32Array(2),shoulderLift=new Float32Array(2);
+  let bounds;
   function resize(){
     if(disposed)return;
     const width=container.clientWidth,height=container.clientHeight;visible=width>0&&height>0;
     if(!visible){cancelAnimationFrame(frameId);frameId=0;return;}
     const dpr=Math.min(devicePixelRatio||1,1.5,Math.sqrt(2000000/(width*height)));
     canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);gl.viewport(0,0,canvas.width,canvas.height);
-    const ratio=width/height;
-    const w=Math.min(1353,941*ratio),h=Math.min(941,1353/ratio);
-    gl.uniform4f(location.crop,(1353-w)/2,(941-h)/2,w,h);resume();
+    // Fit the entire foreground without cropping. Background sizing is separate.
+    const inset=width>=660?Math.min(width*.03,48):0;
+    const availableWidth=width*(width>=900?.56:width>=660?.72:1)-inset;
+    const scale=Math.min(availableWidth/scene.width,height/scene.height);
+    bounds={x:width-inset-scene.width*scale,y:height-scene.height*scale,width:scene.width*scale,height:scene.height*scale};
+    const w=width/scale,h=height/scale;
+    gl.uniform4f(location.crop,-bounds.x/scale,-bounds.y/scale,w,h);resume();
   }
   function frame(now){
     frameId=0;if(disposed||document.hidden||!visible)return;
@@ -143,7 +179,7 @@ export async function createCharacter(container) {
     setMotionEnabled(value){motion=Boolean(value);if(!motion)blinkStart=-1;},
     setAnimationSettings(value){animation=normalizeAnimation(value);if(!animation.mouth){visemes.clear();weights.fill(0);}if(!animation.blink)blinkStart=-1;},
     resetMouth(){visemes.clear();weights.fill(0);},
-    stats(){return disposed?{disposed:true}:{fps:Math.round(fps),gpu,visemes:Object.keys(MOUTHS),mouthMax:Math.max(...weights),blinks,blink:currentBlink,breath:currentBreath,headMovement:Math.abs(currentAngle),headOffset:Array.from(headOffset),shoulderLift:Array.from(shoulderLift),listening:listenAmount,speaking,renderer:'illustration',textures:2};},
+    stats(){return disposed?{disposed:true}:{fps:Math.round(fps),gpu,visemes:Object.keys(MOUTHS),mouthMax:Math.max(...weights),blinks,blink:currentBlink,breath:currentBreath,headMovement:Math.abs(currentAngle),headOffset:Array.from(headOffset),shoulderLift:Array.from(shoulderLift),listening:listenAmount,speaking,renderer:'illustration',layered:true,animated,textures:textures.length,bounds:{...bounds},image:[scene.width,scene.height]};},
     dispose(){if(disposed)return;disposed=true;cancelAnimationFrame(frameId);observer.disconnect();document.removeEventListener('visibilitychange',visibility);textures.forEach(t=>gl.deleteTexture(t));gl.deleteBuffer(buffer);gl.deleteProgram(program);gl.getExtension('WEBGL_lose_context')?.loseContext();canvas.remove();visemes.clear();}
   };
 }

@@ -1,13 +1,31 @@
 {
-  "purpose": "User-approved default realtime character, driven by the existing TTS player; also available in the standalone preview",
+  "purpose": "Independent transparent character and background layers, driven by the existing TTS player; also available in the standalone preview",
   "date": "2026-10-08",
   "tool": "image_gen.imagegen (built-in)",
+  "character": {
+    "file": "character.png",
+    "descriptor": "character.json",
+    "source": "exec-a07c7890-72fe-4070-b967-f539c31177c3.png",
+    "dimensions": [1146, 1372],
+    "transparent_background": true,
+    "prompt_summary": "Edit the transparent character cutout. Preserve the same adult woman, exact face, seated pose, warm lighting, long brown hair, cream cardigan and burgundy dress. Restore the complete crown and top of her hair, with at least 60 pixels of transparent space above it. Keep all existing visible arms, hands and lap. Scale and translate the subject as needed to fit a portrait canvas. Output only the character on true transparent alpha. No bedroom, bed, furniture, room or interface.",
+    "reference_transform": [-171.76119402985074, 187.0149253731343, 1.0895522388059702],
+    "reference_transform_rule": "portrait_pixel = original_animation_pixel * scale + offset",
+    "neutral_face_registration_correlation": 0.9660823687505972
+  },
+  "background": {
+    "file": "../backgrounds/bedroom.png",
+    "source": "exec-27633466-6f14-4987-8f10-b6cb2326f583.png",
+    "dimensions": [1672, 941],
+    "prompt_summary": "Edit the empty warm bedroom background. Remove the entire window, glass, sky, city, moon, curtains and window framing. Replace them with one continuous simple warm beige lightly textured wall. Preserve the wooden upholstered headboard, exactly two cream sleeping pillows, the cream rumpled blanket, burgundy blanket at the foot of the bed, and the left bedside lamp, flowers and table. No extra pillows, windows, moon, wall art, mirrors, new objects, people, text or interface. Leave the bed clear for a separately composited seated character."
+  },
   "scene": {
     "file": "scene.png",
     "source": "exec-41bd82a5-8bbe-44e8-9d94-7e484a206ab5.png",
     "dimensions": [1672, 941],
     "approved_image_preserved": true,
-    "runtime_scene_crop": [0, 0, 1353, 941]
+    "role": "Historical source and original animation coordinate reference; no longer rendered at runtime",
+    "original_main_panel": [0, 0, 1353, 941]
   },
   "face_atlas": {
     "file": "face-atlas.png",
