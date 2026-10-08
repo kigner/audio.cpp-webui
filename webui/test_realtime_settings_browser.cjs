@@ -100,6 +100,67 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     await page.goto('http://127.0.0.1:17781/realtime/');
     await page.waitForFunction(() => document.querySelector('#tts-model').options.length === 3);
     await page.waitForSelector('#live-character-stage canvas');
+    assert.equal(await page.locator('#scene-picker').count(),0,'character selection belongs in session settings');
+    await page.locator('#call-more summary').click();
+    await page.locator('#scene-fullscreen').click();
+    await page.waitForFunction(()=>document.fullscreenElement);
+    await page.evaluate(()=>document.exitFullscreen());
+    await page.waitForFunction(()=>!document.fullscreenElement);
+    const openLlm = async () => {await open();await page.locator('[data-settings-tab="llm"]').click();};
+    const firstKey = 'fixture-key-not-a-real-credential';
+    await openLlm();
+    await page.locator('#llm-key').fill(firstKey);
+    await save();
+    await page.waitForFunction(key=>localStorage.getItem('audiocpp.llm.key')===key,firstKey);
+    assert.equal(await page.evaluate(()=>localStorage.getItem('audiocpp.llm.key')),firstKey);
+    assert.equal((await send()).llm_api_key,firstKey);
+    await openLlm();
+    assert.equal(await page.locator('#llm-key').inputValue(),firstKey,'saved key should remain in the masked password field');
+    assert.equal(await page.locator('#llm-key').getAttribute('type'),'password');
+    assert.match(await page.locator('#llm-key-status').textContent(),/已保存在此浏览器/);
+    await page.locator('.modal-footer [value="close"]').click();
+    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===3);
+    await openLlm();
+    assert.equal(await page.locator('#llm-key').inputValue(),firstKey);
+    await page.locator('.modal-footer [value="close"]').click();
+    assert.equal((await send()).llm_api_key,firstKey);
+    console.log('PASS API key save, masked reopen, reload and outgoing request');
+
+    await openLlm();
+    await page.locator('#llm-key').fill('');
+    await save();
+    assert.equal((await send()).llm_api_key,firstKey);
+    await openLlm();
+    await page.locator('#llm-key').fill('fixture-cancelled-key');
+    assert.match(await page.locator('#llm-key-status').textContent(),/尚未保存/);
+    await page.locator('.modal-footer [value="close"]').click();
+    assert.equal((await send()).llm_api_key,firstKey);
+    console.log('PASS empty key preserves saved credential and cancel discards replacement');
+
+    const secondKey = 'fixture-replacement-key';
+    await openLlm();
+    await page.locator('#llm-key').fill(`  ${secondKey}  `);
+    await save();
+    await page.waitForFunction(key=>localStorage.getItem('audiocpp.llm.key')===key,secondKey);
+    assert.equal(await page.evaluate(()=>localStorage.getItem('audiocpp.llm.key')),secondKey);
+    assert.equal((await send()).llm_api_key,secondKey);
+    await openLlm();
+    await page.locator('#llm-key').fill('   ');
+    await save();
+    assert.equal((await send()).llm_api_key,secondKey);
+    console.log('PASS API key replacement trims surrounding whitespace and ignores blank edits');
+
+    config.llm_api_key_set = true;
+    await page.evaluate(()=>localStorage.removeItem('audiocpp.llm.key'));
+    await page.reload();await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===3);
+    await openLlm();
+    assert.equal(await page.locator('#llm-key').inputValue(),'');
+    assert.match(await page.locator('#llm-key-status').textContent(),/使用启动配置中的密钥/);
+    await save();
+    assert.equal((await send()).llm_api_key,undefined);
+    config.llm_api_key_set = false;
+    console.log('PASS server-only key shows its source without sending a fake masked credential');
+
     await open();
     let bounds = await page.locator('#settings-modal').boundingBox();assert.equal(bounds.x,0);assert.ok(bounds.width<=440);
     assert.equal(await page.locator('#character-select').inputValue(),'companion');
@@ -195,6 +256,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     await page.locator('#character-select').selectOption('system');
     assert.equal(await page.locator('#character-name').inputValue(),'系统');assert.equal(await page.locator('#tts-voice-ref').inputValue(),'');
     await save();assert.equal(await page.locator('#live-character-stage').isHidden(),true);
+    assert.equal(await page.locator('.scene-background').evaluate(el=>el.style.backgroundImage),'');
     payload = await send();assert.equal(payload.tts_voice_ref,'');assert.ok(payload.instructions.includes('系统'));
     console.log('PASS auto-upload library registration, duplicate-name protection, role persistence and blank system role');
     await page.locator('#call-more summary').click();
@@ -240,7 +302,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     console.log('PASS role cancel, animation reset/defaults, tested female voice and responsive left drawer');
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>window.micRequests),0);
-    console.log('Realtime settings browser: 7/7 passed');
+    console.log('Realtime settings browser: 11/11 passed');
   } catch(error) {
     console.error(JSON.stringify({consoleErrors,errors,ui:await page.evaluate(()=>({character:document.body.dataset.character,dialogOpen:document.getElementById('settings-modal').open,returnValue:document.getElementById('settings-modal').returnValue,saved:localStorage.getItem('audiocpp.realtime.characters')}))}));throw error;
   } finally {await browser.close();}

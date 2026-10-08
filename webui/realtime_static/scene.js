@@ -42,7 +42,6 @@ document.querySelector('.scene-settings-tabs').addEventListener('keydown',event=
 });
 selectSettingsTab('character');
 settingsButton.addEventListener('click',()=>{dialog.returnValue='';appearance=readAppearance();applyAppearance();});
-byId('scene-picker').addEventListener('click',()=>{settingsButton.click();selectSettingsTab('character');});
 document.querySelectorAll('[data-setup]').forEach(button=>button.addEventListener('click',()=>selectSettingsTab(button.dataset.setup.replace('settings-',''))));
 
 // Keep overlays outside the transformed control dock, so they anchor to the scene.

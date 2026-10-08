@@ -41,6 +41,7 @@ const STORAGE = {
   llmKey: "audiocpp.llm.key",
   instructions: "audiocpp.llm.instructions",
   noiseGate: "audiocpp.noiseGate",
+  micDeviceId: "audiocpp.mic.deviceId",
 };
 
 // Noise gate: slider minimum = off (gate disabled), rest = active threshold dBFS.
@@ -65,6 +66,7 @@ const DEFAULTS = {
   llmKey: "",
   instructions: DEFAULT_INSTRUCTIONS,
   noiseGate: String(GATE_DEFAULT_DB),
+  micDeviceId: "",
 };
 
 function loadSettings() {
@@ -146,6 +148,7 @@ async function refreshEnvDefaults() {
           renderAsrModelOptions();
           syncTtsSettingsUi(false);
           updateSetupSummary();
+          updateLlmKeyStatus();
           return;
         }
       } catch { /* try next */ }
@@ -313,6 +316,7 @@ const settingsFields = {
   llmKey: $("#llm-key"),
   instructions: $("#instructions"),
   noiseGate: $("#noise-gate"),
+  micDeviceId: $("#mic-device"),
 };
 const ttsModelCapability = $("#tts-model-capability");
 const ttsDotsOptions = $("#tts-dots-options");
@@ -806,6 +810,9 @@ function setState(next) {
     button.disabled = !LIVE_STATES.has(next);
   }
   micBtn.disabled = !LIVE_STATES.has(next) || !micStream;
+  const microphone = micStream?.getAudioTracks().find(track => track.readyState === "live");
+  document.body.dataset.microphone = microphone && !muted ? "on" : "off";
+  document.getElementById("scene-waveform").title = microphone?.label || "麦克风音量";
   stopBtn.disabled = !(LIVE_STATES.has(next) || next === "connecting");
   stopBtn.setAttribute("aria-hidden", String(stopBtn.disabled));
   document.getElementById("text-cancel").hidden = !["processing", "ai-speaking"].includes(next);
@@ -870,6 +877,67 @@ function hideRealtimeError() {
 
 // ── Audio ──────────────────────────────────────────────────────────────
 const MIC_CONSTRAINTS = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+let microphoneDevices = [];
+
+function renderMicrophoneOptions(selected = settings.micDeviceId) {
+  const select = settingsFields.micDeviceId;
+  const systemDefault = microphoneDevices.find(device => device.deviceId === "default");
+  select.replaceChildren(new Option(systemDefault?.label || "系统默认麦克风", ""));
+  for (const device of microphoneDevices) {
+    if (!device.deviceId || device.deviceId === "default") continue;
+    select.add(new Option(device.label || `麦克风 ${select.options.length}`, device.deviceId));
+  }
+  // Keep a saved, disconnected device visible; never silently switch its input.
+  if (selected && ![...select.options].some(option => option.value === selected)) {
+    select.add(new Option("已保存的麦克风（未检测到，请刷新或重新选择）", selected));
+  }
+  select.value = selected;
+}
+
+async function refreshMicrophones() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  microphoneDevices = devices.filter(device => device.kind === "audioinput");
+  renderMicrophoneOptions(settingsModal.open ? settingsFields.micDeviceId.value : settings.micDeviceId);
+}
+
+async function openMicrophone(deviceId = settings.micDeviceId) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("浏览器无法使用麦克风，请通过 localhost 或 HTTPS 打开页面。");
+  }
+  try {
+    return await navigator.mediaDevices.getUserMedia({audio: {
+      ...MIC_CONSTRAINTS.audio,
+      ...(deviceId ? {deviceId: {exact: deviceId}} : {}),
+    }});
+  } catch (error) {
+    const messages = {
+      NotAllowedError: "麦克风权限被拒绝，请允许浏览器访问麦克风后重试。",
+      NotFoundError: "未找到麦克风，请在会话参数的语音识别中重新选择。",
+      OverconstrainedError: "所选麦克风不可用，请在会话参数的语音识别中重新选择。",
+      NotReadableError: "无法打开麦克风，请检查设备连接及其他应用是否占用。",
+    };
+    throw new Error(messages[error.name] || `麦克风开启失败：${error.message || error}`);
+  }
+}
+
+document.getElementById("mic-refresh").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  const status = document.getElementById("mic-device-status");
+  button.disabled = true;
+  status.textContent = "正在读取麦克风…";
+  try {
+    // Device labels need permission. This preview never joins the conversation.
+    const stream = await openMicrophone("");
+    try { await refreshMicrophones(); }
+    finally { stream.getTracks().forEach(track => track.stop()); }
+    status.textContent = "请选择要使用的麦克风；虚拟声卡仅接收其他软件送入的声音。";
+  } catch (error) { status.textContent = error.message; }
+  finally { button.disabled = false; }
+});
+navigator.mediaDevices?.addEventListener("devicechange", () => {
+  void refreshMicrophones().catch(error => console.warn("麦克风列表刷新失败", error));
+});
 
 function createResumedAudioContext() {
   try {
@@ -884,17 +952,14 @@ function createResumedAudioContext() {
 }
 
 async function primeMicPermission() {
-  try {
-    const s = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
-    for (const track of s.getTracks()) track.stop();
-  } catch (err) {
-    throw new Error(`Microphone access denied${err instanceof Error ? `: ${err.message}` : ""}`);
-  }
+  const stream = await openMicrophone();
+  for (const track of stream.getTracks()) track.stop();
+  void refreshMicrophones().catch(error => console.warn("麦克风列表刷新失败", error));
 }
 
 /** @returns {Promise<MediaStream>} */
 async function acquireMicStream() {
-  micStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+  micStream = await openMicrophone();
   return micStream;
 }
 
@@ -1138,18 +1203,30 @@ realtimeNoticeDismiss.addEventListener("click", hideRealtimeError);
 realtimeNoticeSettings.addEventListener("click", () => settingsBtn.click());
 
 // ── Settings modal ─────────────────────────────────────────────────────
+function updateLlmKeyStatus() {
+  const entered = settingsFields.llmKey.value.trim();
+  document.getElementById("llm-key-status").textContent = entered && entered !== settings.llmKey
+    ? "新密钥尚未保存，请点击保存设置。"
+    : settings.llmKey ? "已保存在此浏览器；留空保留，输入新密钥可替换。"
+    : envDefaults.llm_api_key_set ? "使用启动配置中的密钥；输入新密钥可替换。"
+    : "保存在此浏览器；输入后点击保存设置。";
+}
+settingsFields.llmKey.addEventListener("input", updateLlmKeyStatus);
+
 function fillSettingsForm() {
   characterEditEpoch++;
   characterDraft = structuredClone(settings.characters);
   renderTtsModelOptions();
   renderVoiceOptions();
+  renderMicrophoneOptions();
   for (const [k, el] of Object.entries(settingsFields)) {
-    if (el) el.value = k === "llmKey" ? "" : settings[k] ?? "";
+    if (el) el.value = settings[k] ?? "";
   }
   fillCharacterForm();
   document.getElementById("character-advanced").open = false;
   if (settingsFields.llmKey) settingsFields.llmKey.placeholder =
     settings.llmKey || envDefaults.llm_api_key_set ? "已配置；留空保留，输入新密钥替换" : "填写服务商提供的 API Key";
+  updateLlmKeyStatus();
   syncTtsSettingsUi(
     !settings.ttsInferenceSteps || !settings.ttsVocoderMergeSteps,
   );
@@ -1158,8 +1235,11 @@ function fillSettingsForm() {
 function readSettingsForm() {
   const s = { ...settings };
   for (const [k, el] of Object.entries(settingsFields)) {
-    if (k === "rtUrl" || (k === "llmKey" && !el?.value)) continue;
-    if (el) s[k] = el.value;
+    if (k === "rtUrl") continue;
+    if (k === "llmKey") {
+      const key = el?.value.trim();
+      if (key) s[k] = key;
+    } else if (el) s[k] = el.value;
   }
   readCharacterForm();
   s.characters = structuredClone(characterDraft);
@@ -1172,6 +1252,7 @@ settingsBtn?.addEventListener("click", () => {
   settingsModal?.showModal();
   void refreshEnvDefaults();
   void refreshReferenceLibrary();
+  void refreshMicrophones().catch(error => console.warn("麦克风列表刷新失败", error));
 });
 
 settingsForm?.addEventListener("submit", (e) => {
@@ -1201,7 +1282,7 @@ settingsModal?.addEventListener("close", () => {
   if (client) {
     const reconnectKeys = [
       "rtUrl", "ttsUrl", "ttsModel", "ttsServerSource", "ttsPlaybackMode",
-      "asrUrl", "asrModel",
+      "asrUrl", "asrModel", "micDeviceId",
     ];
     const reconnect = reconnectKeys.some((key) => next[key] !== previous[key]);
     if (reconnect) {
