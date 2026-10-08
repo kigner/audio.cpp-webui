@@ -3,6 +3,7 @@ import json
 import queue
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from realtime_pipeline import (
     UserTranscript,
     _StreamingPcm16Resampler,
     _TTSStage,
+    _VADStage,
     _connection_stage_error,
     _http_stage_error,
 )
@@ -86,6 +88,41 @@ def _pipeline_for_transcript(text: str) -> RealtimePipeline:
     pipeline._tts_pending = 0
     pipeline._stop_event = threading.Event()
     return pipeline
+
+
+class RealtimeVadTests(unittest.TestCase):
+    def make_vad(self):
+        out, turns, cancel = queue.Queue(), queue.Queue(), CancelScope()
+        with patch("realtime_pipeline.torch.hub.load", return_value=(Mock(), None)):
+            vad = _VADStage(out, turns, cancel, min_silence_ms=64)
+        return vad, out, turns, cancel
+
+    def test_quiet_onset_and_brief_detection_gap_reach_asr(self):
+        vad, out, turns, cancel = self.make_vad()
+        probabilities = [0.1, 0.9, 0.2] + [0.9] * 6 + [0.1, 0.1]
+        vad._speech_prob = Mock(side_effect=probabilities)
+        audio = np.repeat(np.arange(1, len(probabilities) + 1, dtype=np.int16) * 100, 512)
+        vad.add_chunk(audio[:700].tobytes())
+        vad.process()
+        vad.add_chunk(audio[700:].tobytes())
+        vad.process()
+
+        turn = turns.get_nowait()
+        np.testing.assert_allclose(turn.audio, audio.astype(np.float32) / 32768.0)
+        self.assertEqual(turn.generation, cancel.generation)
+        self.assertEqual(out.qsize(), 2)
+        self.assertEqual(cancel.generation, 1)
+
+    def test_silence_pre_roll_is_bounded_and_does_not_trigger_a_turn(self):
+        vad, out, turns, cancel = self.make_vad()
+        vad._speech_prob = Mock(return_value=0.0)
+        vad.add_chunk(np.zeros(512 * 100, dtype=np.int16).tobytes())
+        vad.process()
+
+        self.assertEqual(len(vad._pre_speech_buf), vad._pre_speech_max)
+        self.assertTrue(out.empty())
+        self.assertTrue(turns.empty())
+        self.assertEqual(cancel.generation, 0)
 
 
 class RealtimeTurnLifecycleTests(unittest.TestCase):

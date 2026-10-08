@@ -103,11 +103,81 @@ class RealtimeTextTests(unittest.TestCase):
                     payload = json.loads(received[0].content)
                     self.assertEqual(str(received[0].url), base_url + "/chat/completions")
                     self.assertEqual(payload["model"], "configured-model")
-                    self.assertEqual([row["content"] for row in payload["messages"]],
-                                     ["configured role", "spoken input", "first reply", "typed follow-up"])
+                    self.assertTrue(payload["messages"][0]["content"].startswith("configured role\n"))
+                    self.assertIn("established language", payload["messages"][0]["content"])
+                    self.assertEqual([row["content"] for row in payload["messages"][1:]],
+                                     ["spoken input", "first reply", "typed follow-up"])
+                    self.assertEqual(llm._messages[0]["content"], "configured role")
                     self.assertEqual(received[0].headers.get("authorization", ""), "Bearer test-secret" if key else "")
                 finally:
                     llm._http.close()
+
+    def test_voxcpm1_cloned_reply_keeps_one_voice_context(self):
+        reply = "Hello there! How can I help you today? Tell me what you need."
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                pipeline = self.make_pipeline()
+                pipeline._tts_model = "voxcpm1"
+                pipeline._tts_voice_ref = "voice/demo_02_woman.wav"
+                pipeline._tts_reference_text = "The reference transcript."
+                pipeline._tts_streaming = streaming
+                pipeline._tts_stream_sample_rate = 16000 if streaming else 0
+                pipeline._llm.stream = Mock(return_value=iter(reply))
+                pipeline._run_text_turn("Hello", 0)
+
+                pipeline._speak.assert_called_once_with(
+                    reply, 0, "voxcpm1", "", "voice/demo_02_woman.wav",
+                    "The reference transcript.", streaming,
+                    pipeline._tts_stream_sample_rate, {})
+                pipeline._llm.add_assistant_message.assert_called_once_with(reply)
+
+    def test_other_tts_models_keep_responsive_sentence_requests(self):
+        pipeline = self.make_pipeline()
+        pipeline._tts_model = "supertonic"
+        pipeline._llm.stream = Mock(return_value=iter("Hello there! How can I help?"))
+        pipeline._run_text_turn("Hello", 0)
+        self.assertEqual([call.args[0] for call in pipeline._speak.call_args_list],
+                         ["Hello there!", "How can I help?"])
+
+    def test_configured_language_guides_first_misrecognized_transcript(self):
+        received = []
+
+        def respond(request):
+            received.append(json.loads(request.content))
+            return httpx.Response(200, text="data: [DONE]\n\n")
+
+        llm = _LLMStage("http://fixture/v1", language="English")
+        llm._http.close()
+        llm._http = httpx.Client(transport=httpx.MockTransport(respond))
+        try:
+            llm.add_user_message("こんにちは")
+            list(llm.stream(CancelScope(), 0))
+            self.assertIn("conversation language is English", received[-1]["messages"][0]["content"])
+            self.assertIn("unclear first transcript", received[-1]["messages"][0]["content"])
+            self.assertEqual(received[-1]["messages"][1]["content"], "こんにちは")
+            llm.configure(language="")
+            list(llm.stream(CancelScope(), 0))
+            self.assertNotIn("conversation language is English", received[-1]["messages"][0]["content"])
+            self.assertIn("established language", received[-1]["messages"][0]["content"])
+        finally:
+            llm._http.close()
+
+    def test_session_language_updates_asr_and_reply_and_can_return_to_auto(self):
+        pipeline = RealtimePipeline(asr_language="English")
+        try:
+            self.assertEqual(pipeline._stt._language, "English")
+            self.assertEqual(pipeline._llm._language, "English")
+            pipeline.configure({"asr_language": "en"})
+            self.assertEqual(pipeline._stt._language, "en")
+            self.assertEqual(pipeline._llm._language, "en")
+            pipeline.configure({})
+            self.assertEqual(pipeline._llm._language, "en")
+            pipeline.configure({"asr_language": ""})
+            self.assertEqual(pipeline._stt._language, "")
+            self.assertEqual(pipeline._llm._language, "")
+        finally:
+            pipeline.stop()
+            pipeline._llm._http.close()
 
 
 class RealtimeTextEndpointTests(unittest.TestCase):

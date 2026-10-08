@@ -348,17 +348,19 @@ export class ChatView {
         this._updateHistMsg(hist, text, d.partial);
       }
 
-      // Both typed input and microphone transcripts wait for the first reply.
-      if (this._activeUserItemId !== id || !this._activeUserBubble) {
+      // Keep user text readable for six seconds after its latest update,
+      // independently of how quickly the assistant starts replying.
+      if (this._activeUserItemId !== id || !this._activeUserBubble?.isConnected
+          || this._activeUserBubble.classList.contains("out")) {
         this._activeUserBubble = this._spawnBubble("user", text);
         this._activeUserItemId = id;
       } else {
         this._updateBubbleText(this._activeUserBubble, text);
       }
+      this._bumpDismiss(this._activeUserBubble, 6000);
       this._markUnread();
     } else if (d.role === "assistant") {
       if (!d.text.trim()) return;
-      for (const bubble of this._bubbleStack.querySelectorAll(".bubble.user:not(.out)")) this._dismissBubble(bubble);
       // Assistant transcript arrives once, as the full text, keyed by
       // response_id so a cancelled speculative response can be removed later. A
       // missing id gets a unique key so two id-less replies never collide.

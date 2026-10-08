@@ -197,8 +197,40 @@
               <label class="field"><span>麦克风</span><select id="mic-device"><option value="">系统默认麦克风</option></select></label>
               <button id="mic-refresh" class="btn plain" type="button">刷新麦克风</button>
               <small id="mic-device-status" role="status">允许麦克风权限后可显示设备名称。</small>
-              <div class="field-row"><label class="field"><span>识别模型</span><input id="asr-model" list="asr-model-list" autocomplete="off" placeholder="选择或输入模型名" /><datalist id="asr-model-list"></datalist></label><label class="field"><span>识别语言</span><input id="asr-language" placeholder="自动识别，或填 zh / en" /></label></div>
-              <small>麦克风输入需同时运行识别与声音模型。</small>
+              <div class="field-row"><label class="field"><span>识别模型</span><input id="asr-model" list="asr-model-list" autocomplete="off" placeholder="选择或输入模型名" /><datalist id="asr-model-list"></datalist></label><label class="field"><span>交流语言</span><select id="asr-language">
+                <option value="">自动</option>
+                <option value="Chinese" data-code="zh">中文</option>
+                <option value="English" data-code="en">英语</option>
+                <option value="Cantonese" data-code="yue">粤语</option>
+                <option value="Japanese" data-code="ja">日语</option>
+                <option value="Korean" data-code="ko">韩语</option>
+                <option value="Russian" data-code="ru">俄语</option>
+                <option value="French" data-code="fr">法语</option>
+                <option value="German" data-code="de">德语</option>
+                <option value="Spanish" data-code="es">西班牙语</option>
+                <option value="Portuguese" data-code="pt">葡萄牙语</option>
+                <option value="Italian" data-code="it">意大利语</option>
+                <option value="Arabic" data-code="ar">阿拉伯语</option>
+                <option value="Indonesian" data-code="id">印尼语</option>
+                <option value="Thai" data-code="th">泰语</option>
+                <option value="Vietnamese" data-code="vi">越南语</option>
+                <option value="Turkish" data-code="tr">土耳其语</option>
+                <option value="Hindi" data-code="hi">印地语</option>
+                <option value="Malay" data-code="ms">马来语</option>
+                <option value="Dutch" data-code="nl">荷兰语</option>
+                <option value="Swedish" data-code="sv">瑞典语</option>
+                <option value="Danish" data-code="da">丹麦语</option>
+                <option value="Finnish" data-code="fi">芬兰语</option>
+                <option value="Polish" data-code="pl">波兰语</option>
+                <option value="Czech" data-code="cs">捷克语</option>
+                <option value="Filipino" data-code="fil">菲律宾语</option>
+                <option value="Persian" data-code="fa">波斯语</option>
+                <option value="Greek" data-code="el">希腊语</option>
+                <option value="Romanian" data-code="ro">罗马尼亚语</option>
+                <option value="Hungarian" data-code="hu">匈牙利语</option>
+                <option value="Macedonian" data-code="mk">马其顿语</option>
+              </select></label></div>
+              <small>识别模型把你说的话转成文字，声音模型朗读回复。</small>
           </section>
           <section id="settings-llm" class="settings-section">
               <h3>对话模型</h3>
@@ -218,7 +250,7 @@
                 <div class="field-row"><label class="field"><span>声音服务</span><select id="tts-server-source"><option value="managed">自动管理</option><option value="external">外部服务</option></select></label><label class="field"><span>播放方式</span><select id="tts-playback-mode"><option value="auto">自动</option><option value="offline">完整生成后播放</option><option value="streaming">边生成边播放</option></select></label></div>
               <div class="field-row"><label class="field"><span>声音服务地址</span><input id="tts-url" autocomplete="off" placeholder="http://127.0.0.1:8088" /></label><label class="field"><span>识别服务地址</span><input id="asr-url" autocomplete="off" placeholder="http://127.0.0.1:8081" /></label></div>
                 <div id="tts-dots-options" class="field-row" hidden><label class="field"><span>推理步数</span><input id="tts-inference-steps" type="number" min="1" step="1" /><small>步数越大，生成越慢。</small></label><label class="field"><span>声码器合并步数</span><input id="tts-vocoder-merge-steps" type="number" min="1" step="1" /><small>减小可更早开口，但可能播放停顿。</small></label></div>
-              <label class="field"><span>忽略环境噪声 <span id="gate-value" class="field-value">关闭</span></span><div class="gate"><div class="gate-track" aria-hidden="true"><div id="gate-meter-fill" class="gate-meter-fill"></div><input id="noise-gate" type="range" min="-66" max="-3" step="1" value="-50" aria-label="环境噪声阈值" /></div><div class="gate-ends"><span>关闭</span><span>更强过滤</span></div></div><small>听不清小声说话时向左调；背景声误触发时向右调。</small></label>
+              <label class="field"><span>忽略环境噪声 <span id="gate-value" class="field-value">关闭</span></span><div class="gate"><div class="gate-track"><div id="gate-meter-fill" class="gate-meter-fill" aria-hidden="true"></div><input id="noise-gate" type="range" min="-66" max="-3" step="1" value="-50" aria-label="环境噪声阈值" /></div><div class="gate-ends"><span>关闭</span><span>更强过滤</span></div></div><small>听不清小声说话时向左调；背景声误触发时向右调。</small></label>
                 <label class="field"><span>实时连接地址</span><input id="rt-url" readonly /></label>
             </div>
           </details>

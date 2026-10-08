@@ -454,7 +454,7 @@ class _VADStage:
         # causes the ASR to miss the first word or two — especially noticeable
         # in Chinese where each character is ~100-150 ms.
         self._pre_speech_buf: list[np.ndarray] = []
-        self._pre_speech_max = self._min_speech_frames + 4  # keep a few extra
+        self._pre_speech_max = self._min_speech_frames + int(0.3 * PIPELINE_SR / VAD_FRAME) + 1
 
     def add_chunk(self, pcm: bytes) -> None:
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
@@ -476,13 +476,13 @@ class _VADStage:
         for frame in frames:
             voiced = self._speech_prob(frame) >= self._threshold
             if not self._speaking:
+                # Quiet consonants and brief VAD gaps can precede confirmed
+                # speech. Keep a bounded pre-roll, including unvoiced frames.
+                self._pre_speech_buf.append(frame.copy())
+                if len(self._pre_speech_buf) > self._pre_speech_max:
+                    self._pre_speech_buf.pop(0)
                 if voiced:
                     self._speech_run += 1
-                    # Accumulate into pre-speech ring buffer so these frames
-                    # aren't lost when speech is confirmed below.
-                    self._pre_speech_buf.append(frame.copy())
-                    if len(self._pre_speech_buf) > self._pre_speech_max:
-                        self._pre_speech_buf.pop(0)
                     if self._speech_run >= self._min_speech_frames:
                         self._speaking = True
                         self._silence_run = 0
@@ -495,7 +495,6 @@ class _VADStage:
                         self._out.put(SpeechStarted(generation=self._speech_generation))
                 else:
                     self._speech_run = 0
-                    self._pre_speech_buf = []
             else:
                 self._segment.append(frame.copy())
                 if voiced:
@@ -578,11 +577,12 @@ class _LLMStage:
     )
 
     def __init__(self, base_url: str, api_key: str = "", model: str = "deepseek-chat",
-                 instructions: str = ""):
+                 instructions: str = "", language: str = ""):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
         self._system = instructions.strip() or self.DEFAULT_SYSTEM
+        self._language = language.strip()
         self._messages: list[dict[str, Any]] = [{"role": "system", "content": self._system}]
         self._http = httpx.Client(timeout=60.0)
         self._response = None
@@ -596,13 +596,16 @@ class _LLMStage:
             response.close()
 
     def configure(self, base_url: Optional[str] = None, api_key: Optional[str] = None,
-                  model: Optional[str] = None, instructions: Optional[str] = None) -> None:
+                  model: Optional[str] = None, instructions: Optional[str] = None,
+                  language: Optional[str] = None) -> None:
         if base_url:
             self._base_url = base_url.rstrip("/")
         if api_key is not None:
             self._api_key = api_key
         if model:
             self._model = model
+        if language is not None:
+            self._language = language.strip()
         if instructions is not None:
             new_system = instructions.strip() or self.DEFAULT_SYSTEM
             if new_system != self._system:
@@ -621,8 +624,24 @@ class _LLMStage:
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        messages = [dict(message) for message in self._messages]
+        language_rule = (
+            "Microphone transcripts may be incomplete or misrecognized. Keep "
+            "the conversation's established language when a short or unclear "
+            "transcript appears to be in another language; ask for clarification "
+            "in the established language instead. Change language only when "
+            "the user clearly requests it."
+        )
+        if self._language and self._language.lower() != "auto":
+            language_rule += (
+                f" The configured conversation language is {self._language}. "
+                "Use that language for replies, including clarification of an "
+                "unclear first transcript, unless the user explicitly requests "
+                "a different language."
+            )
+        messages[0]["content"] += "\n" + language_rule
         payload: dict[str, Any] = {
-            "model": self._model, "messages": list(self._messages), "stream": True,
+            "model": self._model, "messages": messages, "stream": True,
         }
         try:
             with self._http.stream("POST", f"{self._base_url}/chat/completions",
@@ -838,7 +857,8 @@ class RealtimePipeline:
         self._vad: Optional[_VADStage] = None
         self._vad_lock = threading.Lock()
         self._stt = _STTStage(asr_server, asr_model, asr_language)
-        self._llm = _LLMStage(llm_base_url, llm_api_key, llm_model, instructions)
+        self._llm = _LLMStage(llm_base_url, llm_api_key, llm_model, instructions,
+                              language=asr_language)
         self._tts = _TTSStage(tts_server)
         self._tts_model = tts_model
         self._tts_voice = tts_voice
@@ -916,10 +936,12 @@ class RealtimePipeline:
             return v if isinstance(v, str) and v else None
 
         with self._cfg_lock:
+            language = cfg.get("asr_language")
+            language = language if isinstance(language, str) else None
             self._stt.configure(
                 server_url=val("asr_server"),
                 model_id=val("asr_model"),
-                language=val("asr_language"),
+                language=language,
             )
             self._tts.configure(server_url=val("tts_server"))
             if val("tts_model"):
@@ -938,6 +960,7 @@ class RealtimePipeline:
                 api_key=val("llm_api_key"),
                 model=val("llm_model"),
                 instructions=val("instructions"),
+                language=language,
             )
 
     # ── background loops ──────────────────────────────────────────────
@@ -1103,6 +1126,10 @@ class RealtimePipeline:
         full = ""
         queued_tts_chunks = 0
         dots_native_stream = tts_streaming and tts_model.startswith("dots-tts-")
+        # V1 cloning uses prompt continuation. Independent tiny requests reset
+        # its generated voice context and can sound like different speakers.
+        # Keep one reply in one request; native audio streaming still applies.
+        continuous_clone = tts_model in {"voxcpm1", "voxcpm1-clone"} and bool(tts_ref)
         for token in self._llm.stream(self._cancel_scope, gen):
             if self._cancel_scope.is_stale(gen):
                 # Barge-in: drain queued TTS items that haven't started yet,
@@ -1120,6 +1147,8 @@ class RealtimePipeline:
                 return
             full += token
             pending += token
+            if continuous_clone:
+                continue
             while True:
                 # Keep DotTTS's first sentence responsive, then aggregate later
                 # LLM text into larger native-stream requests. The HTTP speech

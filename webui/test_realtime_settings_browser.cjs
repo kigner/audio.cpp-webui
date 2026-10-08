@@ -10,6 +10,8 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
 
 (async () => {
   const options = {headless:true,args:['--enable-gpu','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required']};
+  const screenshots = process.env.AUDIOCPP_BROWSER_SCREENSHOTS;
+  if (screenshots) await fs.mkdir(screenshots,{recursive:true});
   if (process.env.AUDIOCPP_BROWSER_EXECUTABLE) options.executablePath = process.env.AUDIOCPP_BROWSER_EXECUTABLE;
   const browser = await chromium.launch(options);
   const page = await browser.newPage({viewport:{width:1440,height:900}});
@@ -202,6 +204,51 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     assert.equal(payload.tts_voice,'');
     console.log('PASS reference library selection, transcript, preview, legacy path migration and request');
 
+    // An already normalized path must recover its library transcript too.
+    await open();
+    await page.locator('#tts-ref-text').fill('');
+    await save();
+    assert.equal((await send()).tts_reference_text,reference.text);
+    await page.reload();
+    await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===5);
+    await open();
+    assert.equal(await page.locator('#tts-voice-ref').inputValue(),reference.voice_ref);
+    assert.equal(await page.locator('#tts-ref-text').inputValue(),reference.text);
+    await page.locator('[data-settings-tab="asr"]').click();
+    assert.equal(await page.locator('#asr-language').evaluate(el=>el.tagName),'SELECT');
+    assert.equal(await page.locator('#asr-language').inputValue(),'');
+    await page.locator('#asr-language').selectOption('English');
+    await save();
+    assert.equal((await send()).asr_language,'English');
+    await page.evaluate(()=>localStorage.setItem('audiocpp.asr.language','en-US'));
+    await page.reload();
+    await page.waitForFunction(()=>document.querySelector('#tts-model').options.length===5);
+    await open();
+    await page.locator('[data-settings-tab="asr"]').click();
+    assert.equal(await page.locator('#asr-language').inputValue(),'English','legacy language codes select the matching language');
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'conversation-language.png')});
+    await page.locator('#asr-language').selectOption('');
+    await save();
+    assert.equal((await send()).asr_language,'');
+    console.log('PASS saved reference transcript recovery and explicit conversation language request');
+
+    await open();
+    await page.locator('[data-settings-tab="connection"]').click();
+    const gate = page.getByRole('slider',{name:'环境噪声阈值'});
+    await gate.focus();
+    const oldGate = Number(await gate.inputValue());
+    await gate.press('ArrowRight');
+    assert.equal(Number(await gate.inputValue()),oldGate+1);
+    await gate.press('ArrowLeft');
+    const originalTheme = await page.evaluate(()=>document.documentElement.dataset.theme);
+    for(const theme of ['dark','light']){
+      await page.evaluate(value=>document.documentElement.dataset.theme=value,theme);
+      if(screenshots)await page.screenshot({path:path.join(screenshots,`noise-gate-${theme}.png`)});
+    }
+    await page.evaluate(value=>{if(value)document.documentElement.dataset.theme=value;else delete document.documentElement.dataset.theme;},originalTheme);
+    await page.locator('.modal-footer [value="close"]').click();
+    console.log('PASS noise gate remains keyboard accessible in both themes');
+
     await open();
     await selectModel('preset');
     assert.equal(await page.locator('#tts-reference-fields').isHidden(),true);
@@ -285,7 +332,6 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     bounds = await page.locator('#chat-panel').boundingBox();
     assert(bounds.x < 100 && bounds.x + bounds.width < 720);
     assert.equal(await page.locator('#chat-panel').evaluate(el=>el.inert),false);
-    const screenshots = process.env.AUDIOCPP_BROWSER_SCREENSHOTS;
     if (screenshots) {await fs.mkdir(screenshots,{recursive:true});await page.screenshot({path:path.join(screenshots,'system-history.png')});}
     await open();
     await selectCharacter('companion');
@@ -465,20 +511,21 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     // Use the public chat event API on the real DOM, independent of cloud/model availability.
     await page.setViewportSize({width:1440,height:900});
     await page.reload();await page.waitForSelector('#live-character-stage canvas');
-    await page.clock.install();
+    await page.clock.install({time:new Date('2026-10-08T00:00:00Z')});
+    await page.clock.pauseAt(new Date('2026-10-08T00:00:01Z'));
     await page.evaluate(async()=>{
       const {ChatView}=await import('/realtime/ui/chat.js?v=chat-fade-1');window.speechTest=new ChatView();speechTest.setAssistantName('Lily');
       speechTest.onTranscript({role:'user',text:'你好',partial:false,itemId:'user-1'});
       speechTest.onTranscript({role:'user',text:'输入框发来的文字',partial:false,itemId:'typed-1'});
     });
-    await page.clock.fastForward(7000);
-    assert.equal(await page.locator('.bubble.user:not(.out)').count(),2,'microphone and typed text wait for a reply');
+    await page.clock.fastForward(1000);
+    assert.equal(await page.locator('.bubble.user:not(.out)').count(),2,'microphone and typed text start with six seconds of reading time');
     await page.evaluate(()=>speechTest.onTranscript({role:'assistant',text:'',partial:true,responseId:'spoken-1'}));
     assert.equal(await page.locator('.bubble.user:not(.out)').count(),2,'empty reply does not hide user text');
     await page.evaluate(()=>{
       speechTest.onTranscript({role:'assistant',text:'你好，今天有什么想和我分享的吗？我会在这里听你慢慢说。不论是今天遇到的小事，还是最近一直放在心里的想法，你都可以从最想说的地方开始。',partial:false,responseId:'spoken-1'});
     });
-    assert.equal(await page.locator('.bubble.user:not(.out)').count(),0,'first reply fades all pending user text');
+    assert.equal(await page.locator('.bubble.user:not(.out)').count(),2,'a fast reply must not hide user text early');
     assert.equal(await page.locator('.bubble-role, .hist-msg.user .hist-role, .hist-msg.assistant .hist-role').count(),0,'messages have no visible speaker names');
     await page.clock.runFor(1000);
     assert.equal(await page.locator('#bubble-stack').evaluate(el=>el.parentElement===document.body),true);
@@ -493,7 +540,11 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
       await page.waitForFunction(()=>[...document.querySelectorAll('.bubble.in')].every(el=>Number(getComputedStyle(el).opacity)===1));
       await page.screenshot({path:path.join(screenshots,'restored-chat-text.png')});
     }
-    await page.clock.fastForward(6500);
+    await page.clock.fastForward(3900);
+    assert.equal(await page.locator('.bubble.user:not(.out)').count(),2,'user text remains readable just before six seconds');
+    await page.clock.fastForward(150);
+    assert.equal(await page.locator('.bubble.user:not(.out)').count(),0,'user text fades after its original six-second duration');
+    await page.clock.fastForward(2500);
     assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),1,'reply waits for its audio first chunk');
     await page.evaluate(()=>{
       speechTest.onAudioChunk({responseId:'spoken-1'});
@@ -539,7 +590,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
       speechTest.reset({dismiss:true});
     });
     assert.equal(await page.locator('.bubble.assistant:not(.out)').count(),0);
-    console.log('PASS chat placement, transparency, hidden names, reply-triggered user fade and adaptive audio-triggered reply fade');
+    console.log('PASS chat placement, transparency, hidden names, six-second user text and adaptive audio-triggered reply fade');
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>window.micRequests),0);
     console.log('Realtime settings browser: all checks passed');

@@ -69,6 +69,20 @@ const DEFAULTS = {
   micDeviceId: "",
 };
 
+function resolveAsrLanguage(value) {
+  const saved = String(value ?? "").trim();
+  const key = saved.toLowerCase().replaceAll("_", "-");
+  if (!key || key === "auto" || key === "自动") return "";
+  const code = /^(zh-hk|zh-mo)$/.test(key) ? "yue" : key.split("-")[0];
+  const select = document.getElementById("asr-language");
+  const match = Array.from(select.options).find(option =>
+    option.value.toLowerCase() === key || option.dataset.code === code || option.textContent === saved);
+  if (match) return match.value;
+  // Preserve a language saved for an external ASR service, without a text field.
+  select.add(new Option(`${saved}（已保存）`, saved));
+  return saved;
+}
+
 function loadSettings() {
   const s = {};
   for (const [k, def] of Object.entries(DEFAULTS)) {
@@ -87,6 +101,7 @@ function loadSettings() {
     }
     s[k] = v === null ? def : v;
   }
+  s.asrLanguage = resolveAsrLanguage(s.asrLanguage);
   const characters = loadCharacters();
   const role = currentCharacter(characters);
   return {...s, characters, ttsModel: role.ttsModel || s.ttsModel, ttsVoice: role.ttsVoice};
@@ -145,7 +160,8 @@ async function refreshEnvDefaults() {
             if (k === "ttsVoice") continue;
             const envKey = ENV_SETTING_KEYS[k];
             if (envKey && envDefaults[envKey] != null && localStorage.getItem(STORAGE[k]) === null) {
-              settings[k] = String(envDefaults[envKey]);
+              settings[k] = k === "asrLanguage"
+                ? resolveAsrLanguage(envDefaults[envKey]) : String(envDefaults[envKey]);
             }
           }
           renderTtsModelOptions();
@@ -214,7 +230,7 @@ function appConfigFromSettings(s) {
     tts_options: ttsOptions,
     tts_voice: meta?.voice_parameter ? "" : voice,
     tts_voice_ref: reference,
-    tts_reference_text: reference ? role.referenceText : "",
+    tts_reference_text: reference ? role.referenceText || findReferenceVoice(reference)?.text || "" : "",
     asr_server: s.asrUrl,
     asr_model: s.asrModel,
     asr_language: s.asrLanguage,
@@ -533,7 +549,7 @@ function renderReferenceOptions(current = referenceFields.audio.value) {
   for (const voice of referenceVoices) select.add(new Option(voice.label || voice.name, voice.voice_ref));
   if (current && !selected) select.add(new Option("已保存的参考音频（未在库中）", current));
   select.value = selected?.voice_ref || current;
-  if (selected && current !== selected.voice_ref && !referenceFields.text.value) referenceFields.text.value = selected.text || "";
+  if (selected && !referenceFields.text.value) referenceFields.text.value = selected.text || "";
   updateReferencePreview();
 }
 
@@ -606,7 +622,7 @@ async function refreshReferenceLibrary() {
   if (!settingsModal.open) {
     for (const role of Object.values(settings.characters.roles)) {
       const voice = findReferenceVoice(role.referenceAudio);
-      if (voice && role.referenceAudio !== voice.voice_ref) {
+      if (voice) {
         role.referenceAudio = voice.voice_ref;
         if (!role.referenceText) role.referenceText = voice.text || "";
       }
