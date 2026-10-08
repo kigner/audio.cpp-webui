@@ -8,7 +8,14 @@ export async function mountLiveCharacter(profile) {
   let character, bridge, activeClient, output, epoch = 0, disposed = false;
   let characterReady;
   let characterUrl;
+  let characterLayout;
   let attachment = Promise.resolve();
+  function applySceneLayout(){
+    const bounds=characterLayout;
+    backdrop.style.backgroundSize=bounds?`${bounds.width}px ${bounds.height}px`:'';
+    backdrop.style.backgroundPosition=bounds?`${bounds.x}px ${bounds.y}px`:'';
+    backdrop.style.setProperty('--scene-top',`${bounds?.y||0}px`);
+  }
   function connectOutput() {
     const turn = ++epoch;
     bridge?.dispose(); bridge = null;
@@ -35,6 +42,11 @@ export async function mountLiveCharacter(profile) {
     const definition = CHARACTER_DEFAULTS[profile.id];
     stage.hidden = !definition.visual;
     backdrop.style.backgroundImage = definition.background ? `url("${new URL(definition.background,import.meta.url).href}")` : '';
+    if(!definition.visual||new URL(definition.visual,import.meta.url).href!==characterUrl){
+      backdrop.style.backgroundSize = '';
+      backdrop.style.backgroundPosition = '';
+      backdrop.style.removeProperty('--scene-top');
+    }
     document.body.dataset.character = profile.id;
     if (stage.hidden) {
       epoch++; bridge?.dispose(); bridge = null;
@@ -46,7 +58,10 @@ export async function mountLiveCharacter(profile) {
       characterUrl = url;
       epoch++; bridge?.dispose(); bridge = null;
       character?.dispose(); character = null;
-      characterReady = createCharacter(stage,url).then(value => {
+      characterReady = createCharacter(stage,url,{onLayout(bounds){
+        if(disposed||characterUrl!==url)return;
+        characterLayout=bounds;applySceneLayout();
+      }}).then(value => {
         if (disposed || characterUrl !== url) {value.dispose();return;}
         character = value;
       });
@@ -55,6 +70,7 @@ export async function mountLiveCharacter(profile) {
     if (disposed || profile !== next || stage.hidden || !character) return;
     character.setAnimationSettings(profile.animation);
     character.setListening(true);
+    applySceneLayout();
     if (bridge) bridge.setDelay(profile.animation.delayMs);
     else if (output) void connectOutput();
   }

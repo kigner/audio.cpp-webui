@@ -146,6 +146,45 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     }
     console.log('PASS surrounding skin tone across five visemes and listening');
 
+    await page.evaluate(async()=>{
+      character.dispose();
+      window.character=await createCharacter(document.querySelector('#character'),new URL('/companion/assets/baijie/character.json',location.href),{onLayout(bounds){window.sceneBounds=bounds;}});
+      character.setMotionEnabled(false);character.setListening(false);
+    });
+    for(const viewport of [{width:1920,height:1080},{width:1920,height:914},{width:700,height:900},{width:390,height:844}]){
+      await page.setViewportSize(viewport);await page.waitForTimeout(120);
+      const state=await page.evaluate(()=>({bounds:character.stats().bounds,scene:sceneBounds}));
+      assert.deepEqual(state.scene,state.bounds,'foreground and sofa must share their transform');
+      const {bounds:b}=state;
+      for(const [x,y] of [[989,23],[1602,893]]){
+        assert(b.x+x/1672*b.width>=0&&b.x+x/1672*b.width<=viewport.width);
+        assert(b.y+y/941*b.height>=0&&b.y+y/941*b.height<=viewport.height,'hair and shoes remain visible');
+      }
+    }
+    await page.setViewportSize({width:1920,height:1080});await page.waitForTimeout(100);
+    await page.evaluate(()=>{window.neutral=pixels();});
+    for(const viseme of ['aa','E','O','U','PP']){
+      await page.evaluate(key=>{character.resetMouth();character.setViseme(key,1);},viseme);
+      await page.waitForFunction(()=>character.stats().mouthMax>.99);
+      const change=await page.evaluate(()=>{
+        const data=pixels(),canvas=document.querySelector('canvas'),{bounds:b}=character.stats();let changed=0,outside=0;
+        for(let i=0;i<data.length;i+=4){
+          if(Math.max(...[0,1,2].map(c=>Math.abs(data[i+c]-neutral[i+c])))<=8)continue;
+          changed++;
+          const x=((i/4%canvas.width)/canvas.width*innerWidth-b.x)/b.width*1672;
+          const y=((canvas.height-1-Math.floor(i/4/canvas.width))/canvas.height*innerHeight-b.y)/b.height*941;
+          if(x<1250||x>1327||y<156||y>221)outside++;
+        }
+        return {changed,outside};
+      });
+      assert(change.changed>8,`${viseme} should move Baijie's lips`);assert.equal(change.outside,0,'Baijie mouth patches must stay on her face');
+      if(screenshots)await page.screenshot({path:path.join(screenshots,`baijie-${viseme}.png`),clip:{x:1350,y:95,width:240,height:190}});
+    }
+    await page.evaluate(()=>{character.resetMouth();character.setMotionEnabled(true);character.setAnimationSettings({breath:false,head:false,shoulders:false,listening:false});});
+    await page.waitForFunction(()=>character.stats().blink>.65,null,{polling:'raf'});
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'baijie-blink.png'),clip:{x:1350,y:95,width:240,height:190}});
+    console.log('PASS Baijie complete pose, shared sofa placement and registered mouth/eye animation');
+
     const staticStart=requests.length;
     await page.evaluate(async () => {
       character.dispose();
@@ -157,7 +196,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     await page.evaluate(()=>character.dispose());assert.equal(await page.locator('canvas').count(),0);
     assert.deepEqual(errors,[]);
     console.log('PASS plain PNG character support without expression assets and renderer cleanup');
-    console.log('Realtime character browser: 5/5 passed');
+    console.log('Realtime character browser: 6/6 passed');
   } catch(error) {
     console.error(JSON.stringify({errors,requests,state:await page.evaluate(()=>({hidden:document.hidden,stats:window.character?.stats?.(),width:document.querySelector('canvas')?.width,height:document.querySelector('canvas')?.height,error:document.querySelector('canvas')?.getContext('webgl2').getError()}))}));
     throw error;

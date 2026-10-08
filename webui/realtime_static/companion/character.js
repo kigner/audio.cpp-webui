@@ -15,12 +15,16 @@ uniform vec2 imageSize;
 uniform vec3 referenceTransform;
 uniform bool animated;
 uniform vec3 faceMap[9];
+uniform float tileSize, maskAngle;
+uniform vec4 headRegion, leftShoulderRegion, rightShoulderRegion, chestRegion;
+uniform vec4 leftEyeRegion, rightEyeRegion, mouthRegion;
+uniform vec2 headPivot, shoulderGate, skinSamples[4];
 uniform float mouth[5], blink, listening, breath, headAngle;
 uniform vec2 headOffset, shoulderLift;
 vec2 rotate(vec2 p,float a){float c=cos(a),s=sin(a);return mat2(c,s,-s,c)*p;}
 float region(vec2 p,vec2 center,vec2 radius){return 1.-smoothstep(.5,1.,length((p-center)/radius));}
-float featherMask(vec2 p,vec2 center,vec2 radius){float r=length(rotate(p-center,.24)/radius);return 1.-smoothstep(.70,1.,r);}
-vec3 face(vec2 p,int cell){vec3 m=faceMap[cell];vec2 local=(p-m.xy)/m.z;vec2 grid=vec2(float(cell%3),float(cell/3));return texture(faceTexture,(clamp(local,vec2(1.),vec2(417.))+grid*418.)/1254.).rgb;}
+float featherMask(vec2 p,vec2 center,vec2 radius){float r=length(rotate(p-center,maskAngle)/radius);return 1.-smoothstep(.70,1.,r);}
+vec3 face(vec2 p,int cell){vec3 m=faceMap[cell];vec2 local=(p-m.xy)/m.z;vec2 grid=vec2(float(cell%3),float(cell/3));return texture(faceTexture,(clamp(local,vec2(1.),vec2(tileSize-1.))+grid*tileSize)/(tileSize*3.)).rgb;}
 vec3 mouthSkinDelta(vec2 local,int cell){
   vec2 p=faceMap[0].xy+local*faceMap[0].z;
   return texture(characterTexture,(p*referenceTransform.z+referenceTransform.xy)/imageSize).rgb-face(p,cell);
@@ -28,8 +32,8 @@ vec3 mouthSkinDelta(vec2 local,int cell){
 vec3 mouthFace(vec2 p,int cell){
   // Match surrounding skin, excluding the lips so opening the mouth cannot
   // affect the correction or leave the neutral mouth's outline behind.
-  vec3 correction=(mouthSkinDelta(vec2(175.,295.),cell)+mouthSkinDelta(vec2(350.,250.),cell)
-    +mouthSkinDelta(vec2(290.,348.),cell)+mouthSkinDelta(vec2(300.,225.),cell))*.25;
+  vec3 correction=(mouthSkinDelta(skinSamples[0],cell)+mouthSkinDelta(skinSamples[1],cell)
+    +mouthSkinDelta(skinSamples[2],cell)+mouthSkinDelta(skinSamples[3],cell))*.25;
   return clamp(face(p,cell)+correction,0.,1.);
 }
 void main(){
@@ -38,11 +42,11 @@ void main(){
   // All face samples use the same deformed coordinates as the illustration.
   // Compact masks confine movement to the character instead of warping the room.
   if(animated){
-  float headMask=region(p,vec2(610.,230.),vec2(255.,330.));
-  float leftShoulder=region(p,vec2(427.,470.),vec2(126.,245.))*smoothstep(310.,355.,p.y);
-  float rightShoulder=region(p,vec2(929.,456.),vec2(126.,230.))*smoothstep(310.,355.,p.y);
-  float chest=region(p,vec2(742.,563.),vec2(255.,230.));
-  vec2 pivot=vec2(620.,380.);
+  float headMask=region(p,headRegion.xy,headRegion.zw);
+  float leftShoulder=region(p,leftShoulderRegion.xy,leftShoulderRegion.zw)*smoothstep(shoulderGate.x,shoulderGate.y,p.y);
+  float rightShoulder=region(p,rightShoulderRegion.xy,rightShoulderRegion.zw)*smoothstep(shoulderGate.x,shoulderGate.y,p.y);
+  float chest=region(p,chestRegion.xy,chestRegion.zw);
+  vec2 pivot=headPivot;
   p+=(rotate(p-pivot,-headAngle)-(p-pivot)-headOffset)*headMask;
   p.y+=shoulderLift.x*leftShoulder+shoulderLift.y*rightShoulder+breath*chest;
   p.x+=.12*(shoulderLift.x*leftShoulder-shoulderLift.y*rightShoulder);
@@ -54,8 +58,8 @@ void main(){
   vec3 base=portrait.rgb;
   if(animated){
   vec3 m=faceMap[0];vec2 local=(p-m.xy)/m.z;
-  float eyes=max(featherMask(local,vec2(127.,155.),vec2(69.,37.)),featherMask(local,vec2(312.,88.),vec2(67.,38.)));
-  float lips=featherMask(local,vec2(265.,286.),vec2(110.,70.));
+  float eyes=max(featherMask(local,leftEyeRegion.xy,leftEyeRegion.zw),featherMask(local,rightEyeRegion.xy,rightEyeRegion.zw));
+  float lips=featherMask(local,mouthRegion.xy,mouthRegion.zw);
   if(eyes>.001&&blink>.001){
     vec3 neutral=base;
     float closure=blink;
@@ -82,7 +86,7 @@ function compile(gl, type, source) {
   if (!gl.getShaderParameter(shader,gl.COMPILE_STATUS)) {const error=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(error);}
   return shader;
 }
-export async function createCharacter(container, assetUrl = new URL('./assets/character.json', import.meta.url)) {
+export async function createCharacter(container, assetUrl = new URL('./assets/character.json', import.meta.url), {onLayout} = {}) {
   const response=await fetch(assetUrl);
   if(!response.ok)throw new Error('人物素材配置无法读取。');
   const assets=await response.json();
@@ -115,6 +119,17 @@ export async function createCharacter(container, assetUrl = new URL('./assets/ch
   gl.uniform3fv(gl.getUniformLocation(program,'referenceTransform'),new Float32Array(assets.referenceTransform||[0,0,1]));
   gl.uniform1i(gl.getUniformLocation(program,'animated'),animated);
   if(registration)gl.uniform3fv(gl.getUniformLocation(program,'faceMap[0]'),new Float32Array(registration.transforms.flatMap(t=>[t.offsetX,t.offsetY,t.scale])));
+  // Keep the original companion rig unchanged; additional portraits supply their own coordinates.
+  const rig={headRegion:[610,230,255,330],leftShoulderRegion:[427,470,126,245],rightShoulderRegion:[929,456,126,230],
+    chestRegion:[742,563,255,230],headPivot:[620,380],shoulderGate:[310,355],
+    leftEyeRegion:[127,155,69,37],rightEyeRegion:[312,88,67,38],mouthRegion:[265,286,110,70],
+    skinSamples:[[175,295],[350,250],[290,348],[300,225]],maskAngle:.24,motionScale:1,...assets.rig};
+  for(const key of ['headRegion','leftShoulderRegion','rightShoulderRegion','chestRegion','leftEyeRegion','rightEyeRegion','mouthRegion'])
+    gl.uniform4fv(gl.getUniformLocation(program,key),new Float32Array(rig[key]));
+  for(const key of ['headPivot','shoulderGate'])gl.uniform2fv(gl.getUniformLocation(program,key),new Float32Array(rig[key]));
+  gl.uniform2fv(gl.getUniformLocation(program,'skinSamples[0]'),new Float32Array(rig.skinSamples.flat()));
+  gl.uniform1f(gl.getUniformLocation(program,'maskAngle'),rig.maskAngle);
+  gl.uniform1f(gl.getUniformLocation(program,'tileSize'),registration?.tileSize||418);
   container.append(canvas);
   const gpuExtension=gl.getExtension('WEBGL_debug_renderer_info');
   const gpu=gl.getParameter(gpuExtension?gpuExtension.UNMASKED_RENDERER_WEBGL:gl.RENDERER);
@@ -134,8 +149,16 @@ export async function createCharacter(container, assetUrl = new URL('./assets/ch
     // Fit the entire foreground without cropping. Background sizing is separate.
     const inset=width>=660?Math.min(width*.03,48):0;
     const availableWidth=width*(width>=900?.56:width>=660?.72:1)-inset;
-    const scale=Math.min(availableWidth/scene.width,height/scene.height);
-    bounds={x:width-inset-scene.width*scale,y:height-scene.height*scale,width:scene.width*scale,height:scene.height*scale};
+    let scale=Math.min(availableWidth/scene.width,height/scene.height);
+    let x=width-inset-scene.width*scale;
+    if(assets.sceneLayout){
+      // A seated character and her sofa must share one transform, including on narrow screens.
+      const [left,,right]=assets.sceneLayout.subjectBounds;
+      scale=Math.min(width>=900?width/scene.width:(width-16)/(right-left),height/scene.height);
+      x=width>=900?width-scene.width*scale:width/2-(left+right)/2*scale;
+    }
+    bounds={x,y:height-scene.height*scale,width:scene.width*scale,height:scene.height*scale};
+    onLayout?.(assets.sceneLayout?{...bounds}:null);
     const w=width/scale,h=height/scale;
     gl.uniform4f(location.crop,-bounds.x/scale,-bounds.y/scale,w,h);resume();
   }
@@ -156,7 +179,7 @@ export async function createCharacter(container, assetUrl = new URL('./assets/ch
       if(time>=nextBlink&&blinkStart<0){blinkStart=time;blinks++;}
       if(blinkStart>=0){const phase=(time-blinkStart)/.19;if(phase>=1){blinkStart=-1;nextBlink=time+3.2+Math.random()*2.6;}else currentBlink=Math.sin(Math.PI*phase);}
     }
-    const strength=animation.strength;
+    const strength=animation.strength*rig.motionScale;
     currentBreath=motion&&animation.breath?Math.sin(time*1.35)*1.8*strength:0;
     currentAngle=motion&&animation.head?(Math.sin(time*.46)*.008+listenAmount*.016+speakingAmount*Math.sin(time*1.8)*.007)*strength:0;
     headOffset[0]=motion&&animation.head?(Math.sin(time*.63)*1.8+listenAmount*.8)*strength:0;

@@ -300,9 +300,32 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     for(const key of ['mouth','blink','breath','listening','head','shoulders'])assert.equal(await page.locator(`[data-animation="${key}"]`).isChecked(),true);
     assert.ok(requests.every(request=>!request.includes('/scenes/')));
     console.log('PASS role cancel, animation reset/defaults, tested female voice and responsive left drawer');
+    await page.locator('#character-select').selectOption('baijie');
+    assert.equal(await page.locator('#character-name').inputValue(),'白洁');
+    assert.equal(await page.locator('#character-portrait').getAttribute('data-character'),'baijie');
+    await page.locator('#character-name').fill('');await save();
+    await page.waitForFunction(async()=>{
+      const module=await import([...document.scripts].find(s=>s.src.includes('/main.js')).src);
+      return (await module.liveCharacterStats())?.characterId==='baijie'&&document.querySelector('.scene-background').style.backgroundSize;
+    });
+    assert.equal(await page.locator('#scene-location').textContent(),'白洁','blank names retain the selected role default');
+    await page.setViewportSize({width:1920,height:1080});await page.waitForTimeout(250);
+    if(screenshots)await page.screenshot({path:path.join(screenshots,'baijie-live.png')});
+    const sceneSize=await page.locator('.scene-background').evaluate(el=>el.style.backgroundSize);
+    await open();await page.locator('#character-select').selectOption('system');await save();
+    await open();await page.locator('#character-select').selectOption('baijie');await save();
+    await page.waitForFunction(()=>document.querySelector('.scene-background').style.backgroundSize);
+    assert.equal(await page.locator('.scene-background').evaluate(el=>el.style.backgroundSize),sceneSize);
+    await page.reload();await page.waitForSelector('#live-character-stage canvas');
+    assert.equal(await page.locator('#scene-location').textContent(),'白洁');
+    await open();await page.locator('#character-select').selectOption('companion');await save();
+    await page.waitForFunction(()=>document.body.dataset.character==='companion');
+    assert.equal(await page.locator('#scene-location').textContent(),'小暖');
+    await page.waitForFunction(()=>document.querySelector('.scene-background').style.backgroundSize==='');
+    console.log('PASS Baijie selection, thumbnail, persistence and scene layout across role switches');
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>window.micRequests),0);
-    console.log('Realtime settings browser: 11/11 passed');
+    console.log('Realtime settings browser: 12/12 passed');
   } catch(error) {
     console.error(JSON.stringify({consoleErrors,errors,ui:await page.evaluate(()=>({character:document.body.dataset.character,dialogOpen:document.getElementById('settings-modal').open,returnValue:document.getElementById('settings-modal').returnValue,saved:localStorage.getItem('audiocpp.realtime.characters')}))}));throw error;
   } finally {await browser.close();}

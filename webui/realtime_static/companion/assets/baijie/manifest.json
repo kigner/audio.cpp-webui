@@ -1,0 +1,33 @@
+{
+  "name": "白洁",
+  "date": "2026-10-08",
+  "tool": "image_gen.imagegen (built-in)",
+  "approved_scene": "exec-f05b51f9-90a0-4a8d-aa5b-0342e193514c.png",
+  "character": {
+    "file": "character.png",
+    "source": "exec-fc115377-ba52-45b0-9b94-44bc9db2b771.png",
+    "dimensions": [1672, 941],
+    "transparent_background": true,
+    "prompt": "Extract ONLY the fictional adult woman from this approved image into a genuinely transparent RGBA image. Keep the exact original 1672x941 landscape canvas, exact woman position, scale, face, hair, pose, hands, crossed legs, black opaque dress, black stockings and both red heels. She is an adult age 28. Do not redesign or shift or enlarge her. Remove ALL sofa, cushions, furniture, wall, windows, floor, lamp, scenery, shadows cast onto furniture and background. All space outside the woman's silhouette, between limbs, beneath hair and between legs must be real transparency. Preserve fine hair edges and natural antialiasing. Do not erase any fingers, toes, shoe heels, hair or dress fabric. No extra parts or shadows. This is a production character foreground layer that must align exactly over the original background, not a portrait redraw. Keep the entire figure and both shoes at the same pixel coordinates, with the full original canvas."
+  },
+  "background": {
+    "file": "../../backgrounds/baijie-living-room.png",
+    "source": "exec-a6ec035c-7248-4599-bbe5-622b43469b63.png",
+    "dimensions": [1672, 941],
+    "prompt": "Edit this approved living-room scene into its EMPTY background layer. Remove only the seated woman completely, including her entire hair, face, body, hands, clothes, stockings and shoes; reconstruct the sofa cushions, fabric seams, rug, window and city where she used to be. Preserve the exact original landscape canvas, furniture placement, sofa seat height, perspective, camera, table lamp, window, curtains, city lights, wood cabinets and colors so a separate cutout of the original woman at the exact original pixel coordinates sits naturally back on the sofa. Also FIX the left dark overlay: the input has a conspicuous vertical charcoal division around the left third, especially near the coffee table and wall. Remove that pasted black/blur slab. Reconstruct a continuous plausible living room from left to right with low-contrast warm dark wall and floor on the left. Make the left region naturally dim, but do NOT bake in any black panel, straight boundary, hard vignette, rectangular blur or opaque gradient. Keep the transition broad and continuous through actual room lighting, and let the whole left wall/floor remain faintly discernible. A separate smooth CSS gradient will make the extreme left black later. Use only mild consistent depth-of-field softness across the room; recognizable sofa, warm lamp, curtains and window scenery. No people, text, UI or watermark. Keep exact aspect ratio and framing."
+  },
+  "face_atlas": {
+    "file": "face-atlas.png",
+    "source": "exec-d55c932e-67d4-43b4-b843-a2d4a0f8ba82.png",
+    "dimensions": [1254, 1254],
+    "tileSize": 418,
+    "cells": ["neutral", "blink_closed", "blink_half", "aa", "E_I", "O", "U", "PP", "listening"],
+    "prompt": "Create a production facial animation sprite atlas for ONLY the same adult illustrated woman in the reference (age 28). Output a perfectly square image with EXACTLY 3 columns and 3 rows, nine equal square cells, no gaps, no grid lines, no labels and no text. Each cell shows the SAME tightly cropped face, from upper forehead to chin with a small hair border, same head angle, same facial identity, same eye size and placement, same skin color and warm lighting, identical scale and alignment. Match the reference's precise tilted head pose and mature refined semi-realistic anime style. No torso, no shoulders, no room. Every face must occupy the same position within its square cell; do not rotate, tilt or shift between cells. Row 1 left: reference relaxed neutral closed-mouth smile, both eyes open. Row 1 center: BOTH eyes fully closed natural blink, mouth identical neutral. Row 1 right: BOTH eyes half closed, mouth identical neutral. Row 2 left: eyes open, speaking A mouth vertically open with restrained dark mouth interior and a little upper teeth. Row 2 center: eyes open, speaking E/I mouth horizontally open, shallow opening with subtle upper teeth. Row 2 right: eyes open, speaking O rounded opening. Row 3 left: eyes open, speaking U small rounded pursed opening. Row 3 center: eyes open, M/B/P lips gently pressed together, closed. Row 3 right: eyes open, soft attentive closed-mouth smile, slightly lifted mouth corners. Only eyelids and lips change. Keep nose, cheekbones, jaw, hair, eyebrow shape, skin highlights and shadows identical across the nine cells. Mouth shapes should be moderate and natural, not exaggerated or cartoonishly wide. This is a precise expression asset, not nine different portraits. The atlas itself has an opaque neutral warm background."
+  },
+  "registration": {
+    "file": "face-registration.json",
+    "method": "Read-only multiscale normalized cross-correlation of stable face regions; no generated image pixels were edited.",
+    "neutral_correlation": 0.9794977376532523,
+    "minimum_cell_correlation": 0.9728320229454797
+  }
+}

@@ -12,7 +12,7 @@
 import { S2sWsRealtimeClient } from "./ws/s2s-ws-client.js";
 import { ChatView } from "./ui/chat.js?v=scene-1";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
-import {loadCharacters, saveCharacters, normalizeCharacters, currentCharacter, DEFAULT_ANIMATION} from "./companion/profile.js";
+import {loadCharacters, saveCharacters, normalizeCharacters, currentCharacter, DEFAULT_ANIMATION, CHARACTER_DEFAULTS} from "./companion/profile.js";
 
 // ── Settings (persisted in localStorage) ───────────────────────────────
 const DEFAULT_RT_URL = new URL("/v1/realtime", window.location.href).href.replace(/^http/, "ws");
@@ -333,7 +333,7 @@ function applyCharacterProfile(role) {
 
 function readCharacterForm() {
   const role = currentCharacter(characterDraft);
-  role.name = characterName.value.trim() || (role.id === "system" ? "系统" : "小暖");
+  role.name = characterName.value.trim() || CHARACTER_DEFAULTS[role.id].name;
   role.referenceAudio = referenceFields.audio.value;
   role.referenceText = referenceFields.text.value;
   for (const input of document.querySelectorAll("[data-animation]")) {
@@ -351,8 +351,9 @@ function fillCharacterForm() {
   referenceFields.text.value = role.referenceText;
   renderReferenceOptions(role.referenceAudio);
   document.getElementById("character-portrait").classList.toggle("system", role.id === "system");
-  document.getElementById("character-portrait").setAttribute("aria-label", role.id === "system" ? "空白画面" : "暖灯卧室角色");
-  document.getElementById("character-portrait-label").textContent = role.id === "system" ? "空白画面" : "默认角色";
+  document.getElementById("character-portrait").dataset.character = role.id;
+  document.getElementById("character-portrait").setAttribute("aria-label", role.id === "system" ? "空白画面" : `${role.name}角色预览`);
+  document.getElementById("character-portrait-label").textContent = role.id === "system" ? "空白画面" : role.name;
   document.getElementById("character-advanced").hidden = role.id === "system";
   for (const input of document.querySelectorAll("[data-animation]")) {
     if (input.type === "checkbox") input.checked = role.animation[input.dataset.animation];
