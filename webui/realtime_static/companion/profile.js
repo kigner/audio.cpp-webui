@@ -6,7 +6,7 @@ export const DEFAULT_ANIMATION = Object.freeze({
 });
 export const CHARACTER_DEFAULTS = Object.freeze({
   companion: {name: '小暖', referenceAudio: 'voice/demo_02_woman.wav',
-    visual: './assets/character.json', background: './backgrounds/bedroom.png'},
+    visual: './assets/character.json', background: './backgrounds/bedroom-private.png'},
   system: {name: '系统', referenceAudio: ''},
 });
 

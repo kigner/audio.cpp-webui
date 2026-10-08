@@ -4,11 +4,13 @@
 .scene-shade { z-index: 2; }
 #app { z-index: 3; }
 .call-controls { z-index: 30; }
-body[data-character="companion"] .scene-shade { background: linear-gradient(180deg,#18100b30,transparent 22%,transparent 72%,#18100b70); }
+/* Defocus only the room; the animated foreground stays sharp. Overscan hides blur edges. */
+body[data-character="companion"] .scene-background { inset: -40px; filter: blur(4px) brightness(.78) saturate(.8); }
+body[data-character="companion"] .scene-shade { background: linear-gradient(90deg,#0c0b0a 0%,#0c0b0a 16%,#0c0b0af5 30%,#0c0b0ad6 40%,#0c0b0a85 50%,#0c0b0a24 59%,transparent 68%), linear-gradient(180deg,#18100b20,transparent 22%,transparent 72%,#18100b60); }
 body[data-character="system"] .scene-shade { background: none; }
 #scene-location { visibility: visible; }
 #settings-modal { inset: 0 auto 0 0; margin: 0; width: min(440px,100vw); max-width: 100vw; height: 100dvh; max-height: 100dvh; border-left: 0; border-right: 1px solid var(--border); border-radius: 0 16px 16px 0; box-shadow: 20px 0 80px #0003; }
-.character-portrait { position: relative; height: 155px; margin: 4px 0 18px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: url('./assets/character.png') right 14% top 12% / auto 230% no-repeat, url('./backgrounds/bedroom.png') center / cover no-repeat; }
+.character-portrait { position: relative; height: 155px; margin: 4px 0 18px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: url('./assets/character.png') right 14% top 12% / auto 230% no-repeat, url('./backgrounds/bedroom-private.png') center / cover no-repeat; }
 .character-portrait > span { position: absolute; bottom: 10px; left: 12px; padding: 4px 8px; border-radius: 6px; background: #24160ece; color: #fff0df; font-size: 12px; }
 .character-portrait.system { background: var(--bg); }
 .character-portrait.system > span { background: none; color: var(--text-dim); }
@@ -24,3 +26,5 @@ body[data-character="system"] .scene-shade { background: none; }
 .character-advanced .field input[type="range"] { width: 100%; padding: 4px 0; accent-color: var(--accent); }
 .scene-check input { accent-color: var(--accent); }
 @media (max-width: 660px) { #settings-modal { border-radius: 0; } }
+/* Keep the face unobscured when the character occupies most of a narrow screen. */
+@media (max-width: 660px) { body[data-character="companion"] .scene-shade { background: linear-gradient(90deg,#0c0b0ae6,#0c0b0a70 22%,transparent 48%), linear-gradient(0deg,#0c0b0aa6,transparent 44%); } }

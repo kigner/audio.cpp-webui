@@ -5,7 +5,7 @@
 当前素材：
 
 - `assets/character.png`：1146 × 1372，带真实透明通道的人物图。
-- `backgrounds/bedroom.png`：1672 × 941，无窗卧室、两只睡枕。
+- `backgrounds/bedroom-private.png`：1672 × 941，默认暖光卧室；左侧暗色留白，人物周围保留床铺、台灯和窗帘。旧版 `bedroom.png` 保留。
 - `assets/character.json`：人物图片和可选表情素材的描述文件。
 - `assets/manifest.json`：内置 imagegen 生成记录、提示词要点和表情坐标配准结果。
 
