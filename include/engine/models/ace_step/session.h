@@ -29,6 +29,7 @@ public:
     runtime::TaskResult run(const runtime::TaskRequest & request) override;
 
 private:
+    runtime::TaskResult run_analyze(const AceStepRequest & request);
     void ensure_planner();
     void ensure_dit_weights_runtime();
     void ensure_pre_dit();

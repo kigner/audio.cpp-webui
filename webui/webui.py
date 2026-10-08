@@ -2420,10 +2420,10 @@ def params_for(model_id):
     specs = MODEL_PARAMS.get(entry.get("id", ""))
     if specs is None:
         specs = MODEL_PARAMS.get(entry.get("family", ""), [])
-    local = list(specs) if isinstance(specs, list) else []
+    local = [dict(p) for p in specs] if isinstance(specs, list) else []
     family = entry.get("family", "")
     contract = MODEL_SPECS.get(family, {}).get("options", {})
-    names = {p["name"] for p in local}
+    by_name = {p["name"]: p for p in local}
     # Keep downstream labels/defaults, and fill in the backend's new options.
     # Controls send only edited values; an unset backend default stays unset.
     for scope in ("request", "session", "load"):
@@ -2439,10 +2439,40 @@ def params_for(model_id):
             if scope != "request":
                 qualified = name if name.startswith(family + ".") else family + "." + name
                 name = scope + "_options." + qualified
-            if name in names:
+            if name in by_name:
+                # Preserve presentation and deliberate downstream defaults, but
+                # keep the accepted values and bounds in sync with the backend.
+                p = by_name[name]
+                control = _spec_param_control(option, name, scope)
+                if option.get("type") in {"int", "float"}:
+                    if p.get("type") not in {"slider", "number"}:
+                        p["type"] = "number"
+                    for source, target in (("min", "minimum"), ("max", "maximum")):
+                        if source in option:
+                            p[target] = option[source]
+                    if option["type"] == "int":
+                        p.update(precision=0, step=1)
+                elif control.get("choices"):
+                    old = p.get("choices", [])
+                    labels = {v[1] if isinstance(v, list) else v: v for v in old}
+                    choices = list(control["choices"])
+                    if family == "dots_tts" and name == "template_name" and entry.get("id") != "dots-tts-edit":
+                        choices = [v for v in choices if v != "edit"]
+                    if "" in labels and "" not in choices:
+                        choices.insert(0, "")  # legacy optional/automatic choice
+                    p.update(type="choice", choices=[labels.get(v, v) for v in choices])
+                elif option.get("type") != "string":
+                    p["type"] = control["type"]
+                    p.pop("choices", None)
+                    if control.get("json_list"):
+                        p["json_list"] = True
                 continue
             local.append(_spec_param_control(option, name, scope))
-            names.add(name)
+            by_name[name] = local[-1]
+    defaults = profile_for(entry).get("default_options", {})
+    for p in local:
+        if p["name"] in defaults:
+            p["default"] = defaults[p["name"]]
     return [localize_parameter(p) for p in local]
 
 
@@ -3949,6 +3979,14 @@ def _merged_options(prof, adv_values, adv_options):
     return options
 
 
+def _speech_max_tokens(prof, value, options):
+    """A blank workbench limit leaves the model default intact; JSON wins."""
+    if not prof.get("send_max_tokens", True):
+        return None
+    value = options.pop("max_tokens", value)
+    return None if value in (None, "") else int(value)
+
+
 def _tts_reference_text_required(entry, prof, has_reference, options):
     required = (prof.get("require_reference_text") or
                 (prof.get("require_reference_text_with_voice") and has_reference))
@@ -4102,10 +4140,11 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         if not prof.get("send_seed", True):
             payload.pop("seed")
             seed_note = ""
-        if prof.get("send_max_tokens", True):
-            payload["max_tokens"] = int(max_tokens)
+        max_tokens = _speech_max_tokens(prof, max_tokens, options)
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         auto_vibevoice_max_tokens = (
-            is_vibevoice and int(max_tokens) == 1200
+            is_vibevoice and max_tokens in (None, 1200)
         )
         if voice_path and prof.get("accepts_voice_reference", True):
             payload["voice_ref"] = _ensure_wav(voice_path)
@@ -4134,7 +4173,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
                 _t("声音合成中…", "Synthesizing audio…")))
             payload["input"] = chunk
             if auto_vibevoice_max_tokens:
-                payload["max_tokens"] = _vibevoice_text_max_tokens(chunk, int(max_tokens))
+                payload["max_tokens"] = _vibevoice_text_max_tokens(chunk, max_tokens or 1200)
             t_chunk = time.time()
             try:
                 r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
@@ -4249,8 +4288,9 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     if not prof.get("send_seed", True):
         payload.pop("seed")
         seed_note = ""
-    if prof.get("send_max_tokens", True):
-        payload["max_tokens"] = int(max_tokens)
+    max_tokens = _speech_max_tokens(prof, max_tokens, options)
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     if voice_path and prof.get("accepts_voice_reference", True):
         payload["voice_ref"] = _ensure_wav(voice_path)
     elif voice_preset:
@@ -4900,13 +4940,17 @@ def do_music_analyze(model, source_audio, seed, adv_values):
         if not entry or entry.get("family") != "ace_step":
             raise gr.Error(_t("只有 ACE-Step 支持源音频分析。",
                               "Source analysis is available for ACE-Step only."))
-        ensure_model_loaded(model, GEN_TASKS)
+        runtime_options = _merged_options(profile_for(entry), adv_values, "")
+        _ensure_with_options(model, GEN_TASKS, runtime_options)
 
         # 分析要可复现：seed=-1（随机）时固定为 1234，不跟生成共享随机性；
         # 用户显式填的固定 seed 仍然生效（可换 seed 重抽歌词转写）。
+        seed = runtime_options.get("seed", seed)
         analyze_seed = 1234 if int(seed if seed is not None else -1) == -1 else int(seed)
         req = {"text": "analyze", "task_route": "analyze",
                "audio": _ensure_wav(source_audio), "seed": analyze_seed}
+        if "lm_temperature" in runtime_options:
+            req["options"] = {"lm_temperature": runtime_options["lm_temperature"]}
         dur = _audio_duration_seconds(req["audio"])
         dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
         _ui_log(_t("源音频分析开始：model={model}，音频 {dur_note}",
@@ -4949,6 +4993,10 @@ def do_music_analyze(model, source_audio, seed, adv_values):
                    seconds=elapsed))
         return adv_values, dict(adv_values), "\n".join(lines)
     except gr.Error as e:
+        if "Unsupported ACE-Step route: analyze" in str(e):
+            return adv_values, gr.skip(), _t(
+                "❌ 当前后端尚未包含 ACE-Step 源音频分析；请在下次构建时更新 audiocpp_server。",
+                "❌ This backend does not include ACE-Step source analysis; update audiocpp_server at the next build.")
         return adv_values, gr.skip(), _msg_from_error(e)
     except Exception as e:
         return adv_values, gr.skip(), _t("❌ 分析失败：{error}",
@@ -5369,8 +5417,9 @@ def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
         if not prof.get("send_seed", True):
             payload.pop("seed")
             seed_note = ""
-        if prof.get("send_max_tokens", True):
-            payload["max_tokens"] = int(max_tokens)
+        max_tokens = _speech_max_tokens(prof, max_tokens, options)
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         # 音色描述的落点按家族区分：qwen3_tts 走服务器的 instructions→instruction 映射；
         # irodori 等只读自家 options 键（profile 里的 vdes_option_key，如 caption）。
         vdes_key = prof.get("vdes_option_key")

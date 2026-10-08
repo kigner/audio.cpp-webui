@@ -1907,6 +1907,247 @@ public:
         return out;
     }
 
+    AceStepLatents generate_latents_flow_edit(
+        const AceStepDiffusionConditioning & conditioning,
+        const AceStepGenerationOptions & options) {
+        const auto total_start = Clock::now();
+        const auto & pre = conditioning.pre_dit;
+        const auto & config = assets_->config.diffusion;
+
+        if (!pre.is_flow_edit || pre.src_encoder_hidden_states.tokens <= 0) {
+            throw std::runtime_error("ACE-Step flow-edit requires source conditioning");
+        }
+
+        if (pre.context_latents.frames <= 0 ||
+            pre.context_latents.channels != config.latent_channels * 2 ||
+            pre.encoder_hidden_states.hidden_size != assets_->config.encoder.hidden_size ||
+            pre.src_encoder_hidden_states.hidden_size != assets_->config.encoder.hidden_size ||
+            pre.target_latents.values.size() < static_cast<size_t>(pre.context_latents.frames * config.latent_channels)) {
+            throw std::runtime_error("ACE-Step flow-edit conditioning shape mismatch");
+        }
+
+        const int64_t encoder_token_capacity = std::max<int64_t>(
+            pre.encoder_hidden_states.tokens,
+            pre.src_encoder_hidden_states.tokens);
+
+        // Build/reuse StepGraph (batch=1, v1 no CFG batching)
+        if (!graph_ || !graph_->can_run(pre.context_latents.frames, encoder_token_capacity) || graph_->batch_size() != 1) {
+            graph_.reset();
+            graph_ = std::make_unique<StepGraph>(
+                assets_, backend_, backend_type_, threads_, weights_,
+                1, pre.context_latents.frames, encoder_token_capacity,
+                graph_arena_bytes_);
+            engine::debug::timing_log_scalar(
+                "ace_step.flow_edit.graph.prepare_ms",
+                engine::debug::elapsed_ms(total_start, Clock::now()));
+        }
+        const int64_t cached_encoder_capacity = graph_->encoder_token_capacity();
+        if (!cross_cache_graph_ || cross_cache_graph_->encoder_token_capacity() != cached_encoder_capacity) {
+            cross_cache_graph_ = std::make_unique<CrossAttentionCacheGraph>(
+                assets_, backend_, backend_type_, threads_, weights_,
+                cached_encoder_capacity, graph_arena_bytes_);
+        }
+
+        // Build cross-attention caches for tar and src
+        auto tar_encoder_hidden_padded = pad_encoder_hidden_values(
+            pre.encoder_hidden_states, cached_encoder_capacity, assets_->config.encoder.hidden_size);
+        auto tar_encoder_mask_padded = pad_encoder_attention_mask(
+            pre.encoder_hidden_states, cached_encoder_capacity);
+        auto tar_cross_cache = cross_cache_graph_->run(tar_encoder_hidden_padded);
+
+        auto src_encoder_hidden_padded = pad_encoder_hidden_values(
+            pre.src_encoder_hidden_states, cached_encoder_capacity, assets_->config.encoder.hidden_size);
+        auto src_encoder_mask_padded = pad_encoder_attention_mask(
+            pre.src_encoder_hidden_states, cached_encoder_capacity);
+        auto src_cross_cache = cross_cache_graph_->run(src_encoder_hidden_padded);
+
+        const int64_t padded_frames = graph_->padded_frames();
+        auto context_padded = pad_context_values(
+            pre.context_latents, padded_frames, config.latent_channels * 2);
+
+        // Build schedule
+        std::vector<float> schedule = make_python_schedule(options, config.is_turbo);
+        const int64_t total_steps = static_cast<int64_t>(schedule.size());
+        const int64_t n_min_step = static_cast<int64_t>(
+            static_cast<float>(total_steps) * options.flow_edit_n_min);
+        const int64_t n_max_step = static_cast<int64_t>(
+            static_cast<float>(total_steps) * options.flow_edit_n_max);
+        const int64_t n_avg = std::max<int64_t>(1, options.flow_edit_n_avg);
+
+        engine::debug::trace_log_scalar("ace_step.flow_edit.total_steps", total_steps);
+        engine::debug::trace_log_scalar("ace_step.flow_edit.n_min_step", n_min_step);
+        engine::debug::trace_log_scalar("ace_step.flow_edit.n_max_step", n_max_step);
+        engine::debug::trace_log_scalar("ace_step.flow_edit.n_avg", n_avg);
+
+        // Initialize zt_edit = VAE-encoded source audio (target_latents).
+        // Flow-edit operates in VAE latent space; FSQ-decoded latents (lm_hints_25hz)
+        // are only used for conditioning, not as the running latent state.
+        const size_t latent_size = static_cast<size_t>(
+            pre.context_latents.frames * config.latent_channels);
+        std::vector<float> zt_edit(latent_size, 0.0F);
+        std::copy(pre.target_latents.values.begin(),
+                  pre.target_latents.values.begin() + static_cast<std::ptrdiff_t>(latent_size),
+                  zt_edit.begin());
+
+        uint32_t fwd_seed = options.retake_seed.value_or(options.seed);
+        uint64_t fwd_noise_offset = 0;
+
+        const auto rms_of = [](const std::vector<float> & v) {
+            if (v.empty()) {
+                return 0.0;
+            }
+            double s = 0.0;
+            for (const float x : v) {
+                s += static_cast<double>(x) * x;
+            }
+            return std::sqrt(s / static_cast<double>(v.size()));
+        };
+        if (engine::debug::trace_log_enabled()) {
+            engine::debug::trace_log_scalar("ace_step.flow_edit.x_src_rms", rms_of(zt_edit));
+        }
+
+        std::vector<float> prev_vt_src, prev_vt_tar;
+        std::vector<float> xt_tar;
+        bool in_post_window = false;
+
+        const auto sampling_start = Clock::now();
+        for (int64_t step_idx = 0; step_idx < total_steps; ++step_idx) {
+            if (step_idx < n_min_step) continue;
+
+            const float t_curr = schedule[step_idx];
+            const float t_prev = (step_idx + 1 < total_steps) ? schedule[step_idx + 1] : 0.0F;
+            const float dt = t_curr - t_prev;
+
+            if (step_idx < n_max_step) {
+                // Edit window: paired src/tar evaluation
+                std::vector<float> V_src_sum(latent_size, 0.0F);
+                std::vector<float> V_tar_sum(latent_size, 0.0F);
+
+                for (int64_t avg_idx = 0; avg_idx < n_avg; ++avg_idx) {
+                    auto fwd_noise = gaussian_noise(latent_size, fwd_seed, fwd_noise_offset);
+                    fwd_noise_offset += latent_size;
+
+                    // zt_src = (1-t)*src_latents + t*fwd_noise  (VAE space)
+                    std::vector<float> zt_src(latent_size);
+                    for (size_t i = 0; i < latent_size; ++i) {
+                        zt_src[i] = (1.0F - t_curr) * pre.target_latents.values[i]
+                                  + t_curr * fwd_noise[i];
+                    }
+
+                    // zt_tar = zt_edit + zt_src - src_latents  (VAE space)
+                    std::vector<float> zt_tar(latent_size);
+                    for (size_t i = 0; i < latent_size; ++i) {
+                        zt_tar[i] = zt_edit[i] + zt_src[i] - pre.target_latents.values[i];
+                    }
+
+                    // V_src: DiT forward with source conditioning
+                    graph_->set_static_inputs(pre.context_latents.frames,
+                        context_padded, src_cross_cache, src_encoder_mask_padded);
+                    auto V_src = graph_->run_step(
+                        pre.context_latents.frames, zt_src, t_curr, t_curr);
+
+                    // V_tar: DiT forward with target conditioning
+                    graph_->set_static_inputs(pre.context_latents.frames,
+                        context_padded, tar_cross_cache, tar_encoder_mask_padded);
+                    auto V_tar = graph_->run_step(
+                        pre.context_latents.frames, zt_tar, t_curr, t_curr);
+
+                    apply_velocity_norm_clamp(V_src, zt_src,
+                        pre.context_latents.frames, config.latent_channels,
+                        options.velocity_norm_threshold);
+                    apply_velocity_norm_clamp(V_tar, zt_tar,
+                        pre.context_latents.frames, config.latent_channels,
+                        options.velocity_norm_threshold);
+
+                    for (size_t i = 0; i < latent_size; ++i) {
+                        V_src_sum[i] += V_src[i];
+                        V_tar_sum[i] += V_tar[i];
+                    }
+                }
+
+                const float inv_avg = 1.0F / static_cast<float>(n_avg);
+                for (size_t i = 0; i < latent_size; ++i) {
+                    V_src_sum[i] *= inv_avg;
+                    V_tar_sum[i] *= inv_avg;
+                }
+
+                apply_velocity_ema(V_src_sum, prev_vt_src, options.velocity_ema_factor);
+                apply_velocity_ema(V_tar_sum, prev_vt_tar, options.velocity_ema_factor);
+                prev_vt_src = V_src_sum;
+                prev_vt_tar = V_tar_sum;
+
+                if (engine::debug::trace_log_enabled()) {
+                    std::vector<float> delta(latent_size);
+                    for (size_t i = 0; i < latent_size; ++i) {
+                        delta[i] = V_tar_sum[i] - V_src_sum[i];
+                    }
+                    engine::debug::trace_log_scalar("ace_step.flow_edit.step", step_idx);
+                    engine::debug::trace_log_scalar("ace_step.flow_edit.t_curr", static_cast<double>(t_curr));
+                    engine::debug::trace_log_scalar("ace_step.flow_edit.v_src_rms", rms_of(V_src_sum));
+                    engine::debug::trace_log_scalar("ace_step.flow_edit.v_tar_rms", rms_of(V_tar_sum));
+                    engine::debug::trace_log_scalar("ace_step.flow_edit.v_delta_rms", rms_of(delta));
+                    engine::debug::trace_log_scalar("ace_step.flow_edit.zt_edit_rms", rms_of(zt_edit));
+                }
+
+                // Euler step toward t_prev. The schedule descends (Python:
+                // zt_edit += (t_prev - t_curr) * V_delta, a negative dt), so
+                // subtract like subtract_velocity_step does in generate_latents.
+                for (size_t i = 0; i < latent_size; ++i) {
+                    zt_edit[i] -= dt * (V_tar_sum[i] - V_src_sum[i]);
+                }
+            } else {
+                // Post-window: tar-only Euler denoising
+                if (!in_post_window) {
+                    in_post_window = true;
+                    auto fwd_noise = gaussian_noise(latent_size, fwd_seed, fwd_noise_offset);
+                    fwd_noise_offset += latent_size;
+                    xt_tar.resize(latent_size);
+                    for (size_t i = 0; i < latent_size; ++i) {
+                        const float xt_src = (1.0F - t_curr) * pre.target_latents.values[i]
+                                           + t_curr * fwd_noise[i];
+                        xt_tar[i] = zt_edit[i] + xt_src - pre.target_latents.values[i];
+                    }
+                }
+
+                graph_->set_static_inputs(pre.context_latents.frames,
+                    context_padded, tar_cross_cache, tar_encoder_mask_padded);
+                auto V_tar = graph_->run_step(
+                    pre.context_latents.frames, xt_tar, t_curr, t_curr);
+
+                apply_velocity_norm_clamp(V_tar, xt_tar,
+                    pre.context_latents.frames, config.latent_channels,
+                    options.velocity_norm_threshold);
+                apply_velocity_ema(V_tar, prev_vt_tar, options.velocity_ema_factor);
+                prev_vt_tar = V_tar;
+
+                for (size_t i = 0; i < latent_size; ++i) {
+                    xt_tar[i] -= dt * V_tar[i];
+                }
+            }
+        }
+        engine::debug::timing_log_scalar(
+            "ace_step.flow_edit.sampling_loop_ms",
+            engine::debug::elapsed_ms(sampling_start, Clock::now()));
+
+        const auto & final_latents = in_post_window ? xt_tar : zt_edit;
+        AceStepLatents out;
+        out.frames = pre.context_latents.frames;
+        out.channels = config.latent_channels;
+        out.values.assign(final_latents.begin(),
+                          final_latents.begin() + static_cast<std::ptrdiff_t>(out.frames * out.channels));
+
+        // Diagnostic
+        {
+            double s = 0.0;
+            for (float x : out.values) s += static_cast<double>(x) * x;
+            engine::debug::trace_log_scalar("ace_step.flow_edit.output_rms",
+                out.values.empty() ? 0.0 : std::sqrt(s / static_cast<double>(out.values.size())));
+        }
+        engine::debug::timing_log_scalar("ace_step.flow_edit.total_ms",
+            engine::debug::elapsed_ms(total_start, Clock::now()));
+        return out;
+    }
+
     void release_graph_workspace() {
         graph_.reset();
         cross_cache_graph_.reset();
@@ -1939,6 +2180,12 @@ AceStepLatents AceStepDiffusionRuntime::generate_latents(
     const AceStepDiffusionConditioning & conditioning,
     const AceStepGenerationOptions & options) const {
     return impl_->generate_latents(conditioning, options);
+}
+
+AceStepLatents AceStepDiffusionRuntime::generate_latents_flow_edit(
+    const AceStepDiffusionConditioning & conditioning,
+    const AceStepGenerationOptions & options) const {
+    return impl_->generate_latents_flow_edit(conditioning, options);
 }
 
 void AceStepDiffusionRuntime::release_graph_workspace() const {

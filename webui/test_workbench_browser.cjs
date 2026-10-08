@@ -1810,6 +1810,90 @@ cases.push(['UI updates separate warning link colors and discard results when ch
   assert.equal(await page.locator('#job-status').isVisible(),false);assert.equal(await page.locator('#result-content').textContent(),'');
 }]);
 
+cases.push(['parameter migration keeps explicit defaults and model-specific zero limits',async(page,backend)=>{
+  backend.models.push(model('migration-h3','Migration H3','music','gen',{
+    family:'minimax_h3',music_inputs:{duration:false,source_audio:false,lyrics:false},
+    profile:{send_seed:true,default_options:{height:32,width:32}},
+    parameters:[{name:'height',type:'number',label:'高度',default:32,minimum:32,level:'expert',scope:'request'},
+      {name:'width',type:'number',label:'宽度',default:32,minimum:32,level:'expert',scope:'request'}]}));
+  backend.models.push(model('migration-tts','Migration TTS','tts','tts',{
+    max_tokens_min:0,profile:{accepts_voice_reference:false,send_max_tokens:true,send_seed:false},parameters:[]}));
+  await page.reload();await page.locator('#parameter-toggle').waitFor({state:'visible'});
+  await task(page,'music');await pick(page,'migration-h3');await advanced(page);
+  assert.equal(await page.locator('#param-height').inputValue(),'32');
+  await page.locator('#param-height').fill('768');await page.locator('#param-height').fill('32');
+  await page.locator('[data-input-key="text"]').fill('Quiet instrumental music');
+  await page.keyboard.press('Escape');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'H3 request');
+  assert.equal(backend.requests[0].options.height,32,'An explicit default remains a request override');
+  backend.finish('job-1','',['music.wav']);await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  await task(page,'tts');await pick(page,'migration-tts');await advanced(page);
+  await page.locator('[data-input-key="text"]').fill('Hello.');
+  await page.locator('[data-input-key="max_tokens"]').fill('0');
+  assert.equal(await page.locator('[data-input-key="max_tokens"]').evaluate(el=>el.checkValidity()),true);
+  await page.keyboard.press('Escape');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===2,'Zero limit request');
+  assert.equal(backend.requests[1].inputs.max_tokens,0);
+  backend.finish('job-2','',['speech.wav']);await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  await advanced(page);
+  await page.locator('[data-input-key="max_tokens"]').fill('');
+  await page.keyboard.press('Escape');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===3,'Blank limit request');
+  assert.equal(Object.hasOwn(backend.requests[2].inputs,'max_tokens'),false);
+}]);
+
+cases.push(['parameter migration analyzes ACE source and preserves edits and resets',async(page,backend)=>{
+  const parameters=clone(PRESET_PARAMETERS.ace_step).map(p=>({...p,scope:'request',level:p.name==='task_route'?'basic':'expert'}));
+  parameters.find(p=>p.name==='num_inference_steps').route_defaults={remix:16};
+  backend.models.push(model('migration-ace','Migration ACE','music','gen',{
+    family:'ace_step',profile:{send_seed:true},parameters,
+    music_inputs:{source_audio:true,source_audio_routes:['cover'],source_required_routes:['cover'],lyrics:true,duration:false}}));
+  await page.reload();await page.locator('#parameter-toggle').waitFor({state:'visible'});
+  await task(page,'music');await pick(page,'migration-ace');await advanced(page);
+  await page.locator('#param-task_route').selectOption('remix');
+  assert.equal(await page.locator('#param-num_inference_steps').inputValue(),'16');
+  await page.locator('#param-task_route').selectOption('cover');
+  assert.equal(await page.locator('#param-num_inference_steps').inputValue(),'8');
+  await upload(page,'#task-form [data-input-key="audio"]','source.wav');
+  await page.locator('#options-json').fill('{"source_caption":"Old caption","num_inference_steps":8}');
+  await page.keyboard.press('Escape');
+  await page.locator('#analyze-music-source').click();await waitUntil(()=>backend.requests.length===1,'Analysis request');
+  assert.equal(backend.requests[0].action,'analyze_source');
+  assert.equal(backend.requests[0].inputs.text,undefined,'Analysis does not require a generation prompt');
+  assert.equal(await page.locator('#analyze-music-source').isDisabled(),true);
+  await advanced(page);
+  await page.locator('#param-bpm').fill('120'); // a user edit during analysis wins
+  backend.finish('job-1','',[]);
+  Object.assign(backend.jobs.get('job-1'),{parameter_updates:{source_caption:'Warm piano',source_lyrics:'Hello',bpm:90,keyscale:'C major',timesignature:'4/4'}});
+  await waitValue(page,'#param-source_caption','Warm piano');
+  assert.equal(await page.locator('#param-source_lyrics').inputValue(),'Hello');
+  assert.equal(await page.locator('#param-bpm').inputValue(),'120');
+  assert.equal(JSON.parse(await page.locator('#options-json').inputValue()).source_caption,'Warm piano');
+  assert.equal(JSON.parse(await page.locator('#options-json').inputValue()).num_inference_steps,8);
+  assert.equal((await page.locator('#result-content').textContent()).includes('未产生输出文件'),false);
+  await page.locator('[data-input-key="text"]').fill('A piano cover');
+  await page.keyboard.press('Escape');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===2,'Generation after analysis');
+  assert.equal(backend.requests[1].options.source_caption,'Warm piano');
+  assert.equal(backend.requests[1].options.bpm,120);
+  assert.equal(backend.requests[1].options.keyscale,'C major');
+  backend.finish('job-2','',['music.wav']);await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  await page.locator('#analyze-music-source').click();await waitUntil(()=>backend.requests.length===3,'Second analysis');
+  await advanced(page);
+  await page.locator('#reset-options').click();
+  backend.finish('job-3','',[]);Object.assign(backend.jobs.get('job-3'),{parameter_updates:{source_caption:'Stale caption'}});
+  await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  assert.equal(await page.locator('#param-source_caption').inputValue(),'');
+  await page.locator('#param-task_route').selectOption('cover');await page.keyboard.press('Escape');
+  await page.locator('#analyze-music-source').click();await waitUntil(()=>backend.requests.length===4,'Analysis with an edited JSON draft');
+  await advanced(page);await page.locator('#options-json').fill('null');
+  backend.finish('job-4','',[]);Object.assign(backend.jobs.get('job-4'),{parameter_updates:{source_caption:'Ignore invalid draft'}});
+  await page.waitForFunction(()=>document.querySelector('#job-status').dataset.state==='done');
+  assert.equal(await page.locator('#options-json').inputValue(),'null');
+  assert.equal(await page.locator('#param-source_caption').inputValue(),'');
+  await page.locator('#options-json').fill('{}');await page.keyboard.press('Escape');
+}]);
+
 (async () => {
   const options = {headless:true};
   if (process.env.AUDIOCPP_BROWSER_EXECUTABLE) options.executablePath = process.env.AUDIOCPP_BROWSER_EXECUTABLE;

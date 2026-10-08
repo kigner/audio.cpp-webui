@@ -264,7 +264,7 @@ async function selectModel(id, failOnError=false) {
   }catch(error){if(seq!==state.detailSeq||key!==state.key)return;state.detail=null;updateRunButton();if(failOnError)throw error;showToast(friendlyError(error));}
 }
 function activeModelRuntime() {return state.task==='asr'&&state.model&&state.model===state.runtime?.asr?.model?state.runtime.asr:state.runtime?.server;}
-function updateRunButton() {const b=$('run-button'),live=state.runtime?.realtime_active||state.realtime?.active,settings=runtimeSettingsState();b.disabled=!state.detail?.installed||state.model!==activeModelRuntime()?.model||settings.pending||!!settings.error||!!state.job||!!state.referenceJob||!!state.loading||state.runtime?.busy||live||state.submitting||state.uploading>0||state.recorders.size>0;b.textContent=taskInfo().action;updateLoadStatus();}
+function updateRunButton() {const b=$('run-button'),live=state.runtime?.realtime_active||state.realtime?.active,settings=runtimeSettingsState();b.disabled=!state.detail?.installed||state.model!==activeModelRuntime()?.model||settings.pending||!!settings.error||!!state.job||!!state.referenceJob||!!state.loading||state.runtime?.busy||live||state.submitting||state.uploading>0||state.recorders.size>0;b.textContent=taskInfo().action;const analyze=$('analyze-music-source');if(analyze)analyze.disabled=b.disabled||!formValues().audio;updateLoadStatus();}
 function modelUsageHint(model) {
   return (model.description||'').replace(/^\s*\*\*[^*]+\*\*\s*[:：]?\s*/,'').replace(/\*\*|`/g,'').replace(/必须提供/g,'需').replace(/\s+/g,' ').trim();
 }
@@ -774,6 +774,7 @@ function renderInputs() {
     primary.append(description);
     if(music.source_audio){
       const source=uploadInput('audio',music.require_source_audio?'源音频':'源音频（可选）',{required:!!music.require_source_audio});
+      if(detail?.family==='ace_step'){const analyze=button('分析源音频','button secondary small-button',()=>submitTask('analyze_source'));analyze.id='analyze-music-source';analyze.disabled=$('run-button').disabled||!formValues().audio;source.querySelector('.upload-actions').append(analyze);}
       if(music.text_role==='lyrics')secondary.append(source);
       else{primary.append(source);primary.classList.add('paired-inputs');}
     }
@@ -797,7 +798,9 @@ function renderInputs() {
 }
 
 function parameterControl(param) {
-  const values=state.overrides,key=param.name;const modified=Object.hasOwn(values,key);const current=modified?values[key]:param.default;
+  const values=state.overrides,key=param.name;const modified=Object.hasOwn(values,key);
+  let route;if(param.route_defaults){try{route=collectOptions().task_route;}catch{route=values.task_route;}}
+  const current=modified?values[key]:(param.route_defaults?.[route]??param.default);
   const type=param.type;let input;const choices=param.choices||param.values;
   if(state.task==='music'&&key==='tags'){input=node('textarea','short-text');input.rows=3;input.value=current??'';}
   else if(type==='bool'||type==='boolean') {input=node('input');input.type='checkbox';input.checked=!!current;}
@@ -815,7 +818,7 @@ function parameterControl(param) {
   input.addEventListener('input',()=>{
     let value=input.type==='checkbox'?input.checked:input.value;
     if(input.type==='number'||input.type==='range')value=value===''?'':Number(value);
-    if(value===''||value===param.default)delete values[key];else values[key]=value;
+    if(value==='')delete values[key];else values[key]=value;
     if(output)output.textContent=value;
     updateRunButton();
     if(state.task==='music'&&key==='task_route'){renderInputs();renderParameters();}
@@ -848,7 +851,7 @@ function renderParameters() {
   replace($('expert-controls'),...expert.map(parameterControl));
   const profile=state.detail?.profile||{};
   if(['tts','music','vc','processing','design'].includes(state.task)&&profile.send_seed!==false)$('expert-controls').append(textInput('seed','随机种子',{type:'number',min:-1,step:1,placeholder:'留空使用默认',help:'用于复现结果；-1 表示随机。'}));
-  if(['tts','design'].includes(state.task)&&profile.send_max_tokens!==false)$('expert-controls').append(textInput('max_tokens','生成长度上限（max_tokens）',{type:'number',min:1,step:1,placeholder:'使用模型默认',help:'过小可能截断内容。'}));
+  if(['tts','design'].includes(state.task)&&profile.send_max_tokens!==false)$('expert-controls').append(textInput('max_tokens','生成长度上限（max_tokens）',{type:'number',min:state.detail?.max_tokens_min??1,step:1,placeholder:state.detail?.family==='vibevoice'?'按文本长度自动计算':'使用模型默认',help:'过小可能截断内容。'}));
   $('common-options').hidden=!settings.childElementCount&&!$('basic-controls').childElementCount&&!$('effect-controls').childElementCount;
   $('common-options-heading').hidden=state.task!=='tts';
 }
@@ -876,19 +879,24 @@ function validateInputs(inputs,options={}) {
   if(inputs.detailed&&(inputs.dialogue||inputs.stream))throw new Error('详细结果仅支持普通离线转写，请关闭说话人对话和流式处理。');
   if(state.task==='music'){const music=musicInputCapabilities();if(music.require_source_audio&&!inputs.audio)throw new Error('当前创作方式需要源音频。');if(music.require_lyrics&&!inputs.lyrics)throw new Error('请填写歌词。');}
 }
-$('task-form').addEventListener('submit',async event=>{
-  event.preventDefault();if(state.job||state.referenceJob||state.loading||state.submitting||state.runtime?.busy||state.runtime?.realtime_active||state.realtime?.active||!state.detail?.installed||state.model!==activeModelRuntime()?.model||runtimeSettingsState().pending||state.uploading||state.recorders.size)return;
+$('task-form').addEventListener('submit',event=>{event.preventDefault();submitTask();});
+async function submitTask(action='generate'){
+  if(state.job||state.referenceJob||state.loading||state.submitting||state.runtime?.busy||state.runtime?.realtime_active||state.realtime?.active||!state.detail?.installed||state.model!==activeModelRuntime()?.model||runtimeSettingsState().pending||state.uploading||state.recorders.size)return;
   const key=state.key,resultEpoch=workspace(key).resultEpoch||0;
   workspace(key).message='';
   try{
-    const inputs=collectInputs();const options=collectOptions();validateInputs(inputs,options);runtimeOptions(options);const source=workspace(key).forms._audioBlob;
-    const record={key,resultEpoch,task:state.task,model:state.model,label:`${taskInfo().label} · ${state.detail.label||state.model}`,stream:state.task==='tts'&&!!inputs.stream,lastAudioIndex:-1,result:{status:'queued',message:'正在准备任务…',artifacts:[]}};
+    const inputs=collectInputs();const options=collectOptions();
+    for(const root of [$('task-form'),$('workspace-settings')])for(const input of root.querySelectorAll('input[type="number"]'))if(!input.checkValidity())throw new Error(`请检查参数「${input.closest('.field-group')?.querySelector('label')?.textContent||input.name||input.id}」的范围和步长。`);
+    if(action==='analyze_source'){if(state.task!=='music'||state.detail.family!=='ace_step'||!inputs.audio)throw new Error('请先添加 ACE-Step 源音频。');}else validateInputs(inputs,options);
+    runtimeOptions(options);const source=workspace(key).forms._audioBlob;
+    const saved=modelOptions(),record={key,resultEpoch,task:state.task,model:state.model,action,label:`${action==='analyze_source'?'源音频分析':taskInfo().label} · ${state.detail.label||state.model}`,stream:state.task==='tts'&&!!inputs.stream,lastAudioIndex:-1,result:{status:'queued',message:'正在准备任务…',artifacts:[]}};
+    if(action==='analyze_source')Object.assign(record,{parameterValues:saved.values,submittedValues:{...saved.values},submittedJson:saved.json});
     state.pendingRecord=record;
     renderWorkspaceResults();
     $('result-content').closest('.result-card').scrollIntoView({block:'nearest'});
     state.submitting=true;updateRunButton();
     updateActiveJobBanner();stopStreamPlayback();if(record.stream)beginStreamPlayback();
-    const job=await api('/jobs',{method:'POST',body:{task:record.task,model:record.model,inputs,options}});record.id=job.id;
+    const job=await api('/jobs',{method:'POST',body:{task:record.task,model:record.model,inputs,options,...(action==='analyze_source'?{action}:{})}});record.id=job.id;
     if(record.task==='vc'&&source)record.sourceBlob=source;
     if((workspace(key).resultEpoch||0)===resultEpoch){
       if(record.sourceBlob)record.sourceUrl=URL.createObjectURL(record.sourceBlob);
@@ -899,7 +907,23 @@ $('task-form').addEventListener('submit',async event=>{
     if(state.key===key)renderWorkspaceResults();updateActiveJobBanner();pollJob();
   }catch(error){stopStreamPlayback();if((workspace(key).resultEpoch||0)===resultEpoch)workspace(key).message=friendlyError(error);if(state.key!==key)showToast(friendlyError(error));}
   finally{state.submitting=false;state.pendingRecord=null;if(state.key===key)renderWorkspaceResults();updateRunButton();updateActiveJobBanner();}
-});
+}
+
+function applyMusicAnalysis(record,job){
+  const saved=modelOptions(record.key,record.model);
+  if(job.status!=='done'||record.action!=='analyze_source'||workspace(record.key).result!==record||saved.values!==record.parameterValues)return;
+  let extra,submittedExtra;try{extra=JSON.parse(saved.json||'{}');submittedExtra=JSON.parse(record.submittedJson||'{}');}catch{return;}
+  if(!extra||typeof extra!=='object'||Array.isArray(extra))return;
+  let jsonChanged=false;
+  for(const [name,value] of Object.entries(job.parameter_updates||{})){
+    if(!['source_caption','source_lyrics','bpm','keyscale','timesignature'].includes(name))continue;
+    if(saved.values[name]!==record.submittedValues[name]||extra[name]!==submittedExtra[name])continue;
+    saved.values[name]=value;
+    if(Object.hasOwn(extra,name)){extra[name]=value;jsonChanged=true;}
+  }
+  if(jsonChanged)saved.json=JSON.stringify(extra,null,2);
+  if(state.key===record.key&&state.model===record.model){$('options-json').value=saved.json;renderParameters();}
+}
 function isAudioArtifact(artifact) {return artifact.kind==='audio'||/\.(wav|mp3|flac|ogg|m4a|webm)$/i.test(artifact.name||'');}
 function singleAudioArtifact(artifacts) {const audio=(artifacts||[]).filter(artifact=>safeArtifactUrl(artifact.url)&&isAudioArtifact(artifact));return audio.length===1?audio[0]:null;}
 function artifactLink(artifact) {const link=node('a','artifact-name',artifact.name||'输出文件');link.href=safeArtifactUrl(artifact.url);link.download=artifact.name||'';link.title=`下载 ${artifact.name||'输出文件'}`;return link;}
@@ -933,6 +957,7 @@ async function pollJob() {
     const job=await api(`/jobs/${encodeURIComponent(id)}${query}`);if(state.job?.id!==id)return;playStreamSegments(job.audio_segments);
     record.result={...job,audio_segments:undefined};
     if(['done','error','cancelled'].includes(job.status)){
+      applyMusicAnalysis(record,job);
       if(job.status==='done')finishStreamPlayback();else stopStreamPlayback();state.job=null;
       if(state.key===record.key)renderWorkspaceResults();else showToast(`${record.label} · ${job.status==='done'?'已完成':'已结束'}`);
       updateRunButton();updateActiveJobBanner();pollStatus();return;
@@ -974,7 +999,7 @@ function renderResult(job,record) {
     if(isAudioArtifact(artifact)){item.classList.add('audio-artifact');const audio=node('audio');audio.controls=true;audio.preload='metadata';audio.src=url;audio.setAttribute('aria-label',artifact.name||'生成音频');audio.addEventListener('play',stopStreamPlayback);item.append(audio);attachWaveform(item,audio,undefined,false,state.task==='tts');}files.append(item);
   }
   if(files.childElementCount)children.push(files);
-  if(!job.text&&!files.childElementCount&&job.status==='done'&&state.task!=='asr')children.push(node('p','result-placeholder','未产生输出文件'));
+  if(!job.text&&!files.childElementCount&&job.status==='done'&&state.task!=='asr'&&record?.action!=='analyze_source')children.push(node('p','result-placeholder','未产生输出文件'));
   replace($('result-content'),...children);
 }
 function currentResultText() {return $('result-content').querySelector('.result-text')?.value||'';}

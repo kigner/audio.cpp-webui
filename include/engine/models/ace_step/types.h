@@ -20,6 +20,8 @@ enum class AceStepTaskType {
     Extract,
     Lego,
     Complete,
+    Remix,
+    Analyze,
 };
 
 struct AceStepGenerationOptions {
@@ -58,6 +60,9 @@ struct AceStepGenerationOptions {
     float repaint_injection_ratio = 0.5F;
     std::string noise_file;
     bool flow_edit_morph = false;
+    float flow_edit_n_min = 0.0F;
+    float flow_edit_n_max = 1.0F;
+    int64_t flow_edit_n_avg = 1;
 };
 
 struct AceStepReferenceCondition {
@@ -86,6 +91,8 @@ struct AceStepRequest {
     std::optional<runtime::AudioBuffer> source_audio = std::nullopt;
     std::optional<AceStepReferenceCondition> reference = std::nullopt;
     bool rewrite_caption = false;
+    std::string source_caption;
+    std::string source_lyrics;
     AceStepGenerationOptions generation;
 };
 
@@ -101,6 +108,7 @@ struct AceStepMetadata {
 struct AceStepPlan {
     std::string caption;
     std::string cot_caption;
+    std::string lyrics;
     AceStepMetadata metadata;
     std::string audio_codes_text;
     std::vector<int32_t> audio_code_ids;
@@ -154,6 +162,13 @@ struct AceStepPreDitInputs {
     std::optional<runtime::AudioBuffer> repaint_splice_audio = std::nullopt;
     float repaint_splice_start_seconds = 0.0F;
     float repaint_splice_end_seconds = 0.0F;
+    bool is_flow_edit = false;
+    AceStepTokenizedText src_text_prompt;
+    AceStepTokenizedText src_lyrics_prompt;
+    AceStepTextConditioning src_text_hidden_states;
+    AceStepTextConditioning src_lyric_token_embeddings;
+    AceStepEncoderConditioning src_encoder_hidden_states;
+    AceStepLatents src_context_latents;
 };
 
 struct AceStepDiffusionConditioning {

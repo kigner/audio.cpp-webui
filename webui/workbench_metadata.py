@@ -138,10 +138,18 @@ def model_detail(backend, entry):
                 continue
         if family == "f5_tts" and name in {"dialect", "strip_diacritics"} and "habibi" not in ident:
             continue
+        if family == "firered_audio" and entry.get("task") == "gen" and name == "template_name":
+            p.update(choices=[["声学编辑", "acoustic_edit"], ["语义编辑", "semantic_edit"]], default="acoustic_edit")
+        if family == "ace_step" and name == "num_inference_steps":
+            p["route_defaults"] = {"remix": 16}
+        if family == "ace_step" and name == "guidance_scale":
+            p.update(route_defaults={"extract": 7.0}, maximum=max(p.get("maximum", 0), 7.0))
         scope = name.split("_options.", 1)[0] if "_options." in name else "request"
         label, help_text, level = FRIENDLY.get(name, (p.get("label", name), p.get("info", "使用模型默认值即可。"), "expert"))
         if name in COMMON_FAMILY_PARAMETERS.get(family, set()):
             level = "effect"
+        if family == "firered_audio" and name == "template_name":
+            label, level = "编辑方式", "basic"
         if scope != "request":
             level = "expert"
             help_text = (help_text or "") + " 修改后需要重新加载模型。"
@@ -153,6 +161,8 @@ def model_detail(backend, entry):
     spec = getattr(backend, 'MODEL_SPECS', {}).get(family, {})
     result.update(
         parameters=params, profile=profile,
+        max_tokens_min=next((p.get('min', 1) for p in spec.get('options', {}).get('request', [])
+                             if p['name'] == 'max_tokens'), 1),
         languages=model_languages(entry, spec, prof, params),
         speakers=[], streaming=bool(prof.get("supports_streaming")),
         voice_mode="rvc" if prof.get("model_as_target_voice") else (
@@ -169,8 +179,8 @@ def model_detail(backend, entry):
         result["music_inputs"] = music_inputs(backend, entry, prof, params)
     if result['task'] == 'asr':
         offline = 'offline' in spec.get('modes', ['offline'])
-        result['asr_inputs'] = {'context': family in {'qwen3_asr', 'audio_flamingo', 'samsone'},
-                                'context_label': '音频指令' if family in {'audio_flamingo', 'samsone'} else '专有名词',
+        result['asr_inputs'] = {'context': family in {'qwen3_asr', 'audio_flamingo', 'samsone', 'higgs_audio_stt', 'confucius4_r2t2'},
+                                'context_label': '音频指令' if family in {'audio_flamingo', 'samsone', 'higgs_audio_stt'} else '专有名词',
                                 'details': offline, 'dialogue': offline}
     return result
 
@@ -189,7 +199,7 @@ def parameter_applies(entry, name):
         return name in asr if task == 'asr' else name not in {'audio_chunk_mode', 'audio_chunk_seconds'}
     if family == 'firered_audio':
         if name == 'template_name':
-            return False  # the selected entry binds its route
+            return task == 'gen'  # editing supports both acoustic and semantic routes
         if task == 'asr':
             return name in {'language', 'max_new_tokens'}
         if name in {'max_new_tokens', 'enable_thinking', 'top_k', 'top_p', 'temperature'}:

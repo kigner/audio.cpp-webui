@@ -41,6 +41,34 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()["id"]
 
+    def test_blank_speech_limit_reaches_shared_handler_as_none(self):
+        self.b.do_tts = Mock(return_value=(None, "✅"))
+        response = self.client.post("/api/workbench/jobs", json={
+            "task": "tts", "model": "tts", "inputs": {"text": "Hello"}})
+        self.assertEqual(response.status_code, 200)
+        self.wait_job(response.json()["id"])
+        self.assertIsNone(self.b.do_tts.call_args.args[7])
+
+    def test_music_analysis_validates_family_and_returns_only_analysis_parameters(self):
+        request = {"task": "tts", "model": "tts", "action": "analyze_source"}
+        self.assertEqual(self.client.post("/api/workbench/jobs", json=request).status_code, 400)
+        self.entry.update(family="ace_step", task="gen")
+        request["task"] = "music"
+        self.assertEqual(self.client.post("/api/workbench/jobs", json=request).status_code, 400)
+        self.b.do_music_analyze = Mock(return_value=({}, {
+            "source_caption": "Warm piano", "bpm": 90, "num_inference_steps": 8}, "✅ 分析完成"))
+        self.b.do_music_gen_with_files = Mock()
+        request["inputs"] = {"audio": self.upload()}
+        request["options"] = {"session_options.ace_step.weight_type": "f16"}
+        response = self.client.post("/api/workbench/jobs", json=request)
+        self.assertEqual(response.status_code, 200)
+        result = self.wait_job(response.json()["id"])
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["parameter_updates"], {"source_caption": "Warm piano", "bpm": 90})
+        self.assertEqual(result["artifacts"], [])
+        self.assertEqual(self.b.do_music_analyze.call_args.args[3], request["options"])
+        self.b.do_music_gen_with_files.assert_not_called()
+
     def wait_job(self, ident):
         for _ in range(100):
             result = self.client.get(f"/api/workbench/jobs/{ident}").json()

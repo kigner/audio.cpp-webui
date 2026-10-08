@@ -151,7 +151,8 @@ AceStepLatents AceStepVAEEncodeGraph::encode(
     const runtime::AudioBuffer & audio,
     uint64_t seed,
     uint64_t & noise_offset,
-    const std::vector<float> * noise_override) const {
+    const std::vector<float> * noise_override,
+    bool posterior_mean) const {
     const auto total_start = Clock::now();
     const auto & config = assets_->config.vae;
     if (audio.sample_rate != config.sample_rate ||
@@ -210,7 +211,7 @@ AceStepLatents AceStepVAEEncodeGraph::encode(
             "ACE-Step VAE encoder noise file is too short for source-audio latent sampling");
     }
     std::vector<float> channel_major_noise;
-    if (noise_override == nullptr) {
+    if (noise_override == nullptr && !posterior_mean) {
         channel_major_noise = engine::sampling::generate_torch_cuda_randn(
             latent_value_count,
             seed,
@@ -226,9 +227,11 @@ AceStepLatents AceStepVAEEncodeGraph::encode(
             const float scale =
                 bct_output_scratch_[static_cast<size_t>((channel + latent_channels_) * latent_frames_ + frame)];
             const float stddev = std::log1p(std::exp(scale)) + 1.0e-4F;
-            const float noise = noise_override == nullptr
-                ? channel_major_noise[static_cast<size_t>(channel * request_latent_frames + frame)]
-                : (*noise_override)[latent_index];
+            const float noise = posterior_mean
+                ? 0.0F
+                : (noise_override == nullptr
+                       ? channel_major_noise[static_cast<size_t>(channel * request_latent_frames + frame)]
+                       : (*noise_override)[latent_index]);
             out.values[latent_index] = mean + stddev * noise;
         }
     }
@@ -326,7 +329,8 @@ void AceStepVAEEncoderRuntimeCore::ensure_graph(int64_t audio_frames) {
 AceStepLatents AceStepVAEEncoderRuntimeCore::encode(
     const runtime::AudioBuffer & audio,
     uint32_t seed,
-    const std::string & noise_file) {
+    const std::string & noise_file,
+    bool posterior_mean) {
     const auto total_start = Clock::now();
     if (audio.sample_rate != assets_->config.vae.sample_rate ||
         audio.channels != assets_->config.vae.audio_channels ||
@@ -352,7 +356,8 @@ AceStepLatents AceStepVAEEncoderRuntimeCore::encode(
             audio,
             seed,
             noise_offset,
-            noise_override.empty() ? nullptr : &noise_override);
+            noise_override.empty() ? nullptr : &noise_override,
+            posterior_mean);
         engine::debug::timing_log_scalar(
             "ace_step.vae.encode.runtime_total_ms",
             engine::debug::elapsed_ms(total_start, Clock::now()));
@@ -389,7 +394,7 @@ AceStepLatents AceStepVAEEncoderRuntimeCore::encode(
         ensure_graph(window_frames);
         ensure_graph_ms += engine::debug::elapsed_ms(ensure_start, Clock::now());
         const auto chunk_start = Clock::now();
-        AceStepLatents tile = graph_->encode(window, seed, noise_offset);
+        AceStepLatents tile = graph_->encode(window, seed, noise_offset, nullptr, posterior_mean);
         chunk_encode_ms += engine::debug::elapsed_ms(chunk_start, Clock::now());
         if (stitched.channels == 0) {
             stitched.channels = tile.channels;
@@ -454,8 +459,12 @@ public:
         assets_->vae_weights->release_storage();
     }
 
-    AceStepLatents encode(const runtime::AudioBuffer & audio, uint32_t seed, const std::string & noise_file) {
-        return runtime_->encode(audio, seed, noise_file);
+    AceStepLatents encode(
+        const runtime::AudioBuffer & audio,
+        uint32_t seed,
+        const std::string & noise_file,
+        bool posterior_mean) {
+        return runtime_->encode(audio, seed, noise_file, posterior_mean);
     }
 
     void release_runtime_graphs() {
@@ -504,8 +513,9 @@ AceStepVAEEncoderRuntime::~AceStepVAEEncoderRuntime() = default;
 AceStepLatents AceStepVAEEncoderRuntime::encode(
     const runtime::AudioBuffer & audio,
     uint32_t seed,
-    const std::string & noise_file) {
-    return impl_->encode(audio, seed, noise_file);
+    const std::string & noise_file,
+    bool posterior_mean) {
+    return impl_->encode(audio, seed, noise_file, posterior_mean);
 }
 
 void AceStepVAEEncoderRuntime::release_runtime_graphs() const {

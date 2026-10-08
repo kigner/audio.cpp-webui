@@ -30,6 +30,7 @@ public:
         const AceStepRequest & request,
         const AceStepTaskRoute & route,
         const AceStepPlan & plan) const;
+    std::vector<int32_t> encode_source_audio_codes(const runtime::AudioBuffer & audio, uint32_t seed) const;
     void prepare_runtime() const;
     void release_runtime_graphs() const;
 

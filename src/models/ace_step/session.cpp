@@ -76,8 +76,9 @@ AceStepGenerationOptions normalize_generation_options_for_model(
     const AceStepGenerationOptions & options,
     const AceStepAssets & assets) {
     AceStepGenerationOptions normalized = options;
-    if (assets.config.diffusion.is_turbo && normalized.num_inference_steps > 8) {
-        normalized.num_inference_steps = 8;
+    // Preserve the downstream UI's documented 1-20 turbo step range.
+    if (assets.config.diffusion.is_turbo && normalized.num_inference_steps > 20) {
+        normalized.num_inference_steps = 20;
     }
     return normalized;
 }
@@ -93,9 +94,21 @@ void validate_task_route_request(const AceStepRequest &request, const AceStepTas
     }
     if (ace_step_request_uses_flow_edit_morph(request)) {
         if (!request.source_audio.has_value()) {
-            throw std::runtime_error("ACE-Step text2music flow_edit_morph requires source audio");
+            throw std::runtime_error("ACE-Step flow-edit requires source audio");
         }
-        throw std::runtime_error("ACE-Step text2music flow_edit_morph requires missing component: flow-edit diffusion overlay");
+        if (request.task == AceStepTaskType::TextToMusic && request.generation.flow_edit_morph) {
+            throw std::runtime_error(
+                "ACE-Step text2music flow_edit_morph requires missing component: "
+                "flow-edit diffusion overlay (use task_type=remix instead)");
+        }
+        if (request.generation.flow_edit_n_min < 0.0F ||
+            request.generation.flow_edit_n_max > 1.0F ||
+            request.generation.flow_edit_n_min > request.generation.flow_edit_n_max) {
+            throw std::runtime_error("ACE-Step flow-edit requires 0 <= n_min <= n_max <= 1");
+        }
+        if (request.generation.flow_edit_n_avg < 1) {
+            throw std::runtime_error("ACE-Step flow-edit n_avg must be >= 1");
+        }
     }
 }
 
@@ -214,6 +227,11 @@ runtime::RunMode AceStepSession::run_mode() const {
 }
 
 void AceStepSession::prepare(const runtime::SessionPreparationRequest &request) {
+    const auto route = runtime::find_option(request.options, {"route"});
+    if (route.has_value() && *route == "analyze") {
+        mark_prepared();
+        return;
+    }
     ensure_planner();
     if (rewrite_caption_requested(request.options)) {
         mark_prepared();
@@ -235,6 +253,9 @@ runtime::TaskResult AceStepSession::run(const runtime::TaskRequest &request) {
     const AceStepTaskRoute &route = ace_step_task_route(ace_request);
     validate_task_route_request(ace_request, route);
     engine::debug::timing_log_scalar("ace_step.session.parse_request_ms", engine::debug::elapsed_ms(parse_start, Clock::now()));
+    if (ace_request.task == AceStepTaskType::Analyze) {
+        return run_analyze(ace_request);
+    }
     const bool flow_edit_morph = ace_step_request_uses_flow_edit_morph(ace_request);
     if (ace_request.rewrite_caption) {
         if (flow_edit_morph || !route.uses_planner) {
@@ -335,7 +356,9 @@ runtime::TaskResult AceStepSession::run(const runtime::TaskRequest &request) {
     const AceStepGenerationOptions generation_options =
         normalize_generation_options_for_model(ace_request.generation, *assets_);
     const auto diffusion_start = Clock::now();
-    AceStepLatents latents = diffusion_->generate_latents(conditioning, generation_options);
+    AceStepLatents latents = ace_request.task == AceStepTaskType::Remix
+        ? diffusion_->generate_latents_flow_edit(conditioning, generation_options)
+        : diffusion_->generate_latents(conditioning, generation_options);
     engine::debug::timing_log_scalar("ace_step.session.diffusion_generate_ms",
                                      engine::debug::elapsed_ms(diffusion_start, Clock::now()));
 
@@ -384,6 +407,69 @@ runtime::TaskResult AceStepSession::run(const runtime::TaskRequest &request) {
         pre_dit_.reset();
     }
 
+    return result;
+}
+
+runtime::TaskResult AceStepSession::run_analyze(const AceStepRequest & request) {
+    const auto total_start = Clock::now();
+    if (!request.source_audio.has_value()) {
+        throw std::runtime_error("ACE-Step analyze requires source audio");
+    }
+
+    // Keep the encoder and LM stages separate on memory-limited GPUs.
+    if (mem_saver_) {
+        planner_.reset();
+        diffusion_.reset();
+        vae_decoder_.reset();
+    }
+    ensure_pre_dit();
+    const auto codes_start = Clock::now();
+    const std::vector<int32_t> codes =
+        pre_dit_->encode_source_audio_codes(*request.source_audio, request.generation.seed);
+    engine::debug::timing_log_scalar("ace_step.session.analyze_codes_ms",
+                                     engine::debug::elapsed_ms(codes_start, Clock::now()));
+    if (mem_saver_) {
+        pre_dit_.reset();
+        dit_weights_runtime_.reset();
+    }
+    std::string codes_text;
+    codes_text.reserve(codes.size() * 22);
+    for (const int32_t code : codes) {
+        codes_text += "<|audio_code_" + std::to_string(code) + "|>";
+    }
+
+    ensure_planner();
+    const auto understand_start = Clock::now();
+    const AceStepPlan plan = planner_->understand(codes_text, request);
+    engine::debug::timing_log_scalar("ace_step.session.analyze_understand_ms",
+                                     engine::debug::elapsed_ms(understand_start, Clock::now()));
+    planner_->release_graph_workspace();
+    if (execution_context().backend_type() == core::BackendType::Metal) {
+        planner_.reset();
+        pre_dit_.reset();
+    }
+
+    const float source_seconds =
+        static_cast<float>(request.source_audio->samples.size() /
+                           static_cast<size_t>(request.source_audio->channels)) /
+        static_cast<float>(request.source_audio->sample_rate);
+    std::ostringstream json;
+    json << "{"
+         << "\"caption\":" << engine::io::json::stringify_string(
+                !plan.caption.empty() ? plan.caption : plan.cot_caption)
+         << ",\"lyrics\":" << engine::io::json::stringify_string(plan.lyrics)
+         << ",\"bpm\":" << (plan.metadata.bpm.has_value() ? std::to_string(*plan.metadata.bpm) : "null")
+         << ",\"duration\":" << plan.metadata.duration.value_or(static_cast<int64_t>(source_seconds))
+         << ",\"keyscale\":" << engine::io::json::stringify_string(plan.metadata.keyscale.value_or(""))
+         << ",\"language\":" << engine::io::json::stringify_string(plan.metadata.language.value_or(""))
+         << ",\"timesignature\":" << engine::io::json::stringify_string(plan.metadata.timesignature.value_or(""))
+         << ",\"genres\":" << engine::io::json::stringify_string(plan.metadata.genres.value_or(""))
+         << ",\"audio_codes\":" << engine::io::json::stringify_string(codes_text)
+         << "}";
+
+    runtime::TaskResult result;
+    result.text_output = runtime::Transcript{json.str(), plan.metadata.language.value_or("")};
+    engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(total_start, Clock::now()));
     return result;
 }
 

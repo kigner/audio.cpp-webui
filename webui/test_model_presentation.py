@@ -84,7 +84,7 @@ class ModelPresentationTests(unittest.TestCase):
         self.assertNotIn('enable_thinking', self.names('firered-audio-tts'))
         self.assertNotIn('template_name', self.names('fireredtts3-design'))
 
-    def test_legacy_variant_controls_are_scoped_without_changing_defaults(self):
+    def test_legacy_variant_controls_keep_local_defaults_unless_profile_overrides(self):
         for key in ('speaker', 'instruction'):
             self.assertNotIn(key, self.names('qwen3-tts'))
             self.assertIn(key, self.names('qwen3-tts-1.7b-custom'))
@@ -98,10 +98,11 @@ class ModelPresentationTests(unittest.TestCase):
             entry = self.entries[ident]
             presets = original.get(ident, original.get(entry['family'], []))
             expected = {p['name']: p for p in presets}
+            defaults = backend.profile_for(entry).get('default_options', {})
             for actual in detail['parameters']:
                 if actual['name'] in expected:
-                    for key in ('default', 'minimum', 'maximum', 'step', 'choices', 'type'):
-                        self.assertEqual(actual.get(key), expected[actual['name']].get(key), (ident, actual['name'], key))
+                    name = actual['name']
+                    self.assertEqual(actual.get('default'), defaults.get(name, expected[name].get('default')), (ident, name))
 
     def test_language_and_asr_inputs_follow_actual_model_contract(self):
         self.assertEqual(self.details['niagara-asr']['languages'], ['en'])

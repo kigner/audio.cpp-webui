@@ -11,6 +11,7 @@ import secrets
 import subprocess
 import threading
 import time
+from typing import Literal
 import uuid
 import webbrowser
 
@@ -38,6 +39,7 @@ class JobRequest(BaseModel):
     model: str
     inputs: dict = Field(default_factory=dict)
     options: dict = Field(default_factory=dict)
+    action: Literal["generate", "analyze_source"] = "generate"
 
 
 class DownloadRequest(BaseModel):
@@ -120,7 +122,8 @@ class Workbench:
         with self.lock:
             job = self.jobs.get(getattr(self.local, "operation", None))
             if job and self.active_job == job["id"]:
-                self.progress(0, desc=messages.get(job["task"], "正在处理…"))
+                self.progress(0, desc="正在分析源音频…" if job.get("action") == "analyze_source"
+                              else messages.get(job["task"], "正在处理…"))
 
     def progress(self, value, desc=None):
         """Bridge task progress to the owning job, never to another page's task."""
@@ -221,11 +224,16 @@ class Workbench:
         entry = self.entry(request.model)
         if request.task not in TASKS or task_for(entry) != request.task:
             raise HTTPException(400, "这个模型不支持当前任务，请重新选择。")
+        if request.action == "analyze_source":
+            if request.task != "music" or entry.get("family") != "ace_step":
+                raise HTTPException(400, "只有 ACE-Step 支持源音频分析。")
+            if not self.input_path(request.inputs.get("audio")):
+                raise HTTPException(400, "请先添加源音频。")
         if not entry.get("installed"):
             raise HTTPException(400, "模型尚未准备好，请先在模型中心完成下载。")
         ident = uuid.uuid4().hex
         self.reserve(ident)
-        job = {"id": ident, "task": request.task, "model": request.model,
+        job = {"id": ident, "task": request.task, "model": request.model, "action": request.action,
                "status": "queued", "message": "正在准备模型…", "text": "",
                "artifacts": [], "audio_segments": [], "started": time.monotonic(), "cancel": threading.Event()}
         if reference_audio:
@@ -288,7 +296,7 @@ class Workbench:
             seed = values.get("seed")
             seed = 1234 if seed in (None, "") else int(seed)
             max_tokens = values.get("max_tokens")
-            max_tokens = 1200 if max_tokens in (None, "") else int(max_tokens)
+            max_tokens = None if max_tokens in (None, "") else int(max_tokens)
             text, language = str(values.get("text") or ""), str(values.get("language") or "")
             if req.task == "tts":
                 if values.get("stream"):
@@ -332,10 +340,17 @@ class Workbench:
                     out.write_text(job["text"], encoding="utf-8")
                     paths.append(str(out))
             elif req.task == "music":
-                path, files, final_message = b.do_music_gen_with_files(
-                    model, text, str(values.get("lyrics") or ""), audio,
-                    values.get("duration") or 0, seed, opts, "")
-                paths.extend([path, *(files or [])])
+                if req.action == "analyze_source":
+                    self.progress(0, desc="正在分析源音频…")
+                    _, prefill, final_message = b.do_music_analyze(model, audio, seed, opts)
+                    if "✅" in str(final_message) and isinstance(prefill, dict):
+                        job["parameter_updates"] = {key: prefill[key] for key in
+                            ("source_caption", "source_lyrics", "bpm", "keyscale", "timesignature") if key in prefill}
+                else:
+                    path, files, final_message = b.do_music_gen_with_files(
+                        model, text, str(values.get("lyrics") or ""), audio,
+                        values.get("duration") or 0, seed, opts, "")
+                    paths.extend([path, *(files or [])])
             elif req.task in {"vc", "processing"}:
                 path, final_message = b.do_vc(model, audio, voice, builtin,
                     self.input_path(values.get("rvc_voice_model"), audio=False),
