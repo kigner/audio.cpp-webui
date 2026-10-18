@@ -231,5 +231,32 @@
         "t5_weights": "t5:model.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "max_batch",
+        "type": "int",
+        "min": 1,
+        "description": "Maximum prompt batch size; default 1."
+      },
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Stable Audio weight storage type."
+      },
+      {
+        "name": "mem_saver",
+        "type": "bool",
+        "description": "Release staged runtime graphs after each request; default false."
+      }
+    ]
+  }
 }

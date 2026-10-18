@@ -93,6 +93,66 @@
         "ACE-Step1.5-GGUF/base/ace-step-1.5-base-bf16.gguf"
       ],
       "strip_prefix": "ACE-Step1.5-GGUF"
+    },
+    {
+      "id": "ace_step_xl_turbo_bf16",
+      "display_name": "ACE-Step 1.5 XL Turbo BF16 GGUF",
+      "format": "gguf",
+      "precision": "bf16",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/xl-turbo/ace-step-1.5-xl-turbo-bf16.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF",
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "CaptainArni/audio.cpp-gguf"
+      }
+    },
+    {
+      "id": "ace_step_xl_sft_bf16",
+      "display_name": "ACE-Step 1.5 XL SFT BF16 GGUF",
+      "format": "gguf",
+      "precision": "bf16",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/xl-sft/ace-step-1.5-xl-sft-bf16.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF",
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "CaptainArni/audio.cpp-gguf"
+      }
+    },
+    {
+      "id": "ace_step_xl_turbo_q8dit",
+      "display_name": "ACE-Step 1.5 XL Turbo Q8_0 DiT GGUF (BF16 planner)",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/xl-turbo-q8dit/ace-step-1.5-xl-turbo-q8dit.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF",
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "CaptainArni/audio.cpp-gguf"
+      }
+    },
+    {
+      "id": "ace_step_xl_sft_q8dit",
+      "display_name": "ACE-Step 1.5 XL SFT Q8_0 DiT GGUF (BF16 planner)",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "ACE-Step1.5-GGUF",
+      "files": [
+        "ACE-Step1.5-GGUF/xl-sft-q8dit/ace-step-1.5-xl-sft-q8dit.gguf"
+      ],
+      "strip_prefix": "ACE-Step1.5-GGUF",
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "CaptainArni/audio.cpp-gguf"
+      }
     }
   ],
   "sources": [
@@ -118,6 +178,28 @@
         "text_encoder_tokenizer_json": "model:Qwen3-Embedding-0.6B/tokenizer.json",
         "text_encoder_chat_template": "model:Qwen3-Embedding-0.6B/chat_template.jinja",
         "vae_config": "model:vae/config.json"
+      },
+      "optional_files": {
+        "dit_xl_turbo_config": "model:acestep-v15-xl-turbo/config.json",
+        "dit_xl_sft_config": "model:acestep-v15-xl-sft/config.json"
+      },
+      "optional_tensors": {
+        "dit_xl_turbo_weights": {
+          "source": "weights:",
+          "prefix": "dit_xl_turbo_weights"
+        },
+        "dit_xl_turbo_silence_latent": {
+          "source": "weights:",
+          "prefix": "dit_xl_turbo_silence_latent"
+        },
+        "dit_xl_sft_weights": {
+          "source": "weights:",
+          "prefix": "dit_xl_sft_weights"
+        },
+        "dit_xl_sft_silence_latent": {
+          "source": "weights:",
+          "prefix": "dit_xl_sft_silence_latent"
+        }
       },
       "tensors": {
         "dit_turbo_weights": {
@@ -172,6 +254,16 @@
         "text_encoder_chat_template": "model:Qwen3-Embedding-0.6B/chat_template.jinja",
         "vae_config": "model:vae/config.json"
       },
+      "optional_files": {
+        "dit_xl_turbo_config": "model:acestep-v15-xl-turbo/config.json",
+        "dit_xl_sft_config": "model:acestep-v15-xl-sft/config.json"
+      },
+      "optional_tensors": {
+        "dit_xl_turbo_weights": "model:acestep-v15-xl-turbo/model.safetensors.index.json",
+        "dit_xl_turbo_silence_latent": "model:acestep-v15-xl-turbo/silence_latent.safetensors",
+        "dit_xl_sft_weights": "model:acestep-v15-xl-sft/model.safetensors.index.json",
+        "dit_xl_sft_silence_latent": "model:acestep-v15-xl-sft/silence_latent.safetensors"
+      },
       "tensors": {
         "dit_turbo_weights": "model:acestep-v15-turbo/model.safetensors",
         "dit_turbo_silence_latent": "model:acestep-v15-turbo/silence_latent.safetensors",
@@ -182,5 +274,87 @@
         "vae_weights": "model:vae/diffusion_pytorch_model.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Shared ACE-Step weight storage type."
+      },
+      {
+        "name": "dit_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "DiT weight storage type; f16 is promoted to bf16."
+      },
+      {
+        "name": "planner_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Planner LM weight storage type."
+      },
+      {
+        "name": "text_encoder_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Text encoder weight storage type."
+      },
+      {
+        "name": "vae_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "VAE weight storage type."
+      },
+      {
+        "name": "mem_saver",
+        "type": "bool",
+        "description": "Release staged runtime graphs after each request; default false."
+      }
+    ],
+    "load": [
+      {
+        "name": "dit_model_path",
+        "type": "enum",
+        "values": [
+          "acestep-v15-turbo",
+          "acestep-v15-base",
+          "acestep-v15-xl-turbo",
+          "acestep-v15-xl-sft"
+        ],
+        "description": "DiT variant inside the model package; the XL variants are optional and must be installed."
+      }
+    ]
+  }
 }

@@ -1,5 +1,6 @@
 #include "engine/framework/audio/chunking.h"
 
+#include "engine/framework/debug/trace.h"
 #include "engine/framework/runtime/options.h"
 
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -311,8 +313,16 @@ std::vector<runtime::TimeSpan> plan_vad_audio_chunks(
     }
     runtime::TaskRequest vad_request;
     vad_request.audio_input = audio;
-    vad_session.prepare(runtime::build_preparation_request(vad_request));
-    const auto vad_result = vad_session.run(vad_request);
+    runtime::TaskResult vad_result;
+    try {
+        vad_session.prepare(runtime::build_preparation_request(vad_request));
+        vad_result = vad_session.run(vad_request);
+    } catch (const std::runtime_error & error) {
+        throw std::runtime_error(
+            std::string("VAD audio chunking failed: ") + error.what() +
+            ". If the input sample rate is unsupported, resample to a rate supported by the VAD model, "
+            "or select another audio_chunk_mode supported by the ASR model.");
+    }
     return plan_vad_audio_chunks(
         vad_result.speech_segments,
         static_cast<int64_t>(audio.samples.size() / static_cast<size_t>(audio.channels)),
@@ -599,7 +609,20 @@ void append_chunk_word_timestamps(
         const int64_t local_start = std::max<int64_t>(word.span.start_sample, 0);
         const int64_t local_end = std::min<int64_t>(word.span.end_sample, source_samples);
         if (local_start >= local_end) {
-            throw std::runtime_error("Audio chunker word merge received a timestamp outside the chunk span");
+            std::ostringstream warning;
+            warning << "dropping word timestamp outside chunk span"
+                    << " word=\"" << word.word << "\""
+                    << " local_start=" << word.span.start_sample
+                    << " local_end=" << word.span.end_sample
+                    << " source_samples=" << source_samples
+                    << " source_start=" << source_span.start_sample
+                    << " source_end=" << source_span.end_sample
+                    << " keep_start=" << keep_span.start_sample
+                    << " keep_end=" << keep_span.end_sample
+                    << " source_sample_rate=" << source_sample_rate
+                    << " timestamp_sample_rate=" << timestamp_sample_rate;
+            debug::log_message(debug::LogLevel::Warning, "audio.chunking", warning.str());
+            continue;
         }
         const int64_t global_start = timestamp_source_span.start_sample + local_start;
         if (global_start < timestamp_keep_span.start_sample || global_start >= timestamp_keep_span.end_sample) {
@@ -633,8 +656,19 @@ void append_chunk_speech_metadata(
         const int64_t local_start = std::max<int64_t>(local_span.start_sample, 0);
         const int64_t local_end = std::min<int64_t>(local_span.end_sample, source_samples);
         if (local_start >= local_end) {
-            throw std::runtime_error(std::string("Audio chunker speech metadata merge received a ") +
-                label + " outside the chunk span");
+            std::ostringstream warning;
+            warning << "dropping " << label << " outside chunk span"
+                    << " local_start=" << local_span.start_sample
+                    << " local_end=" << local_span.end_sample
+                    << " source_samples=" << source_samples
+                    << " source_start=" << source_span.start_sample
+                    << " source_end=" << source_span.end_sample
+                    << " keep_start=" << keep_span.start_sample
+                    << " keep_end=" << keep_span.end_sample
+                    << " source_sample_rate=" << source_sample_rate
+                    << " timestamp_sample_rate=" << timestamp_sample_rate;
+            debug::log_message(debug::LogLevel::Warning, "audio.chunking", warning.str());
+            return std::optional<runtime::TimeSpan>{};
         }
         runtime::TimeSpan global{
             timestamp_source_span.start_sample + local_start,

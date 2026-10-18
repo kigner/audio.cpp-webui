@@ -29,12 +29,15 @@ except ImportError:
 CATALOG_PATH = os.path.join(HERE, "configs", "models_catalog.json")
 REQUIRED_FILES_PATH = os.path.join(HERE, "configs", "required_files.json")
 REGISTRY_PATH = os.path.join(REPO_ROOT, "src", "framework", "runtime", "registry.cpp")
+CMAKE_PATH = os.path.join(REPO_ROOT, "CMakeLists.txt")
 
-_LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader\s*\(\s*\)")
+_LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader(?:\s*\(\s*\))?")
 
 # Families the server registers but the WebUI deliberately does not surface,
 # with the reason. Keep this empty unless there is one.
-UNLISTED_FAMILIES: dict[str, str] = {}
+UNLISTED_FAMILIES: dict[str, str] = {
+    "liveavatar": "Image-conditioned raw video generation needs a separate video UI; use the CLI.",
+}
 
 
 def _packages():
@@ -86,6 +89,22 @@ class CatalogSyncTests(unittest.TestCase):
                           f"catalog entry {entry['id']} downloads {download_id!r}, "
                           "which model_specs/ does not define")
 
+    def test_every_download_id_is_installable_by_local_manager(self):
+        for entry in self.entries:
+            download_id = entry.get("download_id")
+            if download_id not in self.packages:
+                continue
+            if entry.get("manual_install"):
+                continue
+            download = self.packages[download_id].download
+            self.assertEqual(
+                download.get("kind"), "huggingface_snapshot",
+                f"catalog entry {entry['id']} exposes {download_id!r}, but the local "
+                "WebUI manager cannot install its download kind")
+            self.assertTrue(
+                download.get("repo"),
+                f"catalog entry {entry['id']} exposes {download_id!r} without a Hugging Face repo")
+
     def test_download_directory_matches_the_package_target(self):
         for entry in self.entries:
             download_id = entry.get("download_id")
@@ -101,11 +120,11 @@ class CatalogSyncTests(unittest.TestCase):
         # No download_id means the weights are committed (bundled assets); the
         # path has to exist in a checkout or the model is simply unreachable.
         for entry in self.entries:
-            if entry.get("download_id"):
+            if entry.get("download_id") or entry.get("manual_install"):
                 continue
-            self.assertTrue(os.path.isdir(os.path.join(REPO_ROOT, entry["path"])),
+            self.assertTrue(os.path.exists(os.path.join(REPO_ROOT, entry["path"])),
                             f"catalog entry {entry['id']} has no download_id, so "
-                            f"{entry['path']!r} must be a bundled directory in the repo")
+                            f"{entry['path']!r} must be a bundled file or directory in the repo")
 
     def test_required_files_mirrors_the_package_specs(self):
         expected = {pkg_id: _required_files(p)
@@ -136,6 +155,15 @@ class CatalogSyncTests(unittest.TestCase):
         self.assertEqual(by_id["kroko-asr"]["path"], "models/Kroko-ASR-GGUF")
         self.assertEqual(by_id["kroko-asr"]["download_path"], "models/Kroko-ASR-GGUF")
 
+    def test_catalog_falls_back_from_unsupported_gguf_to_downloadable_weights(self):
+        entry = {item["id"]: item for item in self.entries}["mms-forced-aligner"]
+        self.assertEqual(entry["download_id"], "mms_forced_aligner_300m_safetensors")
+        self.assertEqual(entry["download_path"], "models/mms-300m-1130-forced-aligner")
+        self.assertEqual(entry["legacy_download_id"], "mms_forced_aligner_300m_f16")
+        self.assertEqual(
+            entry["path"],
+            "models/MMS-Forced-Aligner-GGUF/mms-forced-aligner-f16.gguf")
+
     def test_gguf_families_come_from_the_package_specs(self):
         specs = {os.path.splitext(f)[0]
                  for f in os.listdir(os.path.join(REPO_ROOT, "model_specs"))
@@ -148,11 +176,18 @@ class CatalogSyncTests(unittest.TestCase):
         self.assertLessEqual(app.GGUF_WEBUI_CONVERTIBLE_FAMILIES, specs)
 
     def test_every_registered_family_is_reachable_from_the_ui(self):
-        with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
-            registry = f.read()
-        registered = {m.group(1) for line in registry.splitlines()
-                      for m in [_LOADER_CALL_RE.search(line.strip())]
-                      if m and not line.strip().startswith("//")}
+        texts = []
+        for path in (REGISTRY_PATH, CMAKE_PATH):
+            with open(path, "r", encoding="utf-8") as f:
+                texts.append(f.read())
+        registered = {
+            match.group(1)
+            for text in texts
+            for line in text.splitlines()
+            if not line.strip().startswith(("//", "#"))
+            for match in [_LOADER_CALL_RE.search(line.strip())]
+            if match
+        }
         listed = {e.get("family") for e in self.entries}
         missing = sorted(registered - listed - set(UNLISTED_FAMILIES))
         self.assertFalse(missing,

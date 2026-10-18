@@ -6,7 +6,7 @@
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/attention/scaled_dot_product_attention.h"
-#include "engine/framework/modules/attention/transformer_blocks.h"
+#include "engine/framework/modules/transformers/transformer_blocks.h"
 #include "engine/framework/modules/conv_modules.h"
 #include "engine/framework/modules/linear_module.h"
 #include "engine/framework/modules/norm_modules.h"
@@ -18,6 +18,7 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace engine::models::qwen3_asr {
@@ -337,6 +338,14 @@ modules::TransformerEncoderBlockWeights bind_layer(const AudioLayerWeights & wei
     return block;
 }
 
+struct GgmlGallocrDeleter {
+    void operator()(ggml_gallocr_t alloc) const noexcept {
+        if (alloc != nullptr) {
+            ggml_gallocr_free(alloc);
+        }
+    }
+};
+
 class Qwen3ASRAudioEncoderGraph {
 public:
     Qwen3ASRAudioEncoderGraph(
@@ -447,7 +456,7 @@ public:
                 : chunk_value;
         }
         x = compacted;
-        const auto attention_mask_values = audio_attention_mask(output_tokens_, attention_window_lengths_);
+        attention_mask_values_ = audio_attention_mask(output_tokens_, attention_window_lengths_);
         auto attention_mask = core::make_tensor(
             ctx,
             GGML_TYPE_F32,
@@ -473,20 +482,23 @@ public:
         ggml_set_output(output_);
         graph_ = ggml_new_graph_custom(ctx_.get(), 65536, false);
         ggml_build_forward_expand(graph_, output_);
-        gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
-        if (gallocr_ == nullptr || !ggml_gallocr_alloc_graph(gallocr_, graph_)) {
+        // unique_ptr so a throw below frees the partial reservation (a
+        // throwing constructor runs no destructor)
+        const auto try_alloc = [&]() {
+            gallocr_.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_)));
+            return gallocr_ != nullptr && ggml_gallocr_alloc_graph(gallocr_.get(), graph_);
+        };
+        if (!try_alloc() &&
+            (engine::core::trim_backend_pools(backend_), !try_alloc())) {
             throw std::runtime_error("failed to allocate Qwen3 ASR audio encoder graph");
         }
-        ggml_backend_tensor_set(attention_mask_, attention_mask_values.data(), 0, attention_mask_values.size() * sizeof(float));
+        ggml_backend_tensor_set(attention_mask_, attention_mask_values_.data(), 0, attention_mask_values_.size() * sizeof(float));
         debug::timing_log_scalar("qwen3_asr.audio_encoder.graph.build_ms", engine::debug::elapsed_ms(build_start, Clock::now()));
         debug::trace_log_scalar("qwen3_asr.audio_encoder.frames", frames_);
     }
 
     ~Qwen3ASRAudioEncoderGraph() {
-        engine::core::release_backend_graph_resources(backend_, graph_);
-        if (gallocr_ != nullptr) {
-            ggml_gallocr_free(gallocr_);
-        }
+        engine::core::release_backend_graph_resources(backend_, graph_, true);
     }
 
     bool matches(const Qwen3ASRAudioEncoderWeights & weights, int64_t frames, ggml_backend_t backend, int threads) const {
@@ -517,6 +529,7 @@ public:
         }
         auto timing_start = Clock::now();
         ggml_backend_tensor_set(input_, padded_features.data(), 0, padded_features.size() * sizeof(float));
+        ggml_backend_tensor_set(attention_mask_, attention_mask_values_.data(), 0, attention_mask_values_.size() * sizeof(float));
         debug::timing_log_scalar("qwen3_asr.audio_encoder.input_upload_ms", engine::debug::elapsed_ms(timing_start, Clock::now()));
         core::set_backend_threads(backend_, compute_threads_);
         timing_start = Clock::now();
@@ -549,6 +562,7 @@ private:
     std::vector<int64_t> chunk_lengths_;
     std::vector<int64_t> chunk_token_lengths_;
     std::vector<int64_t> attention_window_lengths_;
+    std::vector<float> attention_mask_values_;
     int64_t attention_window_tokens_ = 0;
     int64_t output_tokens_ = 0;
     int64_t output_dim_ = 0;
@@ -557,7 +571,7 @@ private:
     ggml_tensor * attention_mask_ = nullptr;
     ggml_tensor * output_ = nullptr;
     ggml_cgraph * graph_ = nullptr;
-    ggml_gallocr_t gallocr_ = nullptr;
+    std::unique_ptr<std::remove_pointer_t<ggml_gallocr_t>, GgmlGallocrDeleter> gallocr_;
 };
 
 Qwen3ASRAudioEncoderRuntime::Qwen3ASRAudioEncoderRuntime(
@@ -588,6 +602,7 @@ Qwen3ASRAudioEmbeddings Qwen3ASRAudioEncoderRuntime::encode(const Qwen3ASRAudioF
     }
     const int threads = std::max(1, execution_->config().threads);
     if (graph_ == nullptr || !graph_->matches(*weights_, features.frames, execution_->backend(), threads)) {
+        graph_.reset();
         graph_ = std::make_unique<Qwen3ASRAudioEncoderGraph>(
             assets_,
             weights_,

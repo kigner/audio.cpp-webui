@@ -1,0 +1,51 @@
+{
+  "purpose": "Independent transparent character and background layers, driven by the existing TTS player; also available in the standalone preview",
+  "date": "2026-10-08",
+  "tool": "image_gen.imagegen (built-in)",
+  "character": {
+    "file": "character.png",
+    "descriptor": "character.json",
+    "source": "exec-a07c7890-72fe-4070-b967-f539c31177c3.png",
+    "dimensions": [1146, 1372],
+    "transparent_background": true,
+    "prompt_summary": "Edit the transparent character cutout. Preserve the same adult woman, exact face, seated pose, warm lighting, long brown hair, cream cardigan and burgundy dress. Restore the complete crown and top of her hair, with at least 60 pixels of transparent space above it. Keep all existing visible arms, hands and lap. Scale and translate the subject as needed to fit a portrait canvas. Output only the character on true transparent alpha. No bedroom, bed, furniture, room or interface.",
+    "reference_transform": [-171.76119402985074, 187.0149253731343, 1.0895522388059702],
+    "reference_transform_rule": "portrait_pixel = original_animation_pixel * scale + offset",
+    "neutral_face_registration_correlation": 0.9660823687505972
+  },
+  "background": {
+    "file": "../backgrounds/bedroom-private.png",
+    "source": "exec-0b58d33f-c4a1-4522-8df6-ee455b61985b.png",
+    "dimensions": [
+      1672,
+      941
+    ],
+    "tool": "image_gen.imagegen (built-in)",
+    "prompt": "Use case: photorealistic-natural.\nAsset type: production background image for a widescreen realtime companion chat UI, landscape 16:9, preferably 2048x1152.\nCreate an EMPTY cozy bedroom at night, cinematic warm photographic realism with a subtle illustrated softness that pairs well with an illustrated foreground character. No people.\nComposition is critical: a separate seated character will cover x=60-97% of the frame, from near the top to the bottom, so the recognizable room features MUST be visible just to her LEFT around x=44-60% and at the top-right and far-right edges.\nThe left 0-30% is nearly solid warm charcoal-black negative space with no visible objects; smoothly and naturally transition from shadow into the room across x=30-52%, no hard border.\nPlace a clearly recognizable small bedside lamp with a warm ivory fabric shade and amber glow at x=53%, y=37%, its small bedside table visible below around y=55%. The complete lamp shade must fall LEFT of x=59% so the foreground character won't hide it.\nA cozy bed with a walnut or upholstered headboard, inviting cream pillows and soft slightly rumpled duvet should be recognizable across the center and lower-right. Show a substantial visible pillow and folds at x=45-60%, y=61-86%, not just an abstract flat color. Use coherent room perspective and plausible bedside lamp/bed arrangement.\nAt the upper-right and extreme right show a portion of softly draped warm beige curtains with broad recognizable vertical folds, especially x=89-100%, y=0-45%; no bright daylight window. Keep the central-right area visually quiet behind the future character's face.\nLighting: intimate, calm, private conversation atmosphere, warm amber practical lamp, dark brown and charcoal shadows, muted cream textiles. Right-center midtones softly lit enough to recognize the bedroom at a glance. Slight optical depth-of-field softness ONLY, retain recognizable silhouettes and larger texture details in the bed, lamp and curtains. Do not heavily blur into amorphous patches.\nNo character, no person, no faces, no text, no lettering, no watermarks, no UI, no neon, no extra decorative clutter. The output is only the background plate, not a screenshot."
+  },
+  "background_legacy": {
+    "file": "../backgrounds/bedroom.png",
+    "source": "exec-27633466-6f14-4987-8f10-b6cb2326f583.png",
+    "dimensions": [1672, 941],
+    "prompt_summary": "Edit the empty warm bedroom background. Remove the entire window, glass, sky, city, moon, curtains and window framing. Replace them with one continuous simple warm beige lightly textured wall. Preserve the wooden upholstered headboard, exactly two cream sleeping pillows, the cream rumpled blanket, burgundy blanket at the foot of the bed, and the left bedside lamp, flowers and table. No extra pillows, windows, moon, wall art, mirrors, new objects, people, text or interface. Leave the bed clear for a separately composited seated character."
+  },
+  "scene": {
+    "file": "scene.png",
+    "source": "exec-41bd82a5-8bbe-44e8-9d94-7e484a206ab5.png",
+    "dimensions": [1672, 941],
+    "approved_image_preserved": true,
+    "role": "Historical source and original animation coordinate reference; no longer rendered at runtime",
+    "original_main_panel": [0, 0, 1353, 941]
+  },
+  "face_atlas": {
+    "file": "face-atlas.png",
+    "source": "exec-1c780b83-b572-4ae6-9dc0-0928ea023394.png",
+    "dimensions": [1254, 1254],
+    "layout": "3 x 3, 418px cells",
+    "states": ["original", "closed blink", "half blink", "aa", "E/I", "O", "U", "M/B/P closed", "listening smile"],
+    "prompt": "Edit supporting animation asset for the provided approved illustration. Use ONLY the main large woman's face in the LEFT bedroom scene as the identity and pose reference; do not use the three right-side portraits. She is an adult age 28-32. Produce ONE precise 3 by 3 animation atlas, nine equally sized square cells, NO gaps, NO borders, NO text, NO labels. Every cell must contain an identical closely cropped portrait of that same face from upper forehead to chin with the SAME exact head angle, eye placement, face proportions, nose position, lip position, camera position, crop scale, hairstyle, warm lamp illumination and skin color. Face fills the square, dark brown hair at edges; neck and shoulders mostly outside the crop. This is intended for pixel-aligned local eye and lip patches, so do not vary composition, facial identity or head tilt across cells. Changes should be limited to eyelids and mouth. Row 1 left: original attentive soft smile, eyes open, lips relaxed; row 1 middle: BOTH eyes fully closed in a natural blink, same relaxed lips; row 1 right: BOTH eyelids halfway closed, same relaxed lips. Row 2 left: eyes original open, speaking vowel A/aa mouth naturally open with dark inner mouth and subtle teeth; row 2 middle: eyes original open, speaking E/I mouth moderately wide and shallow with upper teeth lightly visible; row 2 right: eyes original open, speaking O mouth rounded medium opening. Row 3 left: eyes original open, speaking U mouth softly pursed and rounded with small opening; row 3 middle: eyes original open, M/B/P lips pressed gently together, fully closed, no teeth; row 3 right: eyes original open, closed-mouth affectionate listening smile with just slightly raised lip corners. Preserve beautiful mature high-end 2D romantic anime illustration, refined lines and shading; no 3D rendering, no photorealism, no room scene, no body pose, no additional characters. All nine portraits use the EXACT SAME tilted face and very consistent pixel placement."
+  },
+  "registration": "face-registration.json; numeric image analysis only, no Python image edits",
+  "animation": "WebGL2 local eye/lip replacement, compact head/shoulder/breath deformation, smooth listening tilt and TTS-driven speaking nods",
+  "audio": "Existing PCM player + vendored HeadAudio; five visual mouth classes, Chinese fine alignment requires visual acceptance"
+}

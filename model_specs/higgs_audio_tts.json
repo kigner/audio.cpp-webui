@@ -32,6 +32,7 @@
       "GGUF"
     ],
     "docs": [
+      "docs/models/higgs_audio_tts.md",
       "docs/tts.md",
       "docs/gguf.md"
     ]
@@ -101,5 +102,91 @@
         "weights": "model:model.safetensors.index.json"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "AR and codec weight storage type."
+      },
+      {
+        "name": "ar_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Autoregressive decoder weight storage type."
+      },
+      {
+        "name": "codec_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Codec weight storage type."
+      },
+      {
+        "name": "ar_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "AR weight context size."
+      },
+      {
+        "name": "codec_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Codec weight context size."
+      },
+      {
+        "name": "ar_decode_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "AR decode graph arena size."
+      },
+      {
+        "name": "codec_decode_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Codec decode graph arena size."
+      },
+      {
+        "name": "codec_encode_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Codec encode graph arena size."
+      },
+      {
+        "name": "reference_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Encoded reference-audio cache slots; default 1."
+      },
+      {
+        "name": "attention",
+        "type": "enum",
+        "values": [
+          "auto",
+          "flash",
+          "eager"
+        ],
+        "description": "Attention lowering; auto probes the backend and falls back to eager on GPUs without a flash kernel (e.g. sm70); default auto."
+      }
+    ]
+  }
 }

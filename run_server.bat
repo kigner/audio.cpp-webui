@@ -6,10 +6,11 @@ call "%~dp0_env.bat"
 
 REM ============================================================
 REM  API server mode (OpenAI-compatible HTTP; backend auto-detected:
-REM  CUDA when an NVIDIA driver + gpu build exist, else CPU).
+REM  Usable CUDA first, then Vulkan, then CPU).
 REM
 REM  Usage:  run_server.bat <model_id> [port] [device] [voice_ref.wav]
-REM    e.g.  run_server.bat qwen3-tts 8088        (TTS server on :8088)
+REM    e.g.  run_server.bat                      (bundled VoxCPM1 on :8088)
+REM          run_server.bat supertonic 8088      (English/preset voices)
 REM          run_server.bat qwen3-asr 8081        (ASR server on :8081, 2nd window)
 REM          run_server.bat qwen3-tts 8088 D:\voices\me.wav
 REM                (bakes a default reference voice into the server, for clients
@@ -43,7 +44,8 @@ if not "%~3"=="" echo %~3| findstr /r /c:"^[0-9][0-9]*$" >nul || (
   set "DEVICE="
 )
 if not "%~4"=="" set "AUDIOCPP_VOICE_REF=%~4"
-if "%MODEL_ID%"=="" goto :usage
+if /I "%MODEL_ID%"=="--help" goto :usage
+if "%MODEL_ID%"=="" set "MODEL_ID=voxcpm1"
 if "%PORT%"=="" set "PORT=8088"
 if "%DEVICE%"=="" set "DEVICE=0"
 if defined AUDIOCPP_VOICE_REF if not exist "%AUDIOCPP_VOICE_REF%" (
@@ -59,7 +61,7 @@ if /I not "%AUDIOCPP_MODE%"=="offline" if /I not "%AUDIOCPP_MODE%"=="streaming" 
 )
 
 if not exist "%SERVER_EXE%" ( echo [ERROR] server exe not found: %SERVER_EXE% & goto :end )
-if /I "%BACKEND%"=="cpu" echo [run_server] no CUDA detected - CPU backend (slower; model coverage may be lower)
+if /I "%BACKEND%"=="cpu" echo [run_server] using CPU backend
 
 REM cpu backend: threads = ggml compute threads, keep one core for the system
 set "SRV_THREADS=1"
@@ -97,7 +99,7 @@ goto :end
 
 :usage
 echo Usage: %~nx0 ^<model_id^> [port] [device] [voice_ref.wav]
-echo   e.g. %~nx0 qwen3-tts 8088        (TTS server on :8088)
+echo   e.g. %~nx0 voxcpm1 8088          (TTS server on :8088; default)
 echo        %~nx0 qwen3-asr 8081        (ASR server on :8081, run in a 2nd window)
 echo        %~nx0 qwen3-tts 8088 D:\voices\me.wav   (bake a default reference voice)
 echo Model ids are the entries in %WEBUI_DIR%\configs\models_catalog.json.

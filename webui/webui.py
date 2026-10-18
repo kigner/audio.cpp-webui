@@ -23,7 +23,11 @@ Env overrides:
                                  above 4 cores — SMT siblings are not counted)
     AUDIOCPP_SERVER=http://...   talk to an already-running server instead of managing one
     AUDIOCPP_LOAD_TIMEOUT=300    seconds to wait for a model to finish loading
+    AUDIOCPP_MODELS_ROOT=...     model install/write directory (default: <bundle>/models)
+    AUDIOCPP_MODEL_SEARCH_ROOTS=...
+                                 extra read-only model roots, separated by os.pathsep
     AUDIOCPP_NO_BROWSER=1        don't open a browser tab
+    AUDIOCPP_DISABLE_REALTIME=1  don't start the realtime voice backend on 8765
 """
 import atexit
 import base64
@@ -49,6 +53,14 @@ from urllib.parse import quote, urlparse
 import numpy as np
 import requests
 import gradio as gr
+try:
+    from .parameter_i18n import localize_parameter
+    from .ace_step_controls import CONTROLS as ACE_CONTROLS, normalize_options as normalize_ace_options
+    from .vc_controls import normalize_options as normalize_vc_options
+except ImportError:
+    from parameter_i18n import localize_parameter
+    from ace_step_controls import CONTROLS as ACE_CONTROLS, normalize_options as normalize_ace_options
+    from vc_controls import normalize_options as normalize_vc_options
 
 try:
     from ui_i18n import (
@@ -254,6 +266,7 @@ def _load_spec_packages():
                 print(f"[webui] failed to read model spec {path}: {exc}")
                 continue
             family = spec.get("family") or os.path.splitext(name)[0]
+            MODEL_SPECS[family] = spec
             defaults = spec.get("package_defaults", {}).get("download", {})
             for package in spec.get("packages", []):
                 try:
@@ -283,6 +296,7 @@ def _load_spec_packages():
 
 
 SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = {}, {}
+MODEL_SPECS = {}
 
 
 def _cmake_cache_backend(bin_dir):
@@ -314,6 +328,8 @@ def _cmake_cache_backend(bin_dir):
                     enabled[key] = line.rstrip().upper().endswith("ON")
             if enabled.get("ENGINE_ENABLE_METAL") or enabled.get("GGML_METAL"):
                 return "metal"
+            if enabled.get("ENGINE_ENABLE_VULKAN") or enabled.get("GGML_VULKAN"):
+                return "vulkan"
             if "GGML_CUDA" in enabled:
                 return "gpu" if enabled["GGML_CUDA"] else "cpu"
     except OSError:
@@ -330,7 +346,7 @@ def _discover_dev_bin_dirs():
     lands in build/bin and says nothing about the backend, so that one is
     classified from its CMakeCache."""
     out = {}
-    for backend, keyword in (("gpu", "*cuda*"), ("metal", "*metal*"), ("cpu", "*cpu*")):
+    for backend, keyword in (("gpu", "*cuda*"), ("vulkan", "*vulkan*"), ("metal", "*metal*"), ("cpu", "*cpu*")):
         hits = sorted(d for d in glob.glob(os.path.join(PROJECT_ROOT, "build", keyword, "bin"))
                       if os.path.isfile(os.path.join(d, SERVER_EXE_NAME)))
         if hits:
@@ -372,7 +388,7 @@ def _find_bundle_root():
     for c in (HERE,                                         # webui.py directly in the bundle
               PROJECT_ROOT,                                 # webui/ shipped under the bundle
               os.path.join(PROJECT_ROOT, "audiocpp-portable")):
-        if any(os.path.isdir(os.path.join(c, b)) for b in ("gpu", "metal", "cpu")):
+        if any(os.path.isdir(os.path.join(c, b)) for b in ("gpu", "vulkan", "metal", "cpu")):
             return c
     if any(os.path.isfile(_dev_server_exe(b)) for b in DEV_BIN_DIRS):
         return PROJECT_ROOT
@@ -406,6 +422,13 @@ def _current_app_version(project_root=PROJECT_ROOT, bundle_root=BUNDLE_ROOT, env
     if overridden:
         return overridden
 
+    # The UI belongs to this source/package root; a separate bundle may only
+    # supply its Python runtime, models and binaries.
+    for root in dict.fromkeys((project_root, bundle_root)):
+        version = _version_from_json(root)
+        if version:
+            return version
+
     # Only query Git when this exact directory is a checkout. A portable bundle
     # may live inside a development tree and must keep using its own version.json.
     if os.path.exists(os.path.join(project_root, ".git")):
@@ -426,10 +449,6 @@ def _current_app_version(project_root=PROJECT_ROOT, bundle_root=BUNDLE_ROOT, env
         except (OSError, subprocess.SubprocessError):
             pass
 
-    for root in dict.fromkeys((bundle_root, project_root)):
-        version = _version_from_json(root)
-        if version:
-            return version
     return ""
 
 
@@ -438,18 +457,22 @@ APP_VERSION_SUFFIX = f" v{APP_VERSION}" if APP_VERSION else ""
 SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = _load_spec_packages()
 
 def _detect_backend():
-    """Which bundle build to launch. AUDIOCPP_BACKEND=gpu|cuda|cpu|metal
-    wins; otherwise auto-detect: gpu when an NVIDIA driver AND the gpu server
-    build are both present, else cpu (the server runs fine on the cpu backend,
-    just slower and with lower model coverage)."""
+    """Honor the override, then select a usable CUDA/Vulkan build, else CPU."""
     env = os.environ.get("AUDIOCPP_BACKEND", "").strip().lower()
     if env in ("gpu", "cuda"):
         return "gpu"
     if env:
         return env
     if os.name == "nt":
-        has_nvidia = os.path.isfile(os.path.join(
-            os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvcuda.dll"))
+        try:
+            from .backend_probe import select_backend
+        except ImportError:
+            from backend_probe import select_backend
+        def executable(backend):
+            bundled = os.path.join(BUNDLE_ROOT, backend, SERVER_EXE_NAME)
+            return bundled if os.path.isfile(bundled) else _dev_server_exe(backend)
+        selected = select_backend(executable("gpu"), executable("vulkan"))
+        return "gpu" if selected == "cuda" else selected
     else:
         has_nvidia = shutil.which("nvidia-smi") is not None
     if has_nvidia and (os.path.isfile(os.path.join(BUNDLE_ROOT, "gpu", SERVER_EXE_NAME))
@@ -547,12 +570,14 @@ def _find_gguf_exe():
     candidates = [
         os.environ.get("AUDIOCPP_GGUF"),
         *(os.path.join(DEV_BIN_DIRS[b], GGUF_EXE_NAME)
-          for b in (BACKEND, "gpu", "metal", "cpu") if b in DEV_BIN_DIRS),
+          for b in (BACKEND, "gpu", "vulkan", "metal", "cpu") if b in DEV_BIN_DIRS),
         os.path.join(BUNDLE_ROOT, BACKEND, GGUF_EXE_NAME),
         os.path.join(BUNDLE_ROOT, "gpu", GGUF_EXE_NAME),
+        os.path.join(BUNDLE_ROOT, "vulkan", GGUF_EXE_NAME),
         os.path.join(BUNDLE_ROOT, "metal", GGUF_EXE_NAME),
         os.path.join(BUNDLE_ROOT, "cpu", GGUF_EXE_NAME),
         os.path.join(PROJECT_ROOT, "audiocpp-portable", "gpu", GGUF_EXE_NAME),
+        os.path.join(PROJECT_ROOT, "audiocpp-portable", "vulkan", GGUF_EXE_NAME),
         os.path.join(PROJECT_ROOT, "audiocpp-portable", "metal", GGUF_EXE_NAME),
         os.path.join(PROJECT_ROOT, "audiocpp-portable", "cpu", GGUF_EXE_NAME),
     ]
@@ -569,7 +594,48 @@ def _find_gguf_exe():
             return candidate
     return None
 
-MODELS_ROOT = os.path.join(BUNDLE_ROOT, "models")
+def _absolute_model_root(path):
+    path = os.path.expanduser(str(path or "").strip())
+    if not os.path.isabs(path):
+        path = os.path.join(PROJECT_ROOT, path)
+    return os.path.normpath(os.path.abspath(path))
+
+
+def _model_search_roots(models_root=None, bundle_root=None, project_root=None, environ=None):
+    """Ordered roots used to find already-installed models.
+
+    Model lookup is deliberately separate from executable lookup: a development
+    server may run from build/ while its models remain in audiocpp-portable/.
+    The first root is also the model manager's single write target; the rest are
+    lookup-only fallbacks, so one install is never written into two trees.
+    """
+    env = os.environ if environ is None else environ
+    bundle = BUNDLE_ROOT if bundle_root is None else bundle_root
+    project = PROJECT_ROOT if project_root is None else project_root
+    primary = models_root or env.get("AUDIOCPP_MODELS_ROOT") or os.path.join(bundle, "models")
+    candidates = [primary]
+    candidates.extend(part for part in env.get("AUDIOCPP_MODEL_SEARCH_ROOTS", "").split(os.pathsep)
+                      if part.strip())
+    candidates.extend((
+        os.path.join(bundle, "models"),
+        os.path.join(project, "models"),
+        os.path.join(project, "audiocpp-portable", "models"),
+    ))
+
+    roots, seen = [], set()
+    for candidate in candidates:
+        root = _absolute_model_root(candidate)
+        key = os.path.normcase(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return tuple(roots)
+
+
+MODELS_ROOT = _absolute_model_root(
+    os.environ.get("AUDIOCPP_MODELS_ROOT") or os.path.join(BUNDLE_ROOT, "models"))
+MODEL_SEARCH_ROOTS = _model_search_roots(MODELS_ROOT)
 
 
 def _find_spec_model_manager():
@@ -593,6 +659,8 @@ SPEC_MODEL_MANAGER = _find_spec_model_manager()
 def _detect_vram_gb():
     """本机 NVIDIA 显卡显存总量（GB，多卡取最大）；无 nvidia-smi/无 N 卡返回 None。
     用于对照 catalog 条目的 min_vram_gb 估算值，提示“下载了也可能跑不动”。"""
+    if BACKEND == "vulkan":
+        return None  # Vulkan enumeration doesn't report a reliable VRAM budget.
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
@@ -604,6 +672,26 @@ def _detect_vram_gb():
 
 
 LOCAL_VRAM_GB = _detect_vram_gb()
+
+
+def _detect_gpu_name():
+    if BACKEND == "vulkan":
+        try:
+            from .backend_probe import probe_devices
+        except ImportError:
+            from backend_probe import probe_devices
+        return next((d[2] for d in probe_devices(SERVER_EXE) if d[0].lower() == "vulkan"), None)
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+        cards = [line.rsplit(",", 1) for line in result.stdout.splitlines() if "," in line]
+        return max(cards, key=lambda card: float(card[1]))[0].strip() if cards else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+LOCAL_GPU_NAME = _detect_gpu_name()
 
 
 def _vram_shortfall(entry):
@@ -628,7 +716,7 @@ ASR_TASKS = ("asr",)
 GEN_TASKS = ("gen",)   # music/SFX generation, served via the generic /v1/tasks/run route
 VC_TASKS = ("vc", "svc", "s2s")           # 声音转换：源音频 + 目标音色，走 /v1/tasks/run
 SEP_TASKS = ("sep",)                      # 音源分离：多轨 named_audio_outputs
-ANALYZE_TASKS = ("vad", "diar", "align", "midi")  # 音频分析：segments / speaker_turns / words / MIDI
+ANALYZE_TASKS = ("vad", "diar", "align", "midi", "turn")
 VDES_TASKS = ("vdes",)                    # 声音设计：文字 + 音色描述，走 /v1/audio/speech
 
 # Per-family behavior for the TTS tab, keyed by catalog `family`. This is how we
@@ -638,10 +726,60 @@ VDES_TASKS = ("vdes",)                    # 声音设计：文字 + 音色描述
 # `default_options` to override the family profile without editing this file, and
 # the "高级参数 (JSON)" box lets you pass ANY model-specific option at run time.
 MODEL_PROFILES = {
+    "f5_tts": {
+        "input_hint": (
+            "**Habibi / F5-TTS** 阿拉伯语零样本克隆：必须上传参考音色并填写与音频一致的参考文本；"
+            "方言、语速和采样步数在高级参数中调整。"),
+        "require_voice": True,
+        "require_reference_text": True,
+        "send_max_tokens": False,
+    },
+    "magpie_tts": {
+        "input_hint": (
+            "**MagpieTTS** 多语种预置音色 TTS：在高级参数中选择 Aria/Jason/John/Leo/Sofia；"
+            "不使用参考音频。"),
+        "accepts_voice_reference": False,
+        "send_reference_text": False,
+        "lang_map": {
+            "arabic": "ar-AE", "chinese": "zh", "english": "en",
+            "french": "fr", "german": "de", "hindi": "hi",
+            "italian": "it", "korean": "ko", "portuguese": "pt-BR",
+            "spanish": "es", "vietnamese": "vi",
+        },
+    },
+    "meanvc2": {
+        "input_hint": (
+            "**MeanVC2** 声音转换：必须上传源语音和目标音色参考；本地 WebUI 当前使用离线路由。"),
+        "require_vc_target": True,
+    },
+    "minimax_music3": {
+        "input_hint": (
+            "**MiniMax Music 3** 音乐生成：提示词描述风格，歌词为必填；-1 时长使用模型默认值。"),
+        "require_lyrics": True,
+        "omit_nonpositive_duration": True,
+    },
+    "mms_forced_aligner": {
+        "input_hint": (
+            "**MMS Forced Aligner**：必须填写与音频一致的原文和语言（nl/nld 或 en/eng）；"
+            "该非商业模型包需按上游文档本地转换。"),
+        "require_analysis_language": True,
+    },
+    "moss_voicegen": {
+        "input_hint": (
+            "**MOSS-VoiceGenerator** 声音设计：填写要朗读的文字与音色描述；"
+            "可在高级参数中选择 English 或 Chinese。"),
+        "default_options": {"language": "English"},
+        "send_max_tokens": False,
+    },
+    "personaplex": {
+        "input_hint": (
+            "**PersonaPlex** 语音到语音：上传源语音；默认使用 NATF2，"
+            "也可在高级参数选择内置 persona 或上传目标音色参考。"),
+    },
     "vibevoice": {
         "input_hint": (
             "**VibeVoice** 多说话人脚本：每行 `Speaker N: 内容`（纯文字自动包装）；"
-            "多音色用高级参数 `voice_samples`，不要传参考音频。"),
+            "单音色选择参考音频，多音色可按说话人分别选择或上传参考音频。"),
         "wrap_speaker_script": True,
         # VibeVoice has no internal text chunking. VRAM is bounded since the
         # layerwise-prefill/gallocr decode-graph fix, so chunks no longer need to be
@@ -658,7 +796,7 @@ MODEL_PROFILES = {
     "voxcpm2": {
         "input_hint": (
             "**VoxCPM2** 声音克隆：上传干净的单人参考音色并填『参考文本』；长文本自动分段；"
-            "支持⚡细粒度流式生成（生成模式选『流式』，边生成边播放）。"),
+            "支持细粒度流式生成（生成模式选『流式』，边生成边播放）。"),
         # 服务端流式（server mode=streaming + /v1/audio/speech stream_format=sse）：
         # delta 事件是 base64 的裸 PCM16，不带采样率——只能客户端自带。取值来自模型
         # config.json 的 audio_vae.out_sample_rate（48000）。流式生成要求显式
@@ -680,7 +818,7 @@ MODEL_PROFILES = {
     "dots_tts": {
         "input_hint": (
             "**DotTTS SOAR / MeanFlow** 多语种 TTS 与声音克隆：上传参考音色并填写"
-            "『参考文本』可获得更稳定的克隆效果；支持⚡细粒度流式生成。"),
+            "『参考文本』可获得更稳定的克隆效果；支持细粒度流式生成。"),
         # DotTTS AudioVAE package config uses 48 kHz output. Unlike pull-event
         # families, its FinalResult session emits vocoder chunks through the sink
         # while the current request is still being synthesized.
@@ -705,6 +843,8 @@ MODEL_PROFILES = {
     },
     "pocket_tts": {
         "input_hint": "**PocketTTS**：必须提供参考音色（上传/录制/内置）。",
+        "supports_streaming": True,
+        "stream_sample_rate": 24000,
     },
     "inflect_v2": {
         "input_hint": "**Inflect Micro v2**：英语离线 TTS；Micro 是默认包，Nano 可另装后手动选择路径。",
@@ -719,7 +859,7 @@ MODEL_PROFILES = {
     "confucius4_tts": {
         "input_hint": (
             "**Confucius4-TTS**：必须提供参考音色；当前中文/英语路径更可靠，"
-            "非中英语种仍在验证中；支持按文本段输出的⚡流式生成。"),
+            "非中英语种仍在验证中；支持按文本段输出的流式生成。"),
         "lang_map": {
             "chinese": "zh", "english": "en", "japanese": "ja", "korean": "ko",
             "french": "fr", "german": "de", "italian": "it", "portuguese": "pt",
@@ -732,7 +872,7 @@ MODEL_PROFILES = {
     "neutts": {
         "input_hint": (
             "**NeuTTS 2E** 英语预置音色 TTS：在『高级参数』选择 voice_id 与 emotion；"
-            "支持按文本段输出的⚡流式生成，不使用参考音频。"),
+            "支持按文本段输出的流式生成，不使用参考音频。"),
         "lang_map": {"english": "en"},
         "accepts_voice_reference": False,
         "supports_streaming": True,
@@ -740,10 +880,11 @@ MODEL_PROFILES = {
     },
     "omnivoice": {
         "input_hint": (
-            "**OmniVoice**：支持自动音色、参考音色克隆和 instruct 音色指令；"
+            "**OmniVoice**：支持自动音色、参考音色克隆和 instruction 音色指令；"
             "流式模式按模型规划的文本块逐段返回音频。"),
         "supports_streaming": True,
         "stream_sample_rate": 24000,
+        "language_aliases": {"600+ languages": "Auto"},
     },
     "chatterbox": {
         "input_hint": (
@@ -766,6 +907,13 @@ MODEL_PROFILES = {
         "input_hint": ("**Qwen3-ASR**：长音频自动分段转写；"
                        "语种/上下文/对话模式见『转写选项』。"),
         "max_input_seconds": 60,
+        "supports_streaming": True,
+        "stream_input_16k_mono": True,
+        "auto_input_16k_mono": True,
+    },
+    "kroko_asr": {
+        "supports_streaming": True,
+        "stream_input_16k_mono": True,
     },
     "sense_asr": {
         "input_hint": (
@@ -776,7 +924,7 @@ MODEL_PROFILES = {
     },
     "voxtral_realtime": {
         "input_hint": (
-            "**Voxtral Mini 4B Realtime**：自动语种转写；支持⚡流式转写，"
+            "**Voxtral Mini 4B Realtime**：自动语种转写；支持流式转写，"
             "勾选后按模型原生音频分块边转边出字；不输出时间戳。"),
         "supports_streaming": True,
     },
@@ -793,7 +941,7 @@ MODEL_PROFILES = {
     "ace_step": {
         "input_hint": (
             "**ACE-Step** 音乐生成/编辑：提示词写风格/乐器/情绪（英文最佳），可填歌词。"
-            "编辑类 route 需上传源音频并建议先点『🔍 分析源音频』；参数详解见 webui/README.zh.md。"),
+            "编辑类 route 需上传源音频并建议先点『分析源音频』；参数详解见 webui/README.zh.md。"),
         # 原版 turbo UI 默认 shift=3.0（C++ 端默认 1.0，仅 remix/extract 路由自带 3.0）。
         # 控件只发用户改过的项，所以这里显式发送，保证 UI 显示值=实际值。
         "default_options": {"shift": 3.0},
@@ -808,6 +956,7 @@ MODEL_PROFILES = {
             "**HeartMuLa**：高级参数 `tags` 必填（逗号分隔），『歌词』填唱词；"
             "峰值显存 ~25G，8G 卡跑不动。"),
     },
+    "tone_color_vc": {"vc_sample_rate": 22050},
     "vevo2": {
         "input_hint": (
             "**Vevo2**：源语音 + 目标音色，默认只换音色（保留说话风格）；"
@@ -841,6 +990,7 @@ MODEL_PROFILES = {
     },
     "miocodec": {
         "input_hint": "**MioCodec**：codec 重建式转换——源提供内容，参考提供音色。",
+        "send_seed": False,
     },
     "htdemucs": {
         "input_hint": "**HTDemucs**：输出 drums / bass / other / vocals 四轨。",
@@ -852,12 +1002,13 @@ MODEL_PROFILES = {
         "input_hint": "**BS-RoFormer**：输出人声轨 + 伴奏轨。",
     },
     "nemotron_asr": {
-        "input_hint": ("**Nemotron ASR**：100+ 语种；支持⚡流式转写"
+        "input_hint": ("**Nemotron ASR**：100+ 语种；支持流式转写"
                        "（勾选后边转边出字，长音频不用干等）。"),
         "supports_streaming": True,
+        "stream_input_16k_mono": True,
     },
     "higgs_audio_stt": {
-        "input_hint": "**Higgs Audio STT**：支持⚡流式转写（勾选后边转边出字）。",
+        "input_hint": "**Higgs Audio STT**：支持流式转写（勾选后边转边出字）。",
         "supports_streaming": True,
     },
     "vibevoice_asr": {
@@ -894,7 +1045,7 @@ MODEL_PROFILES = {
         # 会话默认 no_ref=true（忽略参考音频），带参考时必须显式关掉才走克隆路径。
         "no_ref_toggle": True,
         # 声音设计标签页的『音色描述』对本家族要发 options.caption（qwen3_tts 走
-        # 服务器的 instructions→instruct 映射，irodori session 只读 caption）。
+        # 服务器的 instructions→instruction 映射，irodori session 只读 caption）。
         "vdes_option_key": "caption",
     },
     "moss_tts_local": {
@@ -910,7 +1061,7 @@ MODEL_PROFILES = {
     "supertonic": {
         "input_hint": (
             "**Supertonic 3** 预置音色多语种 TTS：在『高级参数』选 voice（M1-M5 男声 / "
-            "F1-F5 女声）和语速 speaking_rate；支持按文本段输出的⚡流式生成；"
+            "F1-F5 女声）和语速 speaking_rate；支持按文本段输出的流式生成；"
             "**不支持**参考音频克隆（**无中文**）。"),
         # Supertonic 的 C++ 会话支持 mode=streaming，并通过 pull events 按文本段
         # 输出音频。SSE delta 是不带采样率的裸 PCM16，客户端需使用模型的 44.1kHz。
@@ -933,7 +1084,7 @@ MODEL_PROFILES = {
 # reference; English intentionally keeps these notes short so model cards stay
 # aligned on narrower screens.
 MODEL_HINTS_EN = {
-    "vibevoice": "**VibeVoice**: use one `Speaker N:` line per speaker. Use `voice_samples` for multiple voices.",
+    "vibevoice": "**VibeVoice**: use one `Speaker N:` line per speaker. Select or upload references for each speaker.",
     "voxcpm2": ("**VoxCPM2**: upload a clean voice reference and its transcript. "
                 "Fine-grained streaming plays audio while synthesis is still running."),
     "dots_tts": ("**DotTTS SOAR / MeanFlow**: multilingual TTS and voice cloning. "
@@ -1013,12 +1164,17 @@ _SPEAKER_RE = re.compile(r"^\s*Speaker\s+\d+\s*:", re.IGNORECASE | re.MULTILINE)
 def profile_for(entry):
     prof = {**DEFAULT_PROFILE, **MODEL_PROFILES.get(entry.get("family", ""), {})}
     prof["input_hint_en"] = MODEL_HINTS_EN.get(entry.get("family", ""), "")
+    if entry.get("profile"):
+        prof.update(entry["profile"])
     if entry.get("input_hint"):
         prof["input_hint"] = entry["input_hint"]
     if entry.get("input_hint_en"):
         prof["input_hint_en"] = entry["input_hint_en"]
     if entry.get("default_options"):
         prof["default_options"] = {**prof.get("default_options", {}), **entry["default_options"]}
+    # A family may stream one task only (LFM2: TTS yes, ASR no).
+    if entry.get("streaming_tasks") is not None:
+        prof["supports_streaming"] = entry.get("task") in entry["streaming_tasks"]
     return prof
 
 
@@ -1035,14 +1191,40 @@ def asr_stream_update(model_id):
 def vc_voice_input_updates(model_id):
     """Switch VC target controls between reference-audio and RVC voice-model inputs."""
     entry = catalog_by_id(model_id) if model_id else None
-    hide_target_voice = bool(entry) and bool(profile_for(entry).get("model_as_target_voice"))
+    prof = profile_for(entry) if entry else DEFAULT_PROFILE
+    rvc_inputs = bool(prof.get("model_as_target_voice"))
+    hide_target_voice = rvc_inputs or not prof.get("accepts_voice_reference", True)
     return (
         gr.update(visible=not hide_target_voice),
         gr.update(value="(none)"),
         gr.update(value=None),
-        gr.update(visible=hide_target_voice),
+        gr.update(visible=rvc_inputs),
         gr.update(value=None),
         gr.update(value=None),
+    )
+
+
+def tts_voice_input_updates(model_id):
+    """Relabel the shared TTS voice input when a package expects source audio."""
+    entry = catalog_by_id(model_id) if model_id else None
+    source_audio = bool(entry) and profile_for(entry).get("voice_input_role") == "source_audio"
+    if source_audio:
+        return (
+            gr.update(value=_t("#### 🎧 源音频（要编辑的语音）",
+                               "#### 🎧 Source audio to edit")),
+            gr.update(label=_t("内置源音频（可选）",
+                               "Built-in source audio (optional)")),
+            gr.update(label=_t("上传/录制源音频（必填）",
+                               "Upload/record source audio (required)")),
+            gr.update(visible=False, value=""),
+        )
+    return (
+        gr.update(value=_t("#### 🎧 参考音频（声音克隆）",
+                           "#### 🎧 Voice reference")),
+        gr.update(label=_t("内置参考音色", "Built-in voice")),
+        gr.update(label=_t("上传/录制参考音色（可选）",
+                           "Upload/record voice (optional)")),
+        gr.update(visible=True),
     )
 
 
@@ -1074,6 +1256,7 @@ def resolve_language(prof, language):
     are converted and anything it can't do — including "Auto" — is rejected here
     with an actionable message instead of a raw server 500."""
     lang = (language or "").strip()
+    lang = prof.get("language_aliases", {}).get(lang, lang)
     lang_map = prof.get("lang_map")
     if not lang_map:
         return lang
@@ -1410,11 +1593,9 @@ def _ensure_wav(path, target_sr=None):
         raise gr.Error(_t("ffmpeg 转码 {ext} → wav 失败：{error}",
                           "ffmpeg conversion {ext} → wav failed: {error}",
                           ext=ext, error=err or _t("未知错误", "unknown error")))
-    note = (_t("，重采样到 {sr}Hz", ", resampled to {sr}Hz", sr=target_sr)
-            if target_sr else "")
-    _ui_log(_t("输入转码：{name}（{ext}）→ 16-bit PCM WAV{note}",
-               "input transcoded: {name} ({ext}) → 16-bit PCM WAV{note}",
-               name=os.path.basename(path), ext=ext, note=note))
+    note = f", resampled to {target_sr}Hz" if target_sr else ""
+    _ui_log("input transcoded: {name} ({ext}) → 16-bit PCM WAV{note}".format(
+            name=os.path.basename(path), ext=os.path.splitext(path)[1].lower() or "no extension", note=note))
     _WAV_CACHE[key] = out
     return out
 
@@ -1620,25 +1801,36 @@ ERROR_HINTS_EN = [
 
 
 def _extract_server_message(text):
+    raw = (text or "").strip()
     try:
-        return json.loads(text)["error"]["message"] or text
-    except Exception:
-        return (text or "").strip()
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+        else:
+            message = error if isinstance(error, str) else data.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return raw
 
 
 def server_error(entry, status, text, extra=None):
     """Build a friendly gr.Error from a non-200 server response."""
     msg = _extract_server_message(text)
+    log_message = msg[:2000] + ("…" if len(msg) > 2000 else "")
+    _ui_log(f"server {status}: {log_message or '(empty response)'}")
     language = get_language()
     hints = ERROR_HINTS_EN if language == "en" else ERROR_HINTS
     hint = next((h for pat, h in hints if pat.search(msg)), None)
     if hint:
         hint = _t(hint, hint, language)
-    parts = [f"❌ server {status}"]
+    visible_message = msg[:400] + ("…" if len(msg) > 400 else "")
+    parts = [f"❌ server {status}：{visible_message}"]
     if hint:
         parts.append("💡 " + hint)
-    else:
-        parts[0] = f"❌ server {status}：{msg[:400]}"
     if extra:
         parts.append(extra)
     if entry and not hint:
@@ -1750,7 +1942,15 @@ def _variant_key(value):
     return key
 
 
+def _webui_can_install_package(package):
+    """Whether the downstream WebUI manager can install this spec package."""
+    download = package.get("download") or {}
+    return download.get("kind") == "huggingface_snapshot" and bool(download.get("repo"))
+
+
 def _prefer_package(candidates):
+    installable = [p for p in candidates if _webui_can_install_package(p)]
+    candidates = installable or candidates
     gguf = [p for p in candidates if p.get("format") == "gguf"]
     if gguf:
         defaults = [p for p in gguf if p.get("default")]
@@ -1769,9 +1969,16 @@ def _matching_spec_package(entry):
     current = SPEC_PACKAGE_BY_ID.get(download_id)
     if current is not None:
         if current.get("format") == "gguf":
-            return current
+            if _webui_can_install_package(current):
+                return current
+            current_key = _variant_key(current["id"])
+            related = [p for p in packages if _variant_key(p["id"]) == current_key]
+            return _prefer_package(related) or current
         stem = re.sub(r"_?safetensors$", "", current["id"])
-        related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+        related = [p for p in packages
+                   if p["id"].startswith(stem + "_")
+                   and p.get("format") == "gguf"
+                   and _webui_can_install_package(p)]
         return _prefer_package(related) or current
 
     direct = [p for p in packages if p["id"] == download_id or p["id"].startswith(download_id + "_")]
@@ -1785,7 +1992,10 @@ def _matching_spec_package(entry):
         target = _prefer_package(same_target)
         if target and target.get("format") == "safetensors":
             stem = re.sub(r"_?safetensors$", "", target["id"])
-            related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+            related = [p for p in packages
+                       if p["id"].startswith(stem + "_")
+                       and p.get("format") == "gguf"
+                       and _webui_can_install_package(p)]
             return _prefer_package(related) or target
         return target
     return None
@@ -1854,7 +2064,7 @@ def _load_required_files():
                     required[key] = value
         except Exception as e:
             print(f"[webui] failed to read {REQUIRED_FILES_PATH}: {e}; "
-                  + _t("跳过模型完整性检查", "skipping model integrity check"))
+                  + "skipping model integrity check")
     return required
 
 
@@ -1882,23 +2092,83 @@ else:
 
 # --- managed server process state ------------------------------------------
 _proc_lock = threading.Lock()
+_proc_lifecycle_lock = threading.RLock()
+_server_closing = threading.Event()
 _server_proc = None      # subprocess.Popen we launched, or None
 _loaded_id = None        # model id our managed server is serving
 _loaded_session_options = None   # 随本次加载写进 server config 的 session_options
 _loaded_mode = None              # 本次加载的运行模式（offline/streaming），None=未加载
+_loaded_load_options = None
 
 
-def _resolve_bundle_path(path):
-    ap = path if os.path.isabs(path) else os.path.join(BUNDLE_ROOT, path)
-    return os.path.normpath(ap).replace("\\", "/")
+def _normalized_runtime_path(path):
+    return os.path.normpath(path).replace("\\", "/")
 
 
-def _missing_required_files_for(path, download_id):
+def _model_path_candidates(path):
+    """Resolve a catalog path against every compatible model root.
+
+    Absolute catalog paths keep their exact meaning. Relative paths below
+    ``models/`` are searched in MODEL_SEARCH_ROOTS; other relative runtime
+    assets remain relative to BUNDLE_ROOT.
+    """
+    if os.path.isabs(path):
+        return (_normalized_runtime_path(path),)
+
+    relative = os.path.normpath(path or "")
+    prefix = "models" + os.sep
+    if relative == "models":
+        return tuple(_normalized_runtime_path(root) for root in MODEL_SEARCH_ROOTS)
+    if os.path.normcase(relative).startswith(os.path.normcase(prefix)):
+        suffix = relative[len(prefix):]
+        return tuple(_normalized_runtime_path(os.path.join(root, suffix))
+                     for root in MODEL_SEARCH_ROOTS)
+    return (_normalized_runtime_path(os.path.join(BUNDLE_ROOT, relative)),)
+
+
+def _missing_required_files_for(path, download_id, additional_ids=()):
     """目录已存在但缺失的必须文件（相对模型目录）；目录不存在或无清单时返回 []。"""
-    req = REQUIRED_FILES.get(download_id or "")
+    req = list(REQUIRED_FILES.get(download_id or "") or [])
+    for package_id in additional_ids:
+        req.extend(REQUIRED_FILES.get(package_id) or [])
     if not req or not os.path.isdir(path):
         return []
     return [f for f in req if not os.path.isfile(os.path.join(path, f))]
+
+
+def _legacy_source_layout(entry, path):
+    """Validate a declared legacy layout against the current native source spec.
+
+    Only catalog entries with legacy_path opt in. Optional files stay optional;
+    an existing directory alone never makes a Safetensors model loadable.
+    """
+    source = next((source for source in MODEL_SPECS.get(entry.get("family"), {}).get("sources", [])
+                   if source.get("format") == "safetensors"), None)
+    if not source:
+        return path, ["model_specs: safetensors source contract"], {}
+    references = list(source.get("files", {}).values()) + list(source.get("tensors", {}).values())
+    required = {}
+    for reference in references:
+        if not isinstance(reference, str) or ":" not in reference:
+            return path, ["model_specs: unsupported safetensors source reference"], {}
+        name, relative = reference.split(":", 1)
+        required.setdefault(name, []).append(relative)
+    roots = {}
+    for name, relative in source.get("roots", {}).items():
+        candidates = [os.path.join(path, relative)]
+        if entry.get("family") == "vevo2" and name == "whisper":
+            # Older local bundles keep whisper-medium alongside models/, while
+            # the upstream default expects it alongside the Vevo2 directory.
+            for search_root in MODEL_SEARCH_ROOTS:
+                candidates.extend((os.path.join(search_root, "whisper-medium"),
+                                   os.path.join(os.path.dirname(search_root), "whisper-medium")))
+        roots[name] = _normalized_runtime_path(next(
+            (candidate for candidate in candidates
+             if all(os.path.isfile(os.path.join(candidate, rel)) for rel in required.get(name, []))),
+            candidates[0]))
+    missing = [f"{name}:{relative}" for name, relatives in required.items() for relative in relatives
+               if name not in roots or not os.path.isfile(os.path.join(roots[name], relative))]
+    return path, missing, roots
 
 
 def catalog_models():
@@ -1908,35 +2178,69 @@ def catalog_models():
     out = []
     for m in CATALOG.get("models", []):
         entry = dict(m)
-        legacy_path = _resolve_bundle_path(m.get("path", ""))
-        package_path = _resolve_bundle_path(m.get("download_path") or m.get("path", ""))
-        package_missing = _missing_required_files_for(package_path, entry.get("download_id"))
-        legacy_missing = _missing_required_files_for(legacy_path, entry.get("legacy_download_id")
-                                                     or entry.get("download_id"))
-        package_complete = os.path.exists(package_path) and not package_missing
-        legacy_complete = os.path.exists(legacy_path) and not legacy_missing
+        package_states = [
+            (path, _missing_required_files_for(path, entry.get("download_id"),
+                                             entry.get("additional_download_ids", ())))
+            for path in _model_path_candidates(m.get("download_path") or m.get("path", ""))
+        ]
+        legacy_states = [
+            (path, _missing_required_files_for(path, entry.get("legacy_download_id")
+                                               or entry.get("download_id"),
+                                             entry.get("additional_download_ids", ())))
+            for path in _model_path_candidates(m.get("path", ""))
+        ]
+        source_states = ([_legacy_source_layout(entry, path)
+                          for path in _model_path_candidates(m["legacy_path"])]
+                         if m.get("legacy_path") else [])
+        source_complete = next((state for state in source_states
+                                if os.path.isdir(state[0]) and not state[1]), None)
+        source_existing = next((state for state in source_states if os.path.isdir(state[0])), None)
+        package_complete = next(
+            ((path, missing) for path, missing in package_states
+             if os.path.exists(path) and not missing), None)
+        legacy_complete = next(
+            ((path, missing) for path, missing in legacy_states
+             if os.path.exists(path) and not missing), None)
+        package_existing = next(
+            ((path, missing) for path, missing in package_states if os.path.exists(path)), None)
+        legacy_existing = next(
+            ((path, missing) for path, missing in legacy_states if os.path.exists(path)), None)
         if package_complete:
-            entry["abs_path"] = package_path
+            entry["abs_path"] = package_complete[0]
             entry["missing_files"] = []
         elif legacy_complete:
-            entry["abs_path"] = legacy_path
+            entry["abs_path"] = legacy_complete[0]
             entry["missing_files"] = []
-        elif os.path.exists(package_path):
-            entry["abs_path"] = package_path
-            entry["missing_files"] = package_missing
+        elif source_complete:
+            entry["abs_path"] = source_complete[0]
+            entry["missing_files"] = []
+        elif source_existing:
+            entry["abs_path"] = source_existing[0]
+            entry["missing_files"] = source_existing[1]
+        elif package_existing:
+            entry["abs_path"] = package_existing[0]
+            entry["missing_files"] = package_existing[1]
+        elif legacy_existing:
+            entry["abs_path"] = legacy_existing[0]
+            entry["missing_files"] = legacy_existing[1]
         else:
-            entry["abs_path"] = legacy_path if os.path.exists(legacy_path) else package_path
-            entry["missing_files"] = legacy_missing if os.path.exists(legacy_path) else []
+            entry["abs_path"] = package_states[0][0]
+            entry["missing_files"] = []
         entry["incomplete"] = bool(entry["missing_files"])
-        entry["installed"] = package_complete or legacy_complete
-        entry["download_installed"] = package_complete
+        entry["installed"] = bool(package_complete or legacy_complete or source_complete)
+        entry["download_installed"] = bool(package_complete)
         entry["gguf_path"] = (_existing_gguf_path(entry)
                               if entry.get("family") in GGUF_NATIVE_FAMILIES else None)
         entry["gguf_ready"] = bool(entry["gguf_path"])
         entry["gguf_only"] = entry["gguf_ready"] and not (package_complete or legacy_complete)
-        if entry["gguf_ready"]:
+        if entry["gguf_ready"] and not entry.get("additional_download_ids"):
             entry["installed"] = True
             entry["incomplete"] = False
+        if source_complete and entry["abs_path"] == source_complete[0] and not entry["gguf_ready"]:
+            entry["source_format"] = "safetensors"
+            entry["source_roots"] = source_complete[2]
+            entry["session_options"] = {**m.get("legacy_session_options", {}),
+                                        **entry.get("session_options", {})}
         entry["label"] = m.get("display_name") or m.get("id", "?")
         out.append(entry)
     return out
@@ -1955,7 +2259,7 @@ def choices_for_tasks(tasks, language=None):
     language = language or get_language()
     out = []
     for m in catalog_models():
-        if m.get("task") not in tasks:
+        if m.get("ui_task", m.get("task")) not in tasks:
             continue
         label = m["label"]
         if language == "en":
@@ -1972,6 +2276,8 @@ def choices_for_tasks(tasks, language=None):
             if short:
                 label += _t(" ⚠️估算需≥{need:g}G显存", " ⚠️≥{need:g} GB VRAM", language,
                             need=short[0])
+        if m.get("manual_install"):
+            label += _t(" · 手动安装", " · manual install", language)
         out.append((label, m["id"]))
     return out
 
@@ -2193,7 +2499,103 @@ def params_for(model_id):
     specs = MODEL_PARAMS.get(entry.get("id", ""))
     if specs is None:
         specs = MODEL_PARAMS.get(entry.get("family", ""), [])
-    return specs if isinstance(specs, list) else []
+    local = [dict(p) for p in specs] if isinstance(specs, list) else []
+    family = entry.get("family", "")
+    if family in {"kitten_tts", "kokoro_tts"}:
+        ui = MODEL_SPECS.get(family, {}).get("ui", {})
+        if ui.get("builtin_voices") and not any(p["name"] == "voice" for p in local):
+            local.append({"name": "voice", "type": "choice", "label": "预设音色",
+                          "choices": ui["builtin_voices"], "default": ui.get("default_voice")})
+    contract = MODEL_SPECS.get(family, {}).get("options", {})
+    by_name = {p["name"]: p for p in local}
+    # Keep downstream labels/defaults, and fill in the backend's new options.
+    # Controls send only edited values; an unset backend default stays unset.
+    for scope in ("request", "session", "load"):
+        for option in contract.get(scope, []):
+            name = option["name"]
+            if family == "builtin_audio_utils" and name == "utility":
+                continue  # each catalog entry binds the utility to its matching weights
+            if scope == "request" and entry.get("task") in (*TTS_TASKS, *VDES_TASKS):
+                if name in {"seed", "max_tokens", "reference_text"}:
+                    continue
+            if family == "qwen3_tts" and name == "text_chunk_size":
+                continue  # retain the downstream token-budget-dependent chunk limit
+            if scope != "request":
+                qualified = name if name.startswith(family + ".") else family + "." + name
+                name = scope + "_options." + qualified
+            if name in by_name:
+                # Preserve presentation and deliberate downstream defaults, but
+                # keep the accepted values and bounds in sync with the backend.
+                p = by_name[name]
+                control = _spec_param_control(option, name, scope)
+                if option.get("type") in {"int", "float"}:
+                    if p.get("type") not in {"slider", "number"}:
+                        p["type"] = "number"
+                    for source, target in (("min", "minimum"), ("max", "maximum")):
+                        if source in option:
+                            p[target] = option[source]
+                    if option["type"] == "int":
+                        p.update(precision=0, step=1)
+                elif control.get("choices"):
+                    old = p.get("choices", [])
+                    labels = {v[1] if isinstance(v, list) else v: v for v in old}
+                    choices = list(control["choices"])
+                    if family == "dots_tts" and name == "template_name" and entry.get("id") != "dots-tts-edit":
+                        choices = [v for v in choices if v != "edit"]
+                    if "" in labels and "" not in choices:
+                        choices.insert(0, "")  # legacy optional/automatic choice
+                    p.update(type="choice", choices=[labels.get(v, v) for v in choices])
+                elif option.get("type") != "string":
+                    p["type"] = control["type"]
+                    p.pop("choices", None)
+                    if control.get("json_list"):
+                        p["json_list"] = True
+                continue
+            local.append(_spec_param_control(option, name, scope))
+            by_name[name] = local[-1]
+    defaults = profile_for(entry).get("default_options", {})
+    for p in local:
+        if p["name"] in defaults:
+            p["default"] = defaults[p["name"]]
+    return [localize_parameter(p) for p in local]
+
+
+_OPTION_PRESETS = {
+    "best_of_n_language": ["auto", "en", "ja"],
+    "perf_mode_flash_attention": ["off", "flash_attention"],
+    "text_chunk_mode_full": ["word_budget", "tag_aware", "japanese", "endline"],
+    "weight_type_codec_q8": ["native", "f32", "f16", "q8_0"],
+    "weight_type_conv": ["native", "f32", "f16"],
+    "weight_type_full": ["native", "f32", "f16", "bf16", "q8_0"],
+}
+
+
+def _spec_param_control(option, name, scope):
+    kind = option.get("type", "string")
+    p = {"name": name, "label": option["name"], "label_en": option["name"],
+         "info": option.get("description", ""), "info_en": option.get("description", "")}
+    if scope != "request":
+        suffix = "会话，修改后重载" if scope == "session" else "加载，修改后重载"
+        p["label"] += f"（{suffix}）"
+        p["label_en"] += f" ({scope}; reloads model)"
+    if "default" in option:
+        p["default"] = option["default"]
+    if kind == "bool":
+        p["type"] = "bool"
+    elif kind in {"int", "float"}:
+        p["type"] = "number"
+        p["minimum"], p["maximum"] = option.get("min"), option.get("max")
+        if kind == "int":
+            p.update(precision=0, step=1)
+    elif kind == "enum" and (option.get("values") or option.get("preset") in _OPTION_PRESETS):
+        p.update(type="choice", choices=option.get("values") or _OPTION_PRESETS[option["preset"]])
+    else:
+        p["type"] = "text"
+        if kind.endswith("_list"):
+            p["json_list"] = True
+            p["default"] = json.dumps(option["default"]) if "default" in option else ""
+            p["placeholder"] = "JSON array, e.g. [1, 2]"
+    return p
 
 
 def _make_param_component(p, language=None):
@@ -2215,6 +2617,9 @@ def _make_param_component(p, language=None):
     if t == "choice":
         return gr.Dropdown(label=label, info=info, choices=p.get("choices", []),
                            value=p.get("default"), interactive=True)
+    if t == "multiselect":
+        return gr.Dropdown(label=label, info=info, choices=p.get("choices", ACE_CONTROLS["tracks"]),
+                           value=p.get("default", []), multiselect=True, interactive=True)
     if t == "slider":
         return gr.Slider(label=label, info=info,
                          minimum=p.get("minimum", 0), maximum=p.get("maximum", 1),
@@ -2226,11 +2631,21 @@ def _make_param_component(p, language=None):
                      interactive=True)
 
 
-def _adv_updater(name):
+def _adv_updater(name, json_list=False):
     """change-handler that writes one control's value into the shared advanced
     options state dict (keyed by the option name)."""
     def _fn(state, value):
         state = dict(state or {})
+        if json_list and not value:
+            state.pop(name, None)
+            return state
+        if json_list:
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError) as error:
+                raise gr.Error(_t("请输入有效的 JSON 数组。", "Enter a valid JSON array.")) from error
+            if not isinstance(value, list):
+                raise gr.Error(_t("请输入 JSON 数组。", "Enter a JSON array."))
         state[name] = value
         return state
     return _fn
@@ -2253,9 +2668,9 @@ def server_alive():
         return False
 
 
-def loaded_ids():
+def loaded_ids(timeout=5):
     try:
-        r = requests.get(f"{SERVER}/v1/models", timeout=5)
+        r = requests.get(f"{SERVER}/v1/models", timeout=timeout)
         r.raise_for_status()
         return [m.get("id") for m in r.json().get("data", [])]
     except Exception:
@@ -2284,11 +2699,27 @@ def _declared_package_gguf_path(entry):
 
 
 def _server_model_path(entry):
+    if entry.get("additional_download_ids") or entry.get("model_directory"):
+        return entry["abs_path"]
     gguf = _existing_gguf_path(entry)
     if gguf is not None and (_is_downloaded_gguf_package(entry)
                              or entry.get("family") in GGUF_WEBUI_CONVERTIBLE_FAMILIES):
         return gguf
     return entry["abs_path"]
+
+
+def _runtime_model_spec(entry):
+    """Bind a validated external Vevo2 Whisper root in a temporary native spec."""
+    if entry.get("family") != "vevo2" or not entry.get("source_roots"):
+        return None
+    spec = json.loads(json.dumps(MODEL_SPECS["vevo2"]))
+    for source in spec.get("sources", []):
+        if source.get("format") == "safetensors":
+            source["roots"].update(entry["source_roots"])
+    fd, path = tempfile.mkstemp(prefix="audiocpp_vevo2_spec_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(spec, f, ensure_ascii=False)
+    return path
 
 
 def _write_temp_config(entry):
@@ -2302,19 +2733,32 @@ def _write_temp_config(entry):
     for key in ("config", "weight", "load_options", "session_options"):
         if entry.get(key) is not None:
             model[key] = entry[key]
-    cfg = {"host": HOST, "port": PORT, "backend": SERVER_BACKEND, "device": DEVICE,
-           "threads": THREADS, "voice_dir": VOICE_DIR, "models": [model]}
+    model_spec = _runtime_model_spec(entry)
+    if model_spec:
+        model["model_spec_override"] = model_spec
+    backend = entry.get("backend", SERVER_BACKEND)
+    threads = _model_threads(backend)
+    cfg = {"host": HOST, "port": PORT, "backend": backend, "device": DEVICE,
+           "threads": threads, "voice_dir": VOICE_DIR, "models": [model]}
     fd, path = tempfile.mkstemp(prefix="audiocpp_webui_cfg_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
     return path
 
 
+def _model_threads(backend):
+    if backend == "cpu" and THREADS <= 1 and not os.environ.get("AUDIOCPP_THREADS"):
+        return _default_cpu_threads()
+    return THREADS
+
+
 def _stop_server():
-    global _server_proc, _loaded_id, _loaded_session_options, _loaded_mode
-    _loaded_session_options = None
-    _loaded_mode = None
-    proc, _server_proc, _loaded_id = _server_proc, None, None
+    global _server_proc, _loaded_id, _loaded_session_options, _loaded_mode, _loaded_load_options
+    with _proc_lifecycle_lock:
+        _loaded_session_options = None
+        _loaded_load_options = None
+        _loaded_mode = None
+        proc, _server_proc, _loaded_id = _server_proc, None, None
     if proc is not None and proc.poll() is None:
         try:
             proc.terminate()
@@ -2329,6 +2773,20 @@ def _stop_server():
         if not _port_open(HOST, PORT):
             break
         time.sleep(0.25)
+
+
+def _shutdown_server():
+    """Permanently close this runtime; ordinary unload still uses _stop_server."""
+    _server_closing.set()
+    # _start_server publishes its owned handle under the same lock. A start
+    # already in Popen must finish before shutdown can detach and stop it.
+    _stop_server()
+
+
+def _check_server_open():
+    if _server_closing.is_set():
+        raise gr.Error(_t("本地服务正在退出，不能再加载模型。",
+                          "The local service is shutting down; model loading is disabled."))
 
 
 def _read_tail(path, n=30, max_bytes=65536):
@@ -2401,8 +2859,10 @@ def _emit_log_line(text):
 
 
 def _ui_log(msg):
-    """Timestamped webui-side event (request start/finish, model load, ...) so
-    the console/log show when things began and ended, not just server spam."""
+    """Write an English event to console and log, independent of UI language.
+
+    Callers format English copy directly; paths and backend output stay verbatim.
+    """
     _emit_log_line(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [webui] {msg}\n")
 
 
@@ -2416,30 +2876,28 @@ def _pump_server_output(proc):
             if line == last:
                 repeats += 1
                 if repeats % 50 == 0:
-                    _emit_log_line(f"[{_ts()}]   ... " + _t(
-                        "上一行已重复 {count} 次", "previous line repeated {count} times",
-                        count=repeats) + "\n")
+                    _emit_log_line(f"[{_ts()}]   ... " + "previous line repeated {count} times".format(
+                            count=repeats) + "\n")
                 continue
             if repeats:
-                _emit_log_line(f"[{_ts()}]   ... " + _t(
-                    "（上一行共重复 {count} 次）", "(previous line repeated {count} times total)",
-                    count=repeats) + "\n")
+                _emit_log_line(f"[{_ts()}]   ... " + "(previous line repeated {count} times total)".format(
+                        count=repeats) + "\n")
             last, repeats = line, 0
             _emit_log_line(f"[{_ts()}] {line}")
     except Exception:
         pass
     finally:
         if repeats:
-            _emit_log_line(f"[{_ts()}]   ... " + _t(
-                "（上一行共重复 {count} 次）", "(previous line repeated {count} times total)",
-                count=repeats) + "\n")
+            _emit_log_line(f"[{_ts()}]   ... " + "(previous line repeated {count} times total)".format(
+                    count=repeats) + "\n")
 
 
 def _start_server(entry):
     global _server_proc, _loaded_id
+    _check_server_open()
     if not os.path.isfile(SERVER_EXE):
-        raise gr.Error(_t("找不到 server：{path}（可用 AUDIOCPP_BACKEND=gpu|cpu|metal 指定）",
-                          "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|cpu|metal.",
+        raise gr.Error(_t("找不到 server：{path}（可用 AUDIOCPP_BACKEND=gpu|vulkan|cpu|metal 指定）",
+                          "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|vulkan|cpu|metal.",
                           path=SERVER_EXE))
     cfg = _write_temp_config(entry)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -2449,39 +2907,67 @@ def _start_server(entry):
     cmd = [SERVER_EXE, "--config", cfg, "--no-ui", "--host", HOST, "--port", str(PORT)]
     if os.environ.get("AUDIOCPP_SERVER_DEBUG") == "1":
         cmd.append("--log")
-    _server_proc = subprocess.Popen(
-        cmd,
-        cwd=BUNDLE_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
-    )
-    _loaded_id = entry["id"]
-    extra = (_t("，threads={threads}", ", threads={threads}", threads=THREADS)
-             if SERVER_BACKEND == "cpu" else "")
-    _ui_log(_t("启动 audiocpp_server（backend={backend}{extra}），加载模型 {label} …",
-               "starting audiocpp_server (backend={backend}{extra}), loading model {label} …",
-               backend=SERVER_BACKEND, extra=extra, label=entry['label']))
-    threading.Thread(target=_pump_server_output, args=(_server_proc,),
+    with _proc_lifecycle_lock:
+        _check_server_open()
+        proc = subprocess.Popen(
+            cmd,
+            cwd=BUNDLE_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            creationflags=flags, text=True, encoding="utf-8", errors="replace", bufsize=1,
+        )
+        _server_proc = proc
+        _loaded_id = entry["id"]
+    backend = entry.get("backend", SERVER_BACKEND)
+    extra = f", threads={_model_threads(backend)}" if backend == "cpu" else ""
+    _ui_log("starting audiocpp_server (backend={backend}{extra}), loading model {label} …".format(
+            backend=backend, extra=extra, label=entry['label']))
+    threading.Thread(target=_pump_server_output, args=(proc,),
                      daemon=True).start()
 
 
 def _wait_health(timeout):
     start = time.time()
     while time.time() - start < timeout:
+        if _server_closing.is_set():
+            return False
         if _server_proc is not None and _server_proc.poll() is not None:
             return False  # process exited before becoming healthy
         if server_alive():
             return True
-        time.sleep(0.5)
+        _server_closing.wait(0.5)
     return False
 
 
-def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=None):
+_workbench_runtime_guard = None
+_workbench_runtime_ready = None
+
+
+def _runtime_precision_options(entry, session_options, load_options):
+    session = dict(session_options or {})
+    loading = dict(load_options or {})
+    if entry.get("family") == "voxcpm1":
+        for key in ("voxcpm1.weight_type", "voxcpm1.audiovae_weight_type"):
+            if key not in loading:
+                continue
+            value = loading.pop(key)
+            if key in session and session[key] != value:
+                raise gr.Error(_t(
+                    "VoxCPM1 的旧 load 精度参数 {key} 与 session 参数冲突；请只保留 session 参数。",
+                    "The legacy VoxCPM1 load precision {key} conflicts with its session option; keep only the session option.", key=key))
+            session[key] = value
+    return session or None, loading or None
+
+
+def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=None,
+                        load_options=None, reuse_runtime_options=False):
     """(Re)start the server so `model_id` is loaded. Returns a status string.
     session_options：额外写进本次 server config 的 session_options（string→string，
     如 sortformer 的 session_len_sec）；与上次加载不一致时会重启重载。
     mode：覆盖 catalog 条目的运行模式（"streaming"/"offline"），流式转写/生成用；
     与上次加载不一致时同样重启重载。"""
-    global _loaded_session_options, _loaded_mode
+    global _loaded_session_options, _loaded_mode, _loaded_load_options
+    _check_server_open()
+    if _workbench_runtime_guard is not None:
+        _workbench_runtime_guard(model_id)
     if not model_id:
         raise gr.Error(_t("请先选择一个模型", "Select a model first."))
     entry = catalog_by_id(model_id)
@@ -2498,26 +2984,44 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
                 path=entry["abs_path"], missing=shown))
         raise gr.Error(_t("模型未安装：{path}", "Model is not installed: {path}",
                           path=entry["abs_path"]))
-    if expect_tasks and entry.get("task") not in expect_tasks:
+    if expect_tasks and entry.get("ui_task", entry.get("task")) not in expect_tasks:
         raise gr.Error(_t(
             "模型 {model} 的 task 是 {actual}，此处需要 {expected}",
             "Model {model} has task {actual}; expected {expected}.",
             model=model_id, actual=entry.get("task"), expected="/".join(expect_tasks)))
+    session_options, load_options = _runtime_precision_options(entry, session_options, load_options)
     want_mode = mode or entry.get("mode", "offline")
     mode_note = (_t("（流式模式）", " (streaming)")
                  if want_mode == "streaming" else "")
 
     with _proc_lock:
+        _check_server_open()
         managed_alive = _server_proc is not None and _server_proc.poll() is None
+        # Realtime selects a model/mode, not load/session tuning. Retain the
+        # resident model's settings instead of resetting them on every call.
+        if reuse_runtime_options and managed_alive and _loaded_id == model_id:
+            session_options = _loaded_session_options
+            load_options = _loaded_load_options
+        loaded_mode = _loaded_mode or entry.get("mode", "offline")
+        # A TTS model loaded with a streaming session can still serve a normal
+        # /v1/audio/speech request and return a final WAV. Reuse it for the main
+        # WebUI's offline button so an active realtime model is not needlessly
+        # torn down and reloaded in offline mode.
+        mode_compatible = (
+            want_mode == loaded_mode
+            or (entry.get("task") in TTS_TASKS
+                and want_mode == "offline" and loaded_mode == "streaming")
+        )
         if (managed_alive and _loaded_id == model_id and server_alive()
                 and (session_options or {}) == (_loaded_session_options or {})
-                and want_mode == (_loaded_mode or entry.get("mode", "offline"))):
+                and (load_options or {}) == (_loaded_load_options or {})
+                and mode_compatible):
             return _t("✅ 已加载：{label}{mode}", "✅ Loaded: {label}{mode}",
                       label=entry["label"], mode=mode_note)
 
         if not managed_alive and server_alive():
             # A server we didn't launch is holding the port.
-            if session_options:
+            if session_options or load_options:
                 raise gr.Error(_t(
                     "{host}:{port} 上的外部 server 无法调整 session 配置，请先关闭。",
                     "The external server at {host}:{port} cannot change session settings. Stop it first.",
@@ -2536,28 +3040,30 @@ def ensure_model_loaded(model_id, expect_tasks=None, session_options=None, mode=
                 host=HOST, port=PORT))
 
         _stop_server()
-        if session_options or want_mode != entry.get("mode", "offline"):
+        if session_options or load_options or want_mode != entry.get("mode", "offline"):
             entry = dict(entry)
             entry["mode"] = want_mode
             if session_options:
                 entry["session_options"] = {
                     **(entry.get("session_options") or {}), **session_options}
+            if load_options:
+                entry["load_options"] = {**(entry.get("load_options") or {}), **load_options}
         t0 = time.time()
         _start_server(entry)
         _loaded_session_options = dict(session_options) if session_options else None
+        _loaded_load_options = dict(load_options) if load_options else None
         _loaded_mode = want_mode
         if not _wait_health(LOAD_TIMEOUT):
             tail = _log_tail()
             _stop_server()
-            _ui_log(_t("模型 {label} 加载失败/超时（{timeout}s）",
-                       "model {label} load failed/timed out ({timeout}s)",
-                       label=entry['label'], timeout=LOAD_TIMEOUT))
+            _ui_log("model {label} load failed/timed out ({timeout}s)".format(
+                    label=entry['label'], timeout=LOAD_TIMEOUT))
             raise gr.Error(_t("加载 {label} 失败/超时（{timeout}s）。\n日志尾部：\n{tail}",
                               "Loading {label} failed or timed out ({timeout}s).\nLog tail:\n{tail}",
                               label=entry["label"], timeout=LOAD_TIMEOUT, tail=tail))
-        _ui_log(_t("模型 {label} 加载完成{mode_note}，用时 {seconds:.1f}s",
-                   "model {label} loaded{mode_note}, elapsed {seconds:.1f}s",
-                   label=entry['label'], mode_note=mode_note, seconds=time.time() - t0))
+        _ui_log("model {label} loaded{mode_note}, elapsed {seconds:.1f}s".format(
+                label=entry['label'], mode_note=" (streaming)" if want_mode == "streaming" else "",
+                seconds=time.time() - t0))
         return _t("✅ 已加载：{label}{mode}", "✅ Loaded: {label}{mode}",
                   label=entry["label"], mode=mode_note)
 
@@ -2571,9 +3077,8 @@ def unload_model():
         if managed_alive:
             label = _loaded_id or "(unknown)"
             _stop_server()
-            _ui_log(_t("已卸载模型 {label} 并停止 server，显存已释放",
-                       "unloaded model {label} and stopped server, VRAM released",
-                       label=label))
+            _ui_log("unloaded model {label} and stopped server, VRAM released".format(
+                    label=label))
             return (_t("🧹 已卸载模型并释放显存，下次运行时会自动重新加载。",
                        "🧹 Model unloaded and VRAM released. It will reload on the next run."),
                     server_status())
@@ -2712,7 +3217,7 @@ def _download_progress_note(entry):
     done = _staged_bytes(entry)
     if done is None:
         return _t("尚未写入数据（正在连接/解析）", "Waiting for data…")
-    total = package_download_bytes(entry.get("download_id"))
+    total = _entry_download_bytes(entry)
     if not total:
         return _t("已下载 {size}", "Downloaded {size}", size=_fmt_bytes(done))
     return _t("已下载 {done} / {total}（{pct}%）", "Downloaded {done} of {total} ({pct}%)",
@@ -2737,7 +3242,7 @@ def _live_download_prefix(entry):
             "🚨 **{device} alarm**: needs ≈**{need:g} GB** of the {local:g} GB here — **{share:.0%}**.",
             device=_t("显存", "VRAM") if device == "vram" else _t("内存", "RAM"),
             need=need_gb, local=available_gb, share=share))
-    total = package_download_bytes(entry.get("download_id"))
+    total = _entry_download_bytes(entry)
     usage = _disk_usage(MODELS_ROOT)
     if total is not None:
         remaining = max(0, total - (_staged_bytes(entry) or 0))
@@ -2782,6 +3287,13 @@ DISK_FREE_ALARM_BYTES = 20 * 1000 ** 3
 # Likewise for the device the model runs on: needing more than this share of VRAM (or of
 # system RAM on the CPU backend) means it will run, if at all, with nothing to spare.
 MEMORY_USAGE_ALARM = 0.80
+
+
+def _entry_download_bytes(entry):
+    sizes = [package_download_bytes(package_id) for package_id in
+             [entry.get("download_id"), *entry.get("additional_download_ids", [])]]
+    # A conservative estimate: shared sidecars may appear in multiple components.
+    return sum(sizes) if all(size is not None for size in sizes) else None
 
 
 def package_download_bytes(download_id):
@@ -3000,7 +3512,7 @@ def memory_alarm(entry):
     need = entry.get("min_vram_gb")
     if not need:
         return None
-    device = "ram" if BACKEND == "cpu" else "vram"
+    device = "ram" if entry.get("backend", BACKEND) == "cpu" else "vram"
     available = LOCAL_RAM_GB if device == "ram" else LOCAL_VRAM_GB
     if not available:
         return None
@@ -3036,7 +3548,7 @@ def requirements_info_lines(entry):
     question worth answering before a multi-GB download, whichever backend happens to
     be built, so the estimate is stated here and the CPU case is labelled."""
     lines = []
-    need = package_download_bytes(entry.get("download_id"))
+    need = _entry_download_bytes(entry)
     usage = _disk_usage(MODELS_ROOT)
     if need is not None:
         fill = _disk_fill_after(need, usage)
@@ -3075,7 +3587,7 @@ def download_requirements(entry):
     is non-empty only when the models volume provably cannot hold the download, in which
     case starting it would just fill the disk and fail late."""
     lines, blocker = requirements_info_lines(entry), ""
-    need = package_download_bytes(entry.get("download_id"))
+    need = _entry_download_bytes(entry)
     usage = _disk_usage(MODELS_ROOT)
     verdict = _disk_verdict(need, usage)
     if verdict == "short":
@@ -3112,6 +3624,10 @@ def download_model(model_id, hf_token="", proxy=""):
     if entry is None:
         return _t("❌ catalog 里没有模型 id：{model}",
                   "❌ Model id not found: {model}", model=model_id)
+    if entry.get("manual_install"):
+        return _t("⚠️ 该模型没有在线安装包，请手动准备权重：{path}",
+                  "⚠️ No online package is available; prepare local weights at {path}.",
+                  path=entry["abs_path"])
     if entry.get("download_installed", entry["installed"]):
         return _t("✅ {label} 的下载包已安装，无需重新下载",
                   "✅ {label}'s download package is already installed.",
@@ -3123,6 +3639,12 @@ def download_model(model_id, hf_token="", proxy=""):
     if dl_id not in SPEC_PACKAGE_BY_ID:
         return _t("❌ {label} 没有 model_specs GGUF 下载包。",
                   "❌ {label} has no model_specs GGUF download package.", label=entry["label"])
+    component_args = []
+    for package_id in entry.get("additional_download_ids", []):
+        if not _webui_can_install_package(SPEC_PACKAGE_BY_ID.get(package_id, {})):
+            return _t("❌ 必需组件没有可用下载包：{package}",
+                      "❌ Required component is not downloadable: {package}", package=package_id)
+        component_args.extend(["--with-package", package_id])
     if SPEC_MODEL_MANAGER is None:
         return _t("❌ 找不到 webui/model_manager_webui.py",
                   "❌ webui/model_manager_webui.py was not found.")
@@ -3158,8 +3680,8 @@ def download_model(model_id, hf_token="", proxy=""):
     # refused outright rather than filling the volume and failing near the end.
     requirements, blocker = download_requirements(entry)
     if blocker:
-        _ui_log(_t("下载被拒绝（磁盘空间不足）：{label}",
-                   "download refused (not enough disk space): {label}", label=entry['label']))
+        _ui_log("download refused (not enough disk space): {label}".format(
+                label=entry['label']))
         return requirements + blocker
 
     with _dl_lock:
@@ -3175,7 +3697,7 @@ def download_model(model_id, hf_token="", proxy=""):
         try:
             proc = subprocess.Popen(
                 [sys.executable, "-u", SPEC_MODEL_MANAGER, "install", dl_id,
-                 "--models-root", MODELS_ROOT, "--overwrite"],
+                 "--models-root", MODELS_ROOT, "--overwrite", *component_args],
                 cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
         finally:
             logf.close()
@@ -3185,9 +3707,8 @@ def download_model(model_id, hf_token="", proxy=""):
             "model_id": model_id,
             "download_id": dl_id,
         }
-    _ui_log(_t("开始后台下载 {label}（{dl_id}），日志：{log}",
-               "started background download {label} ({dl_id}), log: {log}",
-               label=entry['label'], dl_id=dl_id, log=log))
+    _ui_log("started background download {label} ({dl_id}), log: {log}".format(
+            label=entry['label'], dl_id=dl_id, log=log))
     return warn + proxy_note + requirements + _t(
         "⏳ 已开始下载 **{label}**（{download_id}）。完成后列表会自动刷新。\n日志：{log}",
         "⏳ Download started: **{label}** ({download_id}). The list refreshes when it finishes.\n"
@@ -3231,9 +3752,8 @@ def download_status(model_id):
             time=_ts(), tail=tail)
     if not rec.get("reported"):
         rec["reported"] = True
-        _ui_log(_t("{label} 下载进程结束 (exit {code})",
-                   "{label} download process ended (exit {code})",
-                   label=entry['label'], code=code))
+        _ui_log("{label} download process ended (exit {code})".format(
+                label=entry['label'], code=code))
     if code == 0:
         # The VRAM estimate outlives the download: it is what decides whether the model
         # can actually be run, so it must not disappear the moment the bytes land.
@@ -3453,7 +3973,8 @@ def inspect_gguf(model_id):
         return _t("❌ GGUF 检查无法启动：{error}", "❌ Could not start GGUF inspection: {error}", error=exc)
     if result.returncode != 0:
         return _t("❌ 检查失败（exit {code}）。", "❌ Inspection failed (exit {code}).", code=result.returncode)
-    _ui_log(_t("检查 GGUF：{output}", "checking GGUF: {output}", output=output))
+    _ui_log("checking GGUF: {output}".format(
+            output=output))
     return _gguf_inspection_summary(output, result.stdout)
 
 
@@ -3489,9 +4010,8 @@ def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
     cmd.extend(["--root", root, "--output", output,
                 "--type", weight_type, "--family", entry["family"]])
     progress(0, desc=_t("正在转换 GGUF…", "Converting GGUF…"))
-    _ui_log(_t("开始转换 GGUF：{label}（{type}）",
-               "starting GGUF conversion: {label} ({type})",
-               label=entry["label"], type=weight_type))
+    _ui_log("starting GGUF conversion: {label} ({type})".format(
+            label=entry["label"], type=weight_type))
     try:
         result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=7200)
@@ -3503,9 +4023,8 @@ def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
                   "❌ Could not start GGUF conversion: {error}", error=exc)
 
     if result.returncode != 0 or not os.path.isfile(output):
-        _ui_log(_t("GGUF 转换失败：{label}（exit {code}）",
-                   "GGUF conversion failed: {label} (exit {code})",
-                   label=entry["label"], code=result.returncode))
+        _ui_log("GGUF conversion failed: {label} (exit {code})".format(
+                label=entry["label"], code=result.returncode))
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         details = []
@@ -3526,9 +4045,8 @@ def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
             _stop_server()
             stopped = True
     progress(1, desc=_t("GGUF 转换完成", "GGUF conversion complete"))
-    _ui_log(_t("GGUF 转换完成：{label} → {output}",
-               "GGUF conversion complete: {label} → {output}",
-               label=entry["label"], output=output))
+    _ui_log("GGUF conversion complete: {label} → {output}".format(
+            label=entry["label"], output=output))
     note = (_t("请重新点击『加载模型』。", "Click Load again.") if stopped else
             _t("点击『加载模型』即可使用。", "Click Load to use it."))
     return _t("✅ 转换成功。{note}", "✅ Conversion complete. {note}", note=note)
@@ -3556,7 +4074,8 @@ def delete_gguf(model_id):
     except OSError as exc:
         return (_t("❌ 删除 GGUF 失败：{error}",
                    "❌ Could not delete GGUF: {error}", error=exc), server_status())
-    _ui_log(_t("删除 GGUF：{output}", "deleted GGUF: {output}", output=output))
+    _ui_log("deleted GGUF: {output}".format(
+            output=output))
     if entry.get("gguf_only"):
         return (_t(
             "✅ 已删除：`{path}`\n\n⚠️ 原始模型文件不完整或已清理，模型现在无法加载。",
@@ -3578,6 +4097,103 @@ def _merged_options(prof, adv_values, adv_options):
     return options
 
 
+def _speech_max_tokens(prof, value, options):
+    """A blank workbench limit leaves the model default intact; JSON wins."""
+    if not prof.get("send_max_tokens", True):
+        return None
+    value = options.pop("max_tokens", value)
+    return None if value in (None, "") else int(value)
+
+
+def _tts_reference_text_required(entry, prof, has_reference, options):
+    required = (prof.get("require_reference_text") or
+                (prof.get("require_reference_text_with_voice") and has_reference))
+    # Qwen Base's x-vector mode still needs audio, but does not consume its transcript.
+    x_vector = options.get("x_vector_only_mode", False)
+    if (entry and entry.get("family") == "qwen3_tts" and
+            (x_vector is True or str(x_vector) in {"true", "1", "yes", "on"})):
+        return False
+    return bool(required)
+
+
+def _validate_tts_options(entry, options):
+    if not entry or entry.get("family") != "dots_tts":
+        return
+    if options.get("template_name", "tts") == "edit":
+        return
+    if any(str(options.get(key) or "").strip() for key in ("instruction", "instruct")):
+        raise gr.Error(_t(
+            "DotTTS 的 instruction/instruct 仅适用于 Edit 模板，普通语音生成不支持此参数。",
+            "DotTTS instruction/instruct applies only to the Edit template, not ordinary speech synthesis."))
+
+
+def _tts_preset_options(entry, language, options):
+    """Choose a compatible default voice without overriding an explicit voice."""
+    if not entry or entry.get("family") != "kokoro_tts":
+        return
+    languages = dict(a='en-us', b='en-gb', e='es', f='fr-fr', h='hi', i='it', j='ja', p='pt-br', z='zh')
+    lang = str(options.get("language", language) or "").strip().lower()
+    aliases = {'en': 'en-us', 'fr': 'fr-fr', 'pt': 'pt-br', 'zh-cn': 'zh', 'ja-jp': 'ja'}
+    lang = aliases.get(lang, languages.get(lang, lang))
+    if not lang:
+        return  # the backend infers the language from the selected voice
+    voices = MODEL_SPECS['kokoro_tts']['ui']['builtin_voices']
+    voice = options.get('voice')
+    if not voice:
+        voice = next((v for v in voices if languages[v[0]] == lang), None)
+        if voice:
+            options['voice'] = voice
+    elif lang in languages.values() and languages.get(str(voice)[0]) != lang:
+        raise gr.Error(_t("所选 Kokoro 音色与语言不匹配，请选择该语言的音色，或将语言设为跟随音色。",
+                          "The Kokoro voice does not match the language; choose a matching voice or follow the voice language."))
+
+
+def _tts_has_speaker_samples(entry, options):
+    if not entry or entry.get('family') not in {'moss_ttsd', 'vibevoice'}:
+        return False
+    value = options.get(entry['family'] + '.voice_samples', options.get('voice_samples', ''))
+    return any(part.strip() for part in str(value or '').split(','))
+
+
+def _validate_vc_options(entry, options):
+    if not entry or entry.get("family") != "seed_vc":
+        return
+    task = entry.get("task")
+    allowed = ({"v1_svc"} if task == "svc" else
+               {"v2_vc", "v1_whisper_bigvgan_vc", "v1_xlsr_hift_vc"})
+    route = options.get("route") or ("v1_svc" if task == "svc" else "v2_vc")
+    if route not in allowed:
+        raise gr.Error(_t(
+            "Seed-VC 当前 {task} 入口不支持 route={route}；请选择 {allowed}，或切换到对应功能入口。",
+            "The Seed-VC {task} entry does not support route={route}; choose {allowed} or switch to the matching task entry.",
+            task=task, route=route, allowed=" / ".join(sorted(allowed))))
+
+
+def _ensure_with_options(model, tasks, options, runtime=None, **kwargs):
+    """Keep load/session settings out of request options and reload when changed."""
+    for scope in ("session_options", "load_options"):
+        values = options.pop(scope, {})
+        if not isinstance(values, dict):
+            raise gr.Error(f"{scope} must be a JSON object")
+        values = dict(values)
+        prefix = scope + "."
+        for key in list(options):
+            if key.startswith(prefix):
+                values[key[len(prefix):]] = options.pop(key)
+        if values:
+            # Server config options are string maps (unlike request JSON).
+            values = {k: (json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v)
+                      for k, v in values.items()}
+            kwargs[scope] = {**(kwargs.get(scope) or {}), **values}
+    if runtime is not None:
+        message = runtime.load(model, **kwargs)
+    else:
+        message = ensure_model_loaded(model, tasks, **kwargs)
+    if _workbench_runtime_ready is not None:
+        _workbench_runtime_ready(model)
+    return message
+
+
 def _run_task(entry, model, req, timeout, log_label):
     """POST /v1/tasks/run（通用任务路由）并返回响应 JSON；
     连接失败 / 非 200 统一转成带提示的 gr.Error。"""
@@ -3585,14 +4201,12 @@ def _run_task(entry, model, req, timeout, log_label):
         r = requests.post(f"{SERVER}/v1/tasks/run",
                           json={"model": model, "request": req}, timeout=timeout)
     except requests.RequestException as e:
-        _ui_log(_t("{log_label}失败：无法连接 server",
-                   "{log_label} failed: cannot connect to server",
-                   log_label=log_label))
+        _ui_log("{log_label} failed: cannot connect to server".format(
+                log_label=log_label))
         raise connection_error(e)
     if r.status_code != 200:
-        _ui_log(_t("{log_label}失败：server {code}",
-                   "{log_label} failed: server {code}",
-                   log_label=log_label, code=r.status_code))
+        _ui_log("{log_label} failed: server {code}".format(
+                log_label=log_label, code=r.status_code))
         raise server_error(entry, r.status_code, r.text)
     return r.json()
 
@@ -3602,11 +4216,12 @@ def _resolve_seed(seed):
     （多数族 u32，seed_vc/stable_audio u64），负数会直接报错，所以 -1 只能在
     客户端消化；随机范围取 u32 全集，对所有族安全。返回 (seed, 消息后缀)——
     后缀把实际用的 seed 回显在结果里，方便复现。"""
+    if seed in (None, ""):
+        return None, ""
     s = int(seed)
-    if s != -1:
-        return s, ""
-    s = random.randrange(0, 2 ** 32)
-    return s, f"🎲 seed={s}"
+    if s == -1:
+        s = random.randrange(0, 2 ** 32)
+    return s, _t("随机种子：{seed}", "Seed: {seed}", seed=s)
 
 
 def do_tts(model, text, language, uploaded_voice, builtin_voice,
@@ -3633,30 +4248,44 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
 
         # 必须参考音色的家族（如 IndexTTS2）在加载模型前就拦下来，
         # 免得等几十秒加载后才收到 server 报错。
-        if (prof.get("require_voice") and not uploaded_voice
+        options = _merged_options(prof, adv_values, adv_options)
+        _tts_preset_options(entry, language, options)
+        if (prof.get("require_voice") and not _tts_has_speaker_samples(entry, options) and not uploaded_voice
                 and (not builtin_voice or builtin_voice == "(none)")):
             raise gr.Error(_t(
                 "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
                 "This model requires a voice reference: upload/record one or pick a built-in voice."))
+        has_reference = bool(uploaded_voice or (builtin_voice and builtin_voice != "(none)") or _tts_has_speaker_samples(entry, options))
+        _validate_tts_options(entry, options)
+        if _tts_reference_text_required(entry, prof, has_reference, options) and not (reference_text or "").strip():
+            raise gr.Error(_t(
+                "该模型必须填写与参考音频一致的参考文本。",
+                "This model requires the transcript matching the reference audio."))
 
         # 加载/模式切换（可能几十秒）单独计时：状态栏的"用时"只含合成本身，
         # 不报加载会让它看起来远小于实际等待时间。
+        if entry and entry.get("family") == "auk" and not has_reference and not options.get("duration_sec"):
+            raise gr.Error(_t("AuK 无参考音频时，请在高级参数填写 duration_sec。",
+                              "AuK needs duration_sec in Advanced options when no reference is supplied."))
         t_load = time.time()
-        ensure_model_loaded(model, TTS_TASKS)
+        progress(0, desc=_t("正在准备模型…", "Preparing model…"))
+        _ensure_with_options(model, TTS_TASKS, options)
+        progress(0, desc=_t("声音合成中…", "Synthesizing audio…"))
         load_s = time.time() - t_load
         load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                         seconds=load_s) if load_s >= 1.0 else "")
 
         # Model-specific knobs travel in a nested "options" object; the server merges
         # every key into the request options and each model reads what it understands.
-        options = _merged_options(prof, adv_values, adv_options)
-
         voice_path = None
         if uploaded_voice:                      # gradio gives an absolute temp path
             voice_path = uploaded_voice
         elif builtin_voice and builtin_voice != "(none)":
             voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
-        has_voice_samples = "voice_samples" in options or "vibevoice.voice_samples" in options
+        if voice_path and prof.get("voice_input_role") == "source_audio":
+            options["source_audio"] = _ensure_wav(voice_path)
+            voice_path = None
+        has_voice_samples = any(k in options for k in ("voice_samples", "vibevoice.voice_samples", "moss_ttsd.voice_samples"))
         if is_vibevoice and voice_path and not has_voice_samples:
             options["voice_samples"] = _ensure_wav(voice_path)
             voice_path = None
@@ -3675,16 +4304,20 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         if options.get("emotion_text") and "use_emotion_text" not in options:
             options["use_emotion_text"] = True
 
-        seed, seed_note = _resolve_seed(seed)
+        seed, seed_note = _resolve_seed(options.pop("seed", seed))
         payload = {
             "model": model,
             "language": resolve_language(prof, language),
             "seed": seed,
         }
-        if prof.get("send_max_tokens", True):
-            payload["max_tokens"] = int(max_tokens)
+        if seed is None or not prof.get("send_seed", True):
+            payload.pop("seed")
+            seed_note = ""
+        max_tokens = _speech_max_tokens(prof, max_tokens, options)
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         auto_vibevoice_max_tokens = (
-            is_vibevoice and int(max_tokens) == 1200
+            is_vibevoice and max_tokens in (None, 1200)
         )
         if voice_path and prof.get("accepts_voice_reference", True):
             payload["voice_ref"] = _ensure_wav(voice_path)
@@ -3700,38 +4333,38 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         chunks = _split_tts_chunks(text, prof.get("chunk_chars", 1000))
         if is_vibevoice:
             chunks = _merge_short_vibevoice_tail(chunks)
-        _ui_log(_t("TTS 开始：model={model}，{count} 段 / 共 {chars} 字",
-                   "TTS started: model={model}, {count} chunks / {chars} chars total",
-                   model=model, count=len(chunks), chars=sum(len(c) for c in chunks)))
+        _ui_log("TTS started: model={model}, {count} chunks / {chars} chars total".format(
+                model=model, count=len(chunks), chars=sum(len(c) for c in chunks)))
         t_start = time.time()
         blobs = []
         for i, chunk in enumerate(chunks):
-            if len(chunks) > 1:
-                progress((i, len(chunks)), desc=_t("合成 {index}/{total} 段…",
-                                                   "Synthesizing {index}/{total}…",
-                                                   index=i + 1, total=len(chunks)))
+            progress((i, len(chunks)), desc=(_t(
+                "声音合成中… 第 {index}/{total} 段 · 已完成 {done} 段",
+                "Synthesizing audio… part {index}/{total} · {done} completed",
+                index=i + 1, total=len(chunks), done=i) if len(chunks) > 1 else
+                _t("声音合成中…", "Synthesizing audio…")))
             payload["input"] = chunk
             if auto_vibevoice_max_tokens:
-                payload["max_tokens"] = _vibevoice_text_max_tokens(chunk, int(max_tokens))
+                payload["max_tokens"] = _vibevoice_text_max_tokens(chunk, max_tokens or 1200)
             t_chunk = time.time()
             try:
                 r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
             except requests.RequestException as e:
-                _ui_log(_t("TTS 失败：段 {index}/{count} 无法连接 server",
-                           "TTS failed: chunk {index}/{count} cannot connect to server",
-                           index=i + 1, count=len(chunks)))
+                _ui_log("TTS failed: chunk {index}/{count} cannot connect to server".format(
+                        index=i + 1, count=len(chunks)))
                 raise connection_error(e)
             if r.status_code != 200:
-                _ui_log(_t("TTS 失败：段 {index}/{count}，server {code}",
-                           "TTS failed: chunk {index}/{count}, server {code}",
-                           index=i + 1, count=len(chunks), code=r.status_code))
+                _ui_log("TTS failed: chunk {index}/{count}, server {code}".format(
+                        index=i + 1, count=len(chunks), code=r.status_code))
                 raise server_error(entry, r.status_code, r.text)
             blobs.append(r.content)
-            _ui_log(_t("TTS 段 {index}/{count} 完成（{chars} 字，{seconds:.1f}s）",
-                       "TTS chunk {index}/{count} done ({chars} chars, {seconds:.1f}s)",
-                       index=i + 1, count=len(chunks), chars=len(chunk),
-                       seconds=time.time() - t_chunk))
+            _ui_log("TTS chunk {index}/{count} done ({chars} chars, {seconds:.1f}s)".format(
+                    index=i + 1, count=len(chunks), chars=len(chunk), seconds=time.time() - t_chunk))
 
+        progress((len(chunks), len(chunks)), desc=(_t(
+            "正在合并音频… 已完成 {total}/{total} 段",
+            "Merging audio… {total}/{total} parts completed", total=len(chunks)) if len(chunks) > 1 else
+            _t("正在保存音频…", "Saving audio…")))
         out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_{int(time.time()*1000)}.wav")
         if len(blobs) == 1:
             with open(out, "wb") as f:
@@ -3739,9 +4372,8 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
         else:
             _concat_wavs(blobs, out)
         elapsed = time.time() - t_start
-        _ui_log(_t("TTS 完成：{out}，总用时 {seconds:.1f}s",
-                   "TTS done: {out}, total {seconds:.1f}s",
-                   out=out, seconds=elapsed))
+        _ui_log("TTS done: {out}, total {seconds:.1f}s".format(
+                out=out, seconds=elapsed))
         parts_note = (_t("（{count} 段）", " ({count} parts)", count=len(blobs))
                       if len(blobs) > 1 else "")
         return out, _t("✅ 生成完成{parts}，用时 {seconds:.1f}s{load}。{seed}",
@@ -3773,34 +4405,46 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
 
     # Match the offline path and reject required-reference families before a
     # potentially slow server reload.
-    if (prof.get("require_voice") and not uploaded_voice
+    options = _merged_options(prof, adv_values, adv_options)
+    _tts_preset_options(entry, language, options)
+    if (prof.get("require_voice") and not _tts_has_speaker_samples(entry, options) and not uploaded_voice
             and (not builtin_voice or builtin_voice == "(none)")):
         raise gr.Error(_t(
             "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
             "This model requires a voice reference: upload/record one or pick a built-in voice."))
+    has_reference = bool(uploaded_voice or (builtin_voice and builtin_voice != "(none)") or _tts_has_speaker_samples(entry, options))
+    _validate_tts_options(entry, options)
+    if _tts_reference_text_required(entry, prof, has_reference, options) and not (reference_text or "").strip():
+        raise gr.Error(_t(
+            "该模型必须填写与参考音频一致的参考文本。",
+            "This model requires the transcript matching the reference audio."))
 
     t_load = time.time()
-    ensure_model_loaded(model, TTS_TASKS, mode="streaming")
+    yield None, None, _t("⏳ 正在准备模型…", "⏳ Preparing model…")
+    _ensure_with_options(model, TTS_TASKS, options, mode="streaming")
+    yield None, None, _t("⏳ 声音合成中…", "⏳ Synthesizing audio…")
     load_s = time.time() - t_load
     load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                     seconds=load_s) if load_s >= 1.0 else "")
-    options = _merged_options(prof, adv_values, adv_options)
     family = entry.get("family") if entry else ""
-    if family == "voxcpm2":
+    if family in {"voxcpm1", "voxcpm2"}:
         # VoxCPM2 流式生成的硬性要求（generator.cpp:1259）：badcase 重试要
         # 重新生成整段，与已经推给播放器的音频冲突，所以流式下强制关闭。
         options["retry_badcase"] = False
-        options.pop("voxcpm2.retry_badcase", None)
+        options.pop(family + ".retry_badcase", None)
 
     voice_path = None
     if uploaded_voice:
         voice_path = uploaded_voice
     elif builtin_voice and builtin_voice != "(none)":
         voice_path = os.path.join(PROMPTS_DIR, builtin_voice)
+    if voice_path and prof.get("voice_input_role") == "source_audio":
+        options["source_audio"] = _ensure_wav(voice_path)
+        voice_path = None
     # Supertonic 等预置音色家族要求 voice 位于请求顶层，而不是 options。
     voice_preset = options.pop("voice", None)
 
-    seed, seed_note = _resolve_seed(seed)
+    seed, seed_note = _resolve_seed(options.pop("seed", seed))
     payload = {
         "model": model,
         "language": resolve_language(prof, language),
@@ -3810,8 +4454,12 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
         "response_format": "pcm",
         "options": options,
     }
-    if prof.get("send_max_tokens", True):
-        payload["max_tokens"] = int(max_tokens)
+    if seed is None or not prof.get("send_seed", True):
+        payload.pop("seed")
+        seed_note = ""
+    max_tokens = _speech_max_tokens(prof, max_tokens, options)
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     if voice_path and prof.get("accepts_voice_reference", True):
         payload["voice_ref"] = _ensure_wav(voice_path)
     elif voice_preset:
@@ -3820,9 +4468,8 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
         payload["reference_text"] = reference_text
 
     chunks = _split_tts_chunks(text, prof.get("chunk_chars", 1000))
-    _ui_log(_t("TTS 开始（流式）：model={model}，{count} 段 / 共 {chars} 字",
-               "TTS started (streaming): model={model}, {count} chunks / {chars} chars total",
-               model=model, count=len(chunks), chars=sum(len(c) for c in chunks)))
+    _ui_log("TTS started (streaming): model={model}, {count} chunks / {chars} chars total".format(
+            model=model, count=len(chunks), chars=sum(len(c) for c in chunks)))
     t_start = time.time()
     all_parts = []          # 全部 PCM（拼最终 wav）
     pending = []            # 未推给播放器的 PCM 增量（凑批再推，免得刷屏）
@@ -3841,21 +4488,24 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     for i, chunk in enumerate(chunks):
         seg_note = (_t("（{index}/{total} 段）", " ({index}/{total})",
                        index=i + 1, total=len(chunks)) if len(chunks) > 1 else "")
+        yield None, None, (_t(
+            "⏳ 声音合成中… 第 {index}/{total} 段 · 已完成 {done} 段",
+            "⏳ Synthesizing audio… part {index}/{total} · {done} completed",
+            index=i + 1, total=len(chunks), done=i) if len(chunks) > 1 else
+            _t("⏳ 声音合成中…", "⏳ Synthesizing audio…"))
         payload["input"] = chunk
         t_chunk = time.time()
         try:
             r = requests.post(f"{SERVER}/v1/audio/speech", json=payload,
                               stream=True, timeout=900)
         except requests.RequestException as e:
-            _ui_log(_t("TTS 失败（流式）：段 {index}/{count} 无法连接 server",
-                       "TTS failed (streaming): chunk {index}/{count} cannot connect to server",
-                       index=i + 1, count=len(chunks)))
+            _ui_log("TTS failed (streaming): chunk {index}/{count} cannot connect to server".format(
+                    index=i + 1, count=len(chunks)))
             raise connection_error(e)
         with r:
             if r.status_code != 200:
-                _ui_log(_t("TTS 失败（流式）：段 {index}/{count}，server {code}",
-                           "TTS failed (streaming): chunk {index}/{count}, server {code}",
-                           index=i + 1, count=len(chunks), code=r.status_code))
+                _ui_log("TTS failed (streaming): chunk {index}/{count}, server {code}".format(
+                        index=i + 1, count=len(chunks), code=r.status_code))
                 raise server_error(entry, r.status_code, r.text)
             for event in _iter_sse_events(r):
                 etype = event.get("type")
@@ -3871,7 +4521,7 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
                         out_arr = _flush()
                         done_s = sum(a.size for a in all_parts) / sr
                         yield ((sr, out_arr), None,
-                               _t("⏳ 流式生成中{segment}…已生成 {seconds:.1f}s",
+                               _t("⏳ 声音合成中{segment}…已生成 {seconds:.1f}s 音频",
                                   "⏳ Streaming{segment}… {seconds:.1f}s generated",
                                   segment=seg_note, seconds=done_s))
                 elif etype == "speech.audio.done":
@@ -3880,16 +4530,15 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
                         if ttft:
                             ttft_note = _t("，首包 {seconds:.1f}s", ", first audio {seconds:.1f}s",
                                            seconds=ttft / 1000)
-        _ui_log(_t("TTS 段 {index}/{count} 完成（流式，{chars} 字，{seconds:.1f}s）",
-                   "TTS chunk {index}/{count} done (streaming, {chars} chars, {seconds:.1f}s)",
-                   index=i + 1, count=len(chunks), chars=len(chunk),
-                   seconds=time.time() - t_chunk))
+        _ui_log("TTS chunk {index}/{count} done (streaming, {chars} chars, {seconds:.1f}s)".format(
+                index=i + 1, count=len(chunks), chars=len(chunk), seconds=time.time() - t_chunk))
 
     tail = _flush()
     if tail is not None:
         yield (sr, tail), None, _t("⏳ 流式生成收尾…", "⏳ Finishing stream…")
     if not all_parts:
         raise gr.Error(_t("流式生成没有产出音频。", "Streaming produced no audio."))
+    yield None, None, _t("⏳ 正在保存音频…", "⏳ Saving audio…")
     out = os.path.join(OUTPUT_DIR, f"audiocpp_tts_stream_{int(time.time() * 1000)}.wav")
     with wave.open(out, "wb") as w:
         w.setnchannels(1)
@@ -3900,9 +4549,8 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
     audio_s = sum(a.size for a in all_parts) / sr
     parts_note = (_t("（{count} 段）", " ({count} parts)", count=len(chunks))
                   if len(chunks) > 1 else "")
-    _ui_log(_t("TTS 完成（流式）：{out}，音频 {audio:.1f}s，总用时 {seconds:.1f}s",
-               "TTS done (streaming): {out}, audio {audio:.1f}s, total {seconds:.1f}s",
-               out=out, audio=audio_s, seconds=elapsed))
+    _ui_log("TTS done (streaming): {out}, audio {audio:.1f}s, total {seconds:.1f}s".format(
+            out=out, audio=audio_s, seconds=elapsed))
     yield (None, out, _t(
         "✅ 流式生成完成{parts}，音频 {audio:.1f}s，用时 {elapsed:.1f}s{ttft}{load}。{seed}",
         "✅ Stream complete{parts}: {audio:.1f}s audio in {elapsed:.1f}s{ttft}{load}. {seed}",
@@ -3974,25 +4622,27 @@ def _iter_sse_events(response):
         yield event
 
 
-def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR"):
+def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR", server_url=None, cancel=None):
     """流式转写一个 WAV（server 需已按 mode=streaming 加载）：产出
     (累计文本, 是否最终, ttft_ms)。整个文件一个请求——增量出字本身就解决了
     离线路径靠分段缓解的"长音频干等"问题。"""
     payload = {"model": model, "audio": wav_path, "stream": True, **extras}
     try:
-        r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload,
+        r = requests.post(f"{server_url or SERVER}/v1/audio/transcriptions", json=payload,
                           stream=True, timeout=900)
     except requests.RequestException as e:
-        _ui_log(_t("{tag} 失败：无法连接 server",
-                   "{tag} failed: cannot connect to server", tag=tag))
+        _ui_log("{tag} failed: cannot connect to server".format(
+                tag=tag))
         raise connection_error(e)
     with r:
         if r.status_code != 200:
-            _ui_log(_t("{tag} 失败：server {code}",
-                       "{tag} failed: server {code}", tag=tag, code=r.status_code))
+            _ui_log("{tag} failed: server {code}".format(
+                    tag=tag, code=r.status_code))
             raise server_error(entry, r.status_code, r.text)
         text = ""
         for event in _iter_sse_events(r):
+            if cancel is not None and cancel.is_set():
+                raise RuntimeError("识别任务已取消。")
             etype = event.get("type")
             if etype == "transcript.text.delta":
                 delta = event.get("delta") or ""
@@ -4014,10 +4664,10 @@ def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR"):
     raise gr.Error(_t("流式转写未收到最终结果。", "Streaming transcription returned no final result."))
 
 
-def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR"):
+def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR", details=None, server_url=None, cancel=None):
     """转写一个 WAV 文件（调用方已加载好 ASR 模型）：超过单次上限（见 qwen3_asr
     profile：8G 卡显存实测取 60s）时在静音处切段逐段转写再拼接；短音频/非 PCM
-    WAV（测不出时长）走单请求。extras 是可选的 language/context 请求字段。
+    WAV（测不出时长）走单请求。extras 是可选的 language/text/options 请求字段。
     返回 (text, dur, 段数)。"""
     dur = _audio_duration_seconds(wav_path)
     dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
@@ -4027,58 +4677,63 @@ def _asr_transcribe_wav(model, entry, prof, wav_path, extras, tag="ASR"):
         chunks = [p for p, _ in
                   _split_wav_chunks(wav_path, max_s, pad_to_max=False)]
         if len(chunks) > 1:
-            _ui_log(_t("{tag} 长音频分段：{dur_note} → {count} 段（每段 ≤{max_s:.0f}s，静音处切分）",
-                       "{tag} long-audio split: {dur_note} → {count} chunks (each ≤{max_s:.0f}s, split at silence)",
-                       tag=tag, dur_note=dur_note, count=len(chunks), max_s=max_s))
+            _ui_log("{tag} long-audio split: {dur_note} → {count} chunks (each ≤{max_s:.0f}s, split at silence)".format(
+                    tag=tag, dur_note=dur_note if dur is not None else "unknown", count=len(chunks), max_s=max_s))
     texts = []
+    offset_seconds = 0.0
     for i, chunk in enumerate(chunks):
+        if cancel is not None and cancel.is_set():
+            raise RuntimeError("识别任务已取消。")
         t_chunk = time.time()
         payload = {"model": model, "audio": chunk, **extras}
         try:
-            r = requests.post(f"{SERVER}/v1/audio/transcriptions", json=payload, timeout=900)
+            route = "/v1/audio/transcriptions/details" if details is not None else "/v1/audio/transcriptions"
+            r = requests.post((server_url or SERVER) + route, json=payload, timeout=900)
         except requests.RequestException as e:
-            _ui_log(_t("{tag} 失败：无法连接 server",
-                       "{tag} failed: cannot connect to server", tag=tag))
+            _ui_log("{tag} failed: cannot connect to server".format(
+                    tag=tag))
             raise connection_error(e)
         if r.status_code != 200:
-            seg_note = (_t("，第 {index}/{total} 段", ", part {index}/{total}",
-                           index=i + 1, total=len(chunks)) if len(chunks) > 1 else "")
-            _ui_log(_t("{tag} 失败：server {code}（音频 {dur_note}{seg_note}）",
-                       "{tag} failed: server {code} (audio {dur_note}{seg_note})",
-                       tag=tag, code=r.status_code, dur_note=dur_note, seg_note=seg_note))
+            seg_note = f", part {i + 1}/{len(chunks)}" if len(chunks) > 1 else ""
+            _ui_log("{tag} failed: server {code} (audio {dur_note}{seg_note})".format(
+                    tag=tag, code=r.status_code, dur_note=dur_note if dur is not None else "unknown", seg_note=seg_note))
             extra = (_t("⏱ 本次音频时长约 {seconds:.1f} 秒", "⏱ audio is about {seconds:.1f}s long",
                         seconds=dur) if dur is not None else None)
             raise server_error(entry, r.status_code, r.text, extra=extra)
         try:
             data = r.json()
             texts.append((data.get("text") or str(data)).strip())
+            if details is not None:
+                details.append({"offset_seconds": offset_seconds,
+                                "result": _redact_task_artifacts(data)})
         except Exception:
             texts.append(r.text)
+        offset_seconds += _audio_duration_seconds(chunk) or 0.0
         if len(chunks) > 1:
-            _ui_log(_t("{tag} 段 {index}/{count} 完成（{seconds:.1f}s）",
-                       "{tag} chunk {index}/{count} done ({seconds:.1f}s)",
-                       tag=tag, index=i + 1, count=len(chunks),
-                       seconds=time.time() - t_chunk))
+            _ui_log("{tag} chunk {index}/{count} done ({seconds:.1f}s)".format(
+                    tag=tag, index=i + 1, count=len(chunks), seconds=time.time() - t_chunk))
     text = texts[0] if len(chunks) == 1 else "\n".join(t for t in texts if t)
     return text, dur, len(chunks)
 
 
-def _prepare_asr_input(audio_path, prof, stream=False):
-    """Normalize an uploaded ASR file for the selected request route.
+def _prepare_asr_input(audio_path, prof, stream=False, options=None):
+    """Honor the model's input contract only on routes which require it.
 
-    Most ASR sessions accept the WAV's native layout. SenseVoice needs mono
-    16 kHz before its offline Silero VAD pass as well as for streaming, while
-    Parakeet only requires it for buffered streaming. Keep both requirements
-    in model profiles so other ASR families retain their existing input path.
+    Qwen's auto/VAD chunker uses 16 kHz Silero VAD. Its none/fixed offline routes
+    retain native-rate input, including the timestamp coordinate contract.
     """
     wav_path = _ensure_wav(audio_path)
-    if (prof.get("input_16k_mono") or
+    effective_options = {**prof.get("default_options", {}), **(options or {})}
+    auto_chunking = (prof.get("auto_input_16k_mono") and
+                     effective_options.get("audio_chunk_mode", "auto") in {"auto", "vad"})
+    if (prof.get("input_16k_mono") or auto_chunking or
             (stream and prof.get("stream_input_16k_mono"))):
         return _to_16k_mono_wav(wav_path)
     return wav_path
 
 
-def do_asr(model, audio_path, language="", context="", dialogue=False, stream=False):
+def do_asr(model, audio_path, language="", context="", dialogue=False, stream=False,
+           adv_values=None, adv_options="", detail_results=None, *, asr_runtime=None, cancel=None):
     """生成器：非流式路径只 yield 一次最终结果（行为与旧版 return 完全一致——
     Gradio 对生成器处理器逐次刷新输出）；流式路径边收 SSE 增量边 yield。"""
     try:
@@ -4086,44 +4741,54 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
             raise gr.Error(_t("请上传或录制音频", "Upload or record audio."))
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
-        audio_path = _prepare_asr_input(audio_path, prof, stream=stream and not dialogue)
+        if detail_results is not None and (stream or dialogue):
+            raise gr.Error(_t("详细结果仅支持普通离线转写，请关闭流式和对话模式。",
+                              "Detailed results require offline transcription without dialogue mode."))
+        options = _merged_options(prof, adv_values, adv_options)
+        runtime_args = {"runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
+        route_args = {"server_url": asr_runtime.server_url, "cancel": cancel} if asr_runtime is not None else {}
+        audio_path = _prepare_asr_input(audio_path, prof, stream=stream and not dialogue,
+                                        options=options)
         # 可选转写参数：留空不发，请求体和原来完全一致（qwen3_asr 从 text_input
         # 读 context/language，其它族忽略；server 端 build_openai_transcription_request
         # 只在字段存在时才设置 text_input）。
         extras = {}
         if (language or "").strip():
-            extras["language"] = language.strip()
+            extras["language"] = resolve_language(prof, language)
         if (context or "").strip():
-            extras["context"] = context.strip()
+            extras["text"] = context.strip()
+            if entry and entry.get("family") in {"audio_flamingo", "samsone"}:
+                options.setdefault("instruct", context.strip())
+        if options:
+            extras["options"] = options
         if dialogue:
             # 对话模式走 Sortformer 切段 + 逐段离线转写，与流式互斥（勾了也忽略）。
-            yield _asr_dialogue(model, audio_path, extras)
+            dialogue_args = {"asr_runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
+            yield _asr_dialogue(model, audio_path, extras, **dialogue_args)
             return
         if stream and prof.get("supports_streaming"):
             yield "", _t("⏳ 转写中…模型切换时可能需要重新加载。",
                           "⏳ Transcribing… model switches may require a reload.")
             t_load = time.time()
-            ensure_model_loaded(model, ASR_TASKS, mode="streaming")
+            _ensure_with_options(model, ASR_TASKS, options, mode="streaming", **runtime_args)
             load_s = time.time() - t_load
             load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                             seconds=load_s) if load_s >= 1.0 else "")
-            extras_note = "".join(f"，{k}={v[:20]}" for k, v in extras.items())
-            _ui_log(_t("ASR 开始（流式）：model={model}{extras_note}",
-                       "ASR started (streaming): model={model}{extras_note}",
-                       model=model, extras_note=extras_note))
+            extras_note = "".join(f", {k}={str(v)[:20]}" for k, v in extras.items())
+            _ui_log("ASR started (streaming): model={model}{extras_note}".format(
+                    model=model, extras_note=extras_note))
             t_start = time.time()
             dur = _audio_duration_seconds(audio_path)
             dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
             last_yield = 0.0
             for text, is_final, ttft in _asr_transcribe_stream(
-                    model, entry, audio_path, extras):
+                    model, entry, audio_path, extras, **route_args):
                 if is_final:
                     elapsed = time.time() - t_start
                     ttft_note = (_t("，首字 {seconds:.1f}s", ", first text {seconds:.1f}s",
                                     seconds=ttft / 1000) if ttft else "")
-                    _ui_log(_t("ASR 完成（流式）：音频 {dur_note}，用时 {seconds:.1f}s",
-                               "ASR done (streaming): audio {dur_note}, elapsed {seconds:.1f}s",
-                               dur_note=dur_note, seconds=elapsed))
+                    _ui_log("ASR done (streaming): audio {dur_note}, elapsed {seconds:.1f}s".format(
+                            dur_note=dur_note if dur is not None else "unknown", seconds=elapsed))
                     yield text, _t(
                         "✅ 流式转写完成（音频 {duration}），用时 {elapsed:.1f}s{ttft}{load}。",
                         "✅ Streaming transcript complete ({duration}) in {elapsed:.1f}s{ttft}{load}.",
@@ -4144,22 +4809,21 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
         yield "", _t("⏳ 转写中…模型切换时可能需要重新加载。",
                       "⏳ Transcribing… model switches may require a reload.")
         t_load = time.time()
-        ensure_model_loaded(model, ASR_TASKS)
+        _ensure_with_options(model, ASR_TASKS, options, **runtime_args)
         load_s = time.time() - t_load
         load_note = (_t("，含模型加载 {seconds:.1f}s", ", model load {seconds:.1f}s",
                         seconds=load_s) if load_s >= 1.0 else "")
-        extras_note = "".join(f"，{k}={v[:20]}" for k, v in extras.items())
-        _ui_log(_t("ASR 开始：model={model}{extras_note}",
-                   "ASR started: model={model}{extras_note}",
-                   model=model, extras_note=extras_note))
+        extras_note = "".join(f", {k}={str(v)[:20]}" for k, v in extras.items())
+        _ui_log("ASR started: model={model}{extras_note}".format(
+                model=model, extras_note=extras_note))
         t_start = time.time()
-        text, dur, n = _asr_transcribe_wav(model, entry, prof, audio_path, extras)
+        detail_args = {"details": detail_results} if detail_results is not None else {}
+        text, dur, n = _asr_transcribe_wav(model, entry, prof, audio_path, extras, **detail_args, **route_args)
         elapsed = time.time() - t_start
         dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
         parts_note = (_t("，{count} 段", ", {count} parts", count=n) if n > 1 else "")
-        _ui_log(_t("ASR 完成：音频 {dur_note}{parts_note}，用时 {seconds:.1f}s",
-                   "ASR done: audio {dur_note}{parts_note}, elapsed {seconds:.1f}s",
-                   dur_note=dur_note, parts_note=parts_note, seconds=elapsed))
+        _ui_log("ASR done: audio {dur_note}{parts_note}, elapsed {seconds:.1f}s".format(
+                dur_note=dur_note if dur is not None else "unknown", parts_note=f", {n} parts" if n > 1 else "", seconds=elapsed))
         yield text, _t("✅ 转写完成（音频 {duration}{parts}），用时 {elapsed:.1f}s{load}。",
                        "✅ Transcript complete ({duration}{parts}) in {elapsed:.1f}s{load}.",
                        duration=dur_note, parts=parts_note, elapsed=elapsed, load=load_note)
@@ -4204,7 +4868,21 @@ def _first_installed_model(task):
     return None
 
 
-def _asr_dialogue(model, wav_path, extras):
+def do_asr_with_details(model, audio_path, language, context, dialogue, stream,
+                        adv_values, adv_options, detailed, *, asr_runtime=None, cancel=None):
+    details = [] if detailed else None
+    runtime_args = {"asr_runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
+    for transcript, message in do_asr(model, audio_path, language, context, dialogue,
+                                      stream, adv_values, adv_options, details, **runtime_args):
+        path = None
+        if details:
+            path = os.path.join(OUTPUT_DIR, f"audiocpp_asr_{time.time_ns()}.json")
+            with open(path, "w", encoding="utf-8") as output:
+                json.dump(details, output, ensure_ascii=False, indent=2)
+        yield transcript, message, details or None, path
+
+
+def _asr_dialogue(model, wav_path, extras, *, asr_runtime=None, cancel=None):
     """对话模式：Sortformer 说话人分离 → 按说话人合并/切段 → 逐段 ASR →
     带说话人标签和时间戳的对话稿。server 一次只驻留一个模型，所以先换载 diar
     再换回 ASR（每次自动换载 ~5s）。"""
@@ -4227,13 +4905,13 @@ def _asr_dialogue(model, wav_path, extras):
     total_dur = len(samples) / float(sr)
 
     t_start = time.time()
-    _ui_log(_t("对话模式：先用 {id} 做说话人分离（音频 {seconds:.1f}s）",
-               "dialogue mode: first run speaker diarization with {id} (audio {seconds:.1f}s)",
-               id=diar['id'], seconds=total_dur))
+    _ui_log("dialogue mode: first run speaker diarization with {id} (audio {seconds:.1f}s)".format(
+            id=diar['id'], seconds=total_dur))
     ensure_model_loaded(diar["id"], ("diar",),
-                        session_options=_diar_session_options(total_dur))
+                        session_options=(_diar_session_options(total_dur)
+                                         if diar.get("family") == "sortformer_diar" else None))
     data = _run_task(diar, diar["id"], {"audio": wav16}, timeout=900,
-                     log_label="说话人分离")
+                     log_label="speaker diarization")
     turns = data.get("speaker_turns") or []
     if not turns:
         raise gr.Error(_t("没有检测到说话人发言段。", "No speaker turns were detected."))
@@ -4254,11 +4932,12 @@ def _asr_dialogue(model, wav_path, extras):
     if not merged:
         raise gr.Error(_t("说话人发言段都太短，无法转写。",
                           "All detected speaker turns are too short to transcribe."))
-    _ui_log(_t("说话人分离完成：{turns} 个发言段 → 合并为 {merged} 段；换回 {model} 逐段转写",
-               "speaker diarization done: {turns} turns → merged into {merged} segments; switching back to {model} for per-segment transcription",
-               turns=len(turns), merged=len(merged), model=model))
+    _ui_log("speaker diarization done: {turns} turns → merged into {merged} segments; switching back to {model} for per-segment transcription".format(
+            turns=len(turns), merged=len(merged), model=model))
 
-    ensure_model_loaded(model, ASR_TASKS)
+    runtime_args = {"runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
+    route_args = {"server_url": asr_runtime.server_url, "cancel": cancel} if asr_runtime is not None else {}
+    _ensure_with_options(model, ASR_TASKS, extras.get("options", {}), **runtime_args)
     pad = int(DIALOGUE_PAD_S * sr)
     speakers, lines = [], []
     for idx, (spk, s, e) in enumerate(merged, 1):
@@ -4271,20 +4950,18 @@ def _asr_dialogue(model, wav_path, extras):
             ww.setframerate(sr)
             ww.writeframes(samples[a:b].tobytes())
         text, _, _ = _asr_transcribe_wav(model, entry, prof, seg_path, extras,
-                                         tag=f"对话段 {idx}/{len(merged)}")
+                                         tag=f"dialogue turn {idx}/{len(merged)}", **route_args)
         if spk not in speakers:
             speakers.append(spk)
         label = _t("说话人{index}", "Speaker {index}", index=speakers.index(spk) + 1)
         if text:
             lines.append(f"[{_fmt_mmss(s / sr)}-{_fmt_mmss(e / sr)}] {label}: {text}")
-        _ui_log(_t("对话段 {index}/{count} 完成（{label}，{seconds:.1f}s）",
-                   "dialogue turn {index}/{count} done ({label}, {seconds:.1f}s)",
-                   index=idx, count=len(merged), label=label, seconds=(e - s) / sr))
+        _ui_log("dialogue turn {index}/{count} done ({label}, {seconds:.1f}s)".format(
+                index=idx, count=len(merged), label=f"Speaker {speakers.index(spk) + 1}", seconds=(e - s) / sr))
 
     elapsed = time.time() - t_start
-    _ui_log(_t("对话转写完成：{merged} 段发言、{speakers} 个说话人，用时 {seconds:.1f}s",
-               "dialogue transcription done: {merged} turns, {speakers} speakers, elapsed {seconds:.1f}s",
-               merged=len(merged), speakers=len(speakers), seconds=elapsed))
+    _ui_log("dialogue transcription done: {merged} turns, {speakers} speakers, elapsed {seconds:.1f}s".format(
+            merged=len(merged), speakers=len(speakers), seconds=elapsed))
     if not lines:
         return "", _t("⚠️ 检测到发言段，但没有转写出文字。",
                       "⚠️ Speaker turns were detected, but no text was transcribed.")
@@ -4295,26 +4972,58 @@ def _asr_dialogue(model, wav_path, extras):
 
 
 def do_music_gen(model, text, lyrics, source_audio, duration, seed,
-                 adv_values, adv_options):
+                 adv_values, adv_options, result_files=None):
     """Music/SFX generation via the generic /v1/tasks/run route. The request
     object uses the CLI request-JSON fields (text/lyrics/duration_seconds/
     task_route/audio + an options map); the response carries base64 WAV."""
     try:
-        if not (text or "").strip():
-            raise gr.Error(_t("请输入音乐/音效提示词", "Enter a music or sound prompt."))
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
+        if entry and entry.get("family") == "ace_step":
+            route = options.get("task_route", options.get("route", "text2music"))
+            if route == "text2music":
+                source_audio = None
+            source_duration = None
+            if source_audio:
+                source_audio = _ensure_wav(source_audio)
+                source_duration = _audio_duration_seconds(source_audio)
+                if source_duration is None or source_duration <= 0:
+                    raise gr.Error("无法读取源音频时长，请重新上传。")
+                duration = source_duration
+            options = normalize_ace_options(entry, options, source_duration)
+            if route == "extract":
+                lyrics = ""
+            if not (text or "").strip() and route in {"complete", "lego", "extract"}:
+                tracks = ", ".join(options.get("complete_track_classes", [])) or options.get("track_name", "")
+                text = f"{route}: {tracks}"
+        if not (text or "").strip():
+            raise gr.Error(_t("请输入音乐/音效提示词", "Enter a music or sound prompt."))
+        if prof.get("require_source_audio") and not source_audio:
+            raise gr.Error(_t("该任务需要源音频。", "This task requires source audio."))
+        if prof.get("require_lyrics") and not (lyrics or "").strip():
+            raise gr.Error(_t(
+                "该模型必须填写歌词。",
+                "This model requires lyrics."))
         if entry and entry.get("family") == "minimax_h3" and options.get("return_video"):
             raise gr.Error(_t(
                 "本地 Python WebUI 当前只接收 MiniMax-H3 的音频输出；请关闭 Decode video，"
                 "需要原始视频帧产物时使用上游内置 WebUI。",
                 "The local Python WebUI currently accepts MiniMax-H3 audio output only. "
                 "Disable Decode video, or use the upstream native UI for raw video-frame artifacts."))
-        ensure_model_loaded(model, GEN_TASKS)
+        _ensure_with_options(model, GEN_TASKS, options)
 
-        seed, seed_note = _resolve_seed(seed)
+        seed, seed_note = _resolve_seed(options.pop("seed", seed))
         req = {"text": text, "seed": seed}
+        family = entry.get("family") if entry else ""
+        if family == "yue2":
+            options.setdefault("style", text)
+            # Empty lyrics explicitly request an instrumental; never treat the
+            # style prompt as lyrics through the backend's text fallback.
+            req["text"] = lyrics or ""
+            req["lyrics"] = lyrics or ""
+        if prof.get("edit_instruction_key"):
+            options.setdefault(prof["edit_instruction_key"], text)
         # task_route is a top-level request field (not a model option); the
         # generated controls funnel everything through `options`, so lift it out.
         route = options.pop("task_route", None)
@@ -4323,36 +5032,61 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         if (lyrics or "").strip():
             req["lyrics"] = lyrics
         if duration is not None and float(duration) != 0:
-            req["duration_seconds"] = float(duration)
+            duration_value = float(duration)
+            if duration_value > 0 or not prof.get("omit_nonpositive_duration"):
+                if family in {"auk", "controlfoley", "midashenglm_gen"}:
+                    if duration_value > 0:
+                        options.setdefault("duration_sec", duration_value)
+                elif family not in {"yue2", "firered_audio"}:
+                    req["duration_seconds"] = duration_value
         if source_audio:
             req["audio"] = _ensure_wav(source_audio)
         if options:
             req["options"] = options
 
-        dur_note = req.get("duration_seconds", _t("自动", "auto"))
-        _ui_log(_t("音乐生成开始：model={model}，目标时长 {dur_note}s",
-                   "music generation started: model={model}, target duration {dur_note}s",
-                   model=model, dur_note=dur_note))
+        dur_note = f"{req['duration_seconds']}s" if "duration_seconds" in req else "auto"
+        _ui_log("music generation started: model={model}, target duration {dur_note}".format(
+                model=model, dur_note=dur_note))
         t_start = time.time()
-        data = _run_task(entry, model, req, timeout=1800, log_label="音乐生成")
+        data = _run_task(entry, model, req, timeout=1800, log_label="music generation")
+        artifacts = _save_task_artifacts(data, "audiocpp_gen")
         b64 = data.get("audio")
         if not b64 and data.get("named_audio_outputs"):
             b64 = data["named_audio_outputs"][0].get("audio")
-        if not b64:
+        if not b64 and not artifacts:
             raise gr.Error(_t("server 没有返回音频数据。", "The server returned no audio."))
-        out = os.path.join(OUTPUT_DIR, f"audiocpp_gen_{int(time.time()*1000)}.wav")
-        with open(out, "wb") as f:
-            f.write(base64.b64decode(b64))
+        out = None
+        if b64:
+            out = os.path.join(OUTPUT_DIR, f"audiocpp_gen_{time.time_ns()}.wav")
+            with open(out, "wb") as f:
+                f.write(base64.b64decode(b64))
+        if result_files is not None:
+            result_files.extend(([out] if out else []) + artifacts)
+            for index, stem in enumerate(data.get("named_audio_outputs") or []):
+                # Some models return the primary audio again as a named track.
+                if stem.get("audio") == b64:
+                    continue
+                path = _save_task_artifact({"id": stem.get("id", f"track{index}"),
+                                            "payload": stem.get("audio"),
+                                            "meta": {"extension": "wav"}},
+                                           f"audiocpp_gen_track_{index}")
+                if path:
+                    result_files.append(path)
         elapsed = time.time() - t_start
-        _ui_log(_t("音乐生成完成：{out}，用时 {seconds:.1f}s",
-                   "music generation done: {out}, elapsed {seconds:.1f}s",
-                   out=out, seconds=elapsed))
+        _ui_log("music generation done: {out}, elapsed {seconds:.1f}s".format(
+                out=out, seconds=elapsed))
         return out, _t("✅ 生成完成，用时 {seconds:.1f}s。{seed}",
                        "✅ Complete in {seconds:.1f}s. {seed}", seconds=elapsed, seed=seed_note)
     except gr.Error as e:
         return None, _msg_from_error(e)
     except Exception as e:
         return None, _t("❌ 生成失败：{error}", "❌ Generation failed: {error}", error=e)
+
+
+def do_music_gen_with_files(*args):
+    files = []
+    audio, message = do_music_gen(*args, result_files=files)
+    return audio, files or None, message
 
 
 # analyze 返回的字段 -> ACE-Step 高级参数（model_params.json 里的 name）
@@ -4374,20 +5108,23 @@ def do_music_analyze(model, source_audio, seed, adv_values):
         if not entry or entry.get("family") != "ace_step":
             raise gr.Error(_t("只有 ACE-Step 支持源音频分析。",
                               "Source analysis is available for ACE-Step only."))
-        ensure_model_loaded(model, GEN_TASKS)
+        runtime_options = _merged_options(profile_for(entry), adv_values, "")
+        _ensure_with_options(model, GEN_TASKS, runtime_options)
 
         # 分析要可复现：seed=-1（随机）时固定为 1234，不跟生成共享随机性；
         # 用户显式填的固定 seed 仍然生效（可换 seed 重抽歌词转写）。
+        seed = runtime_options.get("seed", seed)
         analyze_seed = 1234 if int(seed if seed is not None else -1) == -1 else int(seed)
         req = {"text": "analyze", "task_route": "analyze",
                "audio": _ensure_wav(source_audio), "seed": analyze_seed}
+        if "lm_temperature" in runtime_options:
+            req["options"] = {"lm_temperature": runtime_options["lm_temperature"]}
         dur = _audio_duration_seconds(req["audio"])
         dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
-        _ui_log(_t("源音频分析开始：model={model}，音频 {dur_note}",
-                   "source audio analysis started: model={model}, audio {dur_note}",
-                   model=model, dur_note=dur_note))
+        _ui_log("source audio analysis started: model={model}, audio {dur_note}".format(
+                model=model, dur_note=dur_note if dur is not None else "unknown"))
         t_start = time.time()
-        data = _run_task(entry, model, req, timeout=1800, log_label="源音频分析")
+        data = _run_task(entry, model, req, timeout=1800, log_label="source audio analysis")
         raw = data.get("text") or ""
         try:
             info = json.loads(raw)
@@ -4418,11 +5155,14 @@ def do_music_analyze(model, source_audio, seed, adv_values):
         if info.get("lyrics"):
             lines.append(_t("- **歌词**：\n```\n{lyrics}\n```",
                             "- **Lyrics**:\n```\n{lyrics}\n```", lyrics=info["lyrics"]))
-        _ui_log(_t("源音频分析完成：用时 {seconds:.1f}s",
-                   "source audio analysis done: elapsed {seconds:.1f}s",
-                   seconds=elapsed))
+        _ui_log("source audio analysis done: elapsed {seconds:.1f}s".format(
+                seconds=elapsed))
         return adv_values, dict(adv_values), "\n".join(lines)
     except gr.Error as e:
+        if "Unsupported ACE-Step route: analyze" in str(e):
+            return adv_values, gr.skip(), _t(
+                "❌ 当前后端尚未包含 ACE-Step 源音频分析；请在下次构建时更新 audiocpp_server。",
+                "❌ This backend does not include ACE-Step source analysis; update audiocpp_server at the next build.")
         return adv_values, gr.skip(), _msg_from_error(e)
     except Exception as e:
         return adv_values, gr.skip(), _t("❌ 分析失败：{error}",
@@ -4442,29 +5182,42 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
     try:
         if not source_audio:
             raise gr.Error(_t("请上传要转换的源音频", "Upload source audio to convert."))
-        ensure_model_loaded(model, VC_TASKS)
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
+        _validate_vc_options(entry, options)
+        normalize_vc_options(entry, options)
+        if (prof.get("require_vc_target") and not target_upload
+                and (not builtin_voice or builtin_voice == "(none)")):
+            raise gr.Error(_t(
+                "该模型必须提供目标音色：请上传/录制目标音频，或选择内置音色。",
+                "This model requires a target voice: upload/record one or pick a built-in voice."))
+        _ensure_with_options(model, VC_TASKS, options)
 
-        source_audio = _ensure_wav(source_audio)
+        wav_options = ({"target_sr": prof["vc_sample_rate"]}
+                       if prof.get("vc_sample_rate") else {})
+        source_audio = _ensure_wav(source_audio, **wav_options)
         seed_note = ""
         req = {}
-        if prof.get("send_seed", True):
+        seed = options.pop("seed", seed)
+        if prof.get("send_seed", True) and seed not in (None, ""):
             # 同一 seed 用于所有分段，保证各段结果一致可复现。
+            # Tone Color VC parses a signed int, unlike the other VC families.
+            if entry and entry.get("family") == "tone_color_vc" and int(seed) == -1:
+                seed = random.randrange(0, 2 ** 31)
             seed, seed_note = _resolve_seed(seed)
             req["seed"] = seed
-        if not prof.get("model_as_target_voice"):
+        if not prof.get("model_as_target_voice") and prof.get("accepts_voice_reference", True):
             voice_path = target_upload or (
                 os.path.join(PROMPTS_DIR, builtin_voice)
                 if builtin_voice and builtin_voice != "(none)" else None)
             if voice_path:
-                ref_wav = _ensure_wav(voice_path)
+                ref_wav = _ensure_wav(voice_path, **wav_options)
                 ref_cap = prof.get("vc_ref_max_seconds")
                 if ref_cap:                     # 参考音色截短，别让 prompt 段吃满显存
                     ref_wav = _trim_wav_seconds(ref_wav, ref_cap)
                 req["voice_ref"] = ref_wav
-        else:
+        elif prof.get("model_as_target_voice"):
             voice_model_path = _uploaded_file_path(rvc_voice_model, "RVC voice model")
             retrieval_index_path = _uploaded_file_path(rvc_retrieval_index, "RVC retrieval index")
             if voice_model_path and "voice_model_path" not in options:
@@ -4487,13 +5240,10 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
                   if chunk_cap else [(source_audio, 1.0)])
         dur = _audio_duration_seconds(source_audio)
         dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
-        seg_note = (_t("，参考 {reference:.0f}s，自适应分 {count} 段（每段 ≤{cap}s）",
-                       ", {reference:.0f}s reference, {count} adaptive parts (≤{cap}s)",
-                       reference=ref_sec, count=len(pieces), cap=chunk_cap)
+        seg_note = (f", {ref_sec:.0f}s reference, {len(pieces)} adaptive parts (≤{chunk_cap}s)"
                     if len(pieces) > 1 else "")
-        _ui_log(_t("声音转换开始：model={model}，源音频 {dur_note}{seg_note}",
-                   "voice conversion started: model={model}, source audio {dur_note}{seg_note}",
-                   model=model, dur_note=dur_note, seg_note=seg_note))
+        _ui_log("voice conversion started: model={model}, source audio {dur_note}{seg_note}".format(
+                model=model, dur_note=dur_note if dur is not None else "unknown", seg_note=seg_note))
         t_start = time.time()
         blobs, ratios = [], []
         for i, (piece, ratio) in enumerate(pieces):
@@ -4503,7 +5253,7 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
                                                    index=i + 1, total=len(pieces)))
             req["audio"] = piece
             t_seg = time.time()
-            data = _run_task(entry, model, req, timeout=1800, log_label="声音转换")
+            data = _run_task(entry, model, req, timeout=1800, log_label="voice conversion")
             b64 = data.get("audio")
             if not b64 and data.get("named_audio_outputs"):
                 b64 = data["named_audio_outputs"][0].get("audio")
@@ -4512,9 +5262,8 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
             blobs.append(base64.b64decode(b64))
             ratios.append(ratio)
             if len(pieces) > 1:
-                _ui_log(_t("声音转换段 {index}/{count} 完成（{seconds:.1f}s）",
-                           "voice conversion segment {index}/{count} done ({seconds:.1f}s)",
-                           index=i + 1, count=len(pieces), seconds=time.time() - t_seg))
+                _ui_log("voice conversion segment {index}/{count} done ({seconds:.1f}s)".format(
+                        index=i + 1, count=len(pieces), seconds=time.time() - t_seg))
         out = os.path.join(OUTPUT_DIR, f"audiocpp_vc_{int(time.time()*1000)}.wav")
         if len(blobs) == 1 and ratios[0] >= 1.0:
             with open(out, "wb") as f:
@@ -4522,9 +5271,8 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
         else:
             _concat_wavs(blobs, out, keep_ratios=ratios)
         elapsed = time.time() - t_start
-        _ui_log(_t("声音转换完成：{out}，用时 {seconds:.1f}s",
-                   "voice conversion done: {out}, elapsed {seconds:.1f}s",
-                   out=out, seconds=elapsed))
+        _ui_log("voice conversion done: {out}, elapsed {seconds:.1f}s".format(
+                out=out, seconds=elapsed))
         parts_note = (_t("（{count} 段拼接）", " ({count} joined parts)", count=len(blobs))
                       if len(blobs) > 1 else "")
         return out, _t("✅ 转换完成{parts}，用时 {seconds:.1f}s。{seed}",
@@ -4538,34 +5286,44 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
 
 # 分轨 id -> 中文标签；未收录的 id 原样显示。
 STEM_LABELS = {"vocals": "人声", "drums": "鼓", "bass": "贝斯", "other": "其它",
+               "guitar": "吉他", "piano": "钢琴", "target": "目标声音", "residual": "剩余声音",
                "instrumental": "伴奏", "accompaniment": "伴奏", "audio": "输出"}
 STEM_LABELS_EN = {"vocals": "Vocals", "drums": "Drums", "bass": "Bass", "other": "Other",
+                  "guitar": "Guitar", "piano": "Piano", "target": "Target", "residual": "Residual",
                   "instrumental": "Instrumental", "accompaniment": "Accompaniment",
                   "audio": "Output"}
-MAX_SEP_STEMS = 4
+MAX_SEP_STEMS = 6
 # 分离族（htdemucs / mel-band-roformer）的 prepare() 硬校验 44.1kHz（模型配置
 # sample_rate），不自己重采样；其它采样率的输入在 webui 侧先转到 44.1k。
 SEP_SR = 44100
 
 
-def do_sep(model, audio_path):
+def do_sep(model, audio_path, prompt="", adv_values=None, adv_options=""):
     """音源分离：响应里的 named_audio_outputs 每轨落盘成一个 wav，
     前 MAX_SEP_STEMS 轨直接放进播放器，全部轨放进文件下载列表。"""
     empty = [_clear_audio_output(visible=False) for _ in range(MAX_SEP_STEMS)]
     try:
         if not audio_path:
             raise gr.Error(_t("请上传要分离的音频", "Upload audio to separate."))
-        audio_path = _ensure_wav(audio_path, target_sr=SEP_SR)
-        ensure_model_loaded(model, SEP_TASKS)
         entry = catalog_by_id(model)
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        if prof.get("require_separation_prompt") and not (prompt or "").strip():
+            raise gr.Error(_t("请描述要提取的声音。", "Describe the sound to extract."))
+        options = _merged_options(prof, adv_values, adv_options)
+        audio_path = _ensure_wav(audio_path, target_sr=prof.get("separation_sample_rate", SEP_SR))
+        _ensure_with_options(model, SEP_TASKS, options)
+        req = {"audio": audio_path}
+        if (prompt or "").strip():
+            req["text"] = prompt.strip()
+        if options:
+            req["options"] = options
         dur = _audio_duration_seconds(audio_path)
         dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
-        _ui_log(_t("音源分离开始：model={model}，音频时长 {dur_note}",
-                   "source separation started: model={model}, audio duration {dur_note}",
-                   model=model, dur_note=dur_note))
+        _ui_log("source separation started: model={model}, audio duration {dur_note}".format(
+                model=model, dur_note=dur_note if dur is not None else "unknown"))
         t_start = time.time()
-        data = _run_task(entry, model, {"audio": audio_path},
-                         timeout=1800, log_label="音源分离")
+        data = _run_task(entry, model, req,
+                         timeout=1800, log_label="source separation")
         stems = data.get("named_audio_outputs") or []
         if not stems and data.get("audio"):
             stems = [{"id": "audio", "audio": data["audio"]}]
@@ -4595,9 +5353,8 @@ def do_sep(model, audio_path):
             else:
                 updates.append(_clear_audio_output(visible=False))
         elapsed = time.time() - t_start
-        _ui_log(_t("音源分离完成：{tracks} 轨，用时 {seconds:.1f}s",
-                   "source separation done: {tracks} tracks, elapsed {seconds:.1f}s",
-                   tracks=len(paths), seconds=elapsed))
+        _ui_log("source separation done: {tracks} tracks, elapsed {seconds:.1f}s".format(
+                tracks=len(paths), seconds=elapsed))
         note = ("" if len(paths) <= MAX_SEP_STEMS else
                 _t("，其余 {count} 轨见下载列表", "; {count} more in the download list",
                    count=len(paths) - MAX_SEP_STEMS))
@@ -4661,42 +5418,72 @@ def _redact_task_artifacts(data):
     return safe
 
 
-def do_analyze(model, audio_path, transcript, language):
+def _save_task_artifacts(data, prefix):
+    paths = []
+    for index, artifact in enumerate(data.get("artifacts") or []):
+        path = _save_task_artifact(artifact, f"{prefix}_{index}")
+        if path:
+            paths.append(path)
+    return paths
+
+
+def do_analyze(model, audio_path, transcript, language, adv_values=None, adv_options="",
+               result_files=None):
     """音频分析（vad/diar/align/midi）：格式化结构化结果，并保存通用产物。"""
     try:
         if not audio_path:
             raise gr.Error(_t("请上传或录制音频", "Upload or record audio."))
         entry = catalog_by_id(model)
         task = entry.get("task") if entry else ""
-        req = {"audio": _to_16k_mono_wav(_ensure_wav(audio_path))}
+        prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        wav_path = _ensure_wav(audio_path)
+        # SheetSage2 owns its music resampling/channel mix; a speech-oriented
+        # 16 kHz conversion would discard part of its input spectrum.
+        req = {"audio": (wav_path if prof.get("preserve_analysis_audio")
+                         else _to_16k_mono_wav(wav_path))}
         if task == "align":
             if not (transcript or "").strip():
                 raise gr.Error(_t("强制对齐需要填写音频原文。",
                                   "Forced alignment requires the source transcript."))
             req["text"] = transcript.strip()
+            if prof.get("require_analysis_language") and not (language or "").strip():
+                raise gr.Error(_t(
+                    "该对齐模型必须填写语言（nl/nld 或 en/eng）。",
+                    "This aligner requires a language (nl/nld or en/eng)."))
             if (language or "").strip():
                 req["language"] = language.strip()
+        options = _merged_options(prof, adv_values, adv_options)
+        if options:
+            req["options"] = options
         dur = _audio_duration_seconds(req["audio"])
         # diar（Sortformer）是固定图容量，>20s 的音频按时长动态重载。
-        ensure_model_loaded(model, ANALYZE_TASKS,
-                            session_options=(_diar_session_options(dur)
-                                             if task == "diar" else None))
+        _ensure_with_options(model, ANALYZE_TASKS, options,
+                             session_options=(_diar_session_options(dur)
+                                              if entry and entry.get("family") == "sortformer_diar" else None))
         dur_note = f"{dur:.1f}s" if dur is not None else _t("未知", "unknown")
-        _ui_log(_t("音频分析开始：model={model}（task={task}），音频 {dur_note}",
-                   "audio analysis started: model={model} (task={task}), audio {dur_note}",
-                   model=model, task=task, dur_note=dur_note))
+        _ui_log("audio analysis started: model={model} (task={task}), audio {dur_note}".format(
+                model=model, task=task, dur_note=dur_note if dur is not None else "unknown"))
         t_start = time.time()
-        data = _run_task(entry, model, req, timeout=900, log_label="音频分析")
+        data = _run_task(entry, model, req, timeout=900, log_label="audio analysis")
 
         lines = []
-        artifact_path = None
-        for artifact in data.get("artifacts") or []:
-            artifact_path = _save_task_artifact(artifact, "audiocpp_analyze")
-            if artifact_path:
-                break
+        artifacts = _save_task_artifacts(data, "audiocpp_analyze")
+        if result_files is not None:
+            result_files.extend(artifacts)
+        artifact_path = artifacts[0] if artifacts else None
         if task == "midi" and not artifact_path:
-            raise gr.Error(_t("server 没有返回 MIDI 产物。",
-                              "The server returned no MIDI artifact."))
+            raise gr.Error(_t("server 没有返回乐谱产物。",
+                              "The server returned no score artifact."))
+        custom = data.get("custom_schema_output")
+        if custom:
+            if custom.get("schema") == "smart_turn.v1":
+                result = custom.get("data", {})
+                decision = _t("发言已结束", "Turn complete") if result.get("complete") else _t("发言未结束", "Turn incomplete")
+                lines.append(_t("{decision}，完成概率 {probability:.1%}",
+                                "{decision}; completion probability {probability:.1%}",
+                                decision=decision, probability=float(result.get("probability", 0))))
+            else:
+                lines.append(json.dumps(custom, ensure_ascii=False, indent=2))
         if data.get("segments"):
             segs = data["segments"]
             lines.append(_t("共 {count} 个语音段：", "{count} speech segments:", count=len(segs)))
@@ -4728,7 +5515,7 @@ def do_analyze(model, audio_path, transcript, language):
                 lines.append(f"{_fmt_ts(w['start_sample'])} → {_fmt_ts(w['end_sample'])}"
                              f"　{w.get('word', '')}")
         if data.get("text"):
-            if task == "midi":
+            if task == "midi" and entry.get("family") != "sheetsage2":
                 try:
                     events = json.loads(data["text"])
                 except (TypeError, ValueError):
@@ -4758,9 +5545,8 @@ def do_analyze(model, audio_path, transcript, language):
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(_redact_task_artifacts(data), f, ensure_ascii=False, indent=2)
         elapsed = time.time() - t_start
-        _ui_log(_t("音频分析完成：用时 {seconds:.1f}s",
-                   "audio analysis done: elapsed {seconds:.1f}s",
-                   seconds=elapsed))
+        _ui_log("audio analysis done: elapsed {seconds:.1f}s".format(
+                seconds=elapsed))
         return ("\n".join(lines), json_path, artifact_path,
                 _t("✅ 分析完成（音频 {duration}），用时 {elapsed:.1f}s。",
                    "✅ Analysis complete ({duration}) in {elapsed:.1f}s.",
@@ -4772,24 +5558,34 @@ def do_analyze(model, audio_path, transcript, language):
                                   "❌ Analysis failed: {error}", error=e)
 
 
+def do_analyze_with_files(*args):
+    files = []
+    text, raw_json, _first_artifact, message = do_analyze(*args, result_files=files)
+    return text, raw_json, files or None, message
+
+
 def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
     """声音设计（vdes）：文字 + 音色描述走 /v1/audio/speech（instructions 字段
-    映射到模型的 instruct 选项），响应是 WAV 音频。"""
+    映射到模型的 instruction 选项），响应是 WAV 音频。"""
     try:
         if not (text or "").strip():
             raise gr.Error(_t("请输入要合成的文字", "Enter text to synthesize."))
         if not (instruct or "").strip():
             raise gr.Error(_t("请填写音色描述。", "Enter a voice description."))
-        ensure_model_loaded(model, VDES_TASKS)
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
         options = _merged_options(prof, adv_values, adv_options)
+        _ensure_with_options(model, VDES_TASKS, options)
 
-        seed, seed_note = _resolve_seed(seed)
+        seed, seed_note = _resolve_seed(options.pop("seed", seed))
         payload = {"model": model, "input": text, "seed": seed}
-        if prof.get("send_max_tokens", True):
-            payload["max_tokens"] = int(max_tokens)
-        # 音色描述的落点按家族区分：qwen3_tts 走服务器的 instructions→instruct 映射；
+        if seed is None or not prof.get("send_seed", True):
+            payload.pop("seed")
+            seed_note = ""
+        max_tokens = _speech_max_tokens(prof, max_tokens, options)
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        # 音色描述的落点按家族区分：qwen3_tts 走服务器的 instructions→instruction 映射；
         # irodori 等只读自家 options 键（profile 里的 vdes_option_key，如 caption）。
         vdes_key = prof.get("vdes_option_key")
         if vdes_key:
@@ -4798,27 +5594,24 @@ def do_vdes(model, text, instruct, seed, max_tokens, adv_values, adv_options):
             payload["instructions"] = instruct
         if options:
             payload["options"] = options
-        _ui_log(_t("声音设计开始：model={model}，{chars} 字",
-                   "voice design started: model={model}, {chars} chars",
-                   model=model, chars=len(text)))
+        _ui_log("voice design started: model={model}, {chars} chars".format(
+                model=model, chars=len(text)))
         t_start = time.time()
         try:
             r = requests.post(f"{SERVER}/v1/audio/speech", json=payload, timeout=900)
         except requests.RequestException as e:
-            _ui_log(_t("声音设计失败：无法连接 server",
-                       "voice design failed: cannot connect to server"))
+            _ui_log("voice design failed: cannot connect to server")
             raise connection_error(e)
         if r.status_code != 200:
-            _ui_log(_t("声音设计失败：server {code}",
-                       "voice design failed: server {code}", code=r.status_code))
+            _ui_log("voice design failed: server {code}".format(
+                    code=r.status_code))
             raise server_error(entry, r.status_code, r.text)
         out = os.path.join(OUTPUT_DIR, f"audiocpp_vdes_{int(time.time()*1000)}.wav")
         with open(out, "wb") as f:
             f.write(r.content)
         elapsed = time.time() - t_start
-        _ui_log(_t("声音设计完成：{out}，用时 {seconds:.1f}s",
-                   "voice design done: {out}, elapsed {seconds:.1f}s",
-                   out=out, seconds=elapsed))
+        _ui_log("voice design done: {out}, elapsed {seconds:.1f}s".format(
+                out=out, seconds=elapsed))
         return out, _t("✅ 生成完成，用时 {seconds:.1f}s。{seed}",
                        "✅ Complete in {seconds:.1f}s. {seed}", seconds=elapsed, seed=seed_note)
     except gr.Error as e:
@@ -4862,7 +5655,72 @@ def refresh():
     return (*dropdowns, server_status(), *hints, asr_stream_update(asr_model_id))
 
 
-atexit.register(_stop_server)
+_REALTIME_NATIVE_STREAM_FAMILIES = {
+    "dots_tts", "voxcpm2", "voxcpm1", "pocket_tts", "audio8_tts",
+    "breeze_tts", "kugelaudio", "lfm2_audio", "soprano_tts",
+}
+
+
+def realtime_tts_models():
+    """Installed TTS models for the standalone realtime settings page.
+
+    Streaming-capable entries are intentionally first; catalog order remains
+    stable inside each group so existing downstream model ordering is preserved.
+    """
+    try:
+        from .realtime_voices import voice_metadata
+    except ImportError:
+        from realtime_voices import voice_metadata
+
+    models = []
+    for entry in catalog_models():
+        if entry.get("task") not in TTS_TASKS or not entry.get("installed"):
+            continue
+        profile = profile_for(entry)
+        supports = bool(profile.get("supports_streaming"))
+        family = entry.get("family") or ""
+        defaults = {}
+        if entry.get("id") == "dots-tts-meanflow":
+            defaults = {"num_inference_steps": 4, "vocoder_merge_steps": 2}
+        elif family == "dots_tts":
+            defaults = {"num_inference_steps": 10, "vocoder_merge_steps": 4}
+        elif family == "voxcpm2":
+            defaults = {"retry_badcase": False}
+        # DotTTS exposes a real PCM stream, but on the current Windows CUDA
+        # runtime its sustained generation can still trail realtime playback.
+        # Keep that route available explicitly while making auto mode choose
+        # the uninterrupted full-WAV path. Other streaming families retain
+        # their existing automatic behavior until measured otherwise.
+        realtime_auto_mode = (
+            "offline" if family == "dots_tts"
+            else "streaming" if supports
+            else "offline"
+        )
+        models.append({
+            "id": entry["id"],
+            "label": entry.get("display_name") or entry.get("label") or entry["id"],
+            "family": family,
+            "supports_streaming": supports,
+            "streaming_kind": (
+                "native" if supports and family in _REALTIME_NATIVE_STREAM_FAMILIES
+                else "segment" if supports else "none"
+            ),
+            "stream_sample_rate": int(profile.get("stream_sample_rate") or 0),
+            "realtime_defaults": defaults,
+            "realtime_auto_mode": realtime_auto_mode,
+            **voice_metadata(entry, profile, params_for(entry["id"]),
+                             MODEL_SPECS.get(family, {})),
+        })
+    return sorted(models, key=lambda model: not model["supports_streaming"])
+
+
+def load_realtime_tts_model(model_id, mode):
+    if mode not in {"offline", "streaming"}:
+        raise ValueError(f"unsupported realtime TTS mode: {mode}")
+    return ensure_model_loaded(model_id, TTS_TASKS, mode=mode, reuse_runtime_options=True)
+
+
+atexit.register(_shutdown_server)
 
 
 _I18N_COMPONENTS = []
@@ -5101,7 +5959,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Button("🔄 刷新列表", variant="primary", size="lg", min_width=100),
                     value=("🔄 刷新列表", "🔄 Refresh"))
                 dl_btn = _localized(
-                    gr.Button("⬇️ 下载模型", variant="primary", size="lg", min_width=100),
+                    gr.Button("⬇️ 下载模型", variant="primary", size="lg", min_width=100,
+                              interactive=not (catalog_by_id(model.value) or {}).get("manual_install")),
                     value=("⬇️ 下载模型", "⬇️\u00a0Download Model"))
                 dl_stat_btn = _localized(
                     gr.Button("📊 下载进度", variant="primary", size="lg", min_width=100),
@@ -5153,6 +6012,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                     [mm["gguf_status"], status])
         mm["model"].change(model_hint_for, mm["model"], hint)
         mm["model"].change(gguf_status, mm["model"], mm["gguf_status"])
+        mm["model"].change(
+            lambda m: gr.update(interactive=not (catalog_by_id(m) or {}).get("manual_install")),
+            mm["model"], mm["dl_btn"])
 
     def _render_param_controls(model_comp, state_comp, skip=(), prefill_comp=None):
         """“高级参数”折叠区内容：按所选模型的 family 动态生成控件（gr.render），
@@ -5174,7 +6036,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 if p["name"] in prefill:
                     p = {**p, "default": prefill[p["name"]]}
                 comp = _make_param_component(p, language)
-                comp.change(_adv_updater(p["name"]), [state_comp, comp], state_comp)
+                comp.change(_adv_updater(p["name"], p.get("json_list", False)),
+                            [state_comp, comp], state_comp)
 
     # ---------------- TTS / 声音克隆 ----------------
     with _localized(gr.Tab("🗣️ TTS / 声音克隆"),
@@ -5186,9 +6049,10 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                 tts_model = tts_mm["model"]
 
                 with gr.Group():
-                    _localized(gr.Markdown("#### 🎧 参考音频（声音克隆）"),
-                               value=("#### 🎧 参考音频（声音克隆）",
-                                      "#### 🎧 Voice reference"))
+                    tts_voice_heading = _localized(
+                        gr.Markdown("#### 🎧 参考音频（声音克隆）"),
+                        value=("#### 🎧 参考音频（声音克隆）",
+                               "#### 🎧 Voice reference"))
                     with gr.Row(elem_classes="voice-refresh-row"):
                         tts_builtin = _localized(gr.Dropdown(
                             label="内置参考音色",
@@ -5299,6 +6163,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         tts_model.change(
             lambda m: gr.update(visible=supports_streaming(m), value="离线"),
             tts_model, tts_gen_mode)
+        tts_model.change(
+            tts_voice_input_updates,
+            tts_model, [tts_voice_heading, tts_builtin, tts_upload, tts_ref_text])
         # 流式播放组件只在选了流式模式时出现（离线路径的输出组件保持原样）。
         tts_gen_mode.change(lambda v: gr.update(visible=(v == "流式")),
                             tts_gen_mode, tts_out_stream)
@@ -5351,7 +6218,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         label="强制语种（留空=自动检测）",
                         choices=[("自动检测", "")] +
                                 [(f"{zh} {en}", en) for zh, en in QWEN3_ASR_LANGUAGES],
-                        value=""),
+                        value="", allow_custom_value=True),
                         label=("强制语种（留空=自动检测）", "Language (blank=auto)"),
                         choices=([("自动检测", "")] +
                                  [(f"{zh} {en}", en) for zh, en in QWEN3_ASR_LANGUAGES],
@@ -5370,6 +6237,16 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     label="⚡ 流式转写（边转边出字，长音频不用干等；与对话模式互斥）",
                     value=False, visible=supports_streaming(asr_model.value)),
                     label=("⚡ 流式转写（与对话模式互斥）", "⚡ Streaming transcription"))
+                asr_detailed = _localized(gr.Checkbox(value=False,
+                    label="详细结果（离线：时间戳、说话人等）"),
+                    label=("详细结果（离线：时间戳、说话人等）", "Detailed offline results (timestamps, speakers)"))
+                asr_adv_state = gr.State({})
+                with _localized(gr.Accordion("高级参数（只发送改动过的项）", open=False),
+                                label=("高级参数（只发送改动过的项）", "Advanced options")):
+                    _render_param_controls(asr_model, asr_adv_state)
+                with _localized(gr.Accordion("其它参数（JSON，覆盖控件）", open=False),
+                                label=("其它参数（JSON，覆盖控件）", "Other options (JSON override)")):
+                    asr_adv = gr.Textbox(label="", lines=3, placeholder='{"return_timestamps": true}')
                 asr_hint = gr.Markdown(model_hint_for(asr_model.value))
                 asr_btn = _localized(
                     gr.Button("📝 开始转写", variant="primary", size="lg"),
@@ -5385,17 +6262,23 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         label=("转写文本", "Transcript"),
                         placeholder=("转写结果将显示在这里……", "Transcript appears here…"))
                     asr_msg = gr.Markdown("")
+                    asr_details = _localized(gr.JSON(label="详细结果"),
+                                             label=("详细结果", "Detailed results"))
+                    asr_json = _localized(gr.File(label="详细结果 JSON", interactive=False),
+                                          label=("详细结果 JSON", "Detailed result JSON"))
 
         _wire_model_manager(asr_mm, ASR_TASKS, asr_hint)
+        asr_model.change(lambda: {}, None, asr_adv_state)
         # 用户选模型时立即同步流式能力，不走默认队列；用 change 会同时接收
         # 后端刷新下拉框的更新，和未安装模型的其它状态回调交错后可能留下旧的
         # visible=False。程序化刷新由 refresh() 显式更新该控件。
         asr_model.input(asr_stream_update, asr_model, asr_stream,
                         queue=False, show_progress="hidden")
-        asr_btn.click(lambda: ("", ""), None, [asr_out, asr_msg]).then(
-            do_asr, [asr_model, asr_audio, asr_language, asr_context, asr_dialogue,
-                     asr_stream],
-            [asr_out, asr_msg])
+        asr_btn.click(lambda: ("", "", None, None), None,
+                      [asr_out, asr_msg, asr_details, asr_json]).then(
+            do_asr_with_details, [asr_model, asr_audio, asr_language, asr_context, asr_dialogue,
+                                  asr_stream, asr_adv_state, asr_adv, asr_detailed],
+            [asr_out, asr_msg, asr_details, asr_json])
 
     # ---------------- 音乐 / 音效生成 ----------------
     with _localized(gr.Tab("🎵 音乐生成"),
@@ -5470,6 +6353,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                  elem_classes=["audio-default", "audio-output"]),
                         label=("输出音频", "Output audio"))
                     gen_msg = gr.Markdown("")
+                    gen_files = _localized(gr.File(label="生成文件（音频 / 乐谱 / 语义数据）",
+                                                    file_count="multiple", interactive=False),
+                                           label=("生成文件（音频 / 乐谱 / 语义数据）", "Generated files (audio / score / semantic data)"))
 
         _wire_model_manager(gen_mm, GEN_TASKS, gen_hint)
         gen_model.change(lambda: ({}, {}, ""), None,
@@ -5479,11 +6365,11 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                           None, gen_ana_msg).then(
             do_music_analyze, [gen_model, gen_audio, gen_seed, gen_adv_state],
             [gen_adv_state, gen_prefill, gen_ana_msg])
-        gen_btn.click(lambda: (_clear_audio_output(), ""), None, [gen_out, gen_msg]).then(
-            do_music_gen,
+        gen_btn.click(lambda: (_clear_audio_output(), None, ""), None, [gen_out, gen_files, gen_msg]).then(
+            do_music_gen_with_files,
             [gen_model, gen_text, gen_lyrics, gen_audio, gen_duration, gen_seed,
              gen_adv_state, gen_adv],
-            [gen_out, gen_msg]).then(
+            [gen_out, gen_files, gen_msg]).then(
             _reset_audio_output_position, None, gen_out)
 
     # ---------------- 声音转换 (vc / svc / s2s) ----------------
@@ -5606,6 +6492,15 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                                  elem_classes="audio-default"),
                         label=("上传要分离的歌曲/音频", "Upload audio to separate"))
                 sep_hint = gr.Markdown(model_hint_for(sep_model.value))
+                sep_prompt = _localized(gr.Textbox(label="目标声音描述（SAM Audio 必填）", lines=2),
+                                        label=("目标声音描述（SAM Audio 必填）", "Sound to extract (required for SAM Audio)"))
+                sep_adv_state = gr.State({})
+                with _localized(gr.Accordion("高级参数（只发送改动过的项）", open=False),
+                                label=("高级参数（只发送改动过的项）", "Advanced options")):
+                    _render_param_controls(sep_model, sep_adv_state)
+                with _localized(gr.Accordion("其它参数（JSON，覆盖控件）", open=False),
+                                label=("其它参数（JSON，覆盖控件）", "Other options (JSON override)")):
+                    sep_adv = gr.Textbox(label="", lines=3)
                 sep_btn = _localized(
                     gr.Button("🎚️ 开始分离", variant="primary", size="lg"),
                     value=("🎚️ 开始分离", "🎚️ Separate"))
@@ -5629,11 +6524,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     sep_msg = gr.Markdown("")
 
         _wire_model_manager(sep_mm, SEP_TASKS, sep_hint)
+        sep_model.change(lambda: {}, None, sep_adv_state)
         sep_btn.click(
             lambda: (*[_clear_audio_output(visible=False)
                        for _ in range(MAX_SEP_STEMS)], None, ""),
             None, [*sep_stems, sep_files, sep_msg]).then(
-            do_sep, [sep_model, sep_audio], [*sep_stems, sep_files, sep_msg])
+            do_sep, [sep_model, sep_audio, sep_prompt, sep_adv_state, sep_adv],
+            [*sep_stems, sep_files, sep_msg])
 
     # ---------------- 音频分析 (vad / diar / align / midi) ----------------
     with _localized(gr.Tab("🔎 音频分析"),
@@ -5641,7 +6538,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         with gr.Row(equal_height=False):
             # 左列：模型管理 + 音频输入（align 模型多出对齐文本/语言）
             with gr.Column(scale=1):
-                ana_mm = _model_manager_block("vad/diar/align/midi", ANALYZE_TASKS)
+                ana_mm = _model_manager_block("vad/diar/align/midi/turn", ANALYZE_TASKS)
                 ana_model = ana_mm["model"]
 
                 with gr.Group():
@@ -5666,6 +6563,16 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                         label="语言（仅 align 可选，如 English / Chinese）"),
                         label=("语言（仅 align 可选，如 English / Chinese）",
                                "Language (optional for align; e.g. English)"))
+                    ana_adv_state = gr.State({})
+                    with _localized(
+                            gr.Accordion("高级参数（只发送改动过的项）", open=False),
+                            label=("高级参数（只发送改动过的项）", "Advanced options")):
+                        _render_param_controls(ana_model, ana_adv_state, skip=("language",))
+                    with _localized(
+                            gr.Accordion("其它参数（JSON，覆盖控件）", open=False),
+                            label=("其它参数（JSON，覆盖控件）", "Other options (JSON override)")):
+                        ana_adv = gr.Textbox(label="", placeholder='{"return_timestamps": true}',
+                                             lines=3)
                 ana_hint = gr.Markdown(model_hint_for(ana_model.value))
                 ana_btn = _localized(
                     gr.Button("🔎 开始分析", variant="primary", size="lg"),
@@ -5685,14 +6592,16 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     ana_json = _localized(gr.File(label="原始 JSON 结果", interactive=False),
                                           label=("原始 JSON 结果", "Raw JSON"))
                     ana_artifact = _localized(
-                        gr.File(label="生成产物（如 MIDI）", interactive=False),
-                        label=("生成产物（如 MIDI）", "Generated artifact (for example MIDI)"))
+                        gr.File(label="生成产物（MIDI / ABC 等）", file_count="multiple", interactive=False),
+                        label=("生成产物（MIDI / ABC 等）", "Generated artifacts (MIDI / ABC etc.)"))
                     ana_msg = gr.Markdown("")
 
         _wire_model_manager(ana_mm, ANALYZE_TASKS, ana_hint)
+        ana_model.change(lambda: {}, None, ana_adv_state)
         ana_btn.click(lambda: ("", None, None, ""), None,
                       [ana_out, ana_json, ana_artifact, ana_msg]).then(
-            do_analyze, [ana_model, ana_audio, ana_text, ana_lang],
+            do_analyze_with_files, [ana_model, ana_audio, ana_text, ana_lang,
+                         ana_adv_state, ana_adv],
             [ana_out, ana_json, ana_artifact, ana_msg])
 
     # ---------------- 声音设计 (vdes) ----------------
@@ -5718,8 +6627,9 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     with _localized(
                             gr.Accordion("高级参数（只发送改动过的项）", open=False),
                             label=("高级参数（只发送改动过的项）", "Advanced options")):
-                        # instruct 有专用的『音色描述』输入框，这里不重复生成
-                        _render_param_controls(vdes_model, vdes_adv_state, skip=("instruct",))
+                        # instruction 有专用的『音色描述』输入框，这里不重复生成
+                        _render_param_controls(vdes_model, vdes_adv_state,
+                                               skip=("instruct", "instruction"))
                     with _localized(
                             gr.Accordion("其它参数（JSON，覆盖控件）", open=False),
                             label=("其它参数（JSON，覆盖控件）", "Other options (JSON override)")):
@@ -5843,10 +6753,15 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         tts_hint, asr_hint, gen_hint, vc_hint, sep_hint, ana_hint, vdes_hint,
     ]
 
-    ui_language.change(
+    language_change = ui_language.change(
         _change_ui_language,
         language_inputs,
         language_outputs,
+        show_progress="hidden")
+    language_change.then(
+        tts_voice_input_updates,
+        tts_model,
+        [tts_voice_heading, tts_builtin, tts_upload, tts_ref_text],
         show_progress="hidden")
     demo.load(
         _page_load_updates,
@@ -5857,7 +6772,30 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
 
 if __name__ == "__main__":
+    if os.environ.get("AUDIOCPP_WEBUI_LEGACY") != "1":
+        from workbench_server import launch_workbench
+        launch_workbench(sys.modules[__name__])
+        sys.exit(0)
     open_browser = os.environ.get("AUDIOCPP_NO_BROWSER") != "1"
+    realtime = None
+    if os.environ.get("AUDIOCPP_DISABLE_REALTIME") != "1":
+        try:
+            from realtime_server import get_server as get_realtime_server
+            realtime_port = int(os.environ.get("AUDIOCPP_REALTIME_PORT", "8765"))
+            if _port_open("127.0.0.1", realtime_port):
+                print(f"[webui] realtime port {realtime_port} is already in use; "
+                      "keeping the existing realtime backend")
+            else:
+                realtime = get_realtime_server(
+                    port=realtime_port,
+                    model_catalog_provider=realtime_tts_models,
+                    managed_tts_loader=load_realtime_tts_model,
+                )
+                realtime.start()
+                atexit.register(realtime.stop)
+                print(f"[webui] realtime voice: http://127.0.0.1:{realtime_port}/realtime/")
+        except Exception as exc:
+            print(f"[webui] realtime backend failed to start: {exc}")
     # Gradio 6 moved css/theme from the Blocks constructor to launch().
     demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=open_browser,
                 css=CUSTOM_CSS)

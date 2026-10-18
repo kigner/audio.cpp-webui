@@ -19,9 +19,26 @@ struct TransformerKVState {
     std::vector<KVLayerState> layers;
 };
 
+// Absolute position of the i-th stored row in a pinned-prefix ring:
+// pinned prefix first, then oldest-to-newest tail.
+inline int64_t ring_stored_position(
+    int64_t row,
+    int64_t valid_steps,
+    int64_t current_end,
+    int64_t pinned_prefix_steps) {
+    return row < pinned_prefix_steps ? row : current_end - valid_steps + row;
+}
+
 struct TransformerKVCacheOptions {
     bool allow_f16_storage = false;
     bool allow_bf16_storage = false;
+    // In-place ring: once full, appends overwrite the oldest unpinned
+    // entries instead of failing. The first ring_pinned_steps slots are
+    // reserved (e.g. prompt / attention sinks); positions stay absolute.
+    bool ring_mode = false;
+    int64_t ring_pinned_steps = 0;
+    // Device-only users can defer host staging allocation until import_state.
+    bool lazy_import_scratch = false;
 };
 
 class TransformerKVCache {
@@ -40,10 +57,13 @@ public:
         TransformerKVCacheOptions options);
 
     void import_state(const TransformerKVState & state);
+    void clear_on_backend();
     TransformerKVState export_state() const;
 
     void advance_after_direct_append(int64_t steps);
     void retain_prefix(int64_t prefix_steps);
+
+    int64_t slot_for_position(int64_t position) const;
 
     int64_t valid_steps() const noexcept;
     int64_t current_end() const noexcept;
@@ -66,6 +86,68 @@ private:
     int64_t step_elems_ = 0;
     int64_t valid_steps_ = 0;
     int64_t current_end_ = 0;
+    TransformerKVCacheOptions options_;
+    std::vector<LayerCache> layers_;
+};
+
+struct BatchedKVLayerState {
+    int64_t valid_steps = 0;
+    std::vector<float> key;
+    std::vector<float> value;
+};
+
+struct TransformerBatchedKVState {
+    int64_t batch_size = 0;
+    int64_t current_end = 0;
+    std::vector<int64_t> current_end_by_batch;
+    std::vector<int64_t> valid_steps_by_batch;
+    std::vector<BatchedKVLayerState> layers;
+};
+
+class TransformerBatchedKVCache {
+public:
+    TransformerBatchedKVCache() = default;
+    TransformerBatchedKVCache(
+        int64_t cache_steps,
+        int64_t batch_size,
+        int64_t row_elems,
+        std::vector<core::TensorValue> keys,
+        std::vector<core::TensorValue> values);
+    TransformerBatchedKVCache(
+        int64_t cache_steps,
+        int64_t batch_size,
+        int64_t row_elems,
+        std::vector<core::TensorValue> keys,
+        std::vector<core::TensorValue> values,
+        TransformerKVCacheOptions options);
+
+    void import_state(const TransformerBatchedKVState & state);
+    TransformerBatchedKVState export_state() const;
+
+    void advance_after_direct_append(int64_t steps);
+
+    int64_t batch_size() const noexcept;
+    int64_t valid_steps() const noexcept;
+    int64_t current_end() const noexcept;
+    int64_t cache_steps() const noexcept;
+    const std::vector<int64_t> & valid_steps_by_batch() const noexcept;
+    const std::vector<int64_t> & current_end_by_batch() const noexcept;
+
+private:
+    struct LayerCache {
+        core::TensorValue key_tensor;
+        core::TensorValue value_tensor;
+        std::vector<float> import_key_scratch;
+        std::vector<float> import_value_scratch;
+    };
+
+    int64_t cache_steps_ = 0;
+    int64_t batch_size_ = 0;
+    int64_t row_elems_ = 0;
+    int64_t valid_steps_ = 0;
+    int64_t current_end_ = 0;
+    std::vector<int64_t> valid_steps_by_batch_;
+    std::vector<int64_t> current_end_by_batch_;
     TransformerKVCacheOptions options_;
     std::vector<LayerCache> layers_;
 };

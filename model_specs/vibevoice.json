@@ -67,6 +67,22 @@
         "VibeVoice-1.5B-GGUF/vibevoice-1.5b-bf16.gguf"
       ],
       "strip_prefix": "VibeVoice-1.5B-GGUF"
+    },
+    {
+      "id": "vibevoice_7b_q8_0",
+      "display_name": "VibeVoice 7B Q8_0 GGUF",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "VibeVoice-7B-GGUF",
+      "files": [
+        "vibevoice-7b-q8_0.gguf"
+      ],
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "audio-cpp/VibeVoice-7B-GGUF",
+        "revision": "main",
+        "gated": false
+      }
     }
   ],
   "sources": [
@@ -105,5 +121,81 @@
         "model_weights": "model:model.safetensors.index.json"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Tokenizer, connector, decoder, and diffusion-head weight storage type."
+      },
+      {
+        "name": "tokenizer_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Audio tokenizer weight storage type."
+      },
+      {
+        "name": "connector_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Acoustic and semantic connector weight storage type."
+      },
+      {
+        "name": "decoder_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Language decoder weight storage type."
+      },
+      {
+        "name": "diffusion_head_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Diffusion prediction head weight storage type."
+      }
+    ],
+    "load": [
+      {
+        "name": "lora",
+        "type": "string",
+        "description": "Fine-tune adapter dir (LM LoRA + diffusion head + acoustic/semantic connectors) merged at load time."
+      },
+      {
+        "name": "lora_scale",
+        "type": "float",
+        "description": "LoRA merge scale override; defaults to lora_alpha / r."
+      }
+    ]
+  }
 }

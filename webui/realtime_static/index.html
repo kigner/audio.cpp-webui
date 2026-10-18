@@ -1,37 +1,50 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN" data-palette="classic" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>audio.cpp Realtime Voice</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="style.css" />
+    <title data-i18n="实时语音聊天 · Aixora Audio">实时语音聊天 · Aixora Audio</title>
+    <link rel="stylesheet" href="style.css?v=plain-messages-1" />
+    <link rel="stylesheet" href="workbench.css?v=scene-5" />
+<link rel="stylesheet" href="scene.css?v=clear-scenes-1" />
+    <link rel="stylesheet" href="companion/live.css?v=clean-color-1" />
   </head>
   <body class="booting">
+    <div id="live-character-stage" aria-hidden="true"></div>
+    <div class="scene-background" aria-hidden="true"></div>
+    <div class="scene-shade" aria-hidden="true"></div>
     <div id="app">
       <header class="topbar">
+        <div class="scene-heading"><button id="scene-back" class="scene-button" type="button" aria-label="返回工作台" title="返回工作台" data-i18n-aria-label="返回工作台" data-i18n-title="返回工作台">←</button><span id="scene-connection" class="scene-connection" data-state="checking" hidden data-i18n="检查连接">检查连接</span></div>
         <div class="brand">
           <div class="ident">
             <div class="ident-head">
-              <span class="ident-title">audio.cpp Realtime</span>
+              <span class="ident-title" data-i18n="实时语音聊天">实时语音聊天</span>
             </div>
-            <p class="ident-blurb">Real-time voice chat powered by audio.cpp TTS + LLM.</p>
           </div>
         </div>
         <div class="topbar-right">
-          <button id="chat-btn" class="icon-btn" title="Conversation history" aria-label="Conversation history">
+          <button id="scene-fullscreen" class="scene-button" type="button" aria-label="全屏聊天" data-i18n-aria-label="全屏聊天">⛶ <span data-i18n="全屏">全屏</span></button>
+          <button id="chat-btn" class="icon-btn" title="对话记录" aria-label="对话记录" data-i18n-title="对话记录" data-i18n-aria-label="对话记录">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span id="chat-badge" class="chat-badge" aria-hidden="true"></span>
           </button>
-          <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">
+          <button id="settings-btn" class="icon-btn" title="聊天设置" aria-label="聊天设置" data-i18n-title="聊天设置" data-i18n-aria-label="聊天设置">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c0 .66.39 1.25 1 1.51H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
         </div>
       </header>
 
       <main class="stage">
+        <section class="setup-guide" aria-label="对话准备" data-i18n-aria-label="对话准备">
+            <div class="setup-heading"><div><h2 data-i18n="服务连接">服务连接</h2><p data-i18n="文字输入使用对话与声音服务；麦克风输入另需语音识别。">文字输入使用对话与声音服务；麦克风输入另需语音识别。</p></div><button id="setup-check" class="btn plain" type="button" data-i18n="检测准备情况">检测准备情况</button></div>
+          <div class="setup-cards">
+            <button class="setup-card" type="button" data-setup="settings-asr"><span class="setup-number">01</span><strong data-i18n="语音识别">语音识别</strong><span id="setup-asr-status" data-i18n="选择识别模型">选择识别模型</span></button>
+            <button class="setup-card" type="button" data-setup="settings-llm"><span class="setup-number">02</span><strong data-i18n="对话模型">对话模型</strong><span id="setup-llm-status" data-i18n="配置对话服务">配置对话服务</span></button>
+            <button class="setup-card" type="button" data-setup="settings-tts"><span class="setup-number">03</span><strong data-i18n="语音合成">语音合成</strong><span id="setup-tts-status" data-i18n="选择声音与音色">选择声音与音色</span></button>
+          </div>
+        </section>
+        <section class="call-controls" aria-label="语音通话" data-i18n-aria-label="语音通话">
         <div class="orb-wrap">
           <div id="mic-gate" class="mic-gate">
             <svg id="mic-gate-arc" class="mic-gate-arc" viewBox="0 0 100 100" aria-hidden="true">
@@ -40,13 +53,13 @@
               <path id="mga-hit" class="mga-hit" fill="none" />
               <circle id="mga-handle" class="mga-handle" r="3" />
             </svg>
-            <button id="mic-btn" class="side-btn" type="button" aria-label="Mute" title="Mute" aria-hidden="true">
+            <button id="mic-btn" class="side-btn" type="button" aria-label="静音" title="静音" aria-hidden="true" data-i18n-aria-label="静音" data-i18n-title="静音">
               <svg class="mic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
               <svg class="mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M9 5a3 3 0 0 1 6 0v4"/><path d="M9 10v1a3 3 0 0 0 5.1 2.1"/><path d="M19 10a7 7 0 0 1-1.24 3.97"/><path d="M5 10a7 7 0 0 0 11 5.67"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
             </button>
           </div>
 
-          <button id="main-circle" class="circle state-idle" type="button" aria-label="Start voice conversation">
+          <button id="main-circle" class="circle state-idle" type="button" aria-label="开始语音对话" data-i18n-aria-label="开始语音对话">
             <span class="circle-glow" aria-hidden="true"></span>
             <span class="circle-ring" aria-hidden="true"></span>
             <span class="circle-ring-outer" aria-hidden="true"></span>
@@ -81,22 +94,39 @@
             </span>
           </button>
 
-          <button id="stop-btn" class="side-btn" type="button" aria-label="End" title="End" aria-hidden="true">
+          <button id="stop-btn" class="side-btn" type="button" aria-label="结束对话" title="结束对话" aria-hidden="true" data-i18n-aria-label="结束对话" data-i18n-title="结束对话">
             <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
           </button>
         </div>
 
-        <p id="circle-caption" class="circle-caption" role="status">Tap to start</p>
+        <div class="call-status">
+          <p id="circle-caption" class="circle-caption" role="status" data-i18n="未开始">未开始</p>
+          <div id="scene-waveform" class="scene-waveform" aria-label="麦克风音量" data-i18n-aria-label="麦克风音量"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+        <button id="text-toggle" class="scene-button" type="button" aria-label="展开文字输入" title="文字输入" aria-expanded="false" aria-controls="text-composer" data-i18n-aria-label="展开文字输入" data-i18n-title="文字输入"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M5 9h2m2 0h2m2 0h2m2 0h2M5 12h2m2 0h2m2 0h2m2 0h2M7 15h10"/></svg></button>
+        <details id="call-more" class="call-more"><summary aria-label="更多操作" title="更多操作" data-i18n-aria-label="更多操作" data-i18n-title="更多操作">•••</summary><div id="call-more-menu"></div></details>
+        <form id="text-composer" class="text-composer" hidden>
+          <label class="sr-only" for="text-input" data-i18n="发送文字到当前会话">发送文字到当前会话</label>
+          <textarea id="text-input" rows="1" maxlength="12000" placeholder="输入文字，Enter 发送 · Shift+Enter 换行" data-i18n-placeholder="输入文字，Enter 发送 · Shift+Enter 换行"></textarea>
+          <div class="text-actions"><button id="text-cancel" type="button" class="btn plain" hidden data-i18n="停止回复">停止回复</button><button id="text-send" class="btn primary" type="submit" data-i18n="发送">发送</button></div>
+        </form>
+
+        <div id="realtime-notice" class="realtime-notice" role="alert" hidden>
+          <p id="realtime-notice-text"></p>
+          <button id="realtime-notice-settings" class="realtime-notice-action" type="button" data-i18n="打开设置">打开设置</button>
+          <button id="realtime-notice-dismiss" class="realtime-notice-dismiss" type="button" aria-label="关闭错误提示" data-i18n-aria-label="关闭错误提示">×</button>
+        </div>
 
         <div id="bubble-stack" class="bubble-stack" aria-live="polite"></div>
 
-        <!-- Chat panel (slide-in from right) -->
+        </section>
+        <!-- Persistent conversation history -->
         <div id="chat-panel" class="chat-panel">
           <div id="chat-panel-backdrop" class="chat-panel-backdrop"></div>
           <div class="chat-panel-inner">
             <header class="chat-panel-header">
-              <h3>Conversation</h3>
-              <button id="chat-panel-close" class="icon-btn" aria-label="Close">
+              <h3 data-i18n="对话记录">对话记录</h3>
+              <button id="chat-panel-close" class="icon-btn" aria-label="关闭对话记录" data-i18n-aria-label="关闭对话记录">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </header>
@@ -107,14 +137,14 @@
         <!-- Queue UI -->
         <div id="queue-bar" class="queue-bar" hidden>
           <span id="queue-position" class="queue-position"></span>
-          <button id="queue-leave" class="btn plain" hidden>Leave queue</button>
+          <button id="queue-leave" class="btn plain" hidden data-i18n="离开队列">离开队列</button>
         </div>
         <div id="queue-funnel" class="queue-funnel" hidden>
           <div class="queue-funnel-card">
             <p id="queue-funnel-msg"></p>
             <div class="queue-funnel-actions">
-              <button id="queue-funnel-join" class="btn primary">Join now</button>
-              <button id="queue-funnel-leave" class="btn plain">Leave queue</button>
+              <button id="queue-funnel-join" class="btn primary" data-i18n="开始对话">开始对话</button>
+              <button id="queue-funnel-leave" class="btn plain" data-i18n="离开队列">离开队列</button>
             </div>
           </div>
         </div>
@@ -123,113 +153,112 @@
 
     <dialog id="settings-modal" class="modal">
       <form method="dialog" class="modal-content">
-        <header class="modal-header">
-          <h2>Settings</h2>
-          <button class="icon-btn" value="close" aria-label="Close">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </header>
-
+          <header class="modal-header"><h2 data-i18n="聊天设置">聊天设置</h2><button class="icon-btn" value="close" aria-label="关闭" data-i18n-aria-label="关闭">×</button></header>
+        <nav class="scene-settings-tabs" role="tablist" aria-label="聊天设置分类" data-i18n-aria-label="聊天设置分类"><button type="button" role="tab" data-settings-tab="character" data-i18n="角色">角色</button><button type="button" role="tab" data-settings-tab="llm" data-i18n="对话">对话</button><button type="button" role="tab" data-settings-tab="tts" data-i18n="声音">声音</button><button type="button" role="tab" data-settings-tab="asr" data-i18n="识别">识别</button><button type="button" role="tab" data-settings-tab="connection" data-i18n="连接">连接</button></nav>
         <div class="tab-panels">
-          <section class="tab-panel active" role="tabpanel">
-            <div class="settings-grid">
-              <div class="settings-column">
-                <p class="settings-group-title">TTS · audio.cpp 语音合成服务</p>
-            <div class="field-row">
-              <label class="field">
-                <span>TTS server URL</span>
-                <input id="tts-url" type="text" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8088" />
-              </label>
-              <label class="field">
-                <span>TTS model</span>
-                <input id="tts-model" type="text" autocomplete="off" spellcheck="false" placeholder="qwen3-tts" />
-              </label>
+          <section id="settings-character" class="settings-section" data-settings-panel="character">
+            <div id="character-grid" class="character-grid" role="group" aria-label="选择角色" data-i18n-aria-label="选择角色"></div>
+            <div id="character-builtin-field" class="character-reference-row" hidden>
+              <audio id="character-builtin-preview" controls preload="metadata" aria-label="模型内置音色试听" hidden data-i18n-aria-label="模型内置音色试听"></audio>
+              <label class="field"><span class="sr-only" data-i18n="模型内置音色">模型内置音色</span><select id="character-builtin-voice" aria-label="模型内置音色" data-i18n-aria-label="模型内置音色"></select></label>
             </div>
-            <div class="field-row">
-              <label class="field">
-                <span>Voice ref 音频路径 <small>(克隆音色, 可选)</small></span>
-                <input id="tts-voice-ref" type="text" autocomplete="off" spellcheck="false" placeholder="voice/demo_01_man.wav" />
-              </label>
-              <label class="field">
-                <span>Voice name <small>(命名音色, 可选)</small></span>
-                <input id="tts-voice" type="text" autocomplete="off" spellcheck="false" placeholder="(留空则用 voice ref)" />
-              </label>
+            <div class="character-name-row field"><label for="character-name" data-i18n="角色">角色</label><input id="character-name" maxlength="40" autocomplete="off" /><button id="character-name-save" type="button" class="btn plain" data-i18n="保存">保存</button></div>
+            <small id="character-name-status" role="status"></small>
+            <div id="tts-reference-fields">
+              <div class="reference-library-heading"><span data-i18n="角色参考音频">角色参考音频</span><button type="button" id="tts-reference-refresh" class="btn plain" data-i18n="刷新列表">刷新列表</button></div>
+              <label class="field"><span class="sr-only" data-i18n="参考音频库">参考音频库</span><select id="tts-voice-ref"><option value="" data-i18n="不使用参考音频">不使用参考音频</option></select></label>
+              <label class="character-upload btn plain"><span data-i18n="上传参考音频">上传参考音频</span><input id="character-audio-upload" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.aiff,.aif,.wma" /></label>
+              <small id="tts-reference-status" role="status"></small>
+              <small id="character-voice-hint"></small>
+              <audio id="tts-reference-preview" controls preload="none" aria-label="角色参考音频试听" hidden data-i18n-aria-label="角色参考音频试听"></audio>
+              <label class="field"><span data-i18n="参考音频中的原话">参考音频中的原话</span><textarea id="tts-ref-text" rows="2"></textarea><small id="tts-reference-text-hint" data-i18n="从音频库自动填入，可修改">从音频库自动填入，可修改</small></label>
             </div>
-            <label class="field">
-              <span>Reference text <small>(voice ref 的原话, 可选)</small></span>
-              <input id="tts-ref-text" type="text" autocomplete="off" spellcheck="false" placeholder="参考音频里说的那句话" />
-            </label>
-
-            <p class="settings-group-title">ASR · audio.cpp 语音识别服务</p>
-            <div class="field-row">
-              <label class="field">
-                <span>ASR server URL</span>
-                <input id="asr-url" type="text" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8081" />
-              </label>
-              <label class="field">
-                <span>ASR model</span>
-                <input id="asr-model" type="text" autocomplete="off" spellcheck="false" placeholder="qwen3-asr" />
-              </label>
-            </div>
-            <label class="field">
-              <span>ASR language <small>(可选, 如 zh / en)</small></span>
-              <input id="asr-language" type="text" autocomplete="off" spellcheck="false" placeholder="(自动)" />
-            </label>
-
+            <details id="character-advanced" class="character-advanced">
+              <summary data-i18n="高级设置">高级设置</summary>
+              <label class="scene-check character-caption-option"><input id="scene-captions" type="checkbox" checked />显示实时字幕</label>
+              <div id="character-animation-controls">
+              <div class="character-animation-options">
+                <label class="scene-check"><input data-animation="mouth" type="checkbox" checked />跟随语音的口型</label>
+                <label class="scene-check"><input data-animation="blink" type="checkbox" checked />自然眨眼</label>
+                <label class="scene-check"><input data-animation="breath" type="checkbox" checked />轻微呼吸</label>
+                <label class="scene-check"><input data-animation="listening" type="checkbox" checked />倾听表情</label>
+                <label class="scene-check"><input data-animation="head" type="checkbox" checked />头部动作</label>
+                <label class="scene-check"><input data-animation="shoulders" type="checkbox" checked />肩部动作</label>
               </div>
-              <div class="settings-column">
-                <p class="settings-group-title">LLM · Chat Completions</p>
-            <div class="field-row">
-              <label class="field">
-                <span>LLM base URL</span>
-                <input id="llm-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com/v1" />
-              </label>
-              <label class="field">
-                <span>LLM model</span>
-                <input id="llm-model" type="text" autocomplete="off" spellcheck="false" placeholder="deepseek-chat" />
-              </label>
-            </div>
-            <label class="field">
-              <span>LLM API key</span>
-              <input id="llm-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." />
-            </label>
-
-            <label class="field">
-              <span>Instructions <small>(系统提示)</small></span>
-              <textarea id="instructions" rows="4" placeholder="You are a friendly voice assistant..."></textarea>
-            </label>
-
-            <label class="field">
-              <span>Noise gate <small>(噪声门; 最左=关闭)</small> <span id="gate-value" class="field-value">Off</span></span>
-              <div class="gate">
-                <div class="gate-track" aria-hidden="true">
-                  <div id="gate-meter-fill" class="gate-meter-fill"></div>
-                  <input id="noise-gate" type="range" min="-66" max="-3" step="1" value="-50" aria-label="Noise gate threshold" />
-                </div>
-                <div class="gate-ends">
-                  <span>Off</span>
-                  <span>−3 dB</span>
-                </div>
+              <label class="field"><span><span data-i18n="动作幅度 ">动作幅度 </span><output id="character-strength-value">1×</output></span><input data-animation="strength" type="range" min="0.25" max="1.5" step="0.25" value="1" /></label>
+              <label class="field"><span><span data-i18n="音画补偿 ">音画补偿 </span><output id="character-delay-value">90 ms</output></span><input data-animation="delayMs" type="range" min="0" max="180" step="10" value="90" /></label>
+              <button id="character-animation-reset" type="button" class="btn plain" data-i18n="恢复推荐值">恢复推荐值</button>
               </div>
-              <small>低于此阈值的音频不发送到 VAD。弧形条可拖拽调节。</small>
-            </label>
-
-            <label class="field">
-              <span>Realtime server URL <small>(WebSocket 后端)</small></span>
-              <input id="rt-url" type="text" autocomplete="off" spellcheck="false" placeholder="ws://127.0.0.1:8765/v1/realtime" />
-              <small>改这个需要重新连接才生效。上面的 TTS/ASR/LLM 参数可在通话中实时保存。</small>
-            </label>
-              </div>
-            </div>
+            </details>
           </section>
+          <section id="settings-asr" class="settings-section">
+              <h3 data-i18n="语音识别">语音识别</h3>
+              <label class="field"><span data-i18n="麦克风">麦克风</span><select id="mic-device"><option value="" data-i18n="系统默认麦克风">系统默认麦克风</option></select></label>
+              <button id="mic-refresh" class="btn plain" type="button" data-i18n="刷新麦克风">刷新麦克风</button>
+              <small id="mic-device-status" role="status" data-i18n="允许麦克风权限后可显示设备名称。">允许麦克风权限后可显示设备名称。</small>
+              <div class="field-row"><label class="field"><span data-i18n="识别模型">识别模型</span><input id="asr-model" list="asr-model-list" autocomplete="off" placeholder="选择或输入模型名" / data-i18n-placeholder="选择或输入模型名"><datalist id="asr-model-list"></datalist></label><label class="field"><span data-i18n="交流语言">交流语言</span><select id="asr-language">
+                <option value="" data-i18n="自动">自动</option>
+                <option value="Chinese" data-code="zh" data-i18n="中文">中文</option>
+                <option value="English" data-code="en" data-i18n="英语">英语</option>
+                <option value="Cantonese" data-code="yue" data-i18n="粤语">粤语</option>
+                <option value="Japanese" data-code="ja" data-i18n="日语">日语</option>
+                <option value="Korean" data-code="ko" data-i18n="韩语">韩语</option>
+                <option value="Russian" data-code="ru" data-i18n="俄语">俄语</option>
+                <option value="French" data-code="fr" data-i18n="法语">法语</option>
+                <option value="German" data-code="de" data-i18n="德语">德语</option>
+                <option value="Spanish" data-code="es" data-i18n="西班牙语">西班牙语</option>
+                <option value="Portuguese" data-code="pt" data-i18n="葡萄牙语">葡萄牙语</option>
+                <option value="Italian" data-code="it" data-i18n="意大利语">意大利语</option>
+                <option value="Arabic" data-code="ar" data-i18n="阿拉伯语">阿拉伯语</option>
+                <option value="Indonesian" data-code="id" data-i18n="印尼语">印尼语</option>
+                <option value="Thai" data-code="th" data-i18n="泰语">泰语</option>
+                <option value="Vietnamese" data-code="vi" data-i18n="越南语">越南语</option>
+                <option value="Turkish" data-code="tr" data-i18n="土耳其语">土耳其语</option>
+                <option value="Hindi" data-code="hi" data-i18n="印地语">印地语</option>
+                <option value="Malay" data-code="ms" data-i18n="马来语">马来语</option>
+                <option value="Dutch" data-code="nl" data-i18n="荷兰语">荷兰语</option>
+                <option value="Swedish" data-code="sv" data-i18n="瑞典语">瑞典语</option>
+                <option value="Danish" data-code="da" data-i18n="丹麦语">丹麦语</option>
+                <option value="Finnish" data-code="fi" data-i18n="芬兰语">芬兰语</option>
+                <option value="Polish" data-code="pl" data-i18n="波兰语">波兰语</option>
+                <option value="Czech" data-code="cs" data-i18n="捷克语">捷克语</option>
+                <option value="Filipino" data-code="fil" data-i18n="菲律宾语">菲律宾语</option>
+                <option value="Persian" data-code="fa" data-i18n="波斯语">波斯语</option>
+                <option value="Greek" data-code="el" data-i18n="希腊语">希腊语</option>
+                <option value="Romanian" data-code="ro" data-i18n="罗马尼亚语">罗马尼亚语</option>
+                <option value="Hungarian" data-code="hu" data-i18n="匈牙利语">匈牙利语</option>
+                <option value="Macedonian" data-code="mk" data-i18n="马其顿语">马其顿语</option>
+              </select></label></div>
+              <small data-i18n="识别模型把你说的话转成文字，声音模型朗读回复。">识别模型把你说的话转成文字，声音模型朗读回复。</small>
+          </section>
+          <section id="settings-llm" class="settings-section">
+              <h3 data-i18n="对话模型">对话模型</h3>
+              <div class="field-row"><label class="field"><span data-i18n="对话服务地址">对话服务地址</span><input id="llm-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com/v1" title="需兼容 Chat Completions 接口" / data-i18n-title="需兼容 Chat Completions 接口"></label><label class="field"><span data-i18n="对话模型">对话模型</span><input id="llm-model" autocomplete="off" placeholder="deepseek-chat" /></label></div>
+              <label class="field"><span data-i18n="API 密钥">API 密钥</span><input id="llm-key" type="password" autocomplete="off" spellcheck="false" placeholder="API Key" /><small id="llm-key-status" role="status" data-i18n="保存在此浏览器；输入后点击保存设置。">保存在此浏览器；输入后点击保存设置。</small></label>
+            <label class="field"><span data-i18n="你希望它怎样回答？">你希望它怎样回答？</span><textarea id="instructions" rows="3" placeholder="例如：你是一位耐心的英语口语老师，回复简短自然。" data-i18n-placeholder="例如：你是一位耐心的英语口语老师，回复简短自然。"></textarea></label>
+          </section>
+          <section id="settings-tts" class="settings-section">
+              <h3 data-i18n="语音合成">语音合成</h3>
+            <label class="field"><span data-i18n="声音模型">声音模型</span><select id="tts-model"><option value="" data-i18n="正在读取已安装模型…">正在读取已安装模型…</option></select></label>
+              <small id="tts-model-capability"></small>
+            <label class="field"><span data-i18n="音色名称">音色名称</span><select id="tts-voice"><option value="" data-i18n="模型未提供内置音色列表">模型未提供内置音色列表</option></select></label>
+          </section>
+          <details class="advanced-settings">
+              <summary data-i18n="高级设置">高级设置</summary>
+            <div class="settings-section">
+                <div class="field-row"><label class="field"><span data-i18n="声音服务">声音服务</span><select id="tts-server-source"><option value="managed" data-i18n="自动管理">自动管理</option><option value="external" data-i18n="外部服务">外部服务</option></select></label><label class="field"><span data-i18n="播放方式">播放方式</span><select id="tts-playback-mode"><option value="auto" data-i18n="自动">自动</option><option value="offline" data-i18n="完整生成后播放">完整生成后播放</option><option value="streaming" data-i18n="边生成边播放">边生成边播放</option></select></label></div>
+              <div class="field-row"><label class="field"><span data-i18n="声音服务地址">声音服务地址</span><input id="tts-url" autocomplete="off" placeholder="http://127.0.0.1:8088" /></label><label class="field"><span data-i18n="识别服务地址">识别服务地址</span><input id="asr-url" autocomplete="off" placeholder="http://127.0.0.1:8081" /></label></div>
+                <div id="tts-dots-options" class="field-row" hidden><label class="field"><span data-i18n="推理步数">推理步数</span><input id="tts-inference-steps" type="number" min="1" step="1" /><small data-i18n="步数越大，生成越慢。">步数越大，生成越慢。</small></label><label class="field"><span data-i18n="声码器合并步数">声码器合并步数</span><input id="tts-vocoder-merge-steps" type="number" min="1" step="1" /><small data-i18n="减小可更早开口，但可能播放停顿。">减小可更早开口，但可能播放停顿。</small></label></div>
+              <label class="field"><span><span data-i18n="忽略环境噪声 ">忽略环境噪声 </span><span id="gate-value" class="field-value" data-i18n="关闭">关闭</span></span><div class="gate"><div class="gate-track"><div id="gate-meter-fill" class="gate-meter-fill" aria-hidden="true"></div><input id="noise-gate" type="range" min="-66" max="-3" step="1" value="-50" aria-label="环境噪声阈值" / data-i18n-aria-label="环境噪声阈值"></div><div class="gate-ends"><span data-i18n="关闭">关闭</span><span data-i18n="更强过滤">更强过滤</span></div></div><small data-i18n="听不清小声说话时向左调；背景声误触发时向右调。">听不清小声说话时向左调；背景声误触发时向右调。</small></label>
+                <label class="field"><span data-i18n="实时连接地址">实时连接地址</span><input id="rt-url" readonly /></label>
+            </div>
+          </details>
         </div>
-
-        <footer class="modal-footer">
-          <button id="settings-save" type="submit" class="btn primary" value="save">Save</button>
-        </footer>
+        <footer class="modal-footer"><button class="btn plain" type="submit" value="close" data-i18n="取消">取消</button><button id="settings-save" type="submit" class="btn primary" value="save" data-i18n="保存设置">保存设置</button></footer>
       </form>
     </dialog>
 
-    <script type="module" src="main.js"></script>
+<script type="module" src="main.js?v=languages-2"></script>
+<script type="module" src="scene.js?v=languages-6"></script>
   </body>
 </html>

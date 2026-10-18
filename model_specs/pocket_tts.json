@@ -9,7 +9,8 @@
     "clone"
   ],
   "modes": [
-    "offline"
+    "offline",
+    "streaming"
   ],
   "languages": [
     "en",
@@ -241,5 +242,126 @@
         "weights": "language:model.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "voice_state_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Prepared voice-state cache slots; default 4, set 0 to disable."
+      },
+      {
+        "name": "conv_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      },
+      {
+        "name": "flow_step_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "flow_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "flow_weights_view_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "generation_graph_capacity",
+        "type": "int",
+        "min": 1,
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "matmul_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      },
+      {
+        "name": "mimi_conv_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "mimi_decoder_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "mimi_encoder_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "mimi_encoder_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "mimi_full_chunk_frames",
+        "type": "int",
+        "min": 1,
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "mimi_stage2_chunk_frames",
+        "type": "int",
+        "min": 1,
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "mimi_tail_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "mimi_transformer_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "prompt_graph_capacity",
+        "type": "int",
+        "min": 1,
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "use_full_mimi",
+        "type": "bool",
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      }
+    ]
+  }
 }

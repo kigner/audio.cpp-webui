@@ -129,5 +129,93 @@
         "audio_tokenizer_weights": "audio_tokenizer:model.safetensors.index.json"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Global and local-frame weight storage type."
+      },
+      {
+        "name": "global_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Global transformer weight storage type."
+      },
+      {
+        "name": "local_frame_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Local frame decoder weight storage type."
+      },
+      {
+        "name": "global_prefill_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Global transformer prefill graph arena size."
+      },
+      {
+        "name": "global_decode_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Global transformer decode graph arena size."
+      },
+      {
+        "name": "global_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Global transformer weight context size."
+      },
+      {
+        "name": "local_frame_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Local frame decoder graph arena size."
+      },
+      {
+        "name": "local_frame_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Local frame decoder weight context size."
+      },
+      {
+        "name": "audio_tokenizer_encoder_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Audio tokenizer encoder graph arena size."
+      },
+      {
+        "name": "audio_tokenizer_decoder_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Audio tokenizer decoder graph arena size."
+      },
+      {
+        "name": "audio_tokenizer_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Audio tokenizer weight context size."
+      }
+    ]
+  }
 }

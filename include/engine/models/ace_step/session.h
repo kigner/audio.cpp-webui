@@ -29,6 +29,7 @@ public:
     runtime::TaskResult run(const runtime::TaskRequest & request) override;
 
 private:
+    runtime::TaskResult run_analyze(const AceStepRequest & request);
     void ensure_planner();
     void ensure_dit_weights_runtime();
     void ensure_pre_dit();
@@ -43,7 +44,7 @@ private:
     assets::TensorStorageType vae_weight_storage_type_ = assets::TensorStorageType::Native;
     bool mem_saver_ = false;
     std::shared_ptr<const AceStepDitWeightsRuntime> dit_weights_runtime_;
-    std::unique_ptr<AceStepPlannerRuntime> planner_;
+    std::unique_ptr<AceStepQwen3PlannerRuntime> planner_;
     std::unique_ptr<AceStepPreDitRuntime> pre_dit_;
     std::unique_ptr<AceStepDiffusionRuntime> diffusion_;
     std::shared_ptr<AceStepVAEDecoderRuntime> vae_decoder_;

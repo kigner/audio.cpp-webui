@@ -2,12 +2,13 @@
 
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/debug/profiler.h"
+#include "engine/framework/core/execution_context.h"
+#include "engine/framework/io/json.h"
 #include "engine/framework/io/filesystem.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/runtime/session.h"
 #include "engine/framework/text/chunking.h"
 #include "engine/models/fish_audio/ar.h"
-#include "engine/models/fish_audio/codec.h"
 #include "engine/models/fish_audio/generator.h"
 
 #include <algorithm>
@@ -28,10 +29,11 @@ namespace fs = std::filesystem;
 
 constexpr size_t kDefaultArGraphArenaBytes = 512ull * 1024ull * 1024ull;
 constexpr size_t kDefaultCodecGraphArenaBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultArWeightContextBytes = 512ull * 1024ull * 1024ull;
-constexpr size_t kDefaultCodecWeightContextBytes = 512ull * 1024ull * 1024ull;
+constexpr size_t kDefaultArWeightContextBytes = 32ull * 1024ull * 1024ull;
+constexpr size_t kDefaultCodecWeightContextBytes = 32ull * 1024ull * 1024ull;
 constexpr int64_t kDefaultReferenceCacheSlots = 1;
 constexpr const char * kReferenceTextOption = "reference_text";
+constexpr const char * kMultiReferenceCondOption = "multi_reference_cond";
 
 std::shared_ptr<const FishAudioAssets> require_assets(std::shared_ptr<const FishAudioAssets> assets) {
     if (assets == nullptr) {
@@ -194,7 +196,7 @@ runtime::AudioBuffer read_saved_reference_audio(const fs::path & path) {
     return runtime::AudioBuffer{wav.sample_rate, wav.channels, std::move(wav.samples)};
 }
 
-FishAudioReference load_saved_reference(
+std::vector<FishAudioReference> load_saved_references(
     const FishAudioAssets & assets,
     const std::string & reference_id) {
     validate_reference_id(reference_id);
@@ -205,20 +207,20 @@ FishAudioReference load_saved_reference(
     if (audio_files.empty()) {
         throw std::runtime_error(
             "Fish Audio cached_voice_id '" + reference_id +
-            "' requires one WAV reference with a matching .lab file under " +
+            "' requires at least one WAV reference with a matching .lab file under " +
             reference_dir.string());
     }
-    if (audio_files.size() > 1) {
-        throw std::runtime_error(
-            "Fish Audio cached_voice_id '" + reference_id +
-            "' has multiple WAV references with .lab files; the C++ session expects exactly one reference pair");
+    std::vector<FishAudioReference> references;
+    references.reserve(audio_files.size());
+    for (const auto & audio_file : audio_files) {
+        auto lab_path = audio_file;
+        lab_path.replace_extension(".lab");
+        references.push_back(FishAudioReference{
+            read_saved_reference_audio(audio_file),
+            engine::io::read_text_file(lab_path),
+            reference_id + "\n" + audio_file.lexically_normal().string()});
     }
-    auto lab_path = audio_files.front();
-    lab_path.replace_extension(".lab");
-    return FishAudioReference{
-        read_saved_reference_audio(audio_files.front()),
-        engine::io::read_text_file(lab_path),
-        reference_id};
+    return references;
 }
 
 std::string reference_cache_id_from_voice(const std::optional<runtime::VoiceCondition> & voice) {
@@ -240,13 +242,13 @@ bool has_reference_selector(const std::optional<runtime::VoiceCondition> & voice
         (speaker.cached_voice_id.has_value() && !speaker.cached_voice_id->empty());
 }
 
-std::optional<FishAudioReference> reference_from_voice(
+std::vector<FishAudioReference> references_from_voice(
     const FishAudioAssets & assets,
     const std::optional<runtime::VoiceCondition> & voice,
     const std::unordered_map<std::string, std::string> & options,
     const char * role) {
     if (!has_reference_selector(voice)) {
-        return std::nullopt;
+        return {};
     }
     const auto & speaker = *voice->speaker;
     if (speaker.audio.has_value()) {
@@ -255,12 +257,44 @@ std::optional<FishAudioReference> reference_from_voice(
             throw std::runtime_error(
                 std::string(role) + " with inline reference audio requires reference_text option");
         }
-        return FishAudioReference{
+        return {FishAudioReference{
             speaker.audio,
             *reference_text,
-            reference_cache_id_from_voice(voice)};
+            reference_cache_id_from_voice(voice)}};
     }
-    return load_saved_reference(assets, *speaker.cached_voice_id);
+    return load_saved_references(assets, *speaker.cached_voice_id);
+}
+
+std::vector<FishAudioReference> multi_reference_cond_from_options(
+    const std::unordered_map<std::string, std::string> & options) {
+    const auto value = runtime::find_option(options, {kMultiReferenceCondOption});
+    if (!value.has_value()) {
+        return {};
+    }
+    const auto root = engine::io::json::parse(*value);
+    if (!root.is_array()) {
+        throw std::runtime_error("Fish Audio multi_reference_cond must be a JSON array");
+    }
+    std::vector<FishAudioReference> references;
+    references.reserve(root.as_array().size());
+    for (const auto & item : root.as_array()) {
+        if (!item.is_object()) {
+            throw std::runtime_error("Fish Audio multi_reference_cond entries must be objects");
+        }
+        const auto audio_path = engine::io::json::require_string(item, "audio");
+        const auto text = engine::io::json::require_string(item, "text");
+        if (audio_path.empty()) {
+            throw std::runtime_error("Fish Audio multi_reference_cond audio path must not be empty");
+        }
+        if (text.empty()) {
+            throw std::runtime_error("Fish Audio multi_reference_cond text must not be empty");
+        }
+        references.push_back(FishAudioReference{
+            read_saved_reference_audio(audio_path),
+            text,
+            {}});
+    }
+    return references;
 }
 
 }  // namespace
@@ -283,21 +317,33 @@ FishAudioSession::FishAudioSession(
     validate_ar_weight_storage(ar_weight_type, "fish_audio.weight_type");
     validate_codec_weight_storage(codec_weight_type, "fish_audio.codec_weight_type");
     const int threads = options.backend.threads > 0 ? options.backend.threads : 1;
-    auto ar = std::make_unique<FishAudioARRuntime>(
+    auto ar = std::make_unique<FishAudioDualARRuntime>(
         assets_,
         options.backend,
         threads,
         runtime::parse_size_mb_option(options.options, {"fish_audio.ar_graph_arena_mb"}, kDefaultArGraphArenaBytes),
         runtime::parse_size_mb_option(options.options, {"fish_audio.ar_weight_context_mb"}, kDefaultArWeightContextBytes),
         ar_weight_type);
-    auto codec = std::make_unique<FishAudioCodecRuntime>(
-        assets_,
+    engine::codecs::FishDacCodecRuntimeOptions codec_options;
+    codec_options.graph_arena_bytes =
+        runtime::parse_size_mb_option(options.options, {"fish_audio.codec_graph_arena_mb"}, kDefaultCodecGraphArenaBytes);
+    codec_options.weight_context_bytes =
+        runtime::parse_size_mb_option(options.options, {"fish_audio.codec_weight_context_mb"}, kDefaultCodecWeightContextBytes);
+    codec_options.matmul_weight_storage_type = codec_weight_type;
+    codec_options.conv_weight_storage_type = codec_weight_type;
+    core::ExecutionContext codec_execution(options.backend);
+    auto codec_component = engine::codecs::FishDacCodecComponent::load_from_tensor_source(
+        assets_->codec_weights,
+        assets_->config.codec,
+        engine::codecs::FishDacCodecWeightBinding{},
+        codec_execution.backend(),
+        codec_execution.backend_type(),
+        codec_options);
+    auto codec = std::make_unique<engine::codecs::FishDacCodecRuntime>(
+        std::move(codec_component),
         options.backend,
         threads,
-        runtime::parse_size_mb_option(options.options, {"fish_audio.codec_graph_arena_mb"}, kDefaultCodecGraphArenaBytes),
-        runtime::parse_size_mb_option(options.options, {"fish_audio.codec_weight_context_mb"}, kDefaultCodecWeightContextBytes),
-        codec_weight_type,
-        codec_weight_type);
+        codec_options.graph_arena_bytes);
     generator_ = std::make_unique<FishAudioGenerator>(
         assets_,
         std::move(ar),
@@ -346,9 +392,13 @@ void FishAudioSession::prepare(const runtime::SessionPreparationRequest & reques
             defaults.generation.max_new_tokens = *value;
         }
     }
-    if (auto reference = reference_from_voice(*assets_, request.voice, request.options, "Fish Audio prepare");
-        reference.has_value()) {
-        defaults.reference = std::move(*reference);
+    if (auto references = references_from_voice(*assets_, request.voice, request.options, "Fish Audio prepare");
+        !references.empty()) {
+        defaults.references = std::move(references);
+        has_defaults = true;
+    } else if (auto references = multi_reference_cond_from_options(request.options);
+               !references.empty()) {
+        defaults.references = std::move(references);
         has_defaults = true;
     }
     if (has_defaults) {
@@ -363,11 +413,14 @@ FishAudioRequest FishAudioSession::make_request(const runtime::TaskRequest & req
         out.text = request.text_input->text;
     }
     out.generation = generation_options_from_request(request);
-    if (auto reference = reference_from_voice(*assets_, request.voice, request.options, "Fish Audio request");
-        reference.has_value()) {
-        out.reference = std::move(*reference);
+    if (auto references = references_from_voice(*assets_, request.voice, request.options, "Fish Audio request");
+        !references.empty()) {
+        out.references = std::move(references);
+    } else if (auto references = multi_reference_cond_from_options(request.options);
+               !references.empty()) {
+        out.references = std::move(references);
     } else if (request.text_input.has_value()) {
-        out.reference = std::nullopt;
+        out.references.clear();
     }
     if (out.text.empty()) {
         throw std::runtime_error("Fish Audio request text must not be empty");
@@ -375,7 +428,7 @@ FishAudioRequest FishAudioSession::make_request(const runtime::TaskRequest & req
     return out;
 }
 
-const FishAudioCodes & FishAudioSession::resolve_reference_codes(const FishAudioReference & reference) {
+const engine::codecs::FishDacCodes & FishAudioSession::resolve_reference_codes(const FishAudioReference & reference) {
     ReferenceCacheKey key;
     key.source_id = reference.cache_id;
     if (reference.cache_id.empty() && !reference.audio.has_value()) {
@@ -436,13 +489,16 @@ runtime::TaskResult FishAudioSession::run(const runtime::TaskRequest & request) 
     engine::debug::trace_log_scalar("fish_audio.text_chunk_count", static_cast<int64_t>(chunk_requests.size()));
 
     runtime::AudioBuffer merged_audio;
-    std::optional<FishAudioCodes> reference_codes = std::nullopt;
+    std::vector<engine::codecs::FishDacCodes> reference_codes;
     std::optional<FishAudioConversationTurn> previous_turn = std::nullopt;
     for (size_t chunk_index = 0; chunk_index < chunk_requests.size(); ++chunk_index) {
         const auto & chunk_request = chunk_requests[chunk_index];
         auto fish_request = make_request(chunk_request);
-        if (fish_request.reference.has_value() && !reference_codes.has_value()) {
-            reference_codes = resolve_reference_codes(*fish_request.reference);
+        if (!fish_request.references.empty() && reference_codes.empty()) {
+            reference_codes.reserve(fish_request.references.size());
+            for (const auto & reference : fish_request.references) {
+                reference_codes.push_back(resolve_reference_codes(reference));
+            }
         }
         auto generated = generator_->generate(fish_request, reference_codes, previous_turn, mem_saver);
         runtime::append_audio_buffer(merged_audio, generated.audio);

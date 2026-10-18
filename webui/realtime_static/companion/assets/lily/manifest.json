@@ -1,0 +1,53 @@
+{
+  "name": "Lily",
+  "date": "2026-10-08",
+  "tool": "image_gen.imagegen (built-in)",
+  "approved_scene": "exec-d0d461af-783a-47db-8ff9-d62365d7e37c.png",
+  "approved_scene_notes": "User confirmed the illustrated Lily revision after the photorealistic input. Preserve its closer framing, including the original bottom-edge crop.",
+  "character": {
+    "file": "character.png",
+    "source": "exec-0cbc81fb-4c48-4bd7-a83f-2c3bcf0a0fb4.png",
+    "dimensions": [
+      1672,
+      941
+    ],
+    "transparent_background": true,
+    "prompt": "Extract ONLY the adult illustrated woman from this approved scene into a genuinely transparent RGBA foreground layer. Preserve the exact original 1672x941 landscape canvas, exact position, scale, pose, silhouette, facial drawing, hair, clothing, hands, legs, shoes, colors and lighting. Do not redraw, beautify, reframe, shift, zoom or extend the woman. Preserve the existing crop at the bottom edge. Remove every part of the room, sofa, cushions, rug, lamp, walls, windows, scenery and furniture shadows. All pixels outside her silhouette, including gaps between arms, hair and limbs, must be truly transparent. Keep clean naturally antialiased edges and fine strands of hair. This is a technical background-removal operation for a separate character layer that must overlay the supplied original without changing her pixel placement. No background color, checkerboard painted into the pixels, new shadows, text or additional objects."
+  },
+  "background": {
+    "file": "../../backgrounds/lily-living-room.png",
+    "source": "exec-43b0a288-ae04-49db-94f7-f5a1e9946b20.png",
+    "dimensions": [
+      1672,
+      941
+    ],
+    "prompt": "Edit the approved illustration into its empty living-room BACKGROUND layer. Remove only the woman completely, including hair, hands, clothing, legs and shoes, and reconstruct the olive velvet sofa, cushions, seat seams, rug and room behind her. Preserve the exact original 1672x941 landscape canvas, perspective, sofa edges and seat height, lighting, object positions, arched window, ivory curtains, amber floor lamp, greenery and twilight lights. The original woman will be placed back as a separate transparent foreground at exactly the same coordinates, so the sofa must not shift or change height. Retain the approved painted illustration style and warm mood. Preserve the broad smooth dimming toward the far left, with faint room detail and natural continuous light falloff: no rectangular dark slab, straight vertical border or abrupt blur boundary. Keep only mild depth-of-field softness, with sofa, lamp and curtains recognizable. No people, limbs, clothing left behind, text, UI or watermark. Output one empty room only."
+  },
+  "face_atlas": {
+    "file": "face-atlas.png",
+    "source": "exec-70a542b9-34be-4c6a-9cab-b3a6849b7118.png",
+    "dimensions": [
+      1254,
+      1254
+    ],
+    "tileSize": 418,
+    "cells": [
+      "neutral",
+      "blink_closed",
+      "blink_half",
+      "aa",
+      "E_I",
+      "O",
+      "U",
+      "PP",
+      "listening"
+    ],
+    "prompt": "Create a precise facial animation sprite atlas for the same adult illustrated woman Lily in the supplied approved scene. Only her face appears. Output a square image, 3 columns by 3 rows of exactly nine equal square cells, no gaps, borders, grid lines, captions or text. Match the reference's exact facial identity, tilt, eye placement, nose, lips, cheekbones, drawn linework, warm skin shading, hair and face angle. Tightly crop each face from upper forehead to below chin with a small hair border; no shoulders or torso. The face must have identical scale and position within every tile. Keep the reference's mature 2D cartoon style, not a photographic replacement. Only mouth and eyelids may change.\nRow 1 left: original gentle closed-mouth smile, eyes open. Row 1 middle: natural blink with BOTH eyes fully closed, unchanged mouth. Row 1 right: BOTH eyes halfway closed, unchanged mouth. Row 2 left: speaking A, moderately open mouth with a little upper teeth. Row 2 middle: speaking E/I, shallow horizontal mouth opening and subtle upper teeth. Row 2 right: speaking O, rounded opening. Row 3 left: speaking U, small rounded opening. Row 3 middle: M/B/P gently pressed closed lips. Row 3 right: attentive gentle closed-mouth smile, eyes open. Restrained natural speaking shapes. Preserve all other face features and skin highlights identically between cells. Opaque warm neutral background. Do not show the room. This is one 3x3 production expression sheet."
+  },
+  "registration": {
+    "file": "face-registration.json",
+    "method": "Read-only multiscale normalized cross-correlation of stable face regions; no generated image pixels were edited.",
+    "neutral_correlation": 0.9674699277760325,
+    "minimum_cell_correlation": 0.9673631290525804
+  }
+}

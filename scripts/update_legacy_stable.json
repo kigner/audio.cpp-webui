@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "channel": "stable",
+  "version": "0.6.0",
+  "published_at": "2026-08-14T17:58:46Z",
+  "manifest_url": "https://github.com/kigner/audio.cpp-webui/releases/download/v0.6.0-windows-prebuilt/manifest-v0.6.0.json",
+  "signature_url": "https://github.com/kigner/audio.cpp-webui/releases/download/v0.6.0-windows-prebuilt/manifest-v0.6.0.json.minisig",
+  "notes_url": "https://github.com/kigner/audio.cpp-webui/releases/tag/v0.6.0-windows-prebuilt"
+}

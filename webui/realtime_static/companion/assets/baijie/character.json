@@ -1,0 +1,21 @@
+{
+  "image": "character.png",
+  "label": "白洁透明人物",
+  "faceAtlas": "face-atlas.png",
+  "registration": "face-registration.json",
+  "sceneLayout": {"subjectBounds": [989, 23, 1602, 893]},
+  "rig": {
+    "headRegion": [1280, 146, 145, 175],
+    "leftShoulderRegion": [1205, 302, 72, 125],
+    "rightShoulderRegion": [1413, 304, 72, 120],
+    "chestRegion": [1295, 325, 130, 135],
+    "headPivot": [1310, 249],
+    "shoulderGate": [210, 260],
+    "leftEyeRegion": [148, 198, 59, 30],
+    "rightEyeRegion": [269, 151, 58, 30],
+    "mouthRegion": [245, 286, 85, 61],
+    "skinSamples": [[183, 267], [302, 257], [242, 321], [272, 226]],
+    "maskAngle": 0.24,
+    "motionScale": 0.55
+  }
+}

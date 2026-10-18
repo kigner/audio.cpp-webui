@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.2.0",
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.7.0",
     [Parameter(Mandatory = $true)][string]$MinisignBinary,
     [Parameter(Mandatory = $true)][string]$PublicKeyPath,
     [string]$OutputPath = ""
@@ -10,6 +10,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
+if ([version]$Version -lt [version]'0.7.0') {
+    throw 'Do not bootstrap a legacy installation across the 0.7.0 full-package baseline. Keep the published legacy bootstrap, or install Aixora-Studio.zip.'
+}
 $MinisignBinary = [IO.Path]::GetFullPath($MinisignBinary)
 $PublicKeyPath = [IO.Path]::GetFullPath($PublicKeyPath)
 if ($OutputPath -eq "") {
@@ -47,6 +50,7 @@ try {
     $versionValue.components.app = $Version
     $versionValue.components.core_cpu = $Version
     $versionValue.components.core_cuda = $Version
+    $versionValue.components.core_vulkan = $Version
     $updaterVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "updater\updater.version") -Raw).Trim()
     if ($null -eq $versionValue.components.PSObject.Properties["updater"]) {
         $versionValue.components | Add-Member -NotePropertyName "updater" -NotePropertyValue $updaterVersion

@@ -10,6 +10,14 @@ except ImportError:
 
 
 class WebuiVersionTests(unittest.TestCase):
+    def test_source_ui_version_is_independent_of_runtime_bundle(self):
+        with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as bundle:
+            for root, version in ((source, "0.7.0"), (bundle, "0.6.0")):
+                with open(os.path.join(root, "version.json"), "w", encoding="utf-8") as f:
+                    json.dump({"version": version}, f)
+            self.assertEqual(app._current_app_version(source, bundle, environ={}), "0.7.0")
+            self.assertEqual(app._current_app_version(bundle, bundle, environ={}), "0.6.0")
+
     def test_portable_version_comes_from_version_json(self):
         with tempfile.TemporaryDirectory() as root:
             with open(os.path.join(root, "version.json"), "w", encoding="utf-8") as f:

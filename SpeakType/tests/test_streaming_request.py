@@ -19,3 +19,10 @@ def test_segment_gets_configured_trailing_silence() -> None:
     assert padded.startswith(speech)
     assert len(padded) == len(speech) + 16000 * 400 // 1000 * 2
     assert set(padded[len(speech) :]) == {0}
+
+
+def test_explicit_whisper_language_and_fixed_model_default() -> None:
+    whisper = StreamingAsrClient(AsrConfig(model="crisperwhisper", language="zh"), VadConfig())
+    assert whisper._request_data()["language"] == "zh"
+    fixed = StreamingAsrClient(AsrConfig(model="moonshine-asr", language=""), VadConfig())
+    assert "language" not in fixed._request_data()

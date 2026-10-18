@@ -3,12 +3,30 @@
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace engine::models::seed_vc {
+
+inline int64_t seed_vc_adjusted_source_frames(int64_t frames, float length_adjust) {
+    if (frames <= 0 || !std::isfinite(length_adjust) || length_adjust <= 0.0F) {
+        throw std::runtime_error("Seed-VC source length and length_adjust must be positive and finite");
+    }
+    if (length_adjust == 1.0F) {
+        return frames;
+    }
+    // Match v1's truncation while keeping the source regulator non-empty.
+    const double adjusted = static_cast<double>(frames) * length_adjust;
+    if (!std::isfinite(adjusted) || adjusted >= static_cast<double>(std::numeric_limits<int64_t>::max())) {
+        throw std::runtime_error("Seed-VC adjusted source length overflow");
+    }
+    return adjusted < 1.0 ? 1 : static_cast<int64_t>(adjusted);
+}
 
 struct SeedVcLengthRegulatorOutput {
     std::vector<float> values;

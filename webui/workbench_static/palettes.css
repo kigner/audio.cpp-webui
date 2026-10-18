@@ -1,0 +1,7 @@
+/* Each palette supports light and dark; connection indicators keep semantic colors. */
+:root{--bg:#f5f6fa;--surface:#fff;--surface-soft:#f7f8fb;--sidebar:#f3f4f8;--text:#373e52;--muted:#737c90;--border:#e6e8f0;--upload-border:#cbd0df;--accent:#7460ac;--accent-hover:#655197;--accent-soft:#eeebf7;--accent-ink:#fff;--green:#526b99;--red:#b75161;--yellow:#9a7337;--shadow:0 2px 8px #26314b03;--radius:10px;--font:Inter,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;color-scheme:light}
+:root[data-theme=dark]{--bg:#171a24;--surface:#202431;--surface-soft:#252a39;--sidebar:#1b1f2c;--text:#e1e4ef;--muted:#a0a9c0;--border:#353b50;--upload-border:#535d7a;--accent:#b7a2ed;--accent-hover:#c5b4f2;--accent-soft:#343047;--accent-ink:#251e3b;--green:#9eb6e0;--red:#ee99a7;--yellow:#dcb878;--shadow:none;color-scheme:dark}
+:root{--green:#26865b;--red:#c34955;--muted:#626d83}
+:root[data-theme=dark]{--green:#67d59b;--red:#f08290}
+:root[data-palette=studio]{--bg:#f3f0e9;--surface:#fffdf8;--surface-soft:#f7f3eb;--sidebar:#eae5db;--text:#363631;--muted:#716a5e;--border:#dcd5c7;--upload-border:#bdb29d;--accent:#8b571d;--accent-hover:#734515;--accent-soft:#f3e6ce;--accent-ink:#fff;--yellow:#8c661f;--shadow:0 2px 8px #3d311a05}
+:root[data-palette=studio][data-theme=dark]{--bg:#1b1c1e;--surface:#242628;--surface-soft:#2c2e30;--sidebar:#202123;--text:#eeeae2;--muted:#b4ada1;--border:#40403c;--upload-border:#6f6655;--accent:#e2b267;--accent-hover:#edc68b;--accent-soft:#3d3425;--accent-ink:#261e12;--yellow:#e5bd73;--shadow:none}

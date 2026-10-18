@@ -30,6 +30,7 @@ public:
         const AceStepRequest & request,
         const AceStepTaskRoute & route,
         const AceStepPlan & plan) const;
+    std::vector<int32_t> encode_source_audio_codes(const runtime::AudioBuffer & audio, uint32_t seed) const;
     void prepare_runtime() const;
     void release_runtime_graphs() const;
 
@@ -48,7 +49,7 @@ private:
     assets::TensorStorageType text_encoder_weight_storage_type_ = assets::TensorStorageType::Native;
     AceStepTextTokenizer tokenizer_;
     core::ExecutionContext * execution_ = nullptr;
-    mutable std::unique_ptr<AceStepQwenTextEncoderRuntime> text_encoder_;
+    mutable std::unique_ptr<AceStepQwen3TextEncoderRuntime> text_encoder_;
     mutable std::unique_ptr<AceStepConditionEncoderRuntime> condition_encoder_;
     mutable std::unique_ptr<AceStepCoverTokenizerRuntime> cover_tokenizer_;
     mutable std::unique_ptr<AceStepAudioDetokenizerRuntime> detokenizer_;

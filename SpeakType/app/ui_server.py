@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import threading
 import time
@@ -29,6 +30,7 @@ class UiServer:
         self.event_hub = event_hub
         self.state_provider = state_provider
         self.web_root = web_root
+        self.ready = False
         self.app = self._create_app()
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
@@ -45,10 +47,19 @@ class UiServer:
             "mode": mode,
             "toggle_hotkey": self.config.hotkeys.toggle_recording,
             "cancel_hotkey": self.config.hotkeys.cancel_current,
+            "ui_language": "en" if self.config.ui.language == "en" else "zh",
         }
 
     def _create_app(self) -> FastAPI:
         app = FastAPI(title="SpeakType UI", docs_url=None, redoc_url=None)
+        @app.middleware("http")
+        async def revalidate_ui(request, call_next):
+            response = await call_next(request)
+            response.headers["Cache-Control"] = "no-cache"
+            return response
+
+        studio_assets = Path(__file__).resolve().parents[2] / "webui" / "workbench_static"
+        app.mount("/studio-copy", StaticFiles(directory=studio_assets), name="studio-copy")
         app.mount("/assets", StaticFiles(directory=self.web_root), name="assets")
 
         @app.get("/")
@@ -61,7 +72,8 @@ class UiServer:
 
         @app.get("/health")
         async def health() -> JSONResponse:
-            return JSONResponse({"status": "ok", "state": self.state_provider()})
+            return JSONResponse({"status": "ok", "state": self.state_provider(),
+                                 "application": "SpeakType", "pid": os.getpid(), "ready": self.ready})
 
         @app.websocket("/ws/ui")
         async def ui_websocket(websocket: WebSocket) -> None:

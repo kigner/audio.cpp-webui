@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -14,10 +15,11 @@ namespace engine::models::rvc {
 namespace {
 
 int64_t rounded_nonnegative_index(float value, const std::string & name) {
-    if (value < 0.0F) {
-        throw std::runtime_error("RVC retrieval sidecar contains negative " + name);
+    if (!std::isfinite(value) || value < 0.0F || std::floor(value) != value ||
+        static_cast<double>(value) >= static_cast<double>(std::numeric_limits<int64_t>::max())) {
+        throw std::runtime_error("RVC retrieval sidecar contains invalid " + name);
     }
-    return static_cast<int64_t>(std::llround(static_cast<double>(value)));
+    return static_cast<int64_t>(value);
 }
 
 std::vector<uint8_t> read_binary_file(const std::filesystem::path & path) {
@@ -69,11 +71,33 @@ RvcRetrievalIndex load_retrieval_sidecar(
     const auto lengths = source.require_f32("list_lengths", {nlist});
     index.list_offsets.resize(static_cast<size_t>(nlist));
     index.list_lengths.resize(static_cast<size_t>(nlist));
+    // Legacy F16 GGUF packages also cast integer list offsets to F16. Recover
+    // the converter's contiguous layout only when every stored offset is exactly
+    // the F16 encoding of that layout; arbitrary malformed indexes stay errors.
+    const bool f16_offsets = engine::assets::tensor_storage_type_for_dtype(
+        source.require_metadata("list_offsets").dtype) == engine::assets::TensorStorageType::F16;
     int64_t total = 0;
     for (int64_t list = 0; list < nlist; ++list) {
-        index.list_offsets[static_cast<size_t>(list)] = rounded_nonnegative_index(offsets[static_cast<size_t>(list)], "offset");
-        index.list_lengths[static_cast<size_t>(list)] = rounded_nonnegative_index(lengths[static_cast<size_t>(list)], "length");
-        total += index.list_lengths[static_cast<size_t>(list)];
+        const size_t at = static_cast<size_t>(list);
+        const int64_t offset = rounded_nonnegative_index(offsets[at], "offset");
+        const int64_t length = rounded_nonnegative_index(lengths[at], "length");
+        if (length > vector_count - total) {
+            throw std::runtime_error("RVC retrieval sidecar list lengths exceed vector count: " + label);
+        }
+        if (f16_offsets) {
+            const float encoded = ggml_fp16_to_fp32(ggml_fp32_to_fp16(static_cast<float>(total)));
+            if (offsets[at] != encoded) {
+                throw std::runtime_error("RVC retrieval sidecar has invalid F16 list offsets: " + label);
+            }
+            index.list_offsets[at] = total;
+        } else {
+            if (offset > vector_count || length > vector_count - offset) {
+                throw std::runtime_error("RVC retrieval sidecar list range exceeds vector count: " + label);
+            }
+            index.list_offsets[at] = offset;
+        }
+        index.list_lengths[at] = length;
+        total += length;
     }
     if (total != vector_count) {
         throw std::runtime_error("RVC retrieval sidecar list lengths do not match vector count: " + label);

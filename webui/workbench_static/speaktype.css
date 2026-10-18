@@ -1,0 +1,8 @@
+#page-speaktype .speaktype-card{max-width:860px;margin-bottom:20px}
+#page-speaktype h2{font-size:17px;margin:0 0 14px}
+#page-speaktype .field{margin:20px 0;max-width:560px}
+#page-speaktype label{display:block;margin-bottom:8px;font-weight:550}
+#page-speaktype .reference-actions{flex-wrap:wrap;justify-content:flex-start}
+#page-speaktype li{margin:12px 0;line-height:1.8}
+#page-speaktype kbd{display:inline-block;padding:2px 7px;background:var(--bg);border:1px solid var(--border);border-radius:5px;overflow-wrap:anywhere}
+#speaktype-status{line-height:1.7;overflow-wrap:anywhere}

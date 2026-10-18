@@ -153,8 +153,9 @@ class TextInjector:
     def inject(self, text: str) -> InjectionResult:
         if not text:
             return InjectionResult("empty", "EMPTY FINAL")
+        is_foreground = self.target.is_foreground()
         target_hwnd = self.target.target_hwnd
-        fg_hwnd = int(USER32.GetForegroundWindow())
+        fg_hwnd = int(USER32.GetForegroundWindow() or 0)
         LOGGER.info(
             "inject: chars=%s target=%s(%r) foreground=%s(%r) is_foreground=%s",
             len(text),
@@ -162,7 +163,7 @@ class TextInjector:
             _window_title(target_hwnd),
             fg_hwnd,
             _window_title(fg_hwnd),
-            self.target.is_foreground(),
+            is_foreground,
         )
         if not self.target.is_foreground():
             self._copy(text)

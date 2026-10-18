@@ -179,7 +179,7 @@ export class Account {
   /** Show a warm "we're at capacity" message when even the waiting line is full.
    *  Reuses the limit modal shell; no call-to-action, just reassurance. */
   showBusy() {
-    this._modalTitle.textContent = "Hugged to the limit 🤗";
+    this._modalTitle.textContent = "Hugged to the limit";
     this._modalMsg.textContent =
       "Every slot and the whole line are full right now. Too much love! Grab a coffee and pop back in a minute.";
     this._modalNote.textContent = "A spot usually opens up within a few minutes.";

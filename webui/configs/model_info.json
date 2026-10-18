@@ -1,0 +1,2008 @@
+{
+  "checked_at": "2026-10-07",
+  "models": {
+    "miotts": {
+      "memory_range_gb": [
+        8.0,
+        12.0
+      ],
+      "description": "MioTTS 1.7B 语音合成，运行还需要匹配的 MioCodec 音频编解码器；参考声音用于声音克隆。",
+      "package_ids": [
+        "miotts_1_7b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 2197326752,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "minimax-h3": {
+      "memory_range_gb": [
+        12.0,
+        20.0
+      ],
+      "description": "MiniMax H3 多模态音频生成。本地界面仅接收音频结果；视频帧输出请使用上游原生界面。",
+      "package_ids": [
+        "minimax_h3_q4_k"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 32443213394,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "citrinet-asr": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "NVIDIA Citrinet 语音识别，根据输入音频输出文字；使用当前权重包的语言能力。",
+      "package_ids": [
+        "citrinet_asr_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 40574432,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "muscriptor-small": {
+      "memory_range_gb": [
+        4.0,
+        8.0
+      ],
+      "description": "MuScriptor Small 从文字描述生成乐谱，主要产物为 MIDI 文件；模型结果会作为文件保留。",
+      "package_ids": [
+        "muscriptor_small_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 411908672,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "apollo": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "音频修复模型，改善压缩音频和音乐的听感；输入待修复音频，输出恢复后的音频。",
+      "package_ids": [
+        "apollo_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 66398592,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "audio8-asr": {
+      "memory_range_gb": [
+        2.0,
+        3.0
+      ],
+      "description": "Audio8 0.1B 语音识别，使用原始 Safetensors 权重进行转写；本条目不提供声音生成。",
+      "package_ids": [
+        "audio8_asr_0_1b_safetensors"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "Audio8/Audio8-ASR-0.1B",
+          "url": "https://huggingface.co/Audio8/Audio8-ASR-0.1B/tree/main",
+          "revision": "8487da63d581fa4fc9b5c60444cb57c3a523d7aa"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/Audio8/Audio8-ASR-0.1B"
+      ],
+      "size_bytes": 663908188,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "audio8-tts": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "Audio8 0.6B 语音生成与声音克隆。克隆时使用参考音频，生成内容由文本提供。",
+      "package_ids": [
+        "audio8_tts_preview_0_6b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "js-byte/Audio8-TTS-Preview-0.6b-GGUF",
+          "url": "https://huggingface.co/js-byte/Audio8-TTS-Preview-0.6b-GGUF/tree/main",
+          "revision": "788f6fdb0bbdbbc407c63f3265cea9875b4a7c14"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/Audio8/Audio8-TTS-Preview-0.6b"
+      ],
+      "size_bytes": 1429545312,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "audio8-tts-clone": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "Audio8 0.6B 语音生成与声音克隆。克隆时使用参考音频，生成内容由文本提供。",
+      "package_ids": [
+        "audio8_tts_preview_0_6b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "js-byte/Audio8-TTS-Preview-0.6b-GGUF",
+          "url": "https://huggingface.co/js-byte/Audio8-TTS-Preview-0.6b-GGUF/tree/main",
+          "revision": "788f6fdb0bbdbbc407c63f3265cea9875b4a7c14"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/Audio8/Audio8-TTS-Preview-0.6b"
+      ],
+      "size_bytes": 1429545312,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "audio-flamingo": {
+      "memory_range_gb": [
+        8.0,
+        12.0
+      ],
+      "description": "NVIDIA Audio Flamingo Next 音频理解模型，可按文字指令描述或分析音频；适合声音问答，并非所有输出都是逐字转写。",
+      "package_ids": [
+        "audio_flamingo_next_q4_k"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/Audio-Flamingo-GGUF",
+          "url": "https://huggingface.co/audio-cpp/Audio-Flamingo-GGUF/tree/main",
+          "revision": "4cd7a27952e381bcaaa89086ba40b193cb167eb4"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/nvidia/audio-flamingo-next-hf"
+      ],
+      "size_bytes": 5455139584,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "audiosr": {
+      "memory_range_gb": [
+        8.0,
+        12.0
+      ],
+      "description": "AudioSR 音频超分辨率，补全高频细节。扩散推理的占用会随输入长度增加，建议先处理短音频。",
+      "package_ids": [
+        "audiosr_basic_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 6177855616,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "auk": {
+      "memory_range_gb": [
+        18.0,
+        24.0
+      ],
+      "description": "腾讯 AuK 可按指令生成或编辑语音。当前选择 Base F32，下载包含生成器、Qwen 条件模型和音频自编码器；无参考音频时需填写正数生成时长。",
+      "package_ids": [
+        "auk_base_f32",
+        "auk_qwen_bf16",
+        "auk_vae_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/AuK-Base-and-Flash-GGUF",
+          "url": "https://huggingface.co/audio-cpp/AuK-Base-and-Flash-GGUF/tree/main",
+          "revision": "2814a16a49b822a5709e11a78cfd7c1662f19b61"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/tencent/AuK",
+        "https://huggingface.co/tencent/AuK-Flash"
+      ],
+      "size_bytes": 14218395323,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "auk-edit": {
+      "memory_range_gb": [
+        18.0,
+        24.0
+      ],
+      "description": "腾讯 AuK 可按指令生成或编辑语音。当前选择 Base F32，下载包含生成器、Qwen 条件模型和音频自编码器；无参考音频时需填写正数生成时长。",
+      "package_ids": [
+        "auk_base_f32",
+        "auk_qwen_bf16",
+        "auk_vae_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/AuK-Base-and-Flash-GGUF",
+          "url": "https://huggingface.co/audio-cpp/AuK-Base-and-Flash-GGUF/tree/main",
+          "revision": "2814a16a49b822a5709e11a78cfd7c1662f19b61"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/tencent/AuK",
+        "https://huggingface.co/tencent/AuK-Flash"
+      ],
+      "size_bytes": 14218395323,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "breeze-tts": {
+      "memory_range_gb": [
+        7.0,
+        10.0
+      ],
+      "description": "BreezeTTS 2 支持中文、英文的指令合成与参考声音克隆，也可使用文字描述设计声音。",
+      "package_ids": [
+        "breeze_tts_2_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 5079668352,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "breeze-tts-clone": {
+      "memory_range_gb": [
+        7.0,
+        10.0
+      ],
+      "description": "BreezeTTS 2 支持中文、英文的指令合成与参考声音克隆，也可使用文字描述设计声音。",
+      "package_ids": [
+        "breeze_tts_2_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 5079668352,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "breeze-tts-design": {
+      "memory_range_gb": [
+        7.0,
+        10.0
+      ],
+      "description": "BreezeTTS 2 支持中文、英文的指令合成与参考声音克隆，也可使用文字描述设计声音。",
+      "package_ids": [
+        "breeze_tts_2_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 5079668352,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "builtin-rnnoise": {
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [],
+      "size_note": "随程序附带的资源大小，无需在线下载。",
+      "description": "RNNoise 降噪：使用仓库附带权重，无需参考音色。",
+      "memory_range_gb": [
+        0.25,
+        2
+      ],
+      "size_bytes": 23082677,
+      "size_kind": "bundled"
+    },
+    "builtin-deepfilternet2": {
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [],
+      "size_note": "随程序附带的资源大小，无需在线下载。",
+      "description": "DeepFilterNet2 音频处理：使用仓库附带权重，无需参考音色。",
+      "memory_range_gb": [
+        0.25,
+        2
+      ],
+      "size_bytes": 9368328,
+      "size_kind": "bundled"
+    },
+    "builtin-zipenhancer": {
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [],
+      "size_note": "随程序附带的资源大小，无需在线下载。",
+      "description": "ZipEnhancer 音频处理：使用仓库附带权重，无需参考音色。",
+      "memory_range_gb": [
+        0.25,
+        2
+      ],
+      "size_bytes": 8236256,
+      "size_kind": "bundled"
+    },
+    "builtin-gtcrn-streaming": {
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [],
+      "size_note": "随程序附带的资源大小，无需在线下载。",
+      "description": "GTCRN Streaming 音频处理：使用仓库附带权重，无需参考音色。",
+      "memory_range_gb": [
+        0.25,
+        2
+      ],
+      "size_bytes": 242900,
+      "size_kind": "bundled"
+    },
+    "builtin-gtcrn-dns3": {
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [],
+      "size_note": "随程序附带的资源大小，无需在线下载。",
+      "description": "GTCRN DNS3 音频处理：使用仓库附带权重，无需参考音色。",
+      "memory_range_gb": [
+        0.25,
+        2
+      ],
+      "size_bytes": 242892,
+      "size_kind": "bundled"
+    },
+    "builtin-gtcrn-vctk": {
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [],
+      "size_note": "随程序附带的资源大小，无需在线下载。",
+      "description": "GTCRN VCTK 音频处理：使用仓库附带权重，无需参考音色。",
+      "memory_range_gb": [
+        0.25,
+        2
+      ],
+      "size_bytes": 242892,
+      "size_kind": "bundled"
+    },
+    "builtin-flashsr": {
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [],
+      "size_note": "随程序附带的资源大小，无需在线下载。",
+      "description": "FlashSR 音频处理：使用仓库附带权重，无需参考音色。",
+      "memory_range_gb": [
+        0.25,
+        2
+      ],
+      "size_bytes": 356008,
+      "size_kind": "bundled"
+    },
+    "canary-asr": {
+      "memory_range_gb": [
+        2.0,
+        3.0
+      ],
+      "description": "NVIDIA Canary 180M Flash 语音识别，适合轻量多语言转写；语言选项按当前模型的支持范围提供。",
+      "package_ids": [
+        "canary_180m_flash_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/nvidia/canary-180m-flash"
+      ],
+      "size_bytes": 757871168,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "chatterbox-turbo": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "Chatterbox Turbo 语音生成与声音克隆，支持参考音频；当前为 Q8 权重包。",
+      "package_ids": [
+        "chatterbox_turbo_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/ResembleAI/chatterbox-turbo"
+      ],
+      "size_bytes": 699101408,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "cohere-asr": {
+      "memory_range_gb": [
+        6.0,
+        8.0
+      ],
+      "description": "Cohere Transcribe 多语言语音识别，当前使用 BF16 权重；上传音频后生成文字。",
+      "package_ids": [
+        "cohere_transcribe_bf16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/CohereLabs/cohere-transcribe-03-2026"
+      ],
+      "size_bytes": 4134852224,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "confucius4-r2t2": {
+      "memory_range_gb": [
+        4.0,
+        6.0
+      ],
+      "description": "网易有道 Confucius4 R2T2 语音识别，使用 Q8 权重；根据音频生成转写文本。",
+      "package_ids": [
+        "confucius4_r2t2_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "davidxifeng/Confucius4-R2T2-gguf",
+          "url": "https://huggingface.co/davidxifeng/Confucius4-R2T2-gguf/tree/main",
+          "revision": "a8e6b385d7df7eae9519363e07034a209004797a"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/netease-youdao/Confucius4-R2T2"
+      ],
+      "size_bytes": 2477512064,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "controlfoley": {
+      "memory_range_gb": [
+        16.0,
+        24.0
+      ],
+      "description": "ControlFoley 根据文字生成拟音与环境音效，当前为 44 kHz 大模型。可设置生成时长，不需要歌词或参考声音。",
+      "package_ids": [
+        "controlfoley_large_44k_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 12556682464,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "cosyvoice3": {
+      "memory_range_gb": [
+        4.0,
+        6.0
+      ],
+      "description": "CosyVoice3 语音合成与零样本声音克隆，可使用参考音频及其原文，并按支持的指令调整表达方式。",
+      "package_ids": [
+        "cosyvoice3_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 2257658080,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "cosyvoice3-clone": {
+      "memory_range_gb": [
+        4.0,
+        6.0
+      ],
+      "description": "CosyVoice3 语音合成与零样本声音克隆，可使用参考音频及其原文，并按支持的指令调整表达方式。",
+      "package_ids": [
+        "cosyvoice3_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 2257658080,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "crisperwhisper": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "CrisperWhisper 2 支持多语言逐字转写及词级时间戳；对齐条目用于把已有原文对应到音频时间位置。",
+      "package_ids": [
+        "crisperwhisper_2_large_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/nyralabs/CrisperWhisper2.0_large"
+      ],
+      "size_bytes": 1716306528,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "crisperwhisper-align": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "CrisperWhisper 2 支持多语言逐字转写及词级时间戳；对齐条目用于把已有原文对应到音频时间位置。",
+      "package_ids": [
+        "crisperwhisper_2_large_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/nyralabs/CrisperWhisper2.0_large"
+      ],
+      "size_bytes": 1716306528,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "echo-tts": {
+      "memory_range_gb": [
+        5.0,
+        8.0
+      ],
+      "description": "Echo-TTS 参考声音克隆，使用 Q8 权重包。输入要朗读的文本和参考音频，可调采样与扩散参数。",
+      "package_ids": [
+        "echo_tts_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "dignome/Echo-TTS",
+          "url": "https://huggingface.co/dignome/Echo-TTS/tree/919681c9906c88963352d5f96e0f732ddd3989ce",
+          "revision": "919681c9906c88963352d5f96e0f732ddd3989ce"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/jordand/echo-tts-base",
+        "https://huggingface.co/jordand/fish-s1-dac-min",
+        "https://huggingface.co/jordand/whisper-d-v1a"
+      ],
+      "size_bytes": 3028207456,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "firered-audio": {
+      "memory_range_gb": [
+        18.0,
+        26.0
+      ],
+      "description": "FireRedAudio 集成语音识别、声音克隆、声音设计和音频编辑。本地各条目绑定对应任务；当前 Q8 包体积较大，建议高显存设备。",
+      "package_ids": [
+        "firered_audio_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 13974618784,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "firered-audio-tts": {
+      "memory_range_gb": [
+        18.0,
+        26.0
+      ],
+      "description": "FireRedAudio 集成语音识别、声音克隆、声音设计和音频编辑。本地各条目绑定对应任务；当前 Q8 包体积较大，建议高显存设备。",
+      "package_ids": [
+        "firered_audio_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 13974618784,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "firered-audio-clone": {
+      "memory_range_gb": [
+        18.0,
+        26.0
+      ],
+      "description": "FireRedAudio 集成语音识别、声音克隆、声音设计和音频编辑。本地各条目绑定对应任务；当前 Q8 包体积较大，建议高显存设备。",
+      "package_ids": [
+        "firered_audio_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 13974618784,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "firered-audio-design": {
+      "memory_range_gb": [
+        18.0,
+        26.0
+      ],
+      "description": "FireRedAudio 集成语音识别、声音克隆、声音设计和音频编辑。本地各条目绑定对应任务；当前 Q8 包体积较大，建议高显存设备。",
+      "package_ids": [
+        "firered_audio_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 13974618784,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "firered-audio-edit": {
+      "memory_range_gb": [
+        18.0,
+        26.0
+      ],
+      "description": "FireRedAudio 集成语音识别、声音克隆、声音设计和音频编辑。本地各条目绑定对应任务；当前 Q8 包体积较大，建议高显存设备。",
+      "package_ids": [
+        "firered_audio_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 13974618784,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "fireredtts3": {
+      "memory_range_gb": [
+        6.0,
+        9.0
+      ],
+      "description": "FireRedTTS3 Instruct 支持参考声音克隆和文字声音设计；选择声音设计条目时使用独立任务模板。",
+      "package_ids": [
+        "fireredtts3_instruct_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 4149192928,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "fireredtts3-clone": {
+      "memory_range_gb": [
+        6.0,
+        9.0
+      ],
+      "description": "FireRedTTS3 Instruct 支持参考声音克隆和文字声音设计；选择声音设计条目时使用独立任务模板。",
+      "package_ids": [
+        "fireredtts3_instruct_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 4149192928,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "fireredtts3-design": {
+      "memory_range_gb": [
+        6.0,
+        9.0
+      ],
+      "description": "FireRedTTS3 Instruct 支持参考声音克隆和文字声音设计；选择声音设计条目时使用独立任务模板。",
+      "package_ids": [
+        "fireredtts3_instruct_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 4149192928,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "gigaam-asr": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "GigaAM v3 CTC 俄语识别，当前为 F16 权重；无需语言选择或语音生成参数。",
+      "package_ids": [
+        "gigaam_v3_ctc_f16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/ai-sage/GigaAM-v3"
+      ],
+      "size_bytes": 441594240,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "granite5asr": {
+      "memory_range_gb": [
+        2.0,
+        3.0
+      ],
+      "description": "IBM Granite Speech 5.0 470M TurboCTC 语音识别，使用 Q8 权重；提供模型支持的语言和分段设置。",
+      "package_ids": [
+        "granite5asr_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 504717376,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "htdemucs-6stems": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "HTDemucs 六轨分离，可输出人声、鼓、低音、吉他、钢琴及其他声部。长音频的运行缓冲占用更高。",
+      "package_ids": [
+        "htdemucs_6stems_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 42477600,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "index-echo": {
+      "memory_range_gb": [
+        7.0,
+        10.0
+      ],
+      "description": "Index-Echo S2TT 2B 将语音转成文本，也可按模型能力进行语音翻译；此条目仅输出文字。",
+      "package_ids": [
+        "index_echo_s2tt_2b_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/Index-Echo-S2TT-GGUF",
+          "url": "https://huggingface.co/audio-cpp/Index-Echo-S2TT-GGUF/tree/main",
+          "revision": "08c2fc8e3fc87da1d848c5c75aeba1b761d2624e"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/IndexTeam/Index-Echo-S2TT-2B"
+      ],
+      "size_bytes": 5106065312,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "kitten-tts": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "KittenTTS Mini 0.8 轻量语音合成，使用预置说话人并可调整语速；不需要参考音频。",
+      "package_ids": [
+        "kitten_tts_mini_0_8_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/KittenML/kitten-tts-mini-0.8"
+      ],
+      "size_bytes": 302167104,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "kitten-tts2": {
+      "memory_range_gb": [
+        7.0,
+        9.0
+      ],
+      "description": "KittenTTS 2 多语言合成与声音克隆，采用原生 Q8 多语言包；包含说话人和声码器组件。",
+      "package_ids": [
+        "kitten_tts2_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "dignome/kitten_tts2",
+          "url": "https://huggingface.co/dignome/kitten_tts2/tree/main",
+          "revision": "73b762c95b07c4f0675c927c25d65741b8dab7da"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/KittenML/kitten-tts-2"
+      ],
+      "size_bytes": 3282138942,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "kitten-tts2-clone": {
+      "memory_range_gb": [
+        7.0,
+        9.0
+      ],
+      "description": "KittenTTS 2 多语言合成与声音克隆，采用原生 Q8 多语言包；包含说话人和声码器组件。",
+      "package_ids": [
+        "kitten_tts2_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "dignome/kitten_tts2",
+          "url": "https://huggingface.co/dignome/kitten_tts2/tree/main",
+          "revision": "73b762c95b07c4f0675c927c25d65741b8dab7da"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/KittenML/kitten-tts-2"
+      ],
+      "size_bytes": 3282138942,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "kokoro-tts": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "Kokoro 82M 轻量多语言语音合成，使用内置音色并可调整语速；语言需与音色相符，文字前端使用 eSpeak-ng。",
+      "package_ids": [
+        "kokoro_82m_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 189549408,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "kugelaudio": {
+      "memory_range_gb": [
+        12.0,
+        18.0
+      ],
+      "description": "KugelAudio 0 Open 语音生成，支持模型提供的预置音色；Q8 完整权重仍较大。",
+      "package_ids": [
+        "kugelaudio_0_open_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/kugelaudio/kugelaudio-0-open"
+      ],
+      "size_bytes": 9752398658,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "lfm2-audio": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "LiquidAI LFM2.5-Audio 1.5B 同时提供识别和语音生成。英语、日语使用独立权重；只有语音生成条目支持流式音频。 当前条目使用英语检查点。",
+      "package_ids": [
+        "lfm2_audio_1_5b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "LiquidAI/LFM2.5-Audio-1.5B-GGUF",
+          "url": "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-GGUF/tree/7d525f883a077e20afb782f2ff618edcae0e39e4",
+          "revision": "7d525f883a077e20afb782f2ff618edcae0e39e4"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B",
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-GGUF"
+      ],
+      "size_bytes": 1822397120,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "lfm2-audio-jp": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "LiquidAI LFM2.5-Audio 1.5B 同时提供识别和语音生成。英语、日语使用独立权重；只有语音生成条目支持流式音频。 当前条目使用日语检查点。",
+      "package_ids": [
+        "lfm2_audio_1_5b_jp_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF",
+          "url": "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF/tree/64b96718b341dbd5650f9e85627cecdcbd4ac61b",
+          "revision": "64b96718b341dbd5650f9e85627cecdcbd4ac61b"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP",
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF"
+      ],
+      "size_bytes": 1820023680,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "lfm2-audio-tts": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "LiquidAI LFM2.5-Audio 1.5B 同时提供识别和语音生成。英语、日语使用独立权重；只有语音生成条目支持流式音频。 当前条目使用英语检查点。",
+      "package_ids": [
+        "lfm2_audio_1_5b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "LiquidAI/LFM2.5-Audio-1.5B-GGUF",
+          "url": "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-GGUF/tree/7d525f883a077e20afb782f2ff618edcae0e39e4",
+          "revision": "7d525f883a077e20afb782f2ff618edcae0e39e4"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B",
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-GGUF"
+      ],
+      "size_bytes": 1822397120,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "lfm2-audio-tts-jp": {
+      "memory_range_gb": [
+        3.0,
+        5.0
+      ],
+      "description": "LiquidAI LFM2.5-Audio 1.5B 同时提供识别和语音生成。英语、日语使用独立权重；只有语音生成条目支持流式音频。 当前条目使用日语检查点。",
+      "package_ids": [
+        "lfm2_audio_1_5b_jp_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF",
+          "url": "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF/tree/64b96718b341dbd5650f9e85627cecdcbd4ac61b",
+          "revision": "64b96718b341dbd5650f9e85627cecdcbd4ac61b"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP",
+        "https://huggingface.co/LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF"
+      ],
+      "size_bytes": 1820023680,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "maya1": {
+      "memory_range_gb": [
+        9.0,
+        13.0
+      ],
+      "description": "Maya1 语音生成与声音设计模型，使用文字风格描述控制表达；当前为原始精度适配包。",
+      "package_ids": [
+        "maya1_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/maya-research/maya1"
+      ],
+      "size_bytes": 6682824288,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "midashenglm-gen": {
+      "memory_range_gb": [
+        5.0,
+        8.0
+      ],
+      "description": "MiDashengLM 根据文字描述生成音乐或音效，可设置生成时长；当前界面不提供歌词输入或参考音频。",
+      "package_ids": [
+        "midashenglm_gen_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 3381370752,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "mira-tts": {
+      "memory_range_gb": [
+        6.0,
+        10.0
+      ],
+      "description": "MiraTTS 声音克隆，使用参考音频生成语音。当前需从原作者获取权重并按项目文档转换为本地 GGUF，不能一键安装。",
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [
+        "https://huggingface.co/YatharthS/MiraTTS"
+      ],
+      "size_note": "官方原始权重合计约 1.04 GiB；本地 GGUF 转换后的大小取决于精度，不能直接当作适配包下载。",
+      "original_size_bytes": 1120257551,
+      "size_estimate_gb": 1.04,
+      "size_kind": "conversion_estimate"
+    },
+    "mira-tts-clone": {
+      "memory_range_gb": [
+        6.0,
+        10.0
+      ],
+      "description": "MiraTTS 声音克隆，使用参考音频生成语音。当前需从原作者获取权重并按项目文档转换为本地 GGUF，不能一键安装。",
+      "package_ids": [],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [],
+      "original_sources": [
+        "https://huggingface.co/YatharthS/MiraTTS"
+      ],
+      "size_note": "官方原始权重合计约 1.04 GiB；本地 GGUF 转换后的大小取决于精度，不能直接当作适配包下载。",
+      "original_size_bytes": 1120257551,
+      "size_estimate_gb": 1.04,
+      "size_kind": "conversion_estimate"
+    },
+    "moonshine-asr": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "Moonshine Streaming Tiny 轻量流式语音识别，适合短语音与边说边转写。",
+      "package_ids": [
+        "moonshine_streaming_tiny_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/moonshine-ai/moonshine-streaming-tiny"
+      ],
+      "size_bytes": 60408448,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "moss-transcribe-diarize": {
+      "memory_range_gb": [
+        4.0,
+        7.0
+      ],
+      "description": "MOSS Transcribe Diarize 语音转写与说话人分离，适合包含多位说话人的音频；详细输出取决于模型实际返回内容。",
+      "package_ids": [
+        "moss_transcribe_diarize_bf16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 1833018080,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "moss-tts-v15": {
+      "memory_range_gb": [
+        16.0,
+        24.0
+      ],
+      "description": "MOSS-TTS v1.5 语音生成与参考声音克隆；当前为 Q8 主模型与 F16 音频编解码器组合。",
+      "package_ids": [
+        "moss_tts_v15_q8_0_codec_f16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "christopherthompson81/MOSS-TTS-v1.5-GGUF",
+          "url": "https://huggingface.co/christopherthompson81/MOSS-TTS-v1.5-GGUF/tree/main",
+          "revision": "a8acc93aef7acc2e74eafe3a70833b33a92fd38a"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer",
+        "https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5"
+      ],
+      "size_bytes": 13184125376,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "moss-tts-v15-clone": {
+      "memory_range_gb": [
+        16.0,
+        24.0
+      ],
+      "description": "MOSS-TTS v1.5 语音生成与参考声音克隆；当前为 Q8 主模型与 F16 音频编解码器组合。",
+      "package_ids": [
+        "moss_tts_v15_q8_0_codec_f16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "christopherthompson81/MOSS-TTS-v1.5-GGUF",
+          "url": "https://huggingface.co/christopherthompson81/MOSS-TTS-v1.5-GGUF/tree/main",
+          "revision": "a8acc93aef7acc2e74eafe3a70833b33a92fd38a"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer",
+        "https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5"
+      ],
+      "size_bytes": 13184125376,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "moss-ttsd": {
+      "memory_range_gb": [
+        16.0,
+        24.0
+      ],
+      "description": "MOSS-TTSD 多说话人语音生成，适合对话脚本；当前权重包含主模型和音频编解码器，显存预算较高。",
+      "package_ids": [
+        "moss_ttsd_q8_0_codec_f16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "christopherthompson81/MOSS-TTSD-GGUF",
+          "url": "https://huggingface.co/christopherthompson81/MOSS-TTSD-GGUF/tree/main",
+          "revision": "84c3a5cbbf5fbd395bb311de9e4a73738adebf92"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer",
+        "https://huggingface.co/OpenMOSS-Team/MOSS-TTSD-v1.0"
+      ],
+      "size_bytes": 13041314784,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "moss-ttsd-clone": {
+      "memory_range_gb": [
+        16.0,
+        24.0
+      ],
+      "description": "MOSS-TTSD 多说话人语音生成，适合对话脚本；当前权重包含主模型和音频编解码器，显存预算较高。",
+      "package_ids": [
+        "moss_ttsd_q8_0_codec_f16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "christopherthompson81/MOSS-TTSD-GGUF",
+          "url": "https://huggingface.co/christopherthompson81/MOSS-TTSD-GGUF/tree/main",
+          "revision": "84c3a5cbbf5fbd395bb311de9e4a73738adebf92"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer",
+        "https://huggingface.co/OpenMOSS-Team/MOSS-TTSD-v1.0"
+      ],
+      "size_bytes": 13041314784,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "nemotron-3-diar": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "NVIDIA Nemotron 3 说话人区分，输出音频中不同说话人的活动片段；不负责把语音转成文字。",
+      "package_ids": [
+        "nemotron_3_diar_bf16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/Nemotron-3-Diarization-GGUF",
+          "url": "https://huggingface.co/audio-cpp/Nemotron-3-Diarization-GGUF/tree/main",
+          "revision": "647d39feaa0e91dca5ce355a95403837b76dff56"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/nvidia/Nemotron-3-Diarization"
+      ],
+      "size_bytes": 198720928,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "niagara-asr": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "Niagara 19M 英语识别，使用轻量批处理模型；仅支持英语，不显示其他语言选项。",
+      "package_ids": [
+        "niagara_19m_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 255372352,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "owsm": {
+      "memory_range_gb": [
+        1.0,
+        3.0
+      ],
+      "description": "OWSM v4 Base 102M 多语言语音识别与翻译；当前是基础版本，可设置输入语言及目标语言。",
+      "package_ids": [
+        "owsm_v4_base_102m_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/espnet/owsm_v4_base_102M"
+      ],
+      "size_bytes": 331785024,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "owsm-ctc": {
+      "memory_range_gb": [
+        6.0,
+        9.0
+      ],
+      "description": "OWSM CTC v4 1B 多语言语音识别，语言参数使用三字母代码，例如 eng、jpn、zho；支持长音频分段。",
+      "package_ids": [
+        "owsm_ctc_v4_1b_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/espnet/owsm_ctc_v4_1B"
+      ],
+      "size_bytes": 4046590976,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "piper-tts": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "Piper 英语 Lessac Medium 轻量语音合成，使用固定音色并可调整语速；需要兼容的语音前端资源。",
+      "package_ids": [
+        "piper_lessac_medium_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/rhasspy/piper-voices"
+      ],
+      "size_bytes": 62661248,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "pulsevad": {
+      "memory_range_gb": [
+        0.25,
+        1.0
+      ],
+      "description": "PulseVAD 2.1K 极轻量语音活动检测，找出音频中的语音区间；不输出转写文本。",
+      "package_ids": [
+        "pulsevad_2_1k_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 81408,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "reuse": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "NVIDIA RE-USE 语音增强，用于降低背景噪声、改善输入语音；无需目标音色。",
+      "package_ids": [
+        "reuse_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/RE-USE-GGUF",
+          "url": "https://huggingface.co/audio-cpp/RE-USE-GGUF/tree/main",
+          "revision": "e06abaa80995f81f427a21c07ca318060da4bf7e"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/nvidia/RE-USE"
+      ],
+      "size_bytes": 39642144,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "sam-audio": {
+      "memory_range_gb": [
+        8.0,
+        14.0
+      ],
+      "description": "SAM Audio Small 按文字描述分离目标声音。当前本地界面支持音频与文本提示，不提供图像或视频条件。",
+      "package_ids": [
+        "sam_audio_small_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/SAM-Audio-GGUF",
+          "url": "https://huggingface.co/audio-cpp/SAM-Audio-GGUF/tree/main",
+          "revision": "d429aa7d3a8a5a41ad05d83a57177a98e596ee7f"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/facebook/sam-audio-large"
+      ],
+      "size_bytes": 5640890208,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "samsone": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "Samsung Samsone 99M 音频理解，可根据音频指令输出文字；使用 BF16 权重。",
+      "package_ids": [
+        "samsone_99m_bf16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 201102560,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "sanotts": {
+      "memory_range_gb": [
+        0.25,
+        1.0
+      ],
+      "description": "sanoTTS Heart Nano 极轻量语音合成。模型文件很小，可以先用几句自己的文本试听效果和发音。",
+      "package_ids": [
+        "sanotts_heart_nano_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "ampixa/sanoTTS",
+          "url": "https://huggingface.co/ampixa/sanoTTS/tree/main",
+          "revision": "c532a5d21c078a16cb633718e9182bfd71a5b760"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/ampixa/sanoTTS"
+      ],
+      "size_bytes": 1197865,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "sheetsage2": {
+      "memory_range_gb": [
+        5.0,
+        8.0
+      ],
+      "description": "SheetSage2 从音乐音频提取乐谱与相关音乐信息；保留原音频采样率送入音乐前端，输出原生乐谱文件。",
+      "package_ids": [
+        "sheetsage2_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/SheetSage2-GGUF",
+          "url": "https://huggingface.co/audio-cpp/SheetSage2-GGUF/tree/main",
+          "revision": "4e88814450385334524e50df43724af583f74206"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/m-a-p/SheetSage2"
+      ],
+      "size_bytes": 2708224256,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "sidon": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "Sidon 音频到音频处理模型，按所选路径恢复或增强输入声音；无需参考音色。",
+      "package_ids": [
+        "sidon_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/sarulab-speech/sidon-v0.1"
+      ],
+      "size_bytes": 984276544,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "smart-turn": {
+      "memory_range_gb": [
+        0.5,
+        1.0
+      ],
+      "description": "Smart Turn v3.2 判断说话人是否已经说完，输出轮次结束判断；不执行语音识别。",
+      "package_ids": [
+        "smart_turn_v3_2_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/pipecat-ai/smart-turn-v3"
+      ],
+      "size_bytes": 32014304,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "soprano-tts": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "Soprano 1.1 80M 轻量语音生成，使用 Q8 权重；适合低资源设备上的文本朗读。",
+      "package_ids": [
+        "soprano_1_1_80m_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "WalkingCat/Soprano-1.1-80M-GGUF",
+          "url": "https://huggingface.co/WalkingCat/Soprano-1.1-80M-GGUF/tree/main",
+          "revision": "36c6f47cf91421b7f0cf3d862d28ae2e41aab3f2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/ekwek/Soprano-1.1-80M"
+      ],
+      "size_bytes": 123162336,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "sopro-tts": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "Sopro v2 Turbo 支持语音合成与声音克隆；当前下载原始 Safetensors，包含语义编码器、说话人编码器及声码器。",
+      "package_ids": [
+        "sopro_v2_turbo_safetensors"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "samuel-vitorino/sopro-v2-turbo",
+          "url": "https://huggingface.co/samuel-vitorino/sopro-v2-turbo/tree/main",
+          "revision": "c12d0dc7c4a33b3cb6ea3d11ceb70bc60c7c6312"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/samuel-vitorino/sopro-v2-turbo"
+      ],
+      "size_bytes": 634337562,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "sopro-tts-clone": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "Sopro v2 Turbo 支持语音合成与声音克隆；当前下载原始 Safetensors，包含语义编码器、说话人编码器及声码器。",
+      "package_ids": [
+        "sopro_v2_turbo_safetensors"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "samuel-vitorino/sopro-v2-turbo",
+          "url": "https://huggingface.co/samuel-vitorino/sopro-v2-turbo/tree/main",
+          "revision": "c12d0dc7c4a33b3cb6ea3d11ceb70bc60c7c6312"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/samuel-vitorino/sopro-v2-turbo"
+      ],
+      "size_bytes": 634337562,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "sortformer-diar-v2": {
+      "memory_range_gb": [
+        18.0,
+        24.0
+      ],
+      "description": "NVIDIA Sortformer v2.1 区分最多四路说话人。需手动获取并转换官方检查点；本地界面走离线路径，上游验证记录中 F32 离线运行超过 16 GiB 显存。",
+      "package_ids": [
+        "sortformer_diar_v2_1_f32_gguf_local"
+      ],
+      "memory_basis": "本地默认 F32 离线路径；上游文档记载超过 16 GiB，18–24 GiB 为规划预算，非本机实测。",
+      "sources": [],
+      "original_sources": [
+        "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1"
+      ],
+      "size_note": "官方原始权重合计约 0.44 GiB；本地 GGUF 转换后的大小取决于精度，不能直接当作适配包下载。",
+      "original_size_bytes": 471367680,
+      "size_estimate_gb": 0.44,
+      "size_kind": "conversion_estimate"
+    },
+    "tone-color-vc": {
+      "memory_range_gb": [
+        1.0,
+        2.0
+      ],
+      "description": "OpenVoice V2 音色转换，保留源音频内容并用参考音频指定目标音色；不直接从文本生成语音。",
+      "package_ids": [
+        "tone_color_vc_f32"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/myshell-ai/OpenVoiceV2"
+      ],
+      "size_bytes": 131036736,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "universr": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "UniverSR 音频超分辨率，改善低带宽音频并恢复细节；以输入音频为素材，无需参考音色。",
+      "package_ids": [
+        "universr_audio_orig"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 228994240,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "vibeasr": {
+      "memory_range_gb": [
+        4,
+        8
+      ],
+      "description": "Microsoft VibeVoice-ASR BitNet 语音识别，当前集成固定使用 CPU。资源预算看系统内存，不使用 GPU 显存估算。",
+      "package_ids": [
+        "vibeasr_bitnet_i2_s"
+      ],
+      "memory_basis": "CPU 系统内存预算估算，GPU 显存不适用；未做本机峰值实测。",
+      "sources": [
+        {
+          "label": "microsoft/VibeVoice-ASR-BitNet",
+          "url": "https://huggingface.co/microsoft/VibeVoice-ASR-BitNet/tree/main",
+          "revision": "66e78021ab8f5f06133d1ab421ba4d348bda97c9"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/microsoft/VibeVoice-ASR-BitNet"
+      ],
+      "size_bytes": 1702986968,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。",
+      "memory_device": "ram"
+    },
+    "vibevoice-asr-streaming": {
+      "memory_range_gb": [
+        12.0,
+        18.0
+      ],
+      "description": "VibeVoice-ASR Streaming 7B 流式语音识别，支持连续音频转写；当前 Q8 包超过 9 GiB，8 GB 显卡不适合完整载入。",
+      "package_ids": [
+        "vibevoice_asr_streaming_7b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/VibeVoice-ASR-Streaming-7B-GGUF",
+          "url": "https://huggingface.co/audio-cpp/VibeVoice-ASR-Streaming-7B-GGUF/tree/main",
+          "revision": "f1c45856434b200afc049a57d1c986e8d30052db"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-7B"
+      ],
+      "size_bytes": 9858232896,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "voxcpm1": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "VoxCPM 0.5B 语音合成与参考声音克隆，使用 Q8 主模型和 F16 音频自编码器；可流式输出。",
+      "package_ids": [
+        "voxcpm1_0_5b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 847888032,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "voxcpm1-clone": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "VoxCPM 0.5B 语音合成与参考声音克隆，使用 Q8 主模型和 F16 音频自编码器；可流式输出。",
+      "package_ids": [
+        "voxcpm1_0_5b_q8_0"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main",
+          "revision": "e36610ac69b5262e914a52635324050bee8f1ad2"
+        }
+      ],
+      "original_sources": [],
+      "size_bytes": 847888032,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "yue2": {
+      "memory_range_gb": [
+        7.0,
+        12.0
+      ],
+      "description": "YuE2 3B 音乐与歌曲生成，按描述及可选歌词创作。下载包含主模型、乐谱阶段和音频自编码器，所有组件一并计入大小。",
+      "package_ids": [
+        "yue2_main_q8_0",
+        "yue2_vae_f16"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "audio-cpp/Yue2-3B-GGUF",
+          "url": "https://huggingface.co/audio-cpp/Yue2-3B-GGUF/tree/main",
+          "revision": "cca74d8980c00f30ab8d52248a367c01ad633ec2"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/m-a-p/YuE2-3B"
+      ],
+      "size_bytes": 4531978293,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "zipvoice": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "ZipVoice Distill 语音合成与声音克隆，可调整语速；参考音频与对应原文用于复现目标声音。",
+      "package_ids": [
+        "zipvoice_distill_gguf"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "davidxifeng/zipvoice-gguf",
+          "url": "https://huggingface.co/davidxifeng/zipvoice-gguf/tree/main",
+          "revision": "cf07ad4c9f87cf4b5cd99e140d6935b157c41347"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/k2-fsa/ZipVoice"
+      ],
+      "size_bytes": 552696704,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    },
+    "zipvoice-clone": {
+      "memory_range_gb": [
+        2.0,
+        4.0
+      ],
+      "description": "ZipVoice Distill 语音合成与声音克隆，可调整语速；参考音频与对应原文用于复现目标声音。",
+      "package_ids": [
+        "zipvoice_distill_gguf"
+      ],
+      "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
+      "sources": [
+        {
+          "label": "davidxifeng/zipvoice-gguf",
+          "url": "https://huggingface.co/davidxifeng/zipvoice-gguf/tree/main",
+          "revision": "cf07ad4c9f87cf4b5cd99e140d6935b157c41347"
+        }
+      ],
+      "original_sources": [
+        "https://huggingface.co/k2-fsa/ZipVoice"
+      ],
+      "size_bytes": 552696704,
+      "size_kind": "published_files",
+      "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
+    }
+  }
+}

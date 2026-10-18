@@ -33,10 +33,12 @@ runtime::ModelCliInterface cli(const VoxCPM2Assets &) {
   out.request_options = {
       {"text_chunk_mode", "default|tag_aware|japanese|endline",
        "Text chunking mode; default tag_aware."},
+      {"voxcpm2.chunk_strategy", "continuation|stateless",
+       "Long-form chunk generation strategy; default continuation."},
   };
   out.session_options = {
       {"voxcpm2.mem_saver", "true|false",
-       "Use tighter graph workspaces and release request runtime graphs; default false."},
+       "Use tighter graph workspaces and release request runtime graphs; default true."},
       {"voxcpm2.prompt_cache_slots", "n",
        "Prompt and prompt-audio embedding cache slots; default 1."},
   };

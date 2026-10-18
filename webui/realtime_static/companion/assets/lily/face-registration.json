@@ -1,0 +1,59 @@
+{
+  "tileSize": 418,
+  "transforms": [
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 43.85,
+      "correlation": 0.9674699277760325
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 44.85,
+      "correlation": 0.9694357775409511
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 44.85,
+      "correlation": 0.9693206108688379
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 43.85,
+      "correlation": 0.9677350246545858
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 43.85,
+      "correlation": 0.9674976138943062
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 43.85,
+      "correlation": 0.9673631290525804
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 43.85,
+      "correlation": 0.9675131498037992
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 43.85,
+      "correlation": 0.9674946508476978
+    },
+    {
+      "scale": 0.505,
+      "offsetX": 1117.8,
+      "offsetY": 43.85,
+      "correlation": 0.9678931696047512
+    }
+  ]
+}

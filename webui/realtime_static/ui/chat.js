@@ -1,4 +1,5 @@
 // @ts-check
+import {t, uiText, uiAttr, html, applyLanguage} from '/workbench-static/i18n.js';
 /**
  * ChatView — owns the whole conversation surface: the slide-in history panel,
  * the ephemeral on-orb bubbles, and all the transcript/tool/streaming
@@ -19,9 +20,10 @@
 
 import { $, escHtml, DEBUG } from "./dom.js";
 
-const WRENCH_PATH = `<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>`;
-const CHAT_BUBBLE_SVG = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
-const EMPTY_STATE_HTML = `<div id="chat-empty" class="chat-empty">${CHAT_BUBBLE_SVG}<span class="chat-empty-title">No messages yet</span><span class="chat-empty-hint">Tap the orb and start talking</span></div>`;
+const EMPTY_STATE_HTML = html`<div id="chat-empty" class="chat-empty"><span class="chat-empty-title">聊点什么吧</span><span class="chat-empty-hint">点击麦克风开始，文字记录会显示在这里</span></div>`;
+
+// Short acknowledgements fade quickly; longer replies get enough reading time.
+const replyReadTime = text => Math.min(18000, Math.max(1400, Array.from(text.trim()).length * 160));
 
 export class ChatView {
   constructor() {
@@ -41,6 +43,7 @@ export class ChatView {
     this._bubbleStack = $("#bubble-stack");
 
     this._panelOpen = false;
+    this._assistantName = "助手";
     this._scrollQueued = false;
 
     // ── User transcript state (keyed by item_id) ───────────────────────────
@@ -56,15 +59,14 @@ export class ChatView {
     // ── Assistant transcript state (keyed by response_id) ──────────────────
     /** @type {Map<string, { bubble: HTMLElement, hist: HTMLElement }>} */
     this._asstByResp = new Map();
+    this._audioByResp = new Set();
 
     // ── Ephemeral bubble auto-dismiss ──────────────────────────────────────
-    // Per-element expiry (epoch ms). A bubble fades once its expiry passes —
-    // but only in stack order (see _reapBubbles). Refreshing the expiry keeps a
-    // bubble alive while it updates (e.g. the live user utterance).
+    // Per-element expiry (epoch ms). User text waits for the assistant reply;
+    // assistant text gets a reading-time countdown once audio arrives.
     /** @type {WeakMap<HTMLElement, number>} */
     this._bubbleExpiry = new WeakMap();
-    // Single pending reaper handle: one timer for the whole stack (not one per
-    // bubble) so dismissal is strictly oldest-first regardless of per-bubble delays.
+    // One timer wakes at the earliest expiry in the stack.
     this._reaperHandle = 0;
 
     this._chatBtn.addEventListener("click", () => (this._panelOpen ? this._closePanel() : this._openPanel()));
@@ -77,9 +79,13 @@ export class ChatView {
 
   // ── Panel ───────────────────────────────────────────────────────────────
 
+  setAssistantName(name) { this._assistantName = String(name || "助手"); }
+
   _openPanel() {
     this._panelOpen = true;
     this._chatPanel.classList.add("open");
+    this._chatPanel.inert = false;
+    this._chatBtn.setAttribute("aria-expanded", "true");
     this._chatBadge.classList.remove("visible");
     this._scrollToBottom();
   }
@@ -87,6 +93,9 @@ export class ChatView {
   _closePanel() {
     this._panelOpen = false;
     this._chatPanel.classList.remove("open");
+    this._chatPanel.inert = true;
+    this._chatBtn.setAttribute("aria-expanded", "false");
+    this._chatBtn.focus();
   }
 
   // Coalesce scroll-to-bottom: a burst of cumulative transcript deltas would
@@ -111,7 +120,7 @@ export class ChatView {
   // ── Shared rendering ──────────────────────────────────────────────────────
 
   /**
-   * Build a role-labelled message element. Ephemeral bubbles and persistent
+   * Build a message element. Ephemeral bubbles and persistent
    * history rows share the same shape and differ only in their class prefix
    * (`bubble`/`bubble-*` vs `hist-msg`/`hist-*`).
    * @param {{ container: string, prefix: string, role: "user"|"assistant", text: string, partial?: boolean }} o
@@ -120,8 +129,8 @@ export class ChatView {
   _buildMessageEl({ container, prefix, role, text, partial = false }) {
     const el = document.createElement("div");
     el.className = `${container} ${role}`;
-    const label = role === "user" ? "You" : "Assistant";
-    el.innerHTML = `<div class="${prefix}-role">${label}</div><div class="${prefix}-body${partial ? " partial" : ""}">${escHtml(text)}</div>`;
+    uiAttr(el, "aria-label", role === "user" ? "你的消息" : `${this._assistantName}的回复`);
+    el.innerHTML = `<div class="${prefix}-body${partial ? " partial" : ""}">${escHtml(text)}</div>`;
     return el;
   }
 
@@ -133,7 +142,7 @@ export class ChatView {
     if (role === "tool") {
       el = document.createElement("div");
       el.className = "bubble tool";
-      el.innerHTML = `<svg class="bubble-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${WRENCH_PATH}</svg><span class="bubble-tool-text">${escHtml(text)}</span>`;
+      el.innerHTML = `<span class="bubble-tool-text">${escHtml(text)}</span>`;
     } else {
       el = this._buildMessageEl({ container: "bubble", prefix: "bubble", role, text });
     }
@@ -144,7 +153,7 @@ export class ChatView {
     if (visible.length > 3) {
       this._dismissBubble(visible.find((b) => b !== this._activeUserBubble) ?? visible[0]);
     }
-    requestAnimationFrame(() => el.classList.add("in"));
+    requestAnimationFrame(() => { if (!el.classList.contains("out")) el.classList.add("in"); });
     return el;
   }
 
@@ -161,19 +170,16 @@ export class ChatView {
     el.classList.remove("in");
     el.classList.add("out");
     const remove = () => el.remove();
-    el.addEventListener("transitionend", remove, { once: true });
+    el.addEventListener("transitionend", event => { if (event.target === el && event.propertyName === "opacity") remove(); });
     // Fallback: transitionend never fires if the bubble's visual state didn't
     // change (dismissed pre-paint) or the tab is backgrounded. The transition
-    // is 0.3s, so force removal a little after.
-    setTimeout(remove, 400);
+    // lasts 0.75s, so force removal a little after.
+    setTimeout(remove, 850);
   }
 
   /**
-   * Fade bubbles whose expiry has passed — strictly oldest-first. We walk the
-   * stack top (oldest) to bottom (newest) and stop at the first bubble still
-   * alive: nothing newer may leave while an older bubble is still on screen. A
-   * bubble that keeps updating pushes its own expiry forward, so it (and
-   * everything behind it) stays put until it finally goes quiet.
+   * Fade due bubbles independently: a user message awaiting a reply must not
+   * block another reply's audio-triggered countdown.
    */
   _reapBubbles() {
     this._reaperHandle = 0;
@@ -181,13 +187,11 @@ export class ChatView {
     const visible = /** @type {HTMLElement[]} */ ([...this._bubbleStack.querySelectorAll(".bubble:not(.out)")]);
     let nextWake = Infinity;
     for (const el of visible) {
-      const exp = this._bubbleExpiry.get(el) ?? now; // no expiry recorded → treat as due
+      const exp = this._bubbleExpiry.get(el) ?? Infinity;
       if (exp <= now) {
         this._dismissBubble(el);
       } else {
-        // Oldest survivor isn't due yet; stop so nothing newer leaves before it.
-        nextWake = exp;
-        break;
+        nextWake = Math.min(nextWake, exp);
       }
     }
     if (nextWake !== Infinity) {
@@ -198,13 +202,13 @@ export class ChatView {
   /**
    * (Re)arm a bubble's auto-dismiss by pushing its expiry out by `delay`.
    * Calling it again resets the countdown — so a bubble that keeps updating
-   * stays on screen and only fades once it goes quiet. Removal is ordered by the
-   * shared reaper, so the oldest bubble always disappears first.
+   * stays on screen and only fades once it goes quiet.
    * @param {HTMLElement} el @param {number} [delay]
    */
   _bumpDismiss(el, delay = 4000) {
     this._bubbleExpiry.set(el, Date.now() + delay);
-    if (!this._reaperHandle) this._reaperHandle = setTimeout(() => this._reapBubbles(), delay);
+    clearTimeout(this._reaperHandle);
+    this._reapBubbles();
   }
 
   // ── History ───────────────────────────────────────────────────────────────
@@ -212,6 +216,7 @@ export class ChatView {
   /** Render the empty-state placeholder into the history panel. */
   renderEmptyState() {
     this._chatHistory.innerHTML = EMPTY_STATE_HTML;
+    applyLanguage(this._chatHistory);
   }
 
   /** Reset the panel to the empty state and clear the unread badge. */
@@ -255,7 +260,6 @@ export class ChatView {
     el.innerHTML = `
       <div class="hist-role">Tool call</div>
       <button class="hist-tool-header" aria-expanded="false">
-        <svg class="hist-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${WRENCH_PATH}</svg>
         <span class="hist-tool-name">${escHtml(name)}</span>
         <svg class="hist-tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
@@ -284,7 +288,7 @@ export class ChatView {
     hist.classList.add("interrupted");
     const note = document.createElement("div");
     note.className = "hist-note";
-    note.textContent = "Interrupted";
+    uiText(note, "已中断");
     hist.appendChild(note);
   }
 
@@ -309,13 +313,13 @@ export class ChatView {
    */
   reset(opts) {
     if (opts?.dismiss) {
-      if (this._activeUserBubble) this._dismissBubble(this._activeUserBubble);
-      for (const { bubble } of this._asstByResp.values()) this._dismissBubble(bubble);
+      for (const bubble of this._bubbleStack.querySelectorAll(".bubble")) this._dismissBubble(bubble);
     }
     this._userHistByItem.clear();
     this._activeUserBubble = null;
     this._activeUserItemId = "";
     this._asstByResp.clear();
+    this._audioByResp.clear();
   }
 
   // ── Client event handlers ─────────────────────────────────────────────────
@@ -343,11 +347,10 @@ export class ChatView {
         this._updateHistMsg(hist, text, d.partial);
       }
 
-      // One ephemeral bubble per active item. Purely timer-based: the timer is
-      // refreshed on every delta, so it stays while the user keeps talking and
-      // fades a few seconds after they stop — no dependency on a response ever
-      // arriving, so it can never get stuck.
-      if (this._activeUserItemId !== id || !this._activeUserBubble) {
+      // Keep user text readable for six seconds after its latest update,
+      // independently of how quickly the assistant starts replying.
+      if (this._activeUserItemId !== id || !this._activeUserBubble?.isConnected
+          || this._activeUserBubble.classList.contains("out")) {
         this._activeUserBubble = this._spawnBubble("user", text);
         this._activeUserItemId = id;
       } else {
@@ -356,20 +359,34 @@ export class ChatView {
       this._bumpDismiss(this._activeUserBubble, 6000);
       this._markUnread();
     } else if (d.role === "assistant") {
+      if (!d.text.trim()) return;
       // Assistant transcript arrives once, as the full text, keyed by
       // response_id so a cancelled speculative response can be removed later. A
       // missing id gets a unique key so two id-less replies never collide.
       const rid = d.responseId || `_a${++this._anonSeq}`;
-      const entry = this._asstByResp.get(rid);
+      let entry = this._asstByResp.get(rid);
       if (!entry) {
         const bubble = this._spawnBubble("assistant", d.text);
-        this._asstByResp.set(rid, { bubble, hist: this._appendHistMsg("assistant", d.text, false) });
+        entry = { bubble, hist: this._appendHistMsg("assistant", d.text, d.partial) };
+        this._asstByResp.set(rid, entry);
       } else {
-        this._updateBubbleText(entry.bubble, d.text);
-        this._updateHistMsg(entry.hist, d.text, false);
+        if (!entry.bubble.isConnected || entry.bubble.classList.contains("out")) entry.bubble = this._spawnBubble("assistant", d.text);
+        else this._updateBubbleText(entry.bubble, d.text);
+        this._updateHistMsg(entry.hist, d.text, d.partial);
       }
+      // A no-audio fallback covers failed/stalled synthesis. New text after the
+      // first chunk gets fresh reading time; further audio chunks do not reset it.
+      this._bumpDismiss(entry.bubble, this._audioByResp.has(rid) ? replyReadTime(d.text) : 30000);
       this._markUnread();
     }
+  }
+
+  /** @param {{ responseId: string }} detail */
+  onAudioChunk({ responseId }) {
+    if (!responseId || this._audioByResp.has(responseId)) return;
+    this._audioByResp.add(responseId);
+    const entry = this._asstByResp.get(responseId);
+    if (entry) this._bumpDismiss(entry.bubble, replyReadTime(entry.bubble.textContent));
   }
 
   /**
@@ -395,17 +412,17 @@ export class ChatView {
         this._updateHistMsg(hist, transcript, false);
       }
       if (hist) this._markHistInterrupted(hist);
-      if (entry?.bubble) this._bumpDismiss(entry.bubble, 6000);
+      if (entry?.bubble && !this._audioByResp.has(responseId)) this._bumpDismiss(entry.bubble, replyReadTime(entry.bubble.textContent));
       this._asstByResp.delete(responseId);
+      this._audioByResp.delete(responseId);
       return;
     }
 
-    // Any other terminal close (completed / failed / incomplete / …): just
-    // release the map entry. The bubble already auto-dismisses on its timer and
-    // the history row persists as the conversation log. Crucially we do NOT
-    // touch user state here — that lifecycle is fully independent.
-    if (entry?.bubble) this._bumpDismiss(entry.bubble, 6000);
+    // Audio already started the countdown. A silent reply uses reading time
+    // from completion, and the history row remains available after fading.
+    if (entry?.bubble && !this._audioByResp.has(responseId)) this._bumpDismiss(entry.bubble, replyReadTime(entry.bubble.textContent));
     this._asstByResp.delete(responseId);
+    this._audioByResp.delete(responseId);
   }
 
   /** The model called a tool — show an ephemeral "running" bubble.

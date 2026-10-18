@@ -140,6 +140,9 @@ void apply_retrieval_blend(
         static_cast<int64_t>(features.size()) != frames * dim) {
         throw std::runtime_error("RVC retrieval feature shape mismatch");
     }
+    if (index.vectors.empty()) {
+        throw std::runtime_error("RVC retrieval index contains no vectors");
+    }
     constexpr size_t kNeighbors = 8;
     const int worker_count = static_cast<int>(
         std::max<size_t>(
@@ -154,11 +157,14 @@ void apply_retrieval_blend(
 #pragma omp for schedule(static)
         for (int64_t frame = 0; frame < frames; ++frame) {
             const auto * query = source_features.data() + static_cast<size_t>(frame * dim);
-            int64_t best_list = 0;
+            int64_t best_list = -1;
             float best_centroid = std::numeric_limits<float>::infinity();
             for (int64_t list = 0; list < index.nlist; ++list) {
+                if (index.list_lengths[static_cast<size_t>(list)] == 0) {
+                    continue;
+                }
                 const float dist = squared_l2(query, index.centroids.data() + static_cast<size_t>(list * dim), dim);
-                if (dist < best_centroid) {
+                if (best_list < 0 || dist < best_centroid) {
                     best_centroid = dist;
                     best_list = list;
                 }
@@ -187,9 +193,6 @@ void apply_retrieval_blend(
                     nearest_dist[worst_slot] = dist;
                     nearest_index[worst_slot] = vector_index;
                 }
-            }
-            if (nearest_count == 0) {
-                throw std::runtime_error("RVC retrieval selected an empty IVF list");
             }
             std::fill(blended_frame.begin(), blended_frame.end(), 0.0F);
             float weight_sum = 0.0F;
@@ -543,7 +546,7 @@ RvcSynthesizerInput make_synthesizer_input(
 
 }  // namespace
 
-struct RvcNativePipeline::State {
+struct RvcPipeline::State {
     std::shared_ptr<const RvcAssets> assets;
     engine::core::BackendConfig backend;
     engine::assets::TensorStorageType storage_type = engine::assets::TensorStorageType::Native;
@@ -554,7 +557,7 @@ struct RvcNativePipeline::State {
     std::mutex mutex;
 };
 
-RvcNativePipeline::RvcNativePipeline(
+RvcPipeline::RvcPipeline(
     std::shared_ptr<const RvcAssets> assets,
     engine::core::BackendConfig backend,
     engine::assets::TensorStorageType storage_type)
@@ -572,11 +575,11 @@ RvcNativePipeline::RvcNativePipeline(
         state_->storage_type);
 }
 
-RvcNativePipeline::~RvcNativePipeline() = default;
-RvcNativePipeline::RvcNativePipeline(RvcNativePipeline &&) noexcept = default;
-RvcNativePipeline & RvcNativePipeline::operator=(RvcNativePipeline &&) noexcept = default;
+RvcPipeline::~RvcPipeline() = default;
+RvcPipeline::RvcPipeline(RvcPipeline &&) noexcept = default;
+RvcPipeline & RvcPipeline::operator=(RvcPipeline &&) noexcept = default;
 
-runtime::AudioBuffer RvcNativePipeline::infer(
+runtime::AudioBuffer RvcPipeline::infer(
     const runtime::AudioBuffer & source,
     const RvcVoiceModel & voice,
     const RvcInferenceConfig & config,

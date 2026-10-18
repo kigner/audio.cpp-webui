@@ -5,15 +5,17 @@ param(
     [string]$OutputDir = "",
     [string]$ReleaseTag = "",
     [string]$Repository = "kigner/audio.cpp-webui",
+    [string]$HuggingFaceRepository = "kigner/audio.cpp-webui",
     [string]$ReleaseNotesPath = "",
     [Parameter(Mandatory = $true)][string]$MinisignSecretKey,
     [Parameter(Mandatory = $true)][string]$MinisignPublicKey,
     [string]$MinisignPath = "minisign.exe",
     [string]$PythonDepsSource = "",
     [switch]$IncludeUpdater,
+    [switch]$IncludeStandaloneApi,
     [string]$UpdaterMinisignBinary = "",
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$MinimumUpdater = "1.1.1",
-    [string]$SupportedFrom = ">=0.2.0",
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$MinimumUpdater = "1.2.0",
+    [string]$SupportedFrom = "",
     [switch]$Stable,
     [switch]$AllowDirty
 )
@@ -23,6 +25,14 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $repoRoot = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
+$updateBaseline = "0.7.0"
+if ([version]$Version -lt [version]$updateBaseline) {
+    throw "This builder targets baseline $updateBaseline and later. Keep the existing legacy release assets."
+}
+if ([version]$MinimumUpdater -lt [version]"1.2.0") { throw "This release requires updater 1.2.0 or later." }
+# Always retain the baseline floor, even when a caller supplies a broader range.
+$SupportedFrom = (">=$updateBaseline " + $SupportedFrom).Trim()
+$hfReleasePath = "updates/v$updateBaseline/v$Version"
 if ($PortableRoot -eq "") { $PortableRoot = Join-Path $repoRoot "audiocpp-portable" }
 if ($OutputDir -eq "") { $OutputDir = Join-Path $repoRoot "dist\releases\v$Version" }
 if ($ReleaseTag -eq "") { $ReleaseTag = "v$Version-windows-prebuilt" }
@@ -102,7 +112,8 @@ function New-ComponentArchive {
         [Parameter(Mandatory = $true)][string]$Id,
         [Parameter(Mandatory = $true)][string]$FileName,
         [Parameter(Mandatory = $true)][object[]]$Inputs,
-        [string]$ComponentVersion = $Version
+        [string]$ComponentVersion = $Version,
+        [string[]]$RemovePaths = @()
     )
     $stage = Join-Path $stageRoot $Id
     $payload = Join-Path $stage "payload"
@@ -116,7 +127,7 @@ function New-ComponentArchive {
         schema = 1
         component = $Id
         files = @(Get-FileIndex $payload)
-        remove = @()
+        remove = @($RemovePaths)
     }
     $index | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stage "files.json") -Encoding UTF8
 
@@ -135,17 +146,21 @@ function New-ComponentArchive {
 
 function Get-AppInputs {
     $inputs = @()
-    $rootFiles = @(
+    # Explicit startup dependencies must not disappear through tracked-file filtering.
+    $requiredFiles = @(
         "_env.bat",
-        "run_cli_tts.bat",
-        "run_realtime.bat",
-        "run_server.bat",
-        "run_server_asr.bat",
-        "run_server_asr_stream.bat",
-        "run_speaktype.bat",
-        "run_webui.bat"
+        "run_webui.bat",
+        "webui/start_webui.bat",
+        "webui/backend_probe.py",
+        "webui/workbench_static/i18n.js",
+        "webui/workbench_static/locales/en.json",
+        "webui/README.md",
+        "webui/README.zh.md"
     )
-    foreach ($relative in $rootFiles) {
+    if ($IncludeStandaloneApi) {
+        $requiredFiles += @("run_server.bat", "run_server_asr.bat", "run_server_asr_stream.bat")
+    }
+    foreach ($relative in $requiredFiles) {
         $inputs += [pscustomobject]@{ Source = Join-Path $repoRoot $relative; Path = $relative }
     }
 
@@ -161,13 +176,21 @@ function Get-AppInputs {
     if ($LASTEXITCODE -ne 0) { throw "git ls-files failed." }
     foreach ($relative in $tracked) {
         $normalized = ([string]$relative).Replace('\', '/')
+        if ($normalized -in $requiredFiles) { continue }
         $include = $false
         if ($normalized.StartsWith("webui/")) {
             $include = $normalized -notmatch '^webui/(voice|output|logs)/' -and
-                $normalized -notin @("webui/llm_api_key.txt", "webui/configs/ui_language.json") -and
-                $normalized -notmatch '^webui/test_.*\.py$'
+                $normalized -notin @("webui/llm_api_key.txt", "webui/configs/ui_language.json",
+                    "webui/_env.bat", "webui/run_webui.bat", "webui/run_webui.sh") -and
+                $normalized -notmatch '^webui/test_[^/]+$' -and
+                $normalized -notmatch '(^|/)(__pycache__|node_modules|\.svelte-kit)/|\.pyc$'
+            if ($normalized.StartsWith("webui/native/")) {
+                # Keep existing native runtime assets, not its source/build inputs.
+                $include = $normalized -eq "webui/native/dist/index.html" -or
+                    $normalized.StartsWith("webui/native/demo_voices/")
+            }
         } elseif ($normalized.StartsWith("SpeakType/")) {
-            $include = $normalized -match '^SpeakType/(app/|web/|third_party/|run\.py$|run_speaktype\.pyw$|run_mock\.pyw$|README\.md$)' -and
+            $include = $normalized -match '^SpeakType/(app/|web/|third_party/|run\.py$|README\.md$)' -and
                 $normalized -notin @("SpeakType/config.json", "SpeakType/logs/.gitkeep")
         } elseif ($normalized -in @(
                       "tools/model_manager_v2.py",
@@ -186,14 +209,57 @@ function Get-AppInputs {
     return @($inputs)
 }
 
+function Get-AppRemovePaths {
+    # Exact previously distributed app files only. Never delete whole directories:
+    # the updater backs up each file and restores it if a later health check fails.
+    $paths = @(
+        "run_cli_tts.bat",
+        "run_realtime.bat",
+        "run_speaktype.bat",
+        "SpeakType/run_mock.pyw",
+        "SpeakType/run_speaktype.pyw",
+        "webui/_env.bat",
+        "webui/run_webui.bat",
+        "webui/run_webui.sh",
+        "webui/native/package.json",
+        "webui/native/package-lock.json",
+        "webui/native/svelte.config.js",
+        "webui/native/tsconfig.json",
+        "webui/native/vite.config.ts",
+        "webui/native/lang/README.md",
+        "webui/native/lang/lang_it.json",
+        "webui/native/lang/lang_pl.json",
+        "webui/native/lang/lang_ru.json",
+        "webui/native/lang/lang_zh.json",
+        "webui/native/src/app.css",
+        "webui/native/src/app.html",
+        "webui/native/src/lib/api.ts",
+        "webui/native/src/lib/audio.ts",
+        "webui/native/src/lib/catalog.ts",
+        "webui/native/src/lib/i18n.ts",
+        "webui/native/src/lib/text.ts",
+        "webui/native/src/lib/types.ts",
+        "webui/native/src/lib/voices.ts",
+        "webui/native/src/routes/+page.svelte",
+        "webui/native/src/routes/+page.ts"
+    )
+    if (-not $IncludeStandaloneApi) {
+        $paths += @("run_server.bat", "run_server_asr.bat", "run_server_asr_stream.bat")
+    }
+    return $paths
+}
+
 function New-CoreInputs {
-    param([Parameter(Mandatory = $true)][ValidateSet("cpu", "gpu")][string]$Directory)
+    param([Parameter(Mandatory = $true)][ValidateSet("cpu", "gpu", "vulkan")][string]$Directory)
     $inputs = @()
     foreach ($name in @("audiocpp_cli.exe", "audiocpp_server.exe", "audiocpp_gguf.exe")) {
         $inputs += [pscustomobject]@{
             Source = Join-Path (Join-Path $PortableRoot $Directory) $name
             Path = "$Directory/$name"
         }
+    }
+    foreach ($dll in @(Get-ChildItem -LiteralPath (Join-Path $PortableRoot $Directory) -Filter '*.dll' -File | Sort-Object Name)) {
+        $inputs += [pscustomobject]@{ Source = $dll.FullName; Path = "$Directory/$($dll.Name)" }
     }
     return @($inputs)
 }
@@ -248,7 +314,11 @@ function ConvertTo-ManifestComponent {
         file = [string]$Component.File
         size = [int64]$Component.Size
         sha256 = [string]$Component.Sha256
-        urls = @("https://github.com/$Repository/releases/download/$ReleaseTag/$($Component.File)")
+        urls = @(
+            "https://github.com/$Repository/releases/download/$ReleaseTag/$($Component.File)",
+            "https://huggingface.co/$HuggingFaceRepository/resolve/main/$hfReleasePath/$($Component.File)",
+            "https://hf-mirror.com/$HuggingFaceRepository/resolve/main/$hfReleasePath/$($Component.File)"
+        )
     }
 }
 
@@ -301,10 +371,11 @@ if (-not $AllowDirty) {
 if (Test-Path -LiteralPath $OutputDir) { Remove-Item -LiteralPath $OutputDir -Recurse -Force }
 New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 
-$app = New-ComponentArchive "app" "audiocpp-app-v$Version.zip" (Get-AppInputs) $Version
+$app = New-ComponentArchive "app" "audiocpp-app-v$Version.zip" (Get-AppInputs) $Version -RemovePaths (Get-AppRemovePaths)
 $cpu = New-ComponentArchive "core-cpu" "audiocpp-core-cpu-win-x64-v$Version.zip" (New-CoreInputs "cpu") $Version
 $cuda = New-ComponentArchive "core-cuda" "audiocpp-core-cuda-win-x64-v$Version.zip" (New-CoreInputs "gpu") $Version
-$components = @($app, $cpu, $cuda)
+$vulkan = New-ComponentArchive "core-vulkan" "audiocpp-core-vulkan-win-x64-v$Version.zip" (New-CoreInputs "vulkan") $Version
+$components = @($app, $cpu, $cuda, $vulkan)
 $hasPythonDeps = $PythonDepsSource -ne ""
 if ($hasPythonDeps) { $components += New-PythonDepsArchive $PythonDepsSource }
 $hasUpdater = [bool]$IncludeUpdater
@@ -320,6 +391,7 @@ $manifest = [ordered]@{
     product = "audiocpp-portable"
     platform = "windows-x64"
     version = $Version
+    update_baseline = $updateBaseline
     supported_from = $SupportedFrom
     minimum_updater = $MinimumUpdater
     components = @($components | ForEach-Object { ConvertTo-ManifestComponent $_ })
@@ -329,6 +401,8 @@ $manifest = [ordered]@{
         "cpu-server-help",
         "cuda-cli-help-if-available",
         "cuda-server-help-if-available",
+        "vulkan-cli-help-if-available",
+        "vulkan-server-help-if-available",
         "python-imports",
         "pip-check",
         "python-compile"
@@ -339,17 +413,24 @@ $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -E
 Invoke-Minisign $manifestPath "$manifestPath.minisig"
 
 if ($Stable) {
-    $stablePath = Join-Path $OutputDir "stable.json"
+    $stablePath = Join-Path $OutputDir "stable-v$updateBaseline.json"
     $stablePointer = [ordered]@{
         schema = 1
         channel = "stable"
         version = $Version
+        update_baseline = $updateBaseline
         published_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         manifest_url = "https://github.com/$Repository/releases/download/$ReleaseTag/$manifestName"
         signature_url = "https://github.com/$Repository/releases/download/$ReleaseTag/$manifestName.minisig"
         notes_url = "https://github.com/$Repository/releases/tag/$ReleaseTag"
     }
     $stablePointer | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $stablePath -Encoding UTF8
+    # Relative assets keep the HF mirror independent of a failed huggingface.co route.
+    $stablePointer.manifest_url = "v$Version/$manifestName"
+    $stablePointer.signature_url = "v$Version/$manifestName.minisig"
+    $stablePointer | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDir "stable-v$updateBaseline.huggingface.json") -Encoding UTF8
+    # Old clients always request latest/download/stable.json, even after a new Latest release.
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'update_legacy_stable.json') -Destination (Join-Path $OutputDir 'stable.json')
 }
 
 $releaseNotesOutput = Join-Path $OutputDir "release-notes.md"
@@ -361,10 +442,11 @@ if ($ReleaseNotesPath -ne "") {
 
 ## Update
 
-- Supported from: 0.2.0 and later portable bundles
-- Components: app, core-cpu, core-cuda$(if ($hasPythonDeps) { ', python-deps' })$(if ($hasUpdater) { ', updater' })
+- Supported from: $SupportedFrom (full-package baseline $updateBaseline)
+- Versions below $updateBaseline must install the full Aixora-Studio.zip package; their legacy channel remains at 0.6.0.
+- Components: app, core-cpu, core-cuda, core-vulkan$(if ($hasPythonDeps) { ', python-deps' })$(if ($hasUpdater) { ', updater' })
 - Python dependency changes: $(if ($hasPythonDeps) { 'yes' } else { 'no' })
-- CUDA runtime changes: no
+- Backend EXEs and bundled DLLs are included in their respective components.
 
 ## User data
 
@@ -384,6 +466,23 @@ $sumLines = @($sumCandidates | ForEach-Object {
 $sumsPath = Join-Path $OutputDir "SHA256SUMS.txt"
 Set-Content -LiteralPath $sumsPath -Value $sumLines -Encoding ASCII
 Invoke-Minisign $sumsPath "$sumsPath.minisig"
+
+$hfUploads = @(Get-ChildItem -LiteralPath $OutputDir -File | Sort-Object Name | ForEach-Object {
+    [ordered]@{ local_file = $_.Name; path_in_repo = "$hfReleasePath/$($_.Name)"; phase = "assets" }
+})
+if ($Stable) {
+    $hfUploads += [ordered]@{
+        local_file = "stable-v$updateBaseline.huggingface.json"
+        path_in_repo = "updates/v$updateBaseline/stable.json"
+        phase = "promote-after-verification"
+    }
+}
+[ordered]@{
+    repository = $HuggingFaceRepository
+    revision = "main"
+    full_bundle = "Aixora-Studio.zip"
+    files = $hfUploads
+} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDir 'huggingface-upload.json') -Encoding UTF8
 
 Remove-Item -LiteralPath $stageRoot -Recurse -Force
 Write-Host ""

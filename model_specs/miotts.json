@@ -33,6 +33,7 @@
       "GGUF"
     ],
     "docs": [
+      "docs/models/miotts.md",
       "docs/tts.md",
       "docs/gguf.md"
     ]
@@ -121,5 +122,100 @@
         "weights": "model:model.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "codec_model_path",
+        "type": "string",
+        "description": "MioCodec model directory used by MioTTS acoustic decoding."
+      },
+      {
+        "name": "best_of_n_enabled",
+        "type": "bool",
+        "description": "Enable best-of-N candidate selection by default."
+      },
+      {
+        "name": "best_of_n_default",
+        "type": "int",
+        "min": 1,
+        "description": "Default best-of-N candidate count."
+      },
+      {
+        "name": "best_of_n_max",
+        "type": "int",
+        "min": 1,
+        "description": "Maximum best-of-N candidate count."
+      },
+      {
+        "name": "best_of_n_language",
+        "type": "enum",
+        "values": [
+          "auto",
+          "en",
+          "ja"
+        ],
+        "description": "Default language used when scoring best-of-N candidates."
+      },
+      {
+        "name": "best_of_n_asr_model_path",
+        "type": "string",
+        "description": "Qwen3-ASR model directory used by best-of-N scoring."
+      },
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "MioTTS language-model matmul weight storage type."
+      },
+      {
+        "name": "codec_constant_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "codec_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "decode_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "global_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "prefill_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "wave_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      }
+    ]
+  }
 }

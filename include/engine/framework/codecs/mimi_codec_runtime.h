@@ -4,7 +4,7 @@
 #include "engine/framework/codecs/neural_audio.h"
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/modules/attention/types.h"
-#include "engine/framework/modules/attention/feed_forward.h"
+#include "engine/framework/modules/feed_forward_modules.h"
 #include "engine/framework/modules/conditioning_modules.h"
 #include "engine/framework/modules/conv_modules.h"
 #include "engine/framework/modules/linear_module.h"
@@ -203,6 +203,8 @@ public:
     ~MimiEncoderRuntime();
 
     std::vector<int32_t> encode(const runtime::AudioBuffer & audio);
+    void reset_streaming();
+    std::vector<int32_t> encode_streaming(const runtime::AudioBuffer & audio, bool flush);
 
 private:
     struct Impl;

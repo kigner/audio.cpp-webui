@@ -205,5 +205,204 @@
         "whisper_weights": "whisper:model.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Default matmul weight storage type."
+      },
+      {
+        "name": "conv_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16"
+        ],
+        "description": "Default convolution weight storage type."
+      },
+      {
+        "name": "ar_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "AR matmul weight storage type."
+      },
+      {
+        "name": "ar_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "AR weight context size."
+      },
+      {
+        "name": "ar_prefill_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "AR prefill graph context size."
+      },
+      {
+        "name": "ar_decode_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "AR decode graph context size."
+      },
+      {
+        "name": "whisper_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Whisper matmul weight storage type."
+      },
+      {
+        "name": "whisper_conv_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16"
+        ],
+        "description": "Whisper convolution weight storage type."
+      },
+      {
+        "name": "whisper_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Whisper weight context size."
+      },
+      {
+        "name": "whisper_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Whisper graph context size."
+      },
+      {
+        "name": "tokenizer_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Tokenizer matmul weight storage type."
+      },
+      {
+        "name": "tokenizer_conv_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16"
+        ],
+        "description": "Tokenizer convolution weight storage type."
+      },
+      {
+        "name": "tokenizer_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Tokenizer weight context size."
+      },
+      {
+        "name": "tokenizer_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Tokenizer graph context size."
+      },
+      {
+        "name": "fm_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Flow-matching matmul weight storage type."
+      },
+      {
+        "name": "fm_conv_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16"
+        ],
+        "description": "Flow-matching convolution weight storage type."
+      },
+      {
+        "name": "fm_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Flow-matching weight context size."
+      },
+      {
+        "name": "fm_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Flow-matching graph context size."
+      },
+      {
+        "name": "vocoder_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Vocoder matmul weight storage type."
+      },
+      {
+        "name": "vocoder_conv_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16"
+        ],
+        "description": "Vocoder convolution weight storage type."
+      },
+      {
+        "name": "vocoder_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Vocoder weight context size."
+      },
+      {
+        "name": "vocoder_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Vocoder graph context size."
+      }
+    ],
+    "load": [
+      {
+        "name": "whisper_model_path",
+        "type": "string",
+        "description": "Local Whisper model directory used by VeVo2 feature extraction."
+      }
+    ]
+  }
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/framework/model_spec/metadata.h"
+#include "engine/framework/runtime/partial_text.h"
 #include "engine/framework/runtime/session_base.h"
 #include "engine/community_models/parakeet_tdt/assets.h"
 #include "engine/community_models/parakeet_tdt/decoder.h"
@@ -10,8 +11,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
+
 #include <unordered_map>
 #include <vector>
 
@@ -45,8 +48,8 @@ protected:
     engine::assets::TensorStorageType conv_weight_storage_type_ = engine::assets::TensorStorageType::Native;
     bool encoder_flash_attention_ = false;
     ParakeetFrontend frontend_;
-    std::unique_ptr<ParakeetEncoderRuntime> encoder_;
-    std::unique_ptr<ParakeetDecoderRuntime> decoder_;
+    std::unique_ptr<ParakeetFastConformerEncoderRuntime> encoder_;
+    std::unique_ptr<ParakeetTDTDecoderRuntime> decoder_;
 };
 
 class ParakeetTDTOfflineSession final
@@ -69,12 +72,20 @@ private:
     runtime::TaskResult run_long_form(
         const runtime::AudioBuffer & audio,
         const ParakeetDecodeOptions & options);
+    runtime::TaskResult run_vad_chunks(
+        const runtime::AudioBuffer & audio,
+        const std::unordered_map<std::string, std::string> & request_options,
+        const ParakeetDecodeOptions & options);
+    runtime::IOfflineVoiceTaskSession & vad_session();
 
     std::string offline_mode_ = "full_context";
     int64_t center_samples_ = 0;
     int64_t left_context_samples_ = 0;
     int64_t right_context_samples_ = 0;
     int64_t auto_full_context_max_samples_ = 0;
+    std::filesystem::path vad_model_path_;
+    std::unique_ptr<runtime::ILoadedVoiceModel> vad_model_;
+    std::unique_ptr<runtime::IOfflineVoiceTaskSession> vad_session_;
 };
 
 class ParakeetTDTStreamingSession final
@@ -115,8 +126,10 @@ private:
     std::vector<int32_t> token_ids_;
     std::vector<int32_t> token_frame_indices_;
     std::vector<int32_t> token_durations_;
-    std::string emitted_text_;
     runtime::StreamEventCallback stream_event_sink_;
+    // merged_decode() returns the whole transcript each time; this turns it
+    // back into the increment a partial is contracted to be.
+    runtime::PartialTextPublisher partials_;
     bool stream_started_ = false;
     bool finalized_ = false;
 };

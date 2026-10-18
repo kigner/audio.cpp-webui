@@ -1,6 +1,7 @@
 #include "engine/models/voxcpm2/session.h"
 
 #include "engine/framework/debug/profiler.h"
+#include "engine/framework/io/text.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/text/chunking.h"
 
@@ -21,6 +22,36 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr int64_t kDefaultTextChunkSize = 2048;
+
+enum class ChunkStrategy {
+  Continuation,
+  Stateless,
+};
+
+ChunkStrategy parse_chunk_strategy(
+    const std::unordered_map<std::string, std::string> &options) {
+  const auto value =
+      runtime::find_option(options, {"voxcpm2.chunk_strategy", "chunk_strategy"})
+          .value_or("continuation");
+  if (value == "continuation") {
+    return ChunkStrategy::Continuation;
+  }
+  if (value == "stateless") {
+    return ChunkStrategy::Stateless;
+  }
+  throw std::runtime_error(
+      "VoxCPM2 chunk_strategy must be continuation or stateless");
+}
+
+const char *chunk_strategy_name(ChunkStrategy strategy) {
+  switch (strategy) {
+  case ChunkStrategy::Continuation:
+    return "continuation";
+  case ChunkStrategy::Stateless:
+    return "stateless";
+  }
+  return "unknown";
+}
 
 std::shared_ptr<const VoxCPM2Assets>
 require_assets(std::shared_ptr<const VoxCPM2Assets> assets) {
@@ -62,6 +93,56 @@ bool optional_audio_equal(const std::optional<runtime::AudioBuffer> &lhs,
     return false;
   }
   return !lhs.has_value() || audio_buffer_equal(*lhs, *rhs);
+}
+
+std::optional<std::pair<std::string, std::string>>
+split_leading_voice_tag(const std::string &text) {
+  const std::string trimmed = engine::io::trim_ascii_whitespace(text);
+  if (trimmed.empty() || trimmed.front() != '(') {
+    return std::nullopt;
+  }
+  const size_t close = trimmed.find(')');
+  if (close == std::string::npos || close + 1 >= trimmed.size()) {
+    return std::nullopt;
+  }
+  const std::string tag =
+      engine::io::trim_ascii_whitespace(trimmed.substr(0, close + 1));
+  const std::string body =
+      engine::io::trim_ascii_whitespace(trimmed.substr(close + 1));
+  if (tag.empty() || body.empty()) {
+    return std::nullopt;
+  }
+  return std::make_pair(tag, body);
+}
+
+std::vector<runtime::TaskRequest>
+chunk_voxcpm2_request(const runtime::TaskRequest &request,
+                      int64_t text_chunk_size,
+                      engine::text::TextChunkMode text_chunk_mode) {
+  if (!request.text_input.has_value() ||
+      text_chunk_mode != engine::text::TextChunkMode::TagAware) {
+    return runtime::chunk_text_request(request, text_chunk_size,
+                                       text_chunk_mode);
+  }
+  const auto split = split_leading_voice_tag(request.text_input->text);
+  if (!split.has_value()) {
+    return runtime::chunk_text_request(request, text_chunk_size,
+                                       text_chunk_mode);
+  }
+  const auto body_chunks = engine::text::split_text_chunks(
+      split->second, text_chunk_size, text_chunk_mode);
+  if (body_chunks.empty()) {
+    return {request};
+  }
+  std::vector<runtime::TaskRequest> out;
+  out.reserve(body_chunks.size());
+  for (size_t i = 0; i < body_chunks.size(); ++i) {
+    runtime::TaskRequest item = request;
+    item.text_input->text =
+        i == 0 ? split->first + " " + body_chunks[i] : body_chunks[i];
+    out.push_back(std::move(item));
+  }
+  return out;
 }
 
 size_t prompt_cache_slots_from_options(
@@ -259,7 +340,8 @@ runtime::TaskResult VoxCPM2SessionBase::run_offline_request(const runtime::TaskR
       engine::text::parse_text_chunk_mode_override(request.options)
           .value_or(engine::text::TextChunkMode::TagAware);
   const auto chunk_requests =
-      runtime::chunk_text_request(request, text_chunk_size, text_chunk_mode);
+      chunk_voxcpm2_request(request, text_chunk_size, text_chunk_mode);
+  const auto chunk_strategy = parse_chunk_strategy(request.options);
   const auto generation_options = generation_options_from_request(request);
   const auto prompt_text =
       runtime::find_option(request.options, {"voxcpm2.prompt_text",
@@ -278,10 +360,12 @@ runtime::TaskResult VoxCPM2SessionBase::run_offline_request(const runtime::TaskR
   double generator_ms = 0.0;
   double decoder_ms = 0.0;
   runtime::AudioBuffer merged_audio;
+  std::optional<VoxCPM2EncodedPrompt> continuation_prompt;
+  const VoxCPM2EncodedPrompt *active_prompt = prompt;
   for (const auto & chunk_request : chunk_requests) {
     const auto generator_start = Clock::now();
     const auto generated = generator_->generate(
-        chunk_request.text_input->text, prompt, generation_options);
+        chunk_request.text_input->text, active_prompt, generation_options);
     generator_ms += engine::debug::elapsed_ms(generator_start, Clock::now());
 
     const auto decoder_start = Clock::now();
@@ -301,6 +385,20 @@ runtime::TaskResult VoxCPM2SessionBase::run_offline_request(const runtime::TaskR
     }
     decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
     runtime::append_audio_buffer(merged_audio, audio);
+
+    if (chunk_strategy == ChunkStrategy::Continuation &&
+        chunk_requests.size() > 1 && generated.generated_patches > 0) {
+      VoxCPM2EncodedPrompt next_prompt;
+      if (prompt != nullptr) {
+        next_prompt.reference_features = prompt->reference_features;
+        next_prompt.reference_patches = prompt->reference_patches;
+      }
+      next_prompt.prompt_text = chunk_request.text_input->text;
+      next_prompt.prompt_features = generated.generated_features;
+      next_prompt.prompt_patches = generated.generated_patches;
+      continuation_prompt = std::move(next_prompt);
+      active_prompt = &*continuation_prompt;
+    }
   }
   result.audio_output = std::move(merged_audio);
 
@@ -310,6 +408,8 @@ runtime::TaskResult VoxCPM2SessionBase::run_offline_request(const runtime::TaskR
                           engine::text::text_chunk_mode_name(text_chunk_mode));
   debug::trace_log_scalar("voxcpm2.text_chunk_count",
                           static_cast<int64_t>(chunk_requests.size()));
+  debug::trace_log_scalar("voxcpm2.chunk_strategy",
+                          std::string_view(chunk_strategy_name(chunk_strategy)));
   debug::timing_log_scalar("voxcpm2.generator_ms", generator_ms);
   debug::timing_log_scalar("voxcpm2.audiovae_decoder_ms", decoder_ms);
   debug::timing_log_scalar("session.wall_ms",
@@ -361,6 +461,19 @@ VoxCPM2SessionBase::run_streaming_request(
     const auto decoder_start = Clock::now();
     auto audio = decoder_->decode_features(chunk.decode_features,
                                            chunk.decode_patches);
+    if (chunk.context_patches > 0) {
+      // Left-context patches were decoded for the decoder's history only.
+      const int64_t context_samples =
+          chunk.context_patches * assets_->config.patch_size *
+          product(assets_->config.audio_vae.decoder_rates);
+      if (context_samples > static_cast<int64_t>(audio.samples.size())) {
+        throw std::runtime_error(
+            "VoxCPM2 streaming context trim exceeds chunk audio length");
+      }
+      audio.samples.erase(audio.samples.begin(),
+                          audio.samples.begin() +
+                              static_cast<std::ptrdiff_t>(context_samples));
+    }
     decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
     if (emitted_chunks == 0) {
       merged.sample_rate = audio.sample_rate;
@@ -520,6 +633,17 @@ VoxCPM2GenerationOptions VoxCPM2SessionBase::generation_options_from_request(
       runtime::find_option(request.options,
                            {"voxcpm2.cfm_noise_file", "cfm_noise_file"})
           .value_or("");
+  if (const auto value = runtime::parse_i64_option(
+          request.options,
+          {"voxcpm2.stream_left_context", "stream_left_context"})) {
+    options.stream_left_context = *value;
+  }
+  if (options.stream_left_context < 0 ||
+      options.stream_left_context > kVoxCPM2MaxStreamLeftContext) {
+    throw std::runtime_error(
+        "VoxCPM2 stream_left_context must be between 0 and " +
+        std::to_string(kVoxCPM2MaxStreamLeftContext));
+  }
   if (options.min_tokens < 0) {
     throw std::runtime_error("VoxCPM2 min_tokens must be non-negative");
   }

@@ -80,5 +80,21 @@
         "weights": "model:citrinet_256.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      }
+    ]
+  }
 }

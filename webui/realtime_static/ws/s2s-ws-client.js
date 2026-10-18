@@ -52,6 +52,7 @@
  * @property {string} voice
  * @property {string} instructions
  * @property {MediaStream} [micStream] Live mic stream. Provide this OR `acquireMic`.
+ * @property {boolean} [textOnly] Start without requesting microphone access.
  * @property {() => Promise<MediaStream>} [acquireMic] Lazily obtain the mic stream,
  *   called only once a session is actually granted (after any queue wait). Lets the
  *   caller prime mic permission up front but not hold the mic 'in use' indicator on
@@ -212,9 +213,22 @@ export class S2sWsRealtimeClient extends EventTarget {
     /** @type {Promise<void> | null} */
     this._readyPromise = null;
     this._sessionConfigured = false;
+    this._generation = 0;
+    this._awaitingText = false;
+    this._textRequestId = 0;
     /** @type {Record<string, any> | null} audio.cpp per-session config (TTS/ASR/
      *  LLM URLs + params) sent inside session.update as `session.audiocpp`. */
     this._appConfig = options.appConfig ?? null;
+    /** @type {"pending" | "stream" | "smooth"} Auto-mode decision, retained
+     * across turns until the TTS model, options, or playback mode changes. */
+    this._adaptivePlayback = "pending";
+    this._adaptiveRtf = 0;
+    /** @type {Float32Array[]} One sentence held by auto/smooth playback. */
+    this._bufferedPlayback = [];
+    this._bufferedPlaybackResponseId = "";
+    /** @type {Set<string>} Responses with audio queued in the worklet. */
+    this._playbackResponses = new Set();
+    this._currentPlaybackResponseId = "";
     this._debug = (() => { try { return localStorage.getItem("s2s.debug") === "1"; } catch { return false; } })();
   }
 
@@ -243,6 +257,140 @@ export class S2sWsRealtimeClient extends EventTarget {
     if (this._status === "ai-speaking") return;
     if (this._status === "closed" || this._status === "error") return;
     this._setStatus("ai-speaking");
+  }
+
+  _playbackMode() {
+    const mode = this._appConfig?.tts_playback_mode;
+    if (mode === "smooth") return "offline";
+    return ["auto", "streaming", "offline"].includes(mode) ? mode : "auto";
+  }
+
+  _resetAdaptivePlayback() {
+    this._adaptivePlayback = "pending";
+    this._adaptiveRtf = 0;
+  }
+
+  _clearPlaybackState() {
+    this._bufferedPlayback = [];
+    this._bufferedPlaybackResponseId = "";
+    this._playbackResponses.clear();
+    this._currentPlaybackResponseId = "";
+  }
+
+  _interruptResponse() {
+    for (const responseId of new Set([...this._asstTranscriptByResp.keys(), ...this._asstFullByResp.keys()])) {
+      this.dispatchEvent(new CustomEvent("response-finished", { detail: {
+        responseId, status: "cancelled", audible: this._audibleResponses.has(responseId),
+        transcript: this._asstDisplay(responseId),
+      } }));
+      this._audibleResponses.delete(responseId);
+    }
+    this._asstTranscriptByResp.clear();
+    this._asstFullByResp.clear();
+    this._playbackNode?.port.postMessage({ kind: "clear" });
+    this._clearPlaybackState();
+    this._aiSpeaking = false;
+    this.dispatchEvent(new CustomEvent("playback-state", { detail: { kind: "clear" } }));
+  }
+
+  _configurePlaybackNode() {
+    if (!this._playbackNode) return;
+    const mode = this._playbackMode();
+    this._playbackNode.port.postMessage({
+      kind: "config",
+      inputRate: OUTPUT_SAMPLE_RATE,
+      startBufferMs: mode === "offline" ? 400 : 800,
+      resumeBufferMs: mode === "offline" ? 600 : 1000,
+    });
+  }
+
+  /** @param {string} responseId */
+  _ensurePlaybackResponse(responseId) {
+    const rid = responseId || this._currentPlaybackResponseId;
+    if (!rid || !this._playbackNode) return rid;
+    if (!this._playbackResponses.has(rid)) {
+      this._playbackResponses.add(rid);
+      this._currentPlaybackResponseId = rid;
+      this._playbackNode.port.postMessage({ kind: "begin", responseId: rid });
+    }
+    return rid;
+  }
+
+  /** @param {Float32Array} samples @param {string} responseId */
+  _postPlaybackSamples(samples, responseId) {
+    if (!this._playbackNode || samples.length === 0) return;
+    const rid = this._ensurePlaybackResponse(responseId);
+    if (rid) this._audibleResponses.add(rid);
+    this._playbackNode.port.postMessage({ kind: "audio", samples }, [samples.buffer]);
+  }
+
+  /** @param {string} b64 @param {string} responseId */
+  _queueAudioDelta(b64, responseId) {
+    if (!this._playbackNode || !b64) return;
+    const bytes = base64ToBytes(b64);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const samples = new Float32Array(Math.floor(bytes.byteLength / 2));
+    for (let i = 0; i < samples.length; i++) {
+      const s = view.getInt16(i * 2, true);
+      samples[i] = s < 0 ? s / 0x8000 : s / 0x7fff;
+    }
+
+    const rid = this._ensurePlaybackResponse(responseId);
+    if (samples.length) this.dispatchEvent(new CustomEvent("audio-chunk", { detail: { responseId: rid } }));
+    const mode = this._playbackMode();
+    const bufferSentence = mode === "smooth" ||
+      (mode === "auto" && this._adaptivePlayback !== "stream");
+    if (bufferSentence) {
+      if (this._bufferedPlaybackResponseId && this._bufferedPlaybackResponseId !== rid) {
+        this._flushBufferedPlayback();
+      }
+      this._bufferedPlaybackResponseId = rid;
+      this._bufferedPlayback.push(samples);
+      return;
+    }
+    this._postPlaybackSamples(samples, rid);
+  }
+
+  _flushBufferedPlayback() {
+    if (!this._bufferedPlayback.length || !this._playbackNode) return;
+    const rid = this._bufferedPlaybackResponseId;
+    const chunks = this._bufferedPlayback;
+    this._bufferedPlayback = [];
+    this._bufferedPlaybackResponseId = "";
+    for (const samples of chunks) this._postPlaybackSamples(samples, rid);
+    // A completed sentence is safe to play even when shorter than the normal
+    // jitter-buffer target.
+    this._playbackNode.port.postMessage({ kind: "flush" });
+  }
+
+  /** @param {Record<string, any>} event */
+  _finishAudioSegment(event) {
+    const mode = this._playbackMode();
+    if (mode === "auto" && this._adaptivePlayback === "pending") {
+      const rtf = Number(event.rtf);
+      this._adaptiveRtf = Number.isFinite(rtf) && rtf > 0 ? rtf : 0;
+      // An offline endpoint delivers each completed WAV as one fast burst, so
+      // later segments can go straight to the playback queue. Native streaming
+      // still needs sustained headroom before bypassing sentence buffering.
+      this._adaptivePlayback = event.streaming === false ||
+        (this._adaptiveRtf > 0 && this._adaptiveRtf <= 0.85)
+        ? "stream"
+        : "smooth";
+      if (this._debug) {
+        console.debug(
+          `[playback] auto -> ${this._adaptivePlayback} (RTF=${this._adaptiveRtf.toFixed(2)})`,
+        );
+      }
+    }
+    this._flushBufferedPlayback();
+  }
+
+  /** @param {string} responseId */
+  _finishPlaybackResponse(responseId) {
+    if (this._bufferedPlaybackResponseId === responseId) this._flushBufferedPlayback();
+    if (this._playbackNode && this._playbackResponses.has(responseId)) {
+      this._playbackNode.port.postMessage({ kind: "end", responseId });
+    }
   }
 
   /**
@@ -281,14 +429,71 @@ export class S2sWsRealtimeClient extends EventTarget {
     // Acquire the mic now — only once a slot is actually ours. The caller primed
     // permission up front, so this is silent and the 'in use' indicator lights
     // only for a real, connecting session (never during a queue wait).
-    if (!this.options.micStream && this._acquireMic) {
+    if (!this.options.textOnly && !this.options.micStream && this._acquireMic) {
       this.options.micStream = await this._acquireMic();
+    }
+    if (this._closed) {
+      this.options.micStream?.getTracks().forEach(track => track.stop());
+      throw _codedError("connect aborted", "aborted");
     }
 
     // Spin up the AudioContext + worklets in parallel with the WS dial.
     const audioReady = this._setupAudio();
+    const configurationReady = this._waitForConfiguration();
     const wsReady = this._openWebSocket(connectUrl);
-    await Promise.all([audioReady, wsReady]);
+    await Promise.all([audioReady, wsReady, configurationReady]);
+  }
+
+  _waitForConfiguration() {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeEventListener("configured", ready);
+        this.removeEventListener("server-error", failed);
+        this.removeEventListener("status", status);
+      };
+      const ready = () => { cleanup(); resolve(); };
+      const failed = event => { cleanup(); reject(event.detail.error); };
+      const status = event => {
+        if (["closed", "error"].includes(event.detail.status)) {
+          cleanup(); reject(new Error("实时连接已关闭。"));
+        }
+      };
+      const timer = setTimeout(() => { cleanup(); reject(new Error("对话服务准备超时，请重试。")); }, 120000);
+      this.addEventListener("configured", ready);
+      this.addEventListener("server-error", failed);
+      this.addEventListener("status", status);
+    });
+  }
+
+  async enableMicrophone() {
+    if (this.options.micStream) return;
+    const stream = await this._acquireMic();
+    if (this._closed || !this._ctx) {
+      stream.getTracks().forEach(track => track.stop());
+      throw _codedError("connect aborted", "aborted");
+    }
+    this.options.micStream = stream;
+    this.options.textOnly = false;
+    this._micSrc = this._ctx.createMediaStreamSource(stream);
+    this._micSrc.connect(this._captureNode);
+    this._micSrc.connect(this._micAnalyser);
+  }
+
+  sendText(text) {
+    if (!this._sessionConfigured || !this._ws || this._ws.readyState !== WebSocket.OPEN) {
+      throw new Error("对话连接尚未就绪，请重试。");
+    }
+    this._awaitingText = true;
+    this._interruptResponse();
+    this._setStatus("processing");
+    this._send({ type: "user.text", text, request_id: ++this._textRequestId });
+  }
+
+  cancelResponse() {
+    this._interruptResponse();
+    this._awaitingText = true;
+    this._send({ type: "response.cancel", request_id: ++this._textRequestId });
   }
 
   /**
@@ -514,24 +719,24 @@ export class S2sWsRealtimeClient extends EventTarget {
     captureNode.port.postMessage({ kind: "gate", ...this._noiseGate });
     this._captureNode = captureNode;
 
-    const micSrc = ctx.createMediaStreamSource(this.options.micStream);
-    micSrc.connect(captureNode);
-    this._micSrc = micSrc;
-
     // Mic analyser: tap the mic in parallel with the worklet so we get the
     // raw (un-resampled, un-clipped) signal for the visualiser.
     const micAnalyser = ctx.createAnalyser();
     micAnalyser.fftSize = VIS_FFT_SIZE;
     micAnalyser.smoothingTimeConstant = 0;
-    micSrc.connect(micAnalyser);
     this._micAnalyser = micAnalyser;
+    if (this.options.micStream) {
+      const micSrc = ctx.createMediaStreamSource(this.options.micStream);
+      micSrc.connect(captureNode);
+      micSrc.connect(micAnalyser);
+      this._micSrc = micSrc;
+    }
 
     const playbackNode = new AudioWorkletNode(ctx, "audio-playback", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [1],
     });
-    playbackNode.port.postMessage({ kind: "config", inputRate: OUTPUT_SAMPLE_RATE });
     playbackNode.port.onmessage = (e) => this._onPlaybackMessage(e.data);
 
     // Output analyser sits between the playback worklet and the speakers.
@@ -542,9 +747,13 @@ export class S2sWsRealtimeClient extends EventTarget {
     outAnalyser.connect(ctx.destination);
     this._outAnalyser = outAnalyser;
     this._playbackNode = playbackNode;
+    this._configurePlaybackNode();
 
     this._visualiser = new OrbVisualiser(micAnalyser, outAnalyser, () => this._aiSpeaking);
     this._visualiser.start();
+    this.dispatchEvent(new CustomEvent("audio-output", {
+      detail: { context: ctx, source: playbackNode, output: outAnalyser },
+    }));
   }
 
   /** @param {string} connectUrl */
@@ -576,14 +785,28 @@ export class S2sWsRealtimeClient extends EventTarget {
   }
 
   /**
-   * @param {{ kind: string; queuedMs?: number; played?: number }} data
+   * @param {{ kind: string; responseId?: string; queuedMs?: number; played?: number }} data
    */
   _onPlaybackMessage(data) {
-    if (data?.kind === "underrun") {
-      // Server stopped sending audio mid-response. Most likely the turn
-      // ended cleanly (a response.done usually arrives just before/after
-      // this). We let the state machine fall back to "connected" via the
-      // response.done event handler.
+    this.dispatchEvent(new CustomEvent("playback-state", { detail: data }));
+    if (data?.kind === "started") {
+      this._aiSpeaking = true;
+      this._markAudible();
+    } else if (data?.kind === "underrun") {
+      // Pause the speaking state while the worklet builds its larger resume
+      // buffer. The next `started` message restores ai-speaking.
+      this._aiSpeaking = false;
+      if (this._status === "ai-speaking") this._setStatus("processing");
+    } else if (data?.kind === "drained") {
+      // A single worklet queue can contain consecutive responses. Its drained
+      // signal means every response currently tracked here has finished.
+      this._playbackResponses.clear();
+      this._aiSpeaking = false;
+      this._currentPlaybackResponseId = "";
+      if (this._openResponses === 0 &&
+          (this._status === "ai-speaking" || this._status === "processing")) {
+        this._setStatus("connected");
+      }
     }
   }
 
@@ -635,27 +858,43 @@ export class S2sWsRealtimeClient extends EventTarget {
       console.debug(`[ws] ${type}${extra}`);
     }
 
+    if (type === "user.text.accepted" || type === "response.cancelled") {
+      if (event.request_id !== this._textRequestId) return;
+      this._generation = event.generation;
+      this._awaitingText = false;
+      if (type === "response.cancelled") {
+        this._aiSpeaking = false;
+        this._setStatus("connected");
+      }
+      return;
+    }
+    if (typeof event.generation === "number") {
+      if (this._awaitingText || event.generation < this._generation) return;
+      this._generation = event.generation;
+    }
     switch (type) {
       case "session.created":
         // Server-side defaults for the s2s pipeline are already what we
         // want (server_vad, whisper-1 transcription, PCM16 16k in / 24k
         // out). We only push the user-tunable bits: voice + instructions.
         this._sendSessionUpdate();
-        this._sessionConfigured = true;
-        if (this._status === "connecting") this._setStatus("connected");
         break;
 
       case "session.updated":
-        // Acknowledged by server, nothing to do.
+        this._sessionConfigured = true;
+        this.dispatchEvent(new Event("configured"));
+        if (this._status === "connecting") this._setStatus("connected");
         break;
 
       case "input_audio_buffer.speech_started":
+        if (typeof event.generation === "number") this._interruptResponse();
         // User started speaking — stop any audio still playing OR queued, every
         // time. We clear unconditionally (not just when `_aiSpeaking`): after a
         // reply or a tool result the worklet's ring buffer can still be draining
         // even though we already flipped `_aiSpeaking` off, and that tail would
         // otherwise keep playing over the user's barge-in.
         this._playbackNode?.port.postMessage({ kind: "clear" });
+        this._clearPlaybackState();
         this._aiSpeaking = false;
         this._setStatus("user-speaking");
         break;
@@ -689,30 +928,31 @@ export class S2sWsRealtimeClient extends EventTarget {
 
       case "response.audio.delta":
       case "response.output_audio.delta": {
-        this._pushAudioDelta(event.delta);
-        const rid = event.response_id ?? event.response?.id;
-        if (rid) this._audibleResponses.add(rid);
-        if (!this._aiSpeaking) {
-          this._aiSpeaking = true;
-          this._markAudible();
-        }
+        const rid = event.response_id ?? event.response?.id ?? "";
+        this._queueAudioDelta(event.delta, rid);
         break;
       }
 
+      case "response.output_audio.segment_done":
+        this._finishAudioSegment(event);
+        break;
+
       case "response.content_part.added": {
-        const part = event.part;
-        if (part?.type === "audio" || part?.type === "output_audio") {
-          this._markAudible();
-        }
+        // Audio content was announced, but playback may still be prebuffering.
+        // The worklet's `started` event is the authoritative audible boundary.
         break;
       }
 
       case "response.done": {
-        this._aiSpeaking = false;
+        const status = event.response?.status ?? "completed";
+        const responseId = event.response?.id ?? "";
+        this._finishPlaybackResponse(responseId);
         // This response freed the slot (completion OR cancellation both arrive
         // as response.done). Decrement and, if a create was waiting, replay it.
         this._openResponses = Math.max(0, this._openResponses - 1);
-        if (this._status === "ai-speaking" || this._status === "processing") {
+        if (!this._playbackResponses.has(responseId) &&
+            (this._status === "ai-speaking" || this._status === "processing")) {
+          this._aiSpeaking = false;
           this._setStatus("connected");
         }
         // A response closes here for BOTH normal completion and cancellation
@@ -720,8 +960,6 @@ export class S2sWsRealtimeClient extends EventTarget {
         // `response.done` with status "cancelled" — there is no separate
         // `response.cancelled` event). Surface the id + status so the UI can
         // drop a cancelled response's transcript and commit a completed one.
-        const status = event.response?.status ?? "completed";
-        const responseId = event.response?.id ?? "";
         // Did this response ever play audio? Distinguishes a barge-in cut (the
         // user heard part of it) from a speculative response that never played.
         const audible = responseId ? this._audibleResponses.has(responseId) : false;
@@ -806,7 +1044,6 @@ export class S2sWsRealtimeClient extends EventTarget {
         // deltas and push the running text to the UI. Every transcribe event we
         // receive reaches the conversation, so an interrupted reply already has
         // its partial text even if the `.done` never fires.
-        this._markAudible();
         const rid = typeof event.response_id === "string" ? event.response_id : "";
         const delta = typeof event.delta === "string" ? event.delta : "";
         if (delta) {
@@ -847,6 +1084,7 @@ export class S2sWsRealtimeClient extends EventTarget {
       }
 
       case "error": {
+        this._awaitingText = false;
         const err = event.error;
         console.error("[ws] server error:", err);
         // The "another response is already active" race: our optimistic create
@@ -867,26 +1105,24 @@ export class S2sWsRealtimeClient extends EventTarget {
         // Every other server error is non-fatal: surface it for logging but
         // NEVER tear the socket down. Only transport failures (close / failed
         // open) are fatal, and those come through their own paths.
-        this.dispatchEvent(
-          new CustomEvent("server-error", { detail: { error: new Error(err?.message ?? "Server error") } }),
+        const serverError = Object.assign(
+          new Error(err?.message ?? "Server error"),
+          {
+            code: typeof err?.code === "string" ? err.code : "server_error",
+            stage: typeof err?.stage === "string" ? err.stage : "server",
+            serverType: typeof err?.type === "string" ? err.type : "",
+          },
         );
+        this.dispatchEvent(new CustomEvent("server-error", {
+          detail: {
+            error: serverError,
+            code: serverError.code,
+            stage: serverError.stage,
+          },
+        }));
         break;
       }
     }
-  }
-
-  /** @param {string} b64 */
-  _pushAudioDelta(b64) {
-    if (!this._playbackNode) return;
-    if (!b64) return;
-    const bytes = base64ToBytes(b64);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const samples = new Float32Array(bytes.byteLength / 2);
-    for (let i = 0; i < samples.length; i++) {
-      const s = view.getInt16(i * 2, true);
-      samples[i] = s < 0 ? s / 0x8000 : s / 0x7fff;
-    }
-    this._playbackNode.port.postMessage({ kind: "audio", samples }, [samples.buffer]);
   }
 
   /** @param {CloseEvent} ev */
@@ -937,7 +1173,21 @@ export class S2sWsRealtimeClient extends EventTarget {
   /** Update the audio.cpp pipeline config (TTS/ASR/LLM) on a live session.
    *  @param {Record<string, any>} cfg */
   updateAppConfig(cfg) {
+    const previousPlaybackConfig = JSON.stringify([
+      this._appConfig?.tts_model ?? "",
+      this._appConfig?.tts_playback_mode ?? "auto",
+      this._appConfig?.tts_options ?? {},
+    ]);
     this._appConfig = { ...(this._appConfig || {}), ...cfg };
+    const nextPlaybackConfig = JSON.stringify([
+      this._appConfig?.tts_model ?? "",
+      this._appConfig?.tts_playback_mode ?? "auto",
+      this._appConfig?.tts_options ?? {},
+    ]);
+    if (nextPlaybackConfig !== previousPlaybackConfig) {
+      this._resetAdaptivePlayback();
+      this._configurePlaybackNode();
+    }
     this._send({
       type: "session.update",
       session: { type: "realtime", audiocpp: this._appConfig },
@@ -1068,9 +1318,15 @@ export class S2sWsRealtimeClient extends EventTarget {
   }
 
   async close() {
+    this.dispatchEvent(new Event("audio-output-closed"));
     // Abort a queue wait in progress: flag it and wake the poll sleep so
     // `_pollQueue` throws "aborted" and connect() unwinds cleanly.
     this._closed = true;
+    this.options.micStream?.getTracks().forEach(track => {
+      if (track.readyState !== "ended") track.stop();
+    });
+    this.options.micStream = null;
+    this._clearPlaybackState();
     if (this._queueWake) {
       clearTimeout(this._queueTimer);
       const wake = this._queueWake;

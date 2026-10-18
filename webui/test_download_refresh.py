@@ -114,5 +114,67 @@ class LoadPathSelectionTests(unittest.TestCase):
         self.assertEqual(entry["abs_path"], os.path.normpath(self.package).replace("\\", "/"))
 
 
+class MultiRootModelLookupTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="audiocpp_webui_multi_root_test_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.primary = os.path.join(self.root, "development", "models")
+        self.portable = os.path.join(self.root, "audiocpp-portable", "models")
+        self.entry = {
+            "id": "voxcpm2", "family": "voxcpm2", "task": "tts", "mode": "offline",
+            "display_name": "VoxCPM2", "display_name_en": "VoxCPM2",
+            "path": "models/VoxCPM2", "download_path": "models/VoxCPM2-GGUF",
+            "download_id": "voxcpm2_q8_0", "legacy_download_id": "voxcpm2",
+        }
+        originals = (app.CATALOG, app.REQUIRED_FILES, app.MODEL_SEARCH_ROOTS)
+        app.CATALOG = {"models": [self.entry]}
+        app.REQUIRED_FILES = {
+            "voxcpm2": ["config.json", "model.safetensors"],
+            "voxcpm2_q8_0": ["voxcpm2-q8_0.gguf"],
+        }
+        app.MODEL_SEARCH_ROOTS = (self.primary, self.portable)
+        self.addCleanup(setattr, app, "CATALOG", originals[0])
+        self.addCleanup(setattr, app, "REQUIRED_FILES", originals[1])
+        self.addCleanup(setattr, app, "MODEL_SEARCH_ROOTS", originals[2])
+
+    @staticmethod
+    def _touch(root, *names):
+        os.makedirs(root, exist_ok=True)
+        for name in names:
+            open(os.path.join(root, name), "w").close()
+
+    def test_portable_model_is_found_when_development_root_is_empty(self):
+        package = os.path.join(self.portable, "VoxCPM2-GGUF")
+        self._touch(package, "voxcpm2-q8_0.gguf")
+
+        entry = app.catalog_by_id("voxcpm2")
+
+        self.assertTrue(entry["installed"])
+        self.assertEqual(entry["abs_path"], os.path.normpath(package).replace("\\", "/"))
+        self.assertIn("voxcpm2", {model["id"] for model in app.realtime_tts_models()})
+
+    def test_first_root_wins_when_both_have_the_same_complete_package(self):
+        primary_package = os.path.join(self.primary, "VoxCPM2-GGUF")
+        portable_package = os.path.join(self.portable, "VoxCPM2-GGUF")
+        self._touch(primary_package, "voxcpm2-q8_0.gguf")
+        self._touch(portable_package, "voxcpm2-q8_0.gguf")
+
+        entry = app.catalog_by_id("voxcpm2")
+
+        self.assertEqual(entry["abs_path"], os.path.normpath(primary_package).replace("\\", "/"))
+
+    def test_complete_fallback_beats_incomplete_primary_directory(self):
+        primary_package = os.path.join(self.primary, "VoxCPM2-GGUF")
+        portable_package = os.path.join(self.portable, "VoxCPM2-GGUF")
+        os.makedirs(primary_package, exist_ok=True)
+        self._touch(portable_package, "voxcpm2-q8_0.gguf")
+
+        entry = app.catalog_by_id("voxcpm2")
+
+        self.assertTrue(entry["installed"])
+        self.assertFalse(entry["incomplete"])
+        self.assertEqual(entry["abs_path"], os.path.normpath(portable_package).replace("\\", "/"))
+
+
 if __name__ == "__main__":
     unittest.main()

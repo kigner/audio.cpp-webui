@@ -110,5 +110,86 @@
         "model_weights": "model:model.safetensors.index.json"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Tokenizer, connector, and decoder weight storage type."
+      },
+      {
+        "name": "tokenizer_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Speech tokenizer weight storage type."
+      },
+      {
+        "name": "connector_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Acoustic and semantic connector weight storage type."
+      },
+      {
+        "name": "decoder_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Text decoder weight storage type."
+      },
+      {
+        "name": "tokenizer_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Speech tokenizer weight context arena size."
+      },
+      {
+        "name": "connector_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Acoustic and semantic connector weight context arena size."
+      },
+      {
+        "name": "decoder_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Text decoder weight context arena size."
+      },
+      {
+        "name": "vad_model_path",
+        "type": "string",
+        "description": "Silero VAD model path used by audio_chunk_mode=vad."
+      },
+      {
+        "name": "max_history_steps",
+        "type": "int",
+        "min": 0,
+        "description": "Optional runtime setting; unset preserves the model default."
+      }
+    ]
+  }
 }

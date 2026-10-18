@@ -175,5 +175,110 @@
         "audiovae_weights": "model:audiovae.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "mem_saver",
+        "type": "bool",
+        "description": "Use tighter graph workspaces and release request runtime graphs; default true."
+      },
+      {
+        "name": "prompt_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Prompt and prompt-audio embedding cache slots; default 1."
+      },
+      {
+        "name": "audiovae_encoder_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "audiovae_encoder_sample_capacity",
+        "type": "int",
+        "min": 1,
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "audiovae_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "audiovae_latent_capacity",
+        "type": "int",
+        "min": 1,
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "audiovae_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "audiovae_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      },
+      {
+        "name": "dit_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "lm_step_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "local_encoder_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "projection_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "text_embedding_graph_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      }
+    ]
+  }
 }

@@ -96,7 +96,25 @@
       "files": [
         "config.yaml",
         "bpe.model",
-        "gpt.safetensors"
+        "gpt.safetensors",
+        "w2v-bert-2.0/config.json",
+        "w2v-bert-2.0/preprocessor_config.json",
+        "bigvgan/config.json",
+        "qwen0.6bemo4-merge/config.json",
+        "qwen0.6bemo4-merge/generation_config.json",
+        "qwen0.6bemo4-merge/tokenizer.json",
+        "qwen0.6bemo4-merge/tokenizer_config.json",
+        "qwen0.6bemo4-merge/vocab.json",
+        "qwen0.6bemo4-merge/merges.txt",
+        "s2mel.safetensors",
+        "feat1.safetensors",
+        "feat2.safetensors",
+        "wav2vec2bert_stats.safetensors",
+        "w2v-bert-2.0/model.safetensors",
+        "semantic_codec_model.safetensors",
+        "campplus.safetensors",
+        "bigvgan/model.safetensors",
+        "qwen0.6bemo4-merge/model.safetensors"
       ],
       "download": {
         "kind": "huggingface_snapshot",
@@ -237,5 +255,96 @@
         "qwen_emotion": "model:qwen0.6bemo4-merge/model.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Matmul weight storage type."
+      },
+      {
+        "name": "conv_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16"
+        ],
+        "description": "Convolution weight storage type."
+      },
+      {
+        "name": "gpt_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "GPT graph arena size."
+      },
+      {
+        "name": "s2mel_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "S2Mel graph arena size."
+      },
+      {
+        "name": "reference_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Reference encoder and codec graph arena size."
+      },
+      {
+        "name": "emotion_text_prefill_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Emotion-text prefill graph arena size."
+      },
+      {
+        "name": "emotion_text_decode_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Emotion-text cached-step graph arena size."
+      },
+      {
+        "name": "emotion_text_max_tokens",
+        "type": "int",
+        "min": 1,
+        "description": "Maximum generated tokens for emotion-text classification; default 256."
+      },
+      {
+        "name": "weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Shared weight context size."
+      },
+      {
+        "name": "mem_saver",
+        "type": "bool",
+        "description": "Release staged reference and conditioning graphs after request phases; default false."
+      },
+      {
+        "name": "speaker_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Prepared speaker-reference cache slots; default 1."
+      },
+      {
+        "name": "emotion_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Prepared emotion-reference cache slots; default 1."
+      },
+      {
+        "name": "emotion_text_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Emotion-text weight cache slots; default 1."
+      }
+    ]
+  }
 }

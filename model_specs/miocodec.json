@@ -5,7 +5,6 @@
   "category": "audio_tools",
   "status": "supported",
   "tasks": [
-    "codec",
     "vc",
     "s2s"
   ],
@@ -122,5 +121,51 @@
         "wavlm_weights": "wavlm:weights.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "constant_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "content_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "global_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "wave_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Runtime workspace size in MiB; unset preserves the model default."
+      },
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      }
+    ]
+  }
 }

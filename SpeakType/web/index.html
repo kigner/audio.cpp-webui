@@ -4,38 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SpeakType</title>
-    <link rel="stylesheet" href="/assets/styles.css" />
+    <link rel="stylesheet" href="/assets/styles.css?v=4" />
   </head>
   <body>
     <main id="overlay" class="overlay state-idle">
-      <div class="ambient ambient-a"></div>
-      <div class="ambient ambient-b"></div>
-      <section class="status-rail">
-        <div class="status-row">
+      <header class="toolbar">
+        <div id="drag-handle" class="drag-handle" title="按住拖动，不改变输入焦点" data-i18n-title="按住拖动，不改变输入焦点">
+          <span class="grip" aria-hidden="true">⠿</span>
           <span id="status-dot" class="status-dot" aria-hidden="true"></span>
-          <span id="state-label" class="state-label">IDLE</span>
+          <span id="state-label" class="state-label" data-i18n="准备就绪">准备就绪</span>
+          <span id="model-name" class="model-name">SpeakType</span>
         </div>
-        <div id="mode-badge" class="mode-badge">VAD + SSE</div>
-        <div id="notice" class="notice">READY</div>
-      </section>
-
+        <div class="window-actions">
+          <button id="compact-button" type="button" aria-label="收起悬浮窗，继续听写" title="收起，听写继续运行" aria-expanded="true" data-i18n-aria-label="收起悬浮窗，继续听写" data-i18n-title="收起，听写继续运行">−</button>
+          <button id="close-button" type="button" aria-label="退出听写" title="退出听写，取消未完成的识别" data-i18n-aria-label="退出听写" data-i18n-title="退出听写，取消未完成的识别">×</button>
+        </div>
+      </header>
       <section class="speech-panel">
-        <canvas id="waveform" width="360" height="44" aria-label="麦克风音量"></canvas>
-        <div id="transcript" class="transcript placeholder">按 Ctrl + Shift + Space 开始听写</div>
-        <div class="meta-row">
-          <span id="model-name">nemotron-asr</span>
-          <span class="privacy"><span class="lock">◆</span> LOCAL ONLY</span>
-        </div>
+        <div id="transcript" class="transcript placeholder" role="status" data-i18n="按快捷键开始听写">按快捷键开始听写</div>
+        <canvas id="waveform" width="360" height="28" aria-label="麦克风音量" data-i18n-aria-label="麦克风音量"></canvas>
       </section>
-
-      <section class="latency-panel">
-        <span class="latency-label">FIRST TEXT</span>
-        <div><span id="latency-value" class="latency-value">—</span><span id="latency-unit" class="latency-unit">ms</span></div>
-        <span id="connection" class="connection">UI CONNECTING</span>
-      </section>
-
-      <div class="top-line"></div>
+      <footer class="meta-row">
+        <span id="notice" data-i18n="准备就绪">准备就绪</span>
+        <span class="latency" title="识别服务报告的首字响应时间" data-i18n-title="识别服务报告的首字响应时间"><span id="latency-value">—</span> ms</span>
+        <span id="connection" class="connection" data-i18n="正在连接">正在连接</span>
+      </footer>
+      <span id="mode-badge" hidden data-i18n="本地听写">本地听写</span>
     </main>
-    <script src="/assets/app.js"></script>
+    <script type="module" src="/assets/app.js?v=4"></script>
   </body>
 </html>

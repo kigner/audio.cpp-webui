@@ -19,6 +19,11 @@ struct NormWeights {
     std::optional<core::TensorValue> bias;
 };
 
+struct ChannelAffineWeights {
+    core::TensorValue scale;
+    core::TensorValue bias;
+};
+
 class LayerNormModule {
 public:
     explicit LayerNormModule(NormConfig config);
@@ -183,6 +188,15 @@ struct BatchNorm1dEvalWeights {
     core::TensorValue bias;
 };
 
+struct BatchNorm2dEvalConfig {
+    int64_t channels = 0;
+};
+
+struct BatchNorm2dEvalWeights {
+    core::TensorValue scale;
+    core::TensorValue bias;
+};
+
 class BatchNorm1dEvalModule {
 public:
     explicit BatchNorm1dEvalModule(BatchNorm1dEvalConfig config);
@@ -199,6 +213,24 @@ public:
 
 private:
     BatchNorm1dEvalConfig config_;
+};
+
+class BatchNorm2dEvalModule {
+public:
+    explicit BatchNorm2dEvalModule(BatchNorm2dEvalConfig config);
+
+    const core::ModuleSchema & schema() const noexcept;
+    const BatchNorm2dEvalConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const BatchNorm2dEvalWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    BatchNorm2dEvalConfig config_;
 };
 
 }  // namespace engine::modules

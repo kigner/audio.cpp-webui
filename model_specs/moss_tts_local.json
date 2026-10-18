@@ -145,5 +145,28 @@
         "audio_tokenizer_weights": "audio_tokenizer:model.safetensors.index.json"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "auto",
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Backbone weight storage type."
+      },
+      {
+        "name": "reference_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Prepared reference-voice cache slots; default 1, set 0 to disable."
+      }
+    ]
+  }
 }

@@ -3,6 +3,7 @@
 #include "engine/framework/runtime/session.h"
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@ namespace engine::models::qwen3_asr {
 struct Qwen3ASRGenerationOptions {
     int64_t max_new_tokens = 512;
     bool return_timestamps = false;
+    bool clamp_timestamps_to_audio = false;
 };
 
 struct Qwen3ASRRequest {
@@ -50,6 +52,38 @@ struct Qwen3ASRAudioEmbeddings {
 struct Qwen3ASRGeneratedTokens {
     std::vector<int32_t> token_ids;
 };
+
+// Offline aligner/chunk results use the model rate until the final result is returned.
+inline void qwen3_asr_rescale_word_timestamps(
+    std::vector<runtime::WordTimestamp> & words, int source_rate, int target_rate) {
+    if (source_rate <= 0 || target_rate <= 0) {
+        throw std::runtime_error("Qwen3 ASR timestamp conversion requires positive sample rates");
+    }
+    if (source_rate == target_rate) {
+        return;
+    }
+    const auto rescale = [source_rate, target_rate](int64_t sample) {
+        const int64_t whole = sample / source_rate;
+        const int64_t remainder = sample % source_rate;
+        const int64_t maximum = std::numeric_limits<int64_t>::max();
+        const int64_t minimum = std::numeric_limits<int64_t>::min();
+        if (whole > maximum / target_rate || whole < minimum / target_rate) {
+            throw std::runtime_error("Qwen3 ASR timestamp conversion overflow");
+        }
+        const int64_t base = whole * target_rate;
+        const int64_t magnitude = remainder < 0 ? -remainder : remainder;
+        const int64_t rounded = (magnitude * target_rate + source_rate / 2) / source_rate;
+        const int64_t fraction = remainder < 0 ? -rounded : rounded;
+        if ((fraction > 0 && base > maximum - fraction) ||
+            (fraction < 0 && base < minimum - fraction)) {
+            throw std::runtime_error("Qwen3 ASR timestamp conversion overflow");
+        }
+        return base + fraction;
+    };
+    for (auto & word : words) {
+        word.span = {rescale(word.span.start_sample), rescale(word.span.end_sample)};
+    }
+}
 
 inline int64_t qwen3_asr_floor_div(int64_t numerator, int64_t denominator) {
     int64_t quotient = numerator / denominator;

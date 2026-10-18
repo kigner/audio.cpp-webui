@@ -45,6 +45,7 @@
       "Stream"
     ],
     "docs": [
+      "docs/models/voxtral_realtime.md",
       "docs/asr.md",
       "docs/gguf.md"
     ]
@@ -133,5 +134,86 @@
         "weights": "model:model.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Shared matmul weight storage type."
+      },
+      {
+        "name": "audio_encoder_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Audio encoder matmul weight storage type."
+      },
+      {
+        "name": "text_decoder_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Text decoder matmul weight storage type."
+      },
+      {
+        "name": "audio_encoder_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Audio encoder graph arena size."
+      },
+      {
+        "name": "audio_encoder_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Audio encoder weight context arena size."
+      },
+      {
+        "name": "text_decoder_prefill_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Text decoder prefill graph arena size."
+      },
+      {
+        "name": "text_decoder_decode_graph_arena_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Text decoder cached-step graph arena size."
+      },
+      {
+        "name": "text_decoder_weight_context_mb",
+        "type": "int",
+        "min": 1,
+        "description": "Text decoder weight context arena size."
+      },
+      {
+        "name": "stream_batch_tokens",
+        "type": "int",
+        "min": 1,
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "stream_decode_cache_steps",
+        "type": "int",
+        "description": "Optional runtime setting; unset preserves the model default."
+      }
+    ]
+  }
 }

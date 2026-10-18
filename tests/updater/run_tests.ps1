@@ -1,12 +1,15 @@
 [CmdletBinding()]
-param()
+param([string[]]$Test = @())
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
-$testRoot = Join-Path $PSScriptRoot ".tmp-$PID"
+$testRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".tmp-$PID"))
+if (-not $testRoot.StartsWith(([IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Unsafe updater test directory: $testRoot"
+}
 $testUpdaterVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "updater\updater.version") -Raw).Trim()
 $requiredPreserve = @(
     "models/**",
@@ -76,7 +79,8 @@ function New-TestArchive {
         [string]$FileName,
         [string]$ManagedPath,
         [string]$Content = "new managed content",
-        [string]$Component = "app"
+        [string]$Component = "app",
+        [string[]]$RemovePaths = @()
     )
     $stage = Join-Path $Directory ("stage-" + [guid]::NewGuid().ToString("N"))
     $payload = Join-Path $stage "payload"
@@ -92,7 +96,7 @@ function New-TestArchive {
             size = [int64]$file.Length
             sha256 = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash.ToLowerInvariant()
         })
-        remove = @()
+        remove = @($RemovePaths)
     }
     Write-Json $index (Join-Path $stage "files.json")
     $archive = Join-Path $Directory $FileName
@@ -163,6 +167,7 @@ function New-CustomManifest {
         preserve = $requiredPreserve
         health_checks = $HealthChecks
     }
+    if ([version]$ManifestVersion -ge [version]'0.7.0') { $value.update_baseline = '0.7.0' }
     $path = Join-Path $Directory "manifest-custom.json"
     Write-Json $value $path
     Set-Content -LiteralPath "$path.minisig" -Value "VALID_TEST_SIGNATURE" -Encoding ASCII
@@ -386,6 +391,106 @@ function Test-RollbackOnHealthFailure {
     Assert-True ((Read-JsonFile (Join-Path $root "version.json")).version -eq "0.2.0") "failed update changed version.json"
 }
 
+function Test-RetiredFilesAndRollback {
+    foreach ($rollback in @($false, $true)) {
+        $root = New-TestBundle "retired-$rollback"
+        $retired = @("run_server.bat", "webui/native/src/routes/+page.ts")
+        foreach ($relative in $retired) {
+            $path = Join-Path $root $relative
+            New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force | Out-Null
+            Set-Content -LiteralPath $path -Value "old app file" -Encoding ASCII
+        }
+        $custom = Join-Path $root "webui/native/src/routes/user-note.txt"
+        Set-Content -LiteralPath $custom -Value "keep custom file" -Encoding ASCII
+        $assets = Join-Path $root "assets"
+        New-Item -ItemType Directory -Path $assets -Force | Out-Null
+        $archive = New-TestArchive $assets "app.zip" "webui/managed.txt" -RemovePaths $retired
+        $checks = @()
+        if ($rollback) { $checks = @("python-compile") }
+        $manifest = New-TestManifest $assets $archive $checks
+        $dry = Invoke-TestUpdater $root "--dry-run" $manifest
+        Assert-True ($dry.ExitCode -eq 0) "retirement dry run failed: $($dry.Output)"
+        foreach ($relative in $retired) {
+            Assert-True (Test-Path -LiteralPath (Join-Path $root $relative)) "dry run removed $relative"
+        }
+        $result = Invoke-TestUpdater $root "--apply" $manifest
+        Assert-True (($result.ExitCode -eq 0) -ne $rollback) "unexpected retirement result: $($result.Output)"
+        $backup = @(Get-ChildItem -LiteralPath (Join-Path $root "_update/backup") -Directory)[0].FullName
+        foreach ($relative in $retired) {
+            Assert-True ((Test-Path -LiteralPath (Join-Path $root $relative)) -eq $rollback) "wrong removal/rollback state for $relative"
+            Assert-True ((Get-Content -LiteralPath (Join-Path $backup "files/$relative") -Raw) -match "old app file") "retired file backup missing: $relative"
+            if ($rollback) {
+                Assert-True ((Get-Content -LiteralPath (Join-Path $root $relative) -Raw) -match "old app file") "retired file was not restored: $relative"
+            }
+        }
+        Assert-True ((Get-Content -LiteralPath $custom -Raw) -match "keep custom file") "retirement changed an unlisted file"
+    }
+    $root = New-TestBundle "retired-protected"
+    $assets = Join-Path $root "assets"
+    New-Item -ItemType Directory -Path $assets -Force | Out-Null
+    $archive = New-TestArchive $assets "app.zip" "webui/managed.txt" -RemovePaths @("webui/voice/user.wav")
+    $result = Invoke-TestUpdater $root "--dry-run" (New-TestManifest $assets $archive)
+    Assert-True ($result.ExitCode -ne 0) "updater accepted removal of protected user data"
+}
+
+function Test-AppPayloadSelection {
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot "scripts/build_update_release.ps1"), [ref]$tokens, [ref]$errors)
+    Assert-True ($errors.Count -eq 0) "release builder has syntax errors"
+    foreach ($name in @("Get-AppInputs", "Get-AppRemovePaths")) {
+        $definition = $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+        Invoke-Expression $definition[0].Extent.Text
+    }
+    foreach ($IncludeStandaloneApi in @($false, $true)) {
+        $paths = @((Get-AppInputs).Path)
+        $remove = @(Get-AppRemovePaths)
+        foreach ($required in @("_env.bat", "run_webui.bat", "webui/start_webui.bat", "webui/backend_probe.py",
+                "webui/workbench_launcher.py", "webui/webui.py", "webui/README.md", "webui/README.zh.md",
+                "webui/workbench_static/index.html", "webui/realtime_static/index.html", "SpeakType/run.py",
+                "webui/workbench_static/i18n.js", "webui/workbench_static/locales/en.json",
+                "webui/native/dist/index.html", "webui/native/demo_voices/prompt_text")) {
+            Assert-True ($paths -contains $required) "app inputs omit $required"
+        }
+        Assert-True (@($paths | Select-Object -Unique).Count -eq $paths.Count) "duplicate app inputs"
+        foreach ($relative in @("run_server.bat", "run_server_asr.bat", "run_server_asr_stream.bat")) {
+            Assert-True (($paths -contains $relative) -eq $IncludeStandaloneApi) "standalone API switch ignored for $relative"
+            Assert-True (($remove -contains $relative) -ne $IncludeStandaloneApi) "standalone API cleanup conflicts for $relative"
+        }
+        Assert-True (@($paths | Where-Object { $_ -match '^webui/native/(src/|lang/|package|.*config\.)|^webui/test_|^webui/(voice|output|logs)/|llm_api_key|ui_language.json' }).Count -eq 0) "app includes development files or user data"
+        foreach ($relative in $remove) {
+            Assert-True ($paths -notcontains $relative) "app installs and removes $relative"
+            Assert-True ($relative -notmatch '[*?]|(^|/)\.\.(/|$)|^[A-Za-z]:|^/|^models/|^_update/|^webui/(voice|output|logs)/|^SpeakType/(config.json|logs/)') "unsafe retirement path: $relative"
+        }
+    }
+}
+
+function Test-SpeakTypeSyncPreservesUserFiles {
+    $root = New-TestBundle "speaktype-sync"
+    $source = Join-Path $root "SpeakType"
+    $destination = Join-Path $root "audiocpp-portable/SpeakType"
+    foreach ($relative in @("app/main.py", "web/index.html", "third_party/license.txt", "run.py", "README.md", "config.json", "test_fixture.py", "logs/private.log")) {
+        $path = Join-Path $source $relative
+        New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $path -Value "source content" -Encoding ASCII
+    }
+    New-Item -ItemType Directory -Path (Join-Path $destination "logs"),(Join-Path $root "scripts") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $destination "config.json") -Value "user config" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $destination "logs/private.log") -Value "user log" -Encoding ASCII
+    $sync = Join-Path $root "scripts/sync_speaktype.ps1"
+    Copy-Item -LiteralPath (Join-Path $repoRoot "scripts/sync_speaktype.ps1") -Destination $sync
+    $syncOutput = @(& powershell.exe -NoProfile -File $sync 2>&1)
+    Assert-True ($LASTEXITCODE -eq 0) "SpeakType sync failed: $syncOutput"
+    Assert-True ((Get-Content -LiteralPath (Join-Path $destination "config.json") -Raw) -match 'user config') "SpeakType config was overwritten"
+    Assert-True ((Get-Content -LiteralPath (Join-Path $destination "logs/private.log") -Raw) -match 'user log') "SpeakType log was overwritten"
+    Assert-True (Test-Path -LiteralPath (Join-Path $destination "app/main.py")) "SpeakType runtime was not synchronized"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $destination "test_fixture.py"))) "SpeakType development files were copied"
+    Remove-Item -LiteralPath (Join-Path $destination "config.json")
+    $syncOutput = @(& powershell.exe -NoProfile -File $sync 2>&1)
+    Assert-True ($LASTEXITCODE -eq 0) "SpeakType initial sync failed: $syncOutput"
+    Assert-True ((Get-Content -LiteralPath (Join-Path $destination "config.json") -Raw) -match 'source content') "missing SpeakType config was not initialized"
+}
+
 function Test-ProtectedPathAndLock {
     $root = New-TestBundle "protected"
     $assets = Join-Path $root "assets"
@@ -438,14 +543,14 @@ function Test-PythonDependencyUpdateAndRollback {
 }
 
 function Test-UpdaterSelfUpdate {
-    $root = New-TestBundle "self-update"
+    $root = New-TestBundle "self-update" -BundleVersion '0.7.0'
     $assets = Join-Path $root "assets"
     $sources = Join-Path $root "updater-sources"
     New-Item -ItemType Directory -Path $assets, $sources -Force | Out-Null
     $newVersion = Join-Path $sources "updater.version"
     $newPublicKey = Join-Path $sources "public-key.txt"
     $newMinisign = Join-Path $sources "minisign.exe"
-    Set-Content -LiteralPath $newVersion -Value "1.2.0" -Encoding ASCII
+    Set-Content -LiteralPath $newVersion -Value "1.3.0" -Encoding ASCII
     Set-Content -LiteralPath $newPublicKey -Value "new test public key" -Encoding ASCII
     Set-Content -LiteralPath $newMinisign -Value "test minisign binary" -Encoding ASCII
     $updaterInputs = @(
@@ -460,10 +565,10 @@ function Test-UpdaterSelfUpdate {
     $updaterArchive = New-MultiFileComponentArchive $assets "updater.zip" "updater" $updaterInputs
     $appArchive = New-TestArchive $assets "app.zip" "webui/managed.txt" "resumed after self update"
     $components = @(
-        (New-ComponentDescriptor "updater" "1.2.0" $updaterArchive),
-        (New-ComponentDescriptor "app" "0.2.1" $appArchive)
+        (New-ComponentDescriptor "updater" "1.3.0" $updaterArchive),
+        (New-ComponentDescriptor "app" "0.7.1" $appArchive)
     )
-    $manifest = New-CustomManifest $assets $components "1.2.0"
+    $manifest = New-CustomManifest $assets $components "1.3.0" -ManifestVersion '0.7.1' -SupportedFrom '>=0.7.0'
     $result = Invoke-TestUpdater $root "--apply" $manifest
     Assert-True ($result.ExitCode -eq 0) "updater self-update was not scheduled: $($result.Output)"
 
@@ -472,7 +577,7 @@ function Test-UpdaterSelfUpdate {
         Start-Sleep -Milliseconds 200
         $installedUpdater = (Get-Content -LiteralPath (Join-Path $root "updater\updater.version") -Raw).Trim()
         $managed = Join-Path $root "webui\managed.txt"
-        if ($installedUpdater -eq "1.2.0" -and (Test-Path -LiteralPath $managed) -and
+        if ($installedUpdater -eq "1.3.0" -and (Test-Path -LiteralPath $managed) -and
             (Get-Content -LiteralPath $managed -Raw) -match "resumed after self update") {
             $completed = $true
             break
@@ -480,7 +585,7 @@ function Test-UpdaterSelfUpdate {
     }
     $log = if (Test-Path -LiteralPath (Join-Path $root "_update\update.log")) { Get-Content -LiteralPath (Join-Path $root "_update\update.log") -Raw } else { "" }
     Assert-True $completed "updater self-update did not resume the app update: $log"
-    Assert-True ((Read-JsonFile (Join-Path $root "version.json")).components.updater -eq "1.2.0") "version.json did not record the new updater version"
+    Assert-True ((Read-JsonFile (Join-Path $root "version.json")).components.updater -eq "1.3.0") "version.json did not record the new updater version"
 }
 
 function Test-UpgradeMatrixFromSupportedVersions {
@@ -579,11 +684,12 @@ function Test-UpgradeMatrixFromSupportedVersions {
 function Test-ReleaseBuilder {
     $root = Join-Path $testRoot "release-builder"
     $portable = Join-Path $root "portable"
-    foreach ($directory in @("cpu", "gpu")) {
+    foreach ($directory in @("cpu", "gpu", "vulkan")) {
         New-Item -ItemType Directory -Path (Join-Path $portable $directory) -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_cli.exe") -Value "$directory cli" -Encoding ASCII
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_server.exe") -Value "$directory server" -Encoding ASCII
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_gguf.exe") -Value "$directory gguf" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $portable "$directory\runtime.dll") -Value "$directory runtime" -Encoding ASCII
     }
     $secret = Join-Path $root "test-secret.key"
     Set-Content -LiteralPath $secret -Value "test secret" -Encoding ASCII
@@ -613,34 +719,49 @@ function Test-ReleaseBuilder {
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     $builderOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $builder `
-        -Version "0.2.1" -PortableRoot $portable -OutputDir $output -MinisignSecretKey $secret `
+        -Version "0.7.1" -PortableRoot $portable -OutputDir $output -MinisignSecretKey $secret `
         -MinisignPublicKey $publicKey -MinisignPath $signer -PythonDepsSource $pythonDepsSource `
         -IncludeUpdater -UpdaterMinisignBinary $signer -ReleaseNotesPath $releaseNotes -Stable -AllowDirty 2>&1)
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousErrorAction
     Assert-True ($exitCode -eq 0) "release builder failed: $($builderOutput -join "`n")"
     foreach ($name in @(
-        "audiocpp-app-v0.2.1.zip",
-        "audiocpp-core-cpu-win-x64-v0.2.1.zip",
-        "audiocpp-core-cuda-win-x64-v0.2.1.zip",
-        "audiocpp-python-deps-py311-win-x64-v0.2.1.zip",
+        "audiocpp-app-v0.7.1.zip",
+        "audiocpp-core-cpu-win-x64-v0.7.1.zip",
+        "audiocpp-core-cuda-win-x64-v0.7.1.zip",
+        "audiocpp-core-vulkan-win-x64-v0.7.1.zip",
+        "audiocpp-python-deps-py311-win-x64-v0.7.1.zip",
         "audiocpp-updater-v$testUpdaterVersion.zip",
-        "manifest-v0.2.1.json",
-        "manifest-v0.2.1.json.minisig",
+        "manifest-v0.7.1.json",
+        "manifest-v0.7.1.json.minisig",
         "stable.json",
+        "stable-v0.7.0.json",
+        "stable-v0.7.0.huggingface.json",
+        "huggingface-upload.json",
         "SHA256SUMS.txt",
         "SHA256SUMS.txt.minisig",
         "release-notes.md"
     )) {
         Assert-True (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf) "release builder did not create $name"
     }
-    $manifest = Read-JsonFile (Join-Path $output "manifest-v0.2.1.json")
-    Assert-True (@($manifest.components).Count -eq 5) "release manifest does not contain all five component types"
+    $manifest = Read-JsonFile (Join-Path $output "manifest-v0.7.1.json")
+    Assert-True (@($manifest.components).Count -eq 6) "release manifest does not contain all six component types"
     Assert-True (@($manifest.preserve) -contains "webui/voice/**") "release manifest omitted voice preservation"
-    Assert-True ([string]$manifest.supported_from -eq ">=0.2.0") "release manifest does not keep bootstrap installs eligible for later versions"
+    Assert-True ([string]$manifest.supported_from -eq ">=0.7.0") "release manifest did not enforce the new baseline"
+    Assert-True ([string]$manifest.update_baseline -eq '0.7.0') "signed manifest is missing its baseline"
+    foreach ($component in $manifest.components) {
+        Assert-True (@($component.urls).Count -eq 3) "component is missing backup URLs"
+        Assert-True ($component.urls[0] -like 'https://github.com/kigner/audio.cpp-webui/releases/download/*') "primary URL changed"
+        Assert-True ($component.urls[1] -like 'https://huggingface.co/kigner/audio.cpp-webui/resolve/main/updates/v0.7.0/v0.7.1/*') "HF URL is not versioned"
+        Assert-True ($component.urls[2] -like 'https://hf-mirror.com/kigner/audio.cpp-webui/resolve/main/updates/v0.7.0/v0.7.1/*') "mirror URL is missing"
+    }
     Assert-True ((Get-Content -LiteralPath (Join-Path $output "release-notes.md") -Raw) -match "Custom release notes") "release builder did not use custom release notes"
     $appExpanded = Join-Path $root "app-expanded"
-    Expand-Archive -LiteralPath (Join-Path $output "audiocpp-app-v0.2.1.zip") -DestinationPath $appExpanded
+    Expand-Archive -LiteralPath (Join-Path $output "audiocpp-app-v0.7.1.zip") -DestinationPath $appExpanded
+    $appIndex = Read-JsonFile (Join-Path $appExpanded "files.json")
+    Assert-True (@($appIndex.remove) -contains "run_server.bat") "app archive omitted retired launcher cleanup"
+    Assert-True (@($appIndex.remove) -contains "webui/native/src/routes/+page.ts") "app archive omitted old native source cleanup"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $appExpanded "payload/run_server.bat"))) "default app archive still includes standalone API launcher"
     foreach ($relative in @(
         "payload\tools\model_manager_v2.py",
         "payload\tools\model_manager_deprecated.py",
@@ -652,19 +773,29 @@ function Test-ReleaseBuilder {
     )) {
         Assert-True (Test-Path -LiteralPath (Join-Path $appExpanded $relative) -PathType Leaf) "app ZIP omitted $relative"
     }
-    foreach ($directory in @("cpu", "gpu")) {
-        $archive = Join-Path $output "audiocpp-core-$($directory -replace 'gpu', 'cuda')-win-x64-v0.2.1.zip"
+    foreach ($directory in @("cpu", "gpu", "vulkan")) {
+        $archive = Join-Path $output "audiocpp-core-$($directory -replace 'gpu', 'cuda')-win-x64-v0.7.1.zip"
         $expanded = Join-Path $root "core-$directory-expanded"
         Expand-Archive -LiteralPath $archive -DestinationPath $expanded
         Assert-True (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\audiocpp_gguf.exe") -PathType Leaf) "core-$directory ZIP omitted audiocpp_gguf.exe"
+        Assert-True (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\runtime.dll") -PathType Leaf) "core-$directory ZIP omitted its runtime DLL"
     }
     $stable = Read-JsonFile (Join-Path $output "stable.json")
-    Assert-True ([string]$stable.manifest_url -match '/v0\.2\.1-windows-prebuilt/manifest-v0\.2\.1\.json$') "stable.json points at the wrong manifest"
+    Assert-True ([string]$stable.version -eq '0.6.0') "legacy stable.json crossed the full-package baseline"
+    Assert-True ([string]$stable.manifest_url -match '/v0\.6\.0-windows-prebuilt/manifest-v0\.6\.0\.json$') "legacy stable.json was not retained"
+    $newStable = Read-JsonFile (Join-Path $output 'stable-v0.7.0.json')
+    Assert-True ([string]$newStable.manifest_url -match '/v0\.7\.1-windows-prebuilt/manifest-v0\.7\.1\.json$') "new channel points at the wrong manifest"
+    $hfStable = Read-JsonFile (Join-Path $output 'stable-v0.7.0.huggingface.json')
+    Assert-True ([string]$hfStable.manifest_url -eq 'v0.7.1/manifest-v0.7.1.json') "HF pointer must use relative assets so its mirror can work independently"
+    $upload = Read-JsonFile (Join-Path $output 'huggingface-upload.json')
+    Assert-True ($upload.full_bundle -eq 'Aixora-Studio.zip') "full package name changed"
+    $promote = @($upload.files | Where-Object { $_.phase -eq 'promote-after-verification' })
+    Assert-True ($promote.Count -eq 1 -and $promote[0].path_in_repo -eq 'updates/v0.7.0/stable.json') "HF channel promotion path is wrong"
 
     $bootstrapPath = Join-Path $root "bootstrap.zip"
     $bootstrapBuilder = Join-Path $repoRoot "scripts\build_updater_bootstrap.ps1"
     $bootstrapOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrapBuilder `
-        -Version "0.2.0" -MinisignBinary $signer -PublicKeyPath $publicKey -OutputPath $bootstrapPath 2>&1)
+        -Version "0.7.0" -MinisignBinary $signer -PublicKeyPath $publicKey -OutputPath $bootstrapPath 2>&1)
     $bootstrapExitCode = $LASTEXITCODE
     Assert-True ($bootstrapExitCode -eq 0) "bootstrap builder failed: $($bootstrapOutput -join "`n")"
     Assert-True (Test-Path -LiteralPath $bootstrapPath -PathType Leaf) "bootstrap ZIP was not created"
@@ -675,7 +806,15 @@ function Test-ReleaseBuilder {
     }
     $bootstrapVersion = Read-JsonFile (Join-Path $bootstrapExpanded "version.json")
     Assert-True ([string]$bootstrapVersion.components.updater -eq $testUpdaterVersion) "bootstrap version.json does not match updater.version"
+    $ErrorActionPreference = 'Continue'
+    $oldBootstrapOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrapBuilder `
+        -Version '0.6.0' -MinisignBinary $signer -PublicKeyPath $publicKey -OutputPath (Join-Path $root 'legacy-bootstrap.zip') 2>&1)
+    $oldBootstrapExit = $LASTEXITCODE
+    $ErrorActionPreference = $previousErrorAction
+    Assert-True ($oldBootstrapExit -ne 0) "bootstrap silently crossed the full-package baseline"
 }
+
+. (Join-Path $PSScriptRoot 'channel_tests.ps1')
 
 try {
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
@@ -686,16 +825,26 @@ try {
         "Test-DryRunAndHashValidation",
         "Test-ApplySuccessAndPreserve",
         "Test-RollbackOnHealthFailure",
+        "Test-RetiredFilesAndRollback",
+        "Test-AppPayloadSelection",
+        "Test-SpeakTypeSyncPreservesUserFiles",
         "Test-ProtectedPathAndLock",
         "Test-PythonDependencyUpdateAndRollback",
         "Test-UpdaterSelfUpdate",
         "Test-UpgradeMatrixFromSupportedVersions",
+        "Test-BaselineBoundaryAndVulkan",
+        "Test-DefaultChannelSources",
+        "Test-HttpFallbackAndValidation",
         "Test-ReleaseBuilder"
     )
-    foreach ($test in $tests) {
-        Write-Host "[RUN ] $test"
-        & $test
-        Write-Host "[PASS] $test"
+    if ($Test.Count -gt 0) {
+        foreach ($name in $Test) { if ($name -notin $tests) { throw "Unknown updater test: $name" } }
+        $tests = @($tests | Where-Object { $_ -in $Test })
+    }
+    foreach ($testName in $tests) {
+        Write-Host "[RUN ] $testName"
+        & $testName
+        Write-Host "[PASS] $testName"
     }
     Write-Host "All updater acceptance tests passed."
 } finally {

@@ -1,0 +1,121 @@
+{
+  "three": {
+    "version": "0.180.0",
+    "commit": "0af9729d0c143a86a1d725d6e2c3ad83301f3f34",
+    "source": "https://github.com/mrdoob/three.js",
+    "license": "MIT"
+  },
+  "headaudio": {
+    "commit": "d3af5f9ff86ab6b2b1913d411a4e1922ec101953",
+    "source": "https://github.com/met4citizen/HeadAudio",
+    "license": "MIT",
+    "local_change": "Accept valid integer viseme IDs including 0 in modules/headaudio.mjs"
+  },
+  "avatar": {
+    "path": "../assets/mpfb.glb",
+    "commit": "b3e277b3b46f88e557bf28a2c5612a5b04e075c3",
+    "source": "https://github.com/met4citizen/TalkingHead",
+    "license": "CC0-1.0",
+    "bytes": 36815920,
+    "git_blob_sha1": "cd2ebbe1fe8bcbf3d5b2dfbf1262a7f76814e68f",
+    "sha256": "63c645a2a863b9972e9a9c2ed576a1de4c390b8475508e1473e69c87a3ee299c"
+  },
+  "files": [
+    {
+      "path": "headaudio/LICENSE",
+      "upstream_git_blob_sha1": "2eb54c72d8ff864ee311c17565a37c750b98c7a8",
+      "upstream_bytes": 1070,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/dist/model-en-mixed.bin",
+      "upstream_git_blob_sha1": "b152a45ae696a6674171e22686fc3473956157fc",
+      "upstream_bytes": 14352,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/classifier.mjs",
+      "upstream_git_blob_sha1": "77ec3ff6285269e3194907e63fc409f8e854dddd",
+      "upstream_bytes": 5169,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/headaudio.mjs",
+      "upstream_git_blob_sha1": "fad72cbf7a2fd0e1266f9c7eb12e318bc9b9324e",
+      "upstream_bytes": 6856,
+      "locally_modified": true
+    },
+    {
+      "path": "headaudio/modules/headworklet.mjs",
+      "upstream_git_blob_sha1": "6a41d81927142eaece2970487cfe2968b11264b4",
+      "upstream_bytes": 3476,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/mfcc.mjs",
+      "upstream_git_blob_sha1": "cb98985844dd1dc4c18661a2c886c05593817323",
+      "upstream_bytes": 8700,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/parameters.mjs",
+      "upstream_git_blob_sha1": "720d59609ddcc6a3eab7ac8e20dc2159daa21d74",
+      "upstream_bytes": 2221,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/processor.mjs",
+      "upstream_git_blob_sha1": "ad6bbf114f206a92401fab6f0b877a6286d45724",
+      "upstream_bytes": 12009,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/ringbuffer.mjs",
+      "upstream_git_blob_sha1": "2b1b053512427a8bceeeaca73183d11b1fdb85d8",
+      "upstream_bytes": 3450,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/training.mjs",
+      "upstream_git_blob_sha1": "69bda04394bdc10a88bd5fd0a4d51c5973838d40",
+      "upstream_bytes": 7477,
+      "locally_modified": false
+    },
+    {
+      "path": "headaudio/modules/vadgate.mjs",
+      "upstream_git_blob_sha1": "c13ccf8b123d431e70f5cfb145b0650933a609d6",
+      "upstream_bytes": 2649,
+      "locally_modified": false
+    },
+    {
+      "path": "three/LICENSE",
+      "upstream_git_blob_sha1": "cf781430404b0ae0ba7d8dea3457a3515dd7c9b9",
+      "upstream_bytes": 1081,
+      "locally_modified": false
+    },
+    {
+      "path": "three/build/three.core.js",
+      "upstream_git_blob_sha1": "7dcd0fbcbc04b8d9a20ecb96c1ce344cb55150d5",
+      "upstream_bytes": 1403455,
+      "locally_modified": false
+    },
+    {
+      "path": "three/build/three.module.js",
+      "upstream_git_blob_sha1": "477ca4dafa7af919a2b9818e01b5ae25198d4aa4",
+      "upstream_bytes": 603113,
+      "locally_modified": false
+    },
+    {
+      "path": "three/examples/jsm/loaders/GLTFLoader.js",
+      "upstream_git_blob_sha1": "38f8c14fb500631f01d39cd54c202eefddcf0987",
+      "upstream_bytes": 114739,
+      "locally_modified": false
+    },
+    {
+      "path": "three/examples/jsm/utils/BufferGeometryUtils.js",
+      "upstream_git_blob_sha1": "c84dc7b2bbc99849373e17a6efae609e326f9536",
+      "upstream_bytes": 35539,
+      "locally_modified": false
+    }
+  ]
+}

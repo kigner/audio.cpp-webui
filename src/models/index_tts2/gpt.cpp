@@ -1,5 +1,6 @@
 #include "engine/models/index_tts2/gpt.h"
 
+#include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/activation_modules.h"
@@ -63,7 +64,10 @@ int64_t gpt_text_vocab_size(const IndexTTS2Config & config) {
 }
 
 ggml_type decode_cache_type(core::BackendType backend_type) {
-    return backend_type == core::BackendType::Cuda ? GGML_TYPE_F16 : GGML_TYPE_F32;
+    // F32 KV on HIP forces ggml's flash-attention kernels to convert the whole K/V
+    // cache to F16 on every decode step (convert_unary dominates the kernel profile).
+    // Keeping the cache F16 avoids that entirely, as it already does on CUDA.
+    return backend_type == core::BackendType::Cuda || backend_type == core::BackendType::Hip ? GGML_TYPE_F16 : GGML_TYPE_F32;
 }
 
 struct GgmlContextDeleter {
@@ -353,9 +357,20 @@ engine::modules::LinearWeights load_hf_conv1d_linear(
                 source_weight[static_cast<size_t>(in * out_features + out)];
         }
     }
+    // Transposed HF conv1d weights are derived host-side values, so "native"
+    // cannot resolve through load_tensor; follow the checkpoint dtype instead
+    // so an F16 GGUF keeps F16 decoder weights in the compute graph.
+    auto effective_storage_type = storage_type;
+    if (effective_storage_type == engine::assets::TensorStorageType::Native) {
+        try {
+            effective_storage_type = engine::assets::tensor_storage_type_for_dtype(
+                source.require_metadata(prefix + ".weight").dtype);
+        } catch (...) {
+        }
+    }
     weights.weight = store.make_from_f32(
         engine::core::TensorShape::from_dims({out_features, in_features}),
-        storage_type,
+        effective_storage_type,
         std::move(transposed));
     if (use_bias) {
         weights.bias = store.load_f32_tensor(source, prefix + ".bias", {out_features});

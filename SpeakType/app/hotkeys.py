@@ -25,6 +25,7 @@ VK_NAMES = {
     "escape": 0x1B,
     "enter": 0x0D,
     "tab": 0x09,
+    **{f"f{number}": 0x70 + number - 1 for number in range(1, 25)},
 }
 MOD_NAMES = {
     "alt": MOD_ALT,

@@ -30,6 +30,14 @@ export function escHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Remove system-message decorations without filtering conversation content. */
+export function plainMessage(value) {
+  return String(value ?? "")
+    .replace(/^([ \t]*)(?:[✅❌⏳⚠ℹ🚨💡📝⚪🔄✔✖❗🧠🎵🌐⏱📏🔀🎤🗒🧹📦🎛🧊][\ufe0e\ufe0f]?[ \t]*)+/gmu, "$1")
+    .replaceAll("📥 加载模型", "加载模型").replaceAll("⬇️ 下载模型", "下载模型")
+    .replaceAll("📥 Load", "Load").replaceAll("⬇️ Download Model", "Download Model").trim();
+}
+
 /** Trim a long error message to fit the orb caption. @param {string} text */
 export function truncateError(text) {
   if (text.length <= 90) return text;

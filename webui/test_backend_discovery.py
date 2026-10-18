@@ -45,6 +45,20 @@ class BackendDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(app._find_bundle_root(), self.root)
 
+    def test_vulkan_build_and_vulkan_only_bundle_are_discovered(self):
+        bin_dir = self._touch_server("build", "windows-vulkan-release", "bin")
+        app.PROJECT_ROOT = self.root
+        app.HERE = os.path.join(self.root, "webui")
+        self.assertEqual(app._discover_dev_bin_dirs().get("vulkan"), bin_dir)
+        os.makedirs(os.path.join(self.root, "vulkan"))
+        self.assertEqual(app._find_bundle_root(), self.root)
+
+    def test_vulkan_cache_is_not_misclassified_as_cpu(self):
+        bin_dir = self._touch_server("build", "bin")
+        with open(os.path.join(self.root, "build", "CMakeCache.txt"), "w", encoding="utf-8") as f:
+            f.write("GGML_CUDA:BOOL=OFF\nENGINE_ENABLE_VULKAN:BOOL=ON\n")
+        self.assertEqual(app._cmake_cache_backend(bin_dir), "vulkan")
+
 
 if __name__ == "__main__":
     unittest.main()

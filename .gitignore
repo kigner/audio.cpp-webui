@@ -27,6 +27,9 @@ __pycache__/
 /perf/
 /logs/
 /ideas/
+/docs/
+# Local downstream release planning; public usage stays in README files.
+/updater/RELEASE.zh.md
 /windows_prebuild/
 /*.wav
 /flutter/
@@ -54,8 +57,12 @@ __pycache__/
 /webui/llm_api_key.txt
 # written by the in-UI language picker; per-machine, not a project setting
 /webui/configs/ui_language.json
-# personal and saved voices — stay local, repo is public
-/webui/voice/
+/webui/configs/workbench_downloads.json
+/webui/configs/workbench_downloads.json.tmp
+# Shared reference voices can be committed; personal recordings stay local.
+/webui/voice/[mM][yY]-[rR][eE][cC]*
+/webui/voice/[dD][lL][cC]*
+/webui/voice/ref-w1.wav
 
 # --- upstream native WebUI build artifacts ---
 /webui/native/node_modules/

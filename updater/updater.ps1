@@ -4,7 +4,8 @@ param(
     [switch]$Apply,
     [Alias("dry-run")][switch]$DryRun,
     [string]$Manifest = "",
-    [string]$StableUrl = "https://github.com/kigner/audio.cpp-webui/releases/latest/download/stable.json",
+    [string]$StableUrl = "",
+    [string[]]$StableUrls = @(),
     [string]$MinisignPath = "",
     [string]$PublicKeyPath = ""
 )
@@ -26,6 +27,8 @@ $script:LockStream = $null
 $script:Transaction = @()
 $script:DependencyTransaction = $null
 $script:BackupDir = ""
+$script:UpdateBaseline = "0.7.0"
+$script:PreferredDownloadHost = ""
 
 $script:RequiredPreserve = @(
     "models/**",
@@ -57,6 +60,7 @@ $script:ComponentVersionKeys = @{
     "app" = "app"
     "core-cpu" = "core_cpu"
     "core-cuda" = "core_cuda"
+    "core-vulkan" = "core_vulkan"
     "python-deps" = "python_env"
     "updater" = "updater"
 }
@@ -402,6 +406,7 @@ function Get-RemoteJson {
 }
 
 function Resolve-ManifestFiles {
+    param([string]$PointerSource = "")
     $manifestPath = Join-Path $script:DownloadsDir "manifest.json"
     $signaturePath = "$manifestPath.minisig"
     $notesUrl = ""
@@ -427,7 +432,7 @@ function Resolve-ManifestFiles {
             }
         }
     } else {
-        $stable = Get-RemoteJson -Source $StableUrl -FileName "stable.json"
+        $stable = Get-RemoteJson -Source $PointerSource -FileName "stable.json"
         if ([int]$stable.schema -ne 1 -or [string]$stable.channel -ne "stable") {
             throw "stable.json has an unsupported schema or channel."
         }
@@ -435,8 +440,8 @@ function Resolve-ManifestFiles {
             [string]::IsNullOrWhiteSpace([string]$stable.signature_url)) {
             throw "stable.json is missing manifest_url or signature_url."
         }
-        $manifestSource = Resolve-PointerAssetSource ([string]$stable.manifest_url) $StableUrl
-        $signatureSource = Resolve-PointerAssetSource ([string]$stable.signature_url) $StableUrl
+        $manifestSource = Resolve-PointerAssetSource ([string]$stable.manifest_url) $PointerSource
+        $signatureSource = Resolve-PointerAssetSource ([string]$stable.signature_url) $PointerSource
         $script:ManifestBase = Get-SourceBase $manifestSource
         Copy-OrDownloadFile -Source $manifestSource -Destination $manifestPath
         Copy-OrDownloadFile -Source $signatureSource -Destination $signaturePath
@@ -451,6 +456,50 @@ function Resolve-ManifestFiles {
         NotesUrl = $notesUrl
         PointerVersion = $(if ($Manifest -eq "") { [string]$stable.version } else { "" })
     }
+}
+
+function Get-StableSources {
+    param([Parameter(Mandatory = $true)]$LocalVersion)
+    if ($StableUrl -ne "") { return @($StableUrl) }
+    if ($StableUrls.Count -gt 0) { return @($StableUrls) }
+    if ((ConvertTo-Version ([string]$LocalVersion.version)) -lt (ConvertTo-Version $script:UpdateBaseline)) {
+        return @("https://github.com/kigner/audio.cpp-webui/releases/latest/download/stable.json")
+    }
+    return @(
+        "https://github.com/kigner/audio.cpp-webui/releases/latest/download/stable-v$($script:UpdateBaseline).json",
+        "https://huggingface.co/kigner/audio.cpp-webui/resolve/main/updates/v$($script:UpdateBaseline)/stable.json",
+        "https://hf-mirror.com/kigner/audio.cpp-webui/resolve/main/updates/v$($script:UpdateBaseline)/stable.json"
+    )
+}
+
+function Get-ValidatedManifest {
+    param([Parameter(Mandatory = $true)]$LocalVersion)
+    $sources = if ($Manifest -ne "") { @("") } else { @(Get-StableSources $LocalVersion) }
+    $failures = @()
+    foreach ($source in $sources) {
+        try {
+            $script:ManifestBase = $null
+            $script:PreferredDownloadHost = ""
+            $resolved = Resolve-ManifestFiles -PointerSource $source
+            Assert-ManifestSignature $resolved.ManifestPath $resolved.SignaturePath
+            $value = Read-JsonFile $resolved.ManifestPath
+            Assert-Manifest $value $LocalVersion
+            if ($resolved.PointerVersion -ne "" -and $resolved.PointerVersion -ne [string]$value.version) {
+                throw "stable.json version does not match the signed manifest version."
+            }
+            # Reject stale component versions before selecting this feed.
+            $pending = @(Get-PendingComponents $value $LocalVersion)
+            if ($script:ManifestBase -is [uri]) {
+                $script:PreferredDownloadHost = $script:ManifestBase.Host
+            }
+            return [pscustomobject]@{ Resolved = $resolved; Value = $value; Pending = $pending }
+        } catch {
+            if ($Manifest -ne "") { throw }
+            $failures += "$source : $($_.Exception.Message)"
+            Write-Log "Update source failed: $source ($($_.Exception.Message)); trying the next source." "WARN"
+        }
+    }
+    throw "No valid update source is available. $($failures -join ' | ')"
 }
 
 function Assert-ManifestSignature {
@@ -492,6 +541,15 @@ function Assert-Manifest {
         throw "Manifest platform mismatch."
     }
     ConvertTo-Version ([string]$Value.version) | Out-Null
+    if ((ConvertTo-Version ([string]$Value.version)) -ge (ConvertTo-Version $script:UpdateBaseline)) {
+        if ((ConvertTo-Version ([string]$LocalVersion.version)) -lt (ConvertTo-Version $script:UpdateBaseline)) {
+            throw "Updates from versions before $($script:UpdateBaseline) cannot cross this baseline. Install the full Aixora-Studio.zip package first."
+        }
+        if ($null -eq $Value.PSObject.Properties["update_baseline"] -or
+            [string]$Value.update_baseline -ne $script:UpdateBaseline) {
+            throw "The signed manifest does not belong to update baseline $($script:UpdateBaseline)."
+        }
+    }
     if ((ConvertTo-Version ([string]$Value.version)) -lt (ConvertTo-Version ([string]$LocalVersion.version))) {
         throw "Refusing to downgrade from $($LocalVersion.version) to $($Value.version)."
     }
@@ -575,7 +633,7 @@ function Show-UpdatePlan {
     param(
         [Parameter(Mandatory = $true)]$LocalVersion,
         [Parameter(Mandatory = $true)]$ManifestValue,
-        [Parameter(Mandatory = $true)][object[]]$Pending,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Pending,
         [string]$NotesUrl = ""
     )
 
@@ -597,26 +655,36 @@ function Show-UpdatePlan {
     Write-Host ""
 }
 
-function Resolve-AssetSource {
+function Resolve-AssetSources {
     param([Parameter(Mandatory = $true)]$Component)
 
     $sources = @($Component.urls | ForEach-Object { [string]$_ })
+    $resolved = @()
     foreach ($source in $sources) {
         $uri = $null
         if ([uri]::TryCreate($source, [UriKind]::Absolute, [ref]$uri) -and
             ($uri.Scheme -eq "https" -or ($uri.Scheme -eq "http" -and $uri.Host -in @("localhost", "127.0.0.1", "::1")))) {
-            return $uri.AbsoluteUri
+            $resolved += $uri.AbsoluteUri
+            continue
         }
         if ($script:ManifestBase -is [string]) {
             $candidate = if ([IO.Path]::IsPathRooted($source)) { $source } else { Join-Path $script:ManifestBase $source }
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+            $resolved += $candidate
         } else {
             if (-not [uri]::IsWellFormedUriString($source, [UriKind]::Absolute)) {
-                return ([uri]::new([uri]$script:ManifestBase, $source)).AbsoluteUri
+                $resolved += ([uri]::new([uri]$script:ManifestBase, $source)).AbsoluteUri
             }
         }
     }
-    throw "No usable source for component '$($Component.id)'."
+    $resolved = @($resolved | Select-Object -Unique)
+    if ($resolved.Count -eq 0) { throw "No usable source for component '$($Component.id)'." }
+    # A working backup feed should not immediately retry the failed primary host.
+    $preferred = @($resolved | Where-Object {
+        $candidateUri = $null
+        [uri]::TryCreate($_, [UriKind]::Absolute, [ref]$candidateUri) -and
+            $script:PreferredDownloadHost -ne "" -and $candidateUri.Host -eq $script:PreferredDownloadHost
+    })
+    return @($preferred) + @($resolved | Where-Object { $_ -notin $preferred })
 }
 
 function Get-VerifiedComponentArchive {
@@ -633,23 +701,33 @@ function Get-VerifiedComponentArchive {
             $validCache = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -eq $expectedHash
         }
     }
-    if (-not $validCache) {
-        $source = Resolve-AssetSource $Component
-        Copy-OrDownloadFile -Source $source -Destination $destination
-    } else {
+    if ($validCache) {
         Write-Log "Using verified cached asset $fileName"
+        return $destination
     }
 
-    $item = Get-Item -LiteralPath $destination
-    if ($item.Length -ne [int64]$Component.size) {
-        throw "Size mismatch for '$fileName': expected $($Component.size), got $($item.Length)."
+    $candidate = "$destination.candidate"
+    $failures = @()
+    foreach ($source in @(Resolve-AssetSources $Component)) {
+        try {
+            Copy-OrDownloadFile -Source $source -Destination $candidate
+            $item = Get-Item -LiteralPath $candidate
+            if ($item.Length -ne [int64]$Component.size) {
+                throw "Size mismatch for '$fileName': expected $($Component.size), got $($item.Length)."
+            }
+            $actualHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) { throw "SHA-256 mismatch for '$fileName'." }
+            Move-Item -LiteralPath $candidate -Destination $destination -Force
+            Write-Log "Verified component archive $fileName"
+            return $destination
+        } catch {
+            $failures += "$source : $($_.Exception.Message)"
+            Write-Log "Component source failed: $source ($($_.Exception.Message)); trying the next source." "WARN"
+        } finally {
+            Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        }
     }
-    $actualHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $expectedHash) {
-        throw "SHA-256 mismatch for '$fileName'."
-    }
-    Write-Log "Verified component archive $fileName"
-    return $destination
+    throw "All sources failed for '$fileName'. $($failures -join ' | ')"
 }
 
 function Expand-SafeComponentArchive {
@@ -1186,6 +1264,14 @@ function Invoke-HealthChecks {
                 $path = Join-Path $script:Root "gpu\audiocpp_server.exe"
                 if (Test-Path -LiteralPath $path) { Invoke-ProcessHealthCheck $path @("--help") }
             }
+            "vulkan-cli-help-if-available" {
+                $path = Join-Path $script:Root "vulkan\audiocpp_cli.exe"
+                if (Test-Path -LiteralPath $path) { Invoke-ProcessHealthCheck $path @("--help") }
+            }
+            "vulkan-server-help-if-available" {
+                $path = Join-Path $script:Root "vulkan\audiocpp_server.exe"
+                if (Test-Path -LiteralPath $path) { Invoke-ProcessHealthCheck $path @("--help") }
+            }
             "pip-check" {
                 Invoke-ProcessHealthCheck (Join-Path $script:Root "venv\python.exe") @("-m", "pip", "check") 120
             }
@@ -1251,14 +1337,10 @@ function Invoke-Main {
     $localVersion = Read-JsonFile $versionPath
     Reset-StagingDirectory
 
-    $resolved = Resolve-ManifestFiles
-    Assert-ManifestSignature $resolved.ManifestPath $resolved.SignaturePath
-    $manifestValue = Read-JsonFile $resolved.ManifestPath
-    Assert-Manifest $manifestValue $localVersion
-    if ($resolved.PointerVersion -ne "" -and $resolved.PointerVersion -ne [string]$manifestValue.version) {
-        throw "stable.json version does not match the signed manifest version."
-    }
-    $pending = @(Get-PendingComponents $manifestValue $localVersion)
+    $validated = Get-ValidatedManifest $localVersion
+    $resolved = $validated.Resolved
+    $manifestValue = $validated.Value
+    $pending = @($validated.Pending)
     Show-UpdatePlan $localVersion $manifestValue $pending $resolved.NotesUrl
     if ($pending.Count -eq 0 -or $Check) { return }
 

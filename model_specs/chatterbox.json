@@ -101,7 +101,12 @@
         "ve.safetensors",
         "t3_cfg.safetensors",
         "s3gen.safetensors",
-        "tokenizer.json"
+        "tokenizer.json",
+        "grapheme_mtl_merged_expanded_v1.json",
+        "Cangjie5_TC.json",
+        "conds.pt",
+        "t3_mtl23ls_v2.safetensors",
+        "t3_mtl23ls_v3.safetensors"
       ],
       "download": {
         "kind": "huggingface_snapshot",
@@ -164,5 +169,68 @@
         "t3_multilingual_v3_weights": "model:t3_mtl23ls_v3.safetensors"
       }
     }
-  ]
+  ],
+  "options": {
+    "session": [
+      {
+        "name": "conditionals_cache_slots",
+        "type": "int",
+        "min": 0,
+        "description": "Prepared voice-condition cache slots; default 1, set 0 to disable."
+      },
+      {
+        "name": "mem_saver",
+        "type": "bool",
+        "description": "Free non-conditional runtime graphs after each request chunk; default false."
+      },
+      {
+        "name": "multilingual_t3",
+        "type": "enum",
+        "values": [
+          "v2",
+          "v3"
+        ],
+        "description": "Multilingual T3 checkpoint for non-English TTS; default v2."
+      },
+      {
+        "name": "decoder_condition_samples",
+        "type": "int",
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "encoder_condition_samples",
+        "type": "int",
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "t3_speech_cond_prompt_len",
+        "type": "int",
+        "description": "Optional runtime setting; unset preserves the model default."
+      },
+      {
+        "name": "t3_weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      },
+      {
+        "name": "weight_type",
+        "type": "enum",
+        "values": [
+          "native",
+          "f32",
+          "f16",
+          "bf16",
+          "q8_0"
+        ],
+        "description": "Runtime weight storage format; unset preserves the model default."
+      }
+    ]
+  }
 }

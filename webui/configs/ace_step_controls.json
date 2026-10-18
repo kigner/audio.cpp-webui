@@ -1,0 +1,30 @@
+{
+  "routes": {
+    "text2music": {"label": "根据描述生成", "source": false, "lyrics": true},
+    "cover": {"label": "翻唱", "source": true, "required": true, "lyrics": true},
+    "cover-nofsq": {"label": "翻唱（不量化参考）", "source": true, "required": true, "lyrics": true},
+    "complete": {"label": "补全伴奏", "source": true, "lyrics": "optional"},
+    "lego": {"label": "添加声部", "source": true, "required": true, "lyrics": "optional"},
+    "extract": {"label": "提取声部", "source": true, "required": true, "lyrics": false},
+    "repaint": {"label": "局部重绘", "source": true, "required": true, "lyrics": true},
+    "remix": {"label": "重混改词", "source": true, "required": true, "lyrics": true}
+  },
+  "parameter_routes": {
+    "source_caption": ["remix"],
+    "source_lyrics": ["remix"],
+    "complete_track_classes": ["complete"],
+    "track_name": ["lego", "extract"],
+    "repainting_start": ["repaint", "lego"],
+    "repainting_end": ["repaint", "lego"],
+    "repaint_mode": ["repaint"],
+    "repaint_strength": ["repaint"],
+    "repaint_crossfade_frames": ["repaint"],
+    "repaint_injection_ratio": ["repaint"],
+    "audio_cover_strength": ["cover"],
+    "cover_noise_strength": ["cover"],
+    "flow_edit_n_min": ["remix"],
+    "flow_edit_n_max": ["remix"],
+    "flow_edit_n_avg": ["remix"]
+  },
+  "tracks": [["人声", "vocals"], ["鼓", "drums"], ["贝斯", "bass"], ["吉他", "guitar"], ["钢琴", "piano"], ["弦乐", "strings"], ["合成器", "synth"]]
+}

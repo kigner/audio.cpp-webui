@@ -1,6 +1,7 @@
 #include "engine/framework/runtime/registry.h"
 
 #include "engine/framework/debug/trace.h"
+#include "engine/framework/audio/utilities/utility_api.h"
 #include "engine/framework/model_spec/package.h"
 #include "engine/framework/io/config.h"
 #include "engine/framework/io/filesystem.h"
@@ -86,6 +87,10 @@ bool ModelRegistry::supports_family(const std::string & family) const noexcept {
         if (loader->family() == family) {
             return true;
         }
+        const auto aliases = loader->family_aliases();
+        if (std::find(aliases.begin(), aliases.end(), family) != aliases.end()) {
+            return true;
+        }
     }
     return false;
 }
@@ -145,7 +150,13 @@ std::unique_ptr<ILoadedVoiceModel> ModelRegistry::load(const std::filesystem::pa
 }
 
 void ModelRegistry::validate_request(const ModelLoadRequest & request) const {
-    if (!engine::io::is_existing_file(request.model_path) && !engine::io::is_existing_directory(request.model_path)) {
+    const bool builtin_audio_utility_id =
+        request.family_hint.has_value() &&
+        *request.family_hint == "builtin_audio_utils" &&
+        engine::audio::find_builtin_audio_utility(request.model_path.generic_string()).has_value();
+    if (!builtin_audio_utility_id &&
+        !engine::io::is_existing_file(request.model_path) &&
+        !engine::io::is_existing_directory(request.model_path)) {
         throw std::runtime_error("model path does not exist: " + request.model_path.string());
     }
     if (request.family_hint.has_value() && !supports_family(*request.family_hint)) {
@@ -160,11 +171,15 @@ void ModelRegistry::validate_request(const ModelLoadRequest & request) const {
 
 const IVoiceModelLoader * ModelRegistry::find_loader(const ModelLoadRequest & request) const {
     for (const auto & loader : loaders_) {
-        if (request.family_hint.has_value() && loader->family() != *request.family_hint) {
-            continue;
-        }
         if (request.family_hint.has_value()) {
-            return loader.get();
+            if (loader->family() == *request.family_hint) {
+                return loader.get();
+            }
+            const auto aliases = loader->family_aliases();
+            if (std::find(aliases.begin(), aliases.end(), *request.family_hint) != aliases.end()) {
+                return loader.get();
+            }
+            continue;
         }
         if (loader->can_load(request)) {
             return loader.get();
