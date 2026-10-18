@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="webui/workbench_static/aixora-audio-logo.png" alt="Aixora Studio" width="96" />
+  <img src="webui/workbench_static/aixora-audio-logo.png" alt="Aixora Audio" width="96" />
 </p>
 
-<h1 align="center">Aixora Studio</h1>
+<h1 align="center">Aixora Audio</h1>
 
 <p align="center"><a href="README.md">English</a> · <strong>中文</strong></p>
 
 <p align="center"><strong>你的本地声音工作室</strong><br />语音合成 · 语音识别 · 音乐与音效 · 实时语音 · 视频翻译配音</p>
 
 > [!IMPORTANT]
-> **2026-10-18 · Aixora Studio 0.7.0 全新界面**
+> **2026-10-18 · Aixora Audio 0.7.0 全新界面**
 >
 > 新版工作空间现已加入源码：统一的侧边导航、按任务组织的操作页面，以及字幕制作、视频翻译配音、实时语音聊天和全局语音录入。默认采用 **经典蓝紫＋浅色**，模型、参考音频和运行状态都可以在同一个界面管理。
 >
-> **[Aixora Studio v0.7.0 已发布](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0)。** 前往发布页下载 Windows 完整版整合包，支持 Hugging Face、国内 HF 镜像、百度网盘和 Google Drive。
+> **[Aixora Audio v0.7.0 已发布](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0)。** 前往发布页下载 Windows 完整版整合包，支持 Hugging Face、国内 HF 镜像、百度网盘和 Google Drive。
 
 <p align="center">
   <a href="webui/README.zh.md">中文使用说明</a> ·
@@ -23,9 +23,9 @@
   <a href="#致谢">致谢</a>
 </p>
 
-Aixora Studio 把本地音频模型放进一个方便操作的工作空间。输入文字生成配音，把录音转成字幕，为视频翻译和配音，或选择一个角色开始语音对话。音频模型通过 C++ 后端在本机运行；对话与翻译可以连接你配置的本地或云端大语言模型。
+Aixora Audio 把本地音频模型放进一个方便操作的工作空间。输入文字生成配音，把录音转成字幕，为视频翻译和配音，或选择一个角色开始语音对话。音频模型通过 C++ 后端在本机运行；对话与翻译可以连接你配置的本地或云端大语言模型。
 
-![Aixora Studio 0.7.0 中文工作空间首页](assets/studio/workspace-zh.png)
+![Aixora Audio 0.7.0 中文工作空间首页](assets/studio/workspace-zh.png)
 
 ## 新版可以做什么
 
@@ -61,7 +61,7 @@ Aixora Studio 把本地音频模型放进一个方便操作的工作空间。输
 
 ## 从源码编译 C++ 后端
 
-以下以 **Windows x64 + PowerShell** 为主。源码运行需要先编译 C++ 后端，再安装下一节的 Python 环境。音频模型推理由 C++ 后端执行，Python 负责 Studio 工作空间、模型下载、实时语音辅助功能和 SpeakType。
+以下以 **Windows x64 + PowerShell** 为主。源码运行需要先编译 C++ 后端，再安装下一节的 Python 环境。音频模型推理由 C++ 后端执行，Python 负责 Aixora Audio 工作空间、模型下载、实时语音辅助功能和 SpeakType。
 
 ### 1. 准备工具与源码
 
@@ -78,7 +78,7 @@ git clone https://github.com/kigner/audio.cpp-webui.git audio.cpp
 cd audio.cpp
 ```
 
-后续命令均在仓库根目录执行。常规 Studio 构建使用仓库内的依赖；可选的 `external/audio.cpp-server-frontends` 子模块默认关闭，无需为此递归拉取子模块。
+后续命令均在仓库根目录执行。常规 Aixora Audio 构建使用仓库内的依赖；可选的 `external/audio.cpp-server-frontends` 子模块默认关闭，无需为此递归拉取子模块。
 
 ### 2. 选择一种后端并编译
 
@@ -100,7 +100,7 @@ cd audio.cpp
 .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_server -Jobs 16
 ```
 
-`audiocpp_server` 是 Studio 必需的推理服务。需要命令行推理或 GGUF 转换时，再编译对应工具；下面以 CUDA 为例，其他后端替换 `-Preset` 即可：
+`audiocpp_server` 是 Aixora Audio 必需的推理服务。需要命令行推理或 GGUF 转换时，再编译对应工具；下面以 CUDA 为例，其他后端替换 `-Preset` 即可：
 
 ```powershell
 .\scripts\build_windows.ps1 -Preset windows-cuda-release -Target audiocpp_cli -Jobs 16
@@ -113,7 +113,7 @@ cd audio.cpp
 - CUDA 构建默认通过 `nvidia-smi` 检测本机显卡架构；为其他设备构建时可用 `-CudaArchitectures` 指定目标。
 - `-ConfigureOnly` 仅配置；`-RunTests` 会额外构建并运行 C++ 测试。
 - 默认编译完整模型集，但各模型的后端兼容性不同，请以所选模型的支持情况为准。
-- Studio 使用 `webui/model_manager_webui.py` 管理下载，无需为它启用 `-NativeModelManager`。上游原生 WebUI 的模型管理是独立功能。
+- Aixora Audio 使用 `webui/model_manager_webui.py` 管理下载，无需为它启用 `-NativeModelManager`。上游原生 WebUI 的模型管理是独立功能。
 
 ### 3. Linux 后端编译（可选）
 
@@ -138,7 +138,7 @@ py -3.11 -m venv venv
 .\venv\Scripts\python.exe -m pip check
 ```
 
-`webui/requirements.txt` 包含 Studio、实时语音、SpeakType 和模型下载工具的 Python 依赖；其中 Windows 桌面依赖带有平台条件。上述命令直接使用虚拟环境解释器，无需执行 `Activate.ps1`。pip 安装 Python 包不会编译 C++ 后端。
+`webui/requirements.txt` 包含 Aixora Audio、实时语音、SpeakType 和模型下载工具的 Python 依赖；其中 Windows 桌面依赖带有平台条件。上述命令直接使用虚拟环境解释器，无需执行 `Activate.ps1`。pip 安装 Python 包不会编译 C++ 后端。
 
 另外安装 **FFmpeg 和 FFprobe**，将其可执行文件所在目录加入 `PATH`；也可以把 `ffmpeg.exe` 和 `ffprobe.exe` 放在 `webui/` 下。它们用于非 WAV 音频转换、视频读取和配音导出。源码检出不包含整合包中预装的 Python 环境及这些工具。
 
@@ -155,7 +155,7 @@ $env:AUDIOCPP_BACKEND = "cpu"
 .\run_webui.bat
 ```
 
-使用其他位置的 Python 环境时，设置 `AUDIOCPP_PYTHON` 为其 `python.exe` 的完整路径。Studio 按需在 **8088** 端口启动受管理的 C++ 服务；使用工作空间时无需另开一个后端进程。
+使用其他位置的 Python 环境时，设置 `AUDIOCPP_PYTHON` 为其 `python.exe` 的完整路径。Aixora Audio 按需在 **8088** 端口启动受管理的 C++ 服务；使用工作空间时无需另开一个后端进程。
 
 ### Linux（可选）
 
@@ -181,7 +181,7 @@ AUDIOCPP_BACKEND=cpu ./venv/bin/python webui/webui.py
 
 ## 模型支持
 
-Studio 模型中心提供 **113 个模型家族、157 个模型条目**。下表按主要用途列出支持的模型；具体版本、语言、参考输入和参数可在界面中查看。
+Aixora Audio 模型中心提供 **113 个模型家族、157 个模型条目**。下表按主要用途列出支持的模型；具体版本、语言、参考输入和参数可在界面中查看。
 
 | 类别 | 支持的模型 |
 |---|---|
@@ -201,6 +201,6 @@ Studio 模型中心提供 **113 个模型家族、157 个模型条目**。下表
 
 ## 致谢
 
-Aixora Studio 的音频推理后端基于 [audio.cpp](https://github.com/0xShug0/audio.cpp)。感谢 ShugoAI LLC 与上游贡献者；本项目提供 Studio 工作空间、场景应用、Windows 启动和整合包更新。
+Aixora Audio 的音频推理后端基于 [audio.cpp](https://github.com/0xShug0/audio.cpp)。感谢 ShugoAI LLC 与上游贡献者；本项目提供 Aixora Audio 工作空间、场景应用、Windows 启动和整合包更新。
 
 代码许可见 [LICENSE](LICENSE)。

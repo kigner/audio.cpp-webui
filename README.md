@@ -1,31 +1,31 @@
 <p align="center">
-  <img src="webui/workbench_static/aixora-audio-logo.png" alt="Aixora Studio" width="96" />
+  <img src="webui/workbench_static/aixora-audio-logo.png" alt="Aixora Audio" width="96" />
 </p>
 
-<h1 align="center">Aixora Studio</h1>
+<h1 align="center">Aixora Audio</h1>
 
 <p align="center"><strong>English</strong> · <a href="README.zh.md">中文</a></p>
 
 <p align="center"><strong>Your local audio studio</strong><br />Speech synthesis · Speech recognition · Music and sound effects · Realtime voice · Video translation and dubbing</p>
 
 > [!IMPORTANT]
-> **2026-10-18 · A new interface for Aixora Studio 0.7.0**
+> **2026-10-18 · A new interface for Aixora Audio 0.7.0**
 >
 > The redesigned workspace is now in the source tree: unified sidebar navigation, task-oriented pages, subtitle creation, video translation and dubbing, realtime voice chat and global dictation. The default appearance is **Classic blue-purple + Light**, with models, reference audio and runtime status managed in one interface.
 >
-> **[Aixora Studio v0.7.0 is available](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0).** Download the complete Windows package from the release page, with Hugging Face, hf-mirror, Baidu Netdisk and Google Drive links.
+> **[Aixora Audio v0.7.0 is available](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0).** Download the complete Windows package from the release page, with Hugging Face, hf-mirror, Baidu Netdisk and Google Drive links.
 
 <p align="center">
   <a href="webui/README.md">User guide</a> ·
   <a href="#build-the-c-backend-from-source">Build from source</a> ·
-  <a href="#set-up-python-and-launch-studio">Python setup</a> ·
+  <a href="#set-up-python-and-launch-aixora-audio">Python setup</a> ·
   <a href="#model-support">Model support</a> ·
   <a href="#acknowledgments">Acknowledgments</a>
 </p>
 
-Aixora Studio brings local audio models into one workspace. Turn text into voiceovers, transcribe recordings into subtitles, translate and dub videos, or choose a character for a voice conversation. Audio models run locally through the C++ backend; conversation and translation can connect to a local or cloud language model you configure.
+Aixora Audio brings local audio models into one workspace. Turn text into voiceovers, transcribe recordings into subtitles, translate and dub videos, or choose a character for a voice conversation. Audio models run locally through the C++ backend; conversation and translation can connect to a local or cloud language model you configure.
 
-![Aixora Studio 0.7.0 workspace home in English](assets/studio/workspace-en.png)
+![Aixora Audio 0.7.0 workspace home in English](assets/studio/workspace-en.png)
 
 ## What you can do
 
@@ -61,7 +61,7 @@ See the [English guide](webui/README.md) / [中文使用说明](webui/README.zh.
 
 ## Build the C++ backend from source
 
-The main instructions below target **Windows x64 with PowerShell**. To run from source, build the C++ backend first, then set up the Python environment in the next section. The C++ backend performs audio-model inference; Python hosts the Studio workspace, model downloads, realtime helpers and SpeakType.
+The main instructions below target **Windows x64 with PowerShell**. To run from source, build the C++ backend first, then set up the Python environment in the next section. The C++ backend performs audio-model inference; Python hosts the Aixora Audio workspace, model downloads, realtime helpers and SpeakType.
 
 ### 1. Prepare the tools and source
 
@@ -78,7 +78,7 @@ git clone https://github.com/kigner/audio.cpp-webui.git audio.cpp
 cd audio.cpp
 ```
 
-Run the remaining commands from the repository root. A standard Studio build uses the vendored dependencies. The optional `external/audio.cpp-server-frontends` submodule is disabled by default, so a recursive submodule checkout is unnecessary for this setup.
+Run the remaining commands from the repository root. A standard Aixora Audio build uses the vendored dependencies. The optional `external/audio.cpp-server-frontends` submodule is disabled by default, so a recursive submodule checkout is unnecessary for this setup.
 
 ### 2. Choose and build a backend
 
@@ -100,7 +100,7 @@ Run the remaining commands from the repository root. A standard Studio build use
 .\scripts\build_windows.ps1 -Preset windows-vulkan-release -Target audiocpp_server -Jobs 16
 ```
 
-Studio requires `audiocpp_server` for inference. Build the following optional tools for command-line inference or GGUF conversion. These examples use CUDA; replace `-Preset` for another backend:
+Aixora Audio requires `audiocpp_server` for inference. Build the following optional tools for command-line inference or GGUF conversion. These examples use CUDA; replace `-Preset` for another backend:
 
 ```powershell
 .\scripts\build_windows.ps1 -Preset windows-cuda-release -Target audiocpp_cli -Jobs 16
@@ -113,7 +113,7 @@ Outputs are written to `build/<Preset>/bin/`, for example `build/windows-cuda-re
 - CUDA builds detect the local GPU architecture through `nvidia-smi` by default. Use `-CudaArchitectures` to specify a target when building for other devices.
 - `-ConfigureOnly` configures without compiling. `-RunTests` also builds and runs the C++ tests.
 - The full model set is compiled by default, but backend compatibility varies by model.
-- Studio downloads models through `webui/model_manager_webui.py`; it does not require `-NativeModelManager`. Model management for the upstream native WebUI is a separate feature.
+- Aixora Audio downloads models through `webui/model_manager_webui.py`; it does not require `-NativeModelManager`. Model management for the upstream native WebUI is a separate feature.
 
 ### 3. Linux backend build (optional)
 
@@ -125,7 +125,7 @@ bash scripts/build_linux.sh --backend cpu --build-type Release --target audiocpp
 
 Outputs are written to `build/linux-cpu-release/bin/`. With the appropriate SDK installed, replace `--backend cpu` with `--backend cuda` or `--backend vulkan`. See the next section for running the Python workspace on Linux. SpeakType global dictation targets Windows.
 
-## Set up Python and launch Studio
+## Set up Python and launch Aixora Audio
 
 ### Windows
 
@@ -138,7 +138,7 @@ py -3.11 -m venv venv
 .\venv\Scripts\python.exe -m pip check
 ```
 
-`webui/requirements.txt` includes Python dependencies for Studio, realtime audio, SpeakType and the model-download tools. Windows desktop packages have platform markers. These commands use the virtual environment's interpreter directly, so `Activate.ps1` is unnecessary. Installing Python packages with pip does not build the C++ backend.
+`webui/requirements.txt` includes Python dependencies for Aixora Audio, realtime audio, SpeakType and the model-download tools. Windows desktop packages have platform markers. These commands use the virtual environment's interpreter directly, so `Activate.ps1` is unnecessary. Installing Python packages with pip does not build the C++ backend.
 
 Also install **FFmpeg and FFprobe** and add their executable directory to `PATH`, or place `ffmpeg.exe` and `ffprobe.exe` in `webui/`. They are used for non-WAV conversion, video input and dubbed-video export. A source checkout does not include the Python environment or these tools preinstalled in the portable package.
 
@@ -155,7 +155,7 @@ $env:AUDIOCPP_BACKEND = "cpu"
 .\run_webui.bat
 ```
 
-For a Python environment elsewhere, set `AUDIOCPP_PYTHON` to the full path of its `python.exe`. Studio starts its managed C++ service on port **8088** when needed; you do not need to start a separate backend process for the workspace.
+For a Python environment elsewhere, set `AUDIOCPP_PYTHON` to the full path of its `python.exe`. Aixora Audio starts its managed C++ service on port **8088** when needed; you do not need to start a separate backend process for the workspace.
 
 ### Linux (optional)
 
@@ -181,7 +181,7 @@ Replace `cpu` in the last line if you built a CUDA or Vulkan backend. Open the w
 
 ## Model support
 
-Studio's model center offers **113 model families and 157 model entries**. The table below groups them by primary use. Check the interface for versions, languages, reference inputs and parameters.
+Aixora Audio's model center offers **113 model families and 157 model entries**. The table below groups them by primary use. Check the interface for versions, languages, reference inputs and parameters.
 
 | Category | Supported models |
 |---|---|
@@ -201,6 +201,6 @@ Download models from **Model center**. MiraTTS and Sortformer v2 require manual 
 
 ## Acknowledgments
 
-Aixora Studio's audio inference backend is based on [audio.cpp](https://github.com/0xShug0/audio.cpp). Thanks to ShugoAI LLC and the upstream contributors. This project provides the Studio workspace, scenario applications, Windows launchers and portable-package updates.
+Aixora Audio's audio inference backend is based on [audio.cpp](https://github.com/0xShug0/audio.cpp). Thanks to ShugoAI LLC and the upstream contributors. This project provides the Aixora Audio workspace, scenario applications, Windows launchers and portable-package updates.
 
 See [LICENSE](LICENSE) for the code license.

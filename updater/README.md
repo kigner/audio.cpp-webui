@@ -1,4 +1,4 @@
-# Aixora Studio portable updater
+# Aixora Audio portable updater
 
 ```powershell
 .\update.bat --check
@@ -7,9 +7,9 @@
 .\update.bat --manifest C:\release\manifest-v0.7.1.json --dry-run
 ```
 
-Close Studio, dictation and other portable processes before applying an update.
+Close Aixora Audio, dictation and other portable processes before applying an update.
 Running `update.bat` without arguments asks for confirmation. It does not run
-silently when Studio starts.
+silently when Aixora Audio starts.
 
 ## Full-package baseline and naming
 
@@ -145,7 +145,7 @@ target paths and versions to verify and remove during rollback.
 ## Packaging boundaries
 
 Root `run_webui.bat`, `_env.bat`, `webui/start_webui.bat`, backend probing and
-both Studio READMEs are application inputs. `update.bat` belongs to the updater
+both Aixora Audio READMEs are application inputs. `update.bat` belongs to the updater
 component. Native UI runtime assets remain included; native frontend source,
 tests, user data and development dependencies are excluded.
 

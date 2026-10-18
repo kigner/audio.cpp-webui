@@ -1,8 +1,8 @@
-# Aixora Studio Guide
+# Aixora Audio Guide
 
 > **语言 / Language:** **English** · [中文](README.zh.md)
 
-Aixora Studio is a local audio workspace for speech generation, transcription, music, audio processing, realtime conversations and video translation with dubbing.
+Aixora Audio is a local audio workspace for speech generation, transcription, music, audio processing, realtime conversations and video translation with dubbing.
 
 ## Start and stop
 
@@ -52,13 +52,13 @@ With the language set to **Automatic**, replies follow the language you speak. Y
 
 Open **Scenarios → Global dictation**, select an installed streaming recognition model and start it. Switch to a text field in Notepad, a chat app or another program. Use the shortcut shown on the page to start dictation, and press it again to stop.
 
-Studio starts the recognition service and floating toolbar for you. Stop dictation from the scenario page when finished.
+Aixora Audio starts the recognition service and floating toolbar for you. Stop dictation from the scenario page when finished.
 
 ## Appearance and settings
 
 The default appearance is **Classic blue-purple + Light**. System settings also offer graphite/amber, dark mode and system appearance. Your saved choices are kept.
 
-Studio supports Chinese and English. Appearance and some chat settings are saved in your current browser; set them again when using a different browser or port.
+Aixora Audio supports Chinese and English. Appearance and some chat settings are saved in your current browser; set them again when using a different browser or port.
 
 ## Updates and files
 
@@ -81,7 +81,7 @@ To move to another computer, copy the complete package directory. Set up browser
 
 The launcher selects an available backend in **CUDA → Vulkan → CPU** order. Install your graphics card manufacturer's driver before using GPU acceleration.
 
-To choose a backend manually, stop Studio, open Command Prompt in the package directory and run:
+To choose a backend manually, stop Aixora Audio, open Command Prompt in the package directory and run:
 
 ```bat
 set AUDIOCPP_BACKEND=vulkan
@@ -93,7 +93,7 @@ You can replace `vulkan` with `cuda` or `cpu`.
 ## Troubleshooting
 
 - **The interface will not open:** read `webui/logs/startup.log`, or run `run_webui.bat --diagnostic` for startup details.
-- **The port is in use:** stop Studio and check whether another program is using port **7899**. To change the port, edit the `AUDIOCPP_UI_PORT` setting in the root `run_webui.bat`, restart Studio and use the new address. Setting this variable in a terminal does not override the value assigned by that launcher.
+- **The port is in use:** stop Aixora Audio and check whether another program is using port **7899**. To change the port, edit the `AUDIOCPP_UI_PORT` setting in the root `run_webui.bat`, restart Aixora Audio and use the new address. Setting this variable in a terminal does not override the value assigned by that launcher.
 - **No transcript in realtime chat:** check browser microphone access, your input device and the recognition model.
 - **Transcript but no reply:** check the conversation service URL, model name and API key.
 - **Reply but no sound:** check that the speech model is loaded and supports the language, then check playback and system volume.

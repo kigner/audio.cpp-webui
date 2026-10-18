@@ -438,7 +438,7 @@ if ($ReleaseNotesPath -ne "") {
     Copy-Item -LiteralPath $ReleaseNotesPath -Destination $releaseNotesOutput -Force
 } else {
     $releaseNotes = @"
-# audio.cpp Windows portable v$Version
+# Aixora Audio Windows portable v$Version
 
 ## Update
 
