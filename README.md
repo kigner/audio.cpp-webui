@@ -13,7 +13,7 @@
 >
 > The redesigned workspace is now in the source tree: unified sidebar navigation, task-oriented pages, subtitle creation, video translation and dubbing, realtime voice chat and global dictation. The default appearance is **Classic blue-purple + Light**, with models, reference audio and runtime status managed in one interface.
 >
-> **The v0.7.0 GitHub Release is pending.** It will be published after all full-package download links and the tutorial video links are ready. The latest published GitHub Release remains v0.6.0.
+> **[Aixora Studio v0.7.0 is available](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0).** Download the complete Windows package from the release page, with Hugging Face, hf-mirror, Baidu Netdisk and Google Drive links.
 
 <p align="center">
   <a href="webui/README.md">User guide</a> ·
@@ -25,7 +25,7 @@
 
 Aixora Studio brings local audio models into one workspace. Turn text into voiceovers, transcribe recordings into subtitles, translate and dub videos, or choose a character for a voice conversation. Audio models run locally through the C++ backend; conversation and translation can connect to a local or cloud language model you configure.
 
-![Aixora Studio 0.7.0 workspace home](assets/studio/workspace.jpg)
+![Aixora Studio 0.7.0 workspace home in English](assets/studio/workspace-en.png)
 
 ## What you can do
 

@@ -13,7 +13,7 @@
 >
 > 新版工作空间现已加入源码：统一的侧边导航、按任务组织的操作页面，以及字幕制作、视频翻译配音、实时语音聊天和全局语音录入。默认采用 **经典蓝紫＋浅色**，模型、参考音频和运行状态都可以在同一个界面管理。
 >
-> **v0.7.0 的 GitHub Release 尚未发布。** 待全部完整版整合包下载链接和本版教程视频链接准备就绪后发布；GitHub 当前最新正式 Release 仍为 v0.6.0。
+> **[Aixora Studio v0.7.0 已发布](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0)。** 前往发布页下载 Windows 完整版整合包，支持 Hugging Face、国内 HF 镜像、百度网盘和 Google Drive。
 
 <p align="center">
   <a href="webui/README.zh.md">中文使用说明</a> ·
@@ -25,7 +25,7 @@
 
 Aixora Studio 把本地音频模型放进一个方便操作的工作空间。输入文字生成配音，把录音转成字幕，为视频翻译和配音，或选择一个角色开始语音对话。音频模型通过 C++ 后端在本机运行；对话与翻译可以连接你配置的本地或云端大语言模型。
 
-![Aixora Studio 0.7.0 工作空间首页](assets/studio/workspace.jpg)
+![Aixora Studio 0.7.0 中文工作空间首页](assets/studio/workspace-zh.png)
 
 ## 新版可以做什么
 
