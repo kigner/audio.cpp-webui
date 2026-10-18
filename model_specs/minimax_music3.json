@@ -145,6 +145,7 @@
       {
         "name": "pipeline_overlap",
         "type": "bool",
+        "required": false,
         "description": "Overlap AR decoding with per-chunk condition/flow/vocoder work on a second backend stream. Requires mem_saver=false; output is validated to stay identical to the sequential pipeline (automatic sequential fallback otherwise)."
       }
     ],

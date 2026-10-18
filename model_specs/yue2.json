@@ -380,6 +380,7 @@
       {
         "name": "attention",
         "type": "enum",
+        "required": false,
         "values": [
           "auto",
           "flash",
@@ -390,6 +391,7 @@
       {
         "name": "attention_tile_rows",
         "type": "int",
+        "required": false,
         "min": 0,
         "description": "Query rows per tile in the eager NAR attention; 0 keeps a tile's score matrix under 3 GiB."
       }
