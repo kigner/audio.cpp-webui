@@ -84,15 +84,14 @@
       {
         "name": "template_name",
         "type": "enum",
-        "description": "FireRedTTS3 Instruct request template: instruct_tts, voice_design, semantic_edit, or acoustic_edit.",
+        "description": "Instruct template; defaults to acoustic_edit with input audio, otherwise instruct_tts.",
         "required": false,
         "values": [
           "instruct_tts",
           "voice_design",
           "semantic_edit",
           "acoustic_edit"
-        ],
-        "default": "instruct_tts"
+        ]
       },
       {
         "name": "reference_text",
@@ -101,7 +100,7 @@
         "required": false
       },
       {
-        "name": "instruction",
+        "name": "instruct",
         "type": "string",
         "description": "FireRedTTS3 instruction for voice design or edit tasks.",
         "required": false
@@ -116,10 +115,9 @@
       {
         "name": "text_chunk_size",
         "type": "int",
-        "description": "Maximum Unicode codepoints per long-form text chunk; default 600.",
+        "description": "Maximum Unicode codepoints per long-form text chunk; default 80 when hanzi, kana and Hangul outnumber other letters and digits (except edits), otherwise 600.",
         "required": false,
-        "min": 1,
-        "default": 600
+        "min": 1
       },
       {
         "name": "text_chunk_mode",
@@ -145,10 +143,9 @@
       {
         "name": "guidance_scale",
         "type": "float",
-        "description": "FireRed DiT classifier-free guidance scale.",
+        "description": "Positive guidance scale; defaults to 1.2 for voice-design/semantic-edit/acoustic-edit templates and 2 otherwise.",
         "required": false,
-        "min": 0.0,
-        "default": 2.0
+        "min": 0
       },
       {
         "name": "stop_threshold",
@@ -162,10 +159,10 @@
       {
         "name": "seed",
         "type": "int",
-        "description": "Generation seed.",
+        "description": "Unsigned 32-bit sampling seed in [0, 4294967295]; defaults to 2 for voice design and 1234 otherwise.",
         "required": false,
         "min": 0,
-        "default": 1234
+        "max": 4294967295
       }
     ],
     "session": [
@@ -204,7 +201,7 @@
       {
         "name": "reference_cache_slots",
         "type": "int",
-        "description": "Prepared reference-audio cache slots; set 0 to disable reuse.",
+        "description": "Prepared reference-audio cache slots; set 0 to disable reuse. Applies only to Base; Instruct does not use this cache.",
         "required": false,
         "min": 0,
         "default": 4

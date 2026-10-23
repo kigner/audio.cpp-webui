@@ -982,20 +982,20 @@
       ],
       "description": "KittenTTS 2 多语言合成与声音克隆，采用原生 Q8 多语言包；包含说话人和声码器组件。",
       "package_ids": [
-        "kitten_tts2_q8_0"
+        "kitten_tts2_20261021_q8_0"
       ],
       "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
       "sources": [
         {
-          "label": "dignome/kitten_tts2",
-          "url": "https://huggingface.co/dignome/kitten_tts2/tree/main",
-          "revision": "73b762c95b07c4f0675c927c25d65741b8dab7da"
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/ef1ab2598f6d4d101486e4c5b9e605c687f20642",
+          "revision": "ef1ab2598f6d4d101486e4c5b9e605c687f20642"
         }
       ],
       "original_sources": [
         "https://huggingface.co/KittenML/kitten-tts-2"
       ],
-      "size_bytes": 3282138942,
+      "size_bytes": 3343404128,
       "size_kind": "published_files",
       "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
     },
@@ -1006,20 +1006,20 @@
       ],
       "description": "KittenTTS 2 多语言合成与声音克隆，采用原生 Q8 多语言包；包含说话人和声码器组件。",
       "package_ids": [
-        "kitten_tts2_q8_0"
+        "kitten_tts2_20261021_q8_0"
       ],
       "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
       "sources": [
         {
-          "label": "dignome/kitten_tts2",
-          "url": "https://huggingface.co/dignome/kitten_tts2/tree/main",
-          "revision": "73b762c95b07c4f0675c927c25d65741b8dab7da"
+          "label": "audio-cpp/audio.cpp-gguf",
+          "url": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/ef1ab2598f6d4d101486e4c5b9e605c687f20642",
+          "revision": "ef1ab2598f6d4d101486e4c5b9e605c687f20642"
         }
       ],
       "original_sources": [
         "https://huggingface.co/KittenML/kitten-tts-2"
       ],
-      "size_bytes": 3282138942,
+      "size_bytes": 3343404128,
       "size_kind": "published_files",
       "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
     },
@@ -1730,22 +1730,22 @@
         2.0,
         4.0
       ],
-      "description": "Sopro v2 Turbo 支持语音合成与声音克隆；当前下载原始 Safetensors，包含语义编码器、说话人编码器及声码器。",
+      "description": "Sopro v2 Turbo 支持语音合成与声音克隆；使用 F16 GGUF 包，包含必需的语音与声码器组件。",
       "package_ids": [
-        "sopro_v2_turbo_safetensors"
+        "sopro_v2_turbo_f16"
       ],
       "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
       "sources": [
         {
           "label": "samuel-vitorino/sopro-v2-turbo",
-          "url": "https://huggingface.co/samuel-vitorino/sopro-v2-turbo/tree/main",
+          "url": "https://huggingface.co/samuel-vitorino/sopro-v2-turbo/tree/c12d0dc7c4a33b3cb6ea3d11ceb70bc60c7c6312",
           "revision": "c12d0dc7c4a33b3cb6ea3d11ceb70bc60c7c6312"
         }
       ],
       "original_sources": [
         "https://huggingface.co/samuel-vitorino/sopro-v2-turbo"
       ],
-      "size_bytes": 634337562,
+      "size_bytes": 317653216,
       "size_kind": "published_files",
       "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
     },
@@ -1754,22 +1754,22 @@
         2.0,
         4.0
       ],
-      "description": "Sopro v2 Turbo 支持语音合成与声音克隆；当前下载原始 Safetensors，包含语义编码器、说话人编码器及声码器。",
+      "description": "Sopro v2 Turbo 支持语音合成与声音克隆；使用 F16 GGUF 包，包含必需的语音与声码器组件。",
       "package_ids": [
-        "sopro_v2_turbo_safetensors"
+        "sopro_v2_turbo_f16"
       ],
       "memory_basis": "短输入、单任务的预算估算，包含权重与运行缓冲；长音频会增加占用，未经本机峰值实测。",
       "sources": [
         {
           "label": "samuel-vitorino/sopro-v2-turbo",
-          "url": "https://huggingface.co/samuel-vitorino/sopro-v2-turbo/tree/main",
+          "url": "https://huggingface.co/samuel-vitorino/sopro-v2-turbo/tree/c12d0dc7c4a33b3cb6ea3d11ceb70bc60c7c6312",
           "revision": "c12d0dc7c4a33b3cb6ea3d11ceb70bc60c7c6312"
         }
       ],
       "original_sources": [
         "https://huggingface.co/samuel-vitorino/sopro-v2-turbo"
       ],
-      "size_bytes": 634337562,
+      "size_bytes": 317653216,
       "size_kind": "published_files",
       "size_note": "按所选包的发布文件元数据核算，包含必要组件并去重；不含其他精度或可选包。"
     },

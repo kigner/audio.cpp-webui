@@ -186,6 +186,39 @@ void TransformerKVCache::import_state(const TransformerKVState & state) {
     }
 }
 
+void TransformerKVCache::import_prefix(
+    const std::vector<core::TensorValue> & keys,
+    const std::vector<core::TensorValue> & values,
+    int64_t steps) {
+    if (steps <= 0 || steps > cache_steps_ || keys.size() != layers_.size() || values.size() != layers_.size()) {
+        throw std::runtime_error("TransformerKVCache prefix shape exceeds cache or has different layers");
+    }
+    for (size_t layer = 0; layer < layers_.size(); ++layer) {
+        for (const auto & tensors : {std::pair{keys[layer], layers_[layer].key_tensor},
+                                    std::pair{values[layer], layers_[layer].value_tensor}}) {
+            const auto & source = tensors.first;
+            const auto & target = tensors.second;
+            auto expected = target.shape;
+            expected.dims[1] = steps;
+            core::validate_shape(source, expected, "KV prefix");
+            if (source.shape.dims[0] != 1 || source.type != target.type || !ggml_is_contiguous(source.tensor)) {
+                throw std::runtime_error("TransformerKVCache prefix requires unbatched contiguous tensors of matching precision");
+            }
+            // A temporary descriptor limits the copy to the prefix without
+            // adding per-request views to a retained ggml context.
+            ggml_tensor destination = *target.tensor;
+            std::copy(source.tensor->ne, source.tensor->ne + GGML_MAX_DIMS, destination.ne);
+            std::copy(source.tensor->nb, source.tensor->nb + GGML_MAX_DIMS, destination.nb);
+            ggml_backend_tensor_copy(source.tensor, &destination);
+            const size_t copied = ggml_nbytes(source.tensor);
+            const size_t tail = ggml_nbytes(target.tensor) - copied;
+            if (tail != 0) ggml_backend_tensor_memset(target.tensor, 0, copied, tail);
+        }
+    }
+    valid_steps_ = steps;
+    current_end_ = steps;
+}
+
 TransformerKVState TransformerKVCache::export_state() const {
     TransformerKVState state;
     state.current_end = current_end_;
@@ -315,7 +348,8 @@ TransformerBatchedKVCache::TransformerBatchedKVCache(
     if (keys.size() != values.size()) {
         throw std::runtime_error("TransformerBatchedKVCache key/value layer counts must match");
     }
-    const size_t cache_elems = static_cast<size_t>(batch_size_ * cache_steps_ * row_elems_);
+    const size_t cache_elems = options_.lazy_import_scratch
+        ? 0 : static_cast<size_t>(batch_size_ * cache_steps_ * row_elems_);
     layers_.reserve(keys.size());
     for (size_t layer = 0; layer < keys.size(); ++layer) {
         validate_cache_tensor(keys[layer], options_);
@@ -366,6 +400,9 @@ void TransformerBatchedKVCache::import_state(const TransformerBatchedKVState & s
         if (valid_steps_by_batch_.empty() && source.valid_steps != state_steps) {
             throw std::runtime_error("TransformerBatchedKVCache requires consistent valid_steps across all layers");
         }
+        const size_t cache_elems = static_cast<size_t>(batch_size_ * cache_steps_ * row_elems_);
+        cache.import_key_scratch.resize(cache_elems);
+        cache.import_value_scratch.resize(cache_elems);
         std::fill(cache.import_key_scratch.begin(), cache.import_key_scratch.end(), 0.0F);
         std::fill(cache.import_value_scratch.begin(), cache.import_value_scratch.end(), 0.0F);
         const bool variable_rows = !valid_steps_by_batch_.empty();
@@ -409,6 +446,41 @@ void TransformerBatchedKVCache::import_state(const TransformerBatchedKVState & s
         write_cache_tensor(cache.key_tensor, cache.import_key_scratch, options_);
         write_cache_tensor(cache.value_tensor, cache.import_value_scratch, options_);
     }
+}
+
+void TransformerBatchedKVCache::clear_on_backend() {
+    for (auto & layer : layers_) {
+        ggml_backend_tensor_memset(layer.key_tensor.tensor, 0, 0, ggml_nbytes(layer.key_tensor.tensor));
+        ggml_backend_tensor_memset(layer.value_tensor.tensor, 0, 0, ggml_nbytes(layer.value_tensor.tensor));
+    }
+    current_end_ = valid_steps_ = 0;
+    current_end_by_batch_.assign(static_cast<size_t>(batch_size_), 0);
+    valid_steps_by_batch_ = current_end_by_batch_;
+}
+
+void TransformerBatchedKVCache::advance_after_direct_append(const std::vector<int64_t> & steps_by_batch) {
+    if (steps_by_batch.size() != static_cast<size_t>(batch_size_) || valid_steps_by_batch_.size() != steps_by_batch.size()) {
+        throw std::runtime_error("TransformerBatchedKVCache append batch size mismatch");
+    }
+    for (size_t batch = 0; batch < steps_by_batch.size(); ++batch) {
+        if (steps_by_batch[batch] < 0 || valid_steps_by_batch_[batch] + steps_by_batch[batch] > cache_steps_) {
+            throw std::runtime_error("TransformerBatchedKVCache direct append exceeds cache capacity");
+        }
+    }
+    for (size_t batch = 0; batch < steps_by_batch.size(); ++batch) {
+        valid_steps_by_batch_[batch] += steps_by_batch[batch];
+        current_end_by_batch_[batch] += steps_by_batch[batch];
+    }
+    valid_steps_ = *std::max_element(valid_steps_by_batch_.begin(), valid_steps_by_batch_.end());
+    current_end_ = *std::max_element(current_end_by_batch_.begin(), current_end_by_batch_.end());
+}
+
+const core::TensorValue & TransformerBatchedKVCache::key_tensor(size_t layer) const {
+    return layers_.at(layer).key_tensor;
+}
+
+const core::TensorValue & TransformerBatchedKVCache::value_tensor(size_t layer) const {
+    return layers_.at(layer).value_tensor;
 }
 
 TransformerBatchedKVState TransformerBatchedKVCache::export_state() const {
@@ -495,8 +567,9 @@ core::TensorValue view_transformer_kv_cache_steps(
     int64_t heads,
     int64_t head_dim,
     const char * label,
-    ggml_type view_type) {
-    if (start < 0 || steps <= 0 || start + steps > cache.shape.dims[1]) {
+    ggml_type view_type,
+    int64_t batch) {
+    if (start < 0 || steps <= 0 || start + steps > cache.shape.dims[1] || batch < 0 || batch >= cache.shape.dims[0]) {
         throw std::runtime_error(std::string(label) + " cache view range is invalid");
     }
     return core::wrap_tensor(
@@ -510,7 +583,7 @@ core::TensorValue view_transformer_kv_cache_steps(
             cache.tensor->nb[1],
             cache.tensor->nb[2],
             cache.tensor->nb[3],
-            static_cast<size_t>(start) * cache.tensor->nb[2]),
+            static_cast<size_t>(batch) * cache.tensor->nb[3] + static_cast<size_t>(start) * cache.tensor->nb[2]),
         core::TensorShape::from_dims({1, steps, heads, head_dim}),
         view_type);
 }

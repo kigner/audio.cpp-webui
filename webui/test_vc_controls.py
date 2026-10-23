@@ -47,7 +47,8 @@ class VoiceConversionControlsTests(unittest.TestCase):
             'seed-vc': ['v2_vc', 'v1_whisper_bigvgan_vc', 'v1_xlsr_hift_vc'],
             'seed-vc-svc': ['v1_svc'],
             'vevo2': ['style_preserved_vc', 'style_converted_vc'],
-            'vevo2-svc': ['style_preserved_svc', 'style_converted_svc', 'singing_style_conversion'],
+            'vevo2-svc': ['style_preserved_svc', 'style_converted_svc', 'singing_style_conversion',
+                          'humming_to_singing', 'instrument_to_singing'],
         }.items():
             parameters = {p['name']: p for p in self.detail(ident)['parameters']}
             self.assertEqual(parameters['route']['choices'], expected)

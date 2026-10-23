@@ -33,6 +33,9 @@ struct SpecBackedVoiceModelConfig {
         const SessionOptions &,
         std::shared_ptr<const Assets>,
         std::shared_ptr<const engine::model_spec::ModelContract>)> create_session;
+    std::function<ModelResourcePlan(
+        const std::filesystem::path &,
+        const std::unordered_map<std::string, std::string> &)> model_resources;
 };
 
 inline std::shared_ptr<const engine::model_spec::ModelContract> require_model_contract(std::string family) {
@@ -63,7 +66,12 @@ inline void validate_spec_backed_request_options(
     std::string_view model_name) {
     for (const auto & [key, _] : options) {
         if (contract.request_option_keys.find(key) == contract.request_option_keys.end()) {
-            throw std::runtime_error("unknown " + std::string(model_name) + " request option: " + key);
+            throw std::runtime_error(
+                "unknown " + std::string(model_name) + " request option: " + key +
+                ". The option may be misspelled or require a newer audio.cpp runtime. "
+                "Supported options: https://github.com/0xShug0/audio.cpp/blob/main/model_specs/" +
+                contract.metadata.family + ".json. "
+                "Update audio.cpp: https://github.com/0xShug0/audio.cpp/releases");
         }
     }
 }
@@ -79,7 +87,12 @@ inline void validate_spec_backed_request_options(
     validate_spec_backed_request_options(options, contract, model_name);
     for (const auto & [key, _] : option_arrays) {
         if (contract.request_option_keys.find(key) == contract.request_option_keys.end()) {
-            throw std::runtime_error("unknown " + std::string(model_name) + " request option: " + key);
+            throw std::runtime_error(
+                "unknown " + std::string(model_name) + " request option: " + key +
+                ". The option may be misspelled or require a newer audio.cpp runtime. "
+                "Supported options: https://github.com/0xShug0/audio.cpp/blob/main/model_specs/" +
+                contract.metadata.family + ".json. "
+                "Update audio.cpp: https://github.com/0xShug0/audio.cpp/releases");
         }
     }
 }
@@ -231,6 +244,14 @@ public:
             config_,
             std::move(contract),
             std::move(assets));
+    }
+
+    ModelResourcePlan model_resources(
+        const std::filesystem::path & model_path,
+        const std::unordered_map<std::string, std::string> & session_options) const override {
+        return config_.model_resources
+            ? config_.model_resources(model_path, session_options)
+            : ModelResourcePlan{};
     }
 
 private:

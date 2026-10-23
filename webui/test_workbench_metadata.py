@@ -48,7 +48,7 @@ class MusicInputMetadataTests(unittest.TestCase):
                 self.assertEqual(fields["text_role"], "prompt")
                 self.assertEqual(fields["duration"], family != "minimax_h3")
         self.assertEqual(self.inputs("controlfoley")["duration_default"], 8.0)
-        self.assertEqual(self.inputs("controlfoley")["duration_max"], 60.0)
+        self.assertIsNone(self.inputs("controlfoley")["duration_max"])
 
     def test_lyrics_contract_distinguishes_required_optional_and_text_fallback(self):
         music3 = self.inputs("minimax_music3")

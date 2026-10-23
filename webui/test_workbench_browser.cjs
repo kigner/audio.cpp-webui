@@ -1824,7 +1824,7 @@ const cases = [
   ['voice design common options preserve model defaults, requests and advanced settings', async (page, backend) => {
     const variants=[
       {id:'design-qwen',family:'qwen3_tts',values:{temperature:1.15,do_sample:false},defaults:{temperature:.9,do_sample:true},maxTokens:true},
-      {id:'design-firered3',family:'fireredtts3',values:{num_inference_steps:16,guidance_scale:2.5},defaults:{num_inference_steps:10,guidance_scale:2}},
+      {id:'design-firered3',family:'fireredtts3',values:{num_inference_steps:16,guidance_scale:2.5},defaults:{num_inference_steps:10},jsonDefaults:{guidance_scale:2}},
       {id:'design-irodori-v3',family:'irodori_tts',values:{duration_sec:0,duration_scale:1.2,caption_guidance_scale:4},defaults:{duration_sec:0,duration_scale:1,caption_guidance_scale:3}},
       {id:'design-irodori-v4',family:'irodori_tts',values:{duration_sec:8,duration_scale:1.1,caption_guidance_scale:2},defaults:{duration_sec:0,duration_scale:1,caption_guidance_scale:3}},
       {id:'design-moss',family:'moss_voicegen',values:{temperature:1.25,repetition_penalty:1.2},defaults:{temperature:1.5,repetition_penalty:1.1}},
@@ -1858,7 +1858,7 @@ const cases = [
       await advanced(page);
       assert.deepEqual(await page.locator('#expert-controls .parameter-section-title').allTextContents(),['加载与内存','高级合成参数']);
       assert.equal(await page.locator('#workspace-settings [data-input-key="max_tokens"]').count(),variant.maxTokens?1:0);
-      await page.locator('#options-json').fill(JSON.stringify({...variant.defaults,seed:100+index}));await page.keyboard.press('Escape');
+      await page.locator('#options-json').fill(JSON.stringify({...variant.defaults,...variant.jsonDefaults,seed:100+index}));await page.keyboard.press('Escape');
       await waitValue(page,'#common-options [data-input-key="seed"]',String(100+index));
       for(const [key,value] of Object.entries(variant.values)){
         const input=page.locator(`#common-options #param-${key}`);
@@ -3120,7 +3120,7 @@ cases.push(['ACE editing controls validate ranges filter drafts and preserve mod
   const gate=backend.holdUpload('delayed-source.wav');
   await page.locator('[data-input-key="audio"]').setInputFiles({name:'delayed-source.wav',mimeType:'audio/wav',buffer:wav()});
   await waitUntil(()=>backend.uploadAttempts.some(item=>item.name==='delayed-source.wav'),'Delayed source upload started');
-  await task(page,'tts');await page.locator('[data-input-key="text"]').fill('Keep this speech draft');gate.resolve();
+  await task(page,'tts');await page.locator('#parameter-toggle').waitFor({state:'visible'});await page.locator('[data-input-key="text"]').fill('Keep this speech draft');gate.resolve();
   await task(page,'music');await waitText(page,'#task-inputs','delayed-source.wav');await waitValue(page,'#param-source_lyrics','');
   await task(page,'tts');assert.equal(await page.locator('[data-input-key="text"]').inputValue(),'Keep this speech draft');
 }]);
@@ -3489,6 +3489,32 @@ cases.push(['interface language preserves drafts, runtime and request values', a
   await page.reload();
   assert.equal(await page.locator('#ui-language').inputValue(),'en');
   assert.equal(await page.locator('#settings-heading').textContent(),'Settings');
+}]);
+
+cases.push(['upstream parameter aliases preserve saved ASR values and nested runtime settings',async(page,backend)=>{
+  const entry=backend.models.find(m=>m.id==='asr-one');
+  entry.parameters=[{name:'pnc',label:'标点',type:'bool',default:true,level:'basic',scope:'request'}];
+  await task(page,'asr','ASR One');
+  await page.locator('#param-pnc').uncheck();
+  await task(page,'tts');
+  entry.option_aliases={pnc:'punc','load_options.demo.mem_saver':'session_options.demo.mem_saver'};
+  entry.parameters=[{name:'punc',label:'标点',type:'bool',default:true,level:'basic',scope:'request'},
+    {name:'session_options.demo.mem_saver',label:'节省显存',type:'choice',choices:['true','false'],level:'expert',scope:'session'}];
+  await task(page,'asr','ASR One');
+  assert.equal(await page.locator('#param-punc').isChecked(),false,'Saved false must survive the rename');
+  await upload(page,'#task-form [data-input-key="audio"]','migration.wav');await advanced(page);
+  await page.locator('#options-json').fill('{"pnc":true,"punc":false,"load_options":{"demo.mem_saver":true}}');
+  await waitValue(page,'#param-session_options-demo-mem_saver','true');
+  assert.equal(await page.locator('#param-punc').isChecked(),false,'Current spelling wins over a stale alias');
+  await page.locator('#param-session_options-demo-mem_saver').selectOption('false');
+  await page.keyboard.press('Escape');
+  if(await page.locator('#workspace-load').textContent()!=='已加载')await page.locator('#workspace-load').click();
+  await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'Migrated ASR request missing');
+  assert.equal(backend.requests[0].options.punc,false);
+  assert.equal(backend.requests[0].options.pnc,undefined);
+  assert.equal(backend.requests[0].options['session_options.demo.mem_saver'],'false');
+  assert.equal(backend.requests[0].options.load_options?.['demo.mem_saver'],undefined);
 }]);
 
 (async () => {

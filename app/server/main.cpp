@@ -7,6 +7,7 @@
 #include "../common/build_info.h"
 
 #include "engine/framework/core/backend.h"
+#include "engine/framework/core/load_progress.h"
 #include "engine/framework/debug/trace.h"
 
 #include <csignal>
@@ -88,9 +89,9 @@ void print_help() {
         << "audiocpp_server [--config <server.json>] [--ui] [--host <ip>] [--port <port>] [--backend <backend>]\n"
         << "                [--device <id>] [--list-devices] [--threads <n>] [--busy-timeout-ms <ms>]\n"
         << "                [--max-loaded-models <n>] [--idle-unload-ms <ms>] [--min-free-memory-mb <mb>]\n"
-        << "                [--model-spec-override <json-or-directory>] [--voice-dir <directory>]\n"
+        << "                [--model-spec-override <json-or-directory|embedded>] [--voice-dir <directory>]\n"
         << "                [--frontend-listener <name>] [--frontend-option key=value]\n"
-        << "                [--log] [--log-file <path>]\n"
+        << "                [--log] [--log-file <path>] [--load-progress 0|1]\n"
         << "                [--cors-origins <origins>]\n"
         << "  --version                        print build version, commit, compiler, platform, and enabled backends\n"
         << "  --parallel-jobs                  opt into the experimental parallel runtime; per-model slots default to 1\n"
@@ -118,11 +119,15 @@ void print_help() {
         << "  --frontend-option key=value      listener-specific option; may be repeated\n"
         << "  --cors-origins \"*\"              experimental; disabled by default. Allows browser\n"
         << "                                   requests from any origin for trusted local demos only\n"
+        << "  --load-progress 0|1              with --log/--log-file, emit model-load progress keys\n"
+        << "                                   (runtime.load.phase, <store>.weights.upload_progress,\n"
+        << "                                   server.load.progress); default 0 (no new log lines)\n"
         << "\n"
         << "Endpoints:\n"
         << "  GET  /                           embedded WebUI (enabled by default with a config)\n"
         << "  GET  /health\n"
         << "  GET  /v1/models\n"
+        << "  GET  /v1/recipes\n"
         << "  POST /v1/models/load             available with --ui-management\n"
         << "  POST /v1/models/unload           available with --ui-management\n"
         << "  POST /v1/ui/upload               temporary browser upload for WebUI requests\n"
@@ -137,8 +142,9 @@ void print_help() {
         << "  GET  /v1/ui/models/package-sizes package sizes from metadata-only checks\n"
         << "  GET  /v1/audio/voices?model=<id>\n"
         << "  POST /v1/audio/speech\n"
-        << "  POST /v1/audio/speech/live?model=<id>\n"
-        << "       raw PCM in a chunked body, speech audio deltas as SSE on the same connection\n"
+        << "  POST /v1/audio/speech/live?model=<id>[&return_text=true]\n"
+        << "       raw PCM in a chunked body, speech audio deltas as SSE on the same connection;\n"
+        << "       return_text adds the text the model writes as text deltas\n"
         << "  POST /v1/audio/transcriptions\n"
         << "       fields: file, model, language, prompt, stream\n"
         << "  POST /v1/batches/transcriptions\n"
@@ -149,7 +155,11 @@ void print_help() {
         << "  POST /v1/audio/transcriptions/live?model=<id>\n"
         << "       raw PCM in a chunked body, transcript deltas as SSE on the same connection\n"
         << "  POST /v1/tasks/run\n"
-        << "  POST /v1/tasks/batch\n";
+        << "  POST /v1/tasks/batch\n"
+        << "  POST /v1/tasks/stream\n"
+        << "       events and result in one JSON body, or as SSE with stream_format=sse\n"
+        << "  POST /v1/recipes/run\n"
+        << "       run a built-in multi-model recipe; set stream=true for SSE\n";
 }
 
 }  // namespace
@@ -180,6 +190,15 @@ int main(int argc, char ** argv) {
             has_arg(argc, argv, "--log") || log_file.has_value(),
             log_file,
         });
+        // Opt-in model-load progress reporting (runtime.load.phase,
+        // <store>.weights.upload_progress, server.load.progress). Default
+        // off so the log for existing downstream pipelines is unchanged.
+        if (const auto load_progress = arg_value(argc, argv, "--load-progress")) {
+            if (*load_progress != "0" && *load_progress != "1") {
+                throw std::runtime_error("--load-progress expects 0 or 1");
+            }
+            engine::core::set_load_progress_enabled(*load_progress == "1");
+        }
         std::signal(SIGINT, request_shutdown);
         std::signal(SIGTERM, request_shutdown);
 #ifdef SIGPIPE
@@ -199,9 +218,11 @@ int main(int argc, char ** argv) {
         }
         if (ui_requested) {
             config.ui_enabled = true;
+            config.ui_requested = true;
         }
         if (has_arg(argc, argv, "--no-ui")) {
             config.ui_enabled = false;
+            config.ui_requested = false;
         }
         if (has_arg(argc, argv, "--ui-management")) {
             config.ui_management = true;

@@ -1,5 +1,6 @@
 #include "engine/community_models/granite5asr/session.h"
 
+#include "engine/community_models/granite5asr/ctc_timestamps.h"
 #include "engine/framework/audio/chunking.h"
 #include "engine/framework/audio/conversion.h"
 #include "engine/framework/debug/profiler.h"
@@ -23,6 +24,26 @@
 
 namespace engine::community_models::granite5asr {
 namespace json = engine::io::json;
+
+std::vector<std::string> languages_for_tokens(const std::vector<std::string> & tokens) {
+    const bool english_only_blank = !tokens.empty() && tokens.front() == "<|blank|>";
+    bool has_french = false;
+    bool has_japanese = false;
+    if (!english_only_blank) {
+        for (const auto & token : tokens) {
+            if (token == "<|fr|>") {
+                has_french = true;
+            } else if (token == "<|ja|>") {
+                has_japanese = true;
+            }
+        }
+    }
+    if (english_only_blank || !has_french || !has_japanese) {
+        return {"en"};
+    }
+    return {"en", "fr", "de", "es", "pt", "it", "ja"};
+}
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -88,21 +109,8 @@ std::string parse_vad_model_path(
     return "assets/framework/models/silero_vad";
 }
 
-std::vector<int32_t> ctc_greedy_collapse(
-    const std::vector<int32_t> & raw_ids,
-    int64_t blank_id) {
-    std::vector<int32_t> collapsed;
-    int32_t prev = -1;
-    for (int32_t id : raw_ids) {
-        if (id != prev) {
-            if (id != static_cast<int32_t>(blank_id)) {
-                collapsed.push_back(id);
-            }
-            prev = id;
-        }
-    }
-    return collapsed;
-}
+const std::string kLanguageOptionHelp =
+    "Accepted and ignored. Granite has no language input. A result is labelled en unless decoding emits a trained language token such as <|fr|>.";
 
 void append_chunk_transcript(std::string & merged, std::string chunk_text) {
     chunk_text = engine::io::trim_ascii_whitespace(std::move(chunk_text));
@@ -135,7 +143,7 @@ public:
             {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         out.languages = {"en"};
-        out.supports_timestamps = false;
+        out.supports_timestamps = true;
         return out;
     }
 
@@ -164,6 +172,16 @@ public:
             request.model_path,
             default_spec_path());
         runtime::ModelInspection inspection;
+        inspection.cli.request_options = {
+            {"language", "code", kLanguageOptionHelp, false, "en"},
+            {"audio_chunk_mode", "auto|fixed|vad|none", "Offline audio chunking mode: auto, fixed, vad, or none. VAD requires a regular model file; otherwise the planner uses fixed chunks. Default: auto.", false, "auto"},
+            {"audio_chunk_duration_sec", "float", "Positive maximum audio chunk duration for fixed and VAD chunking. Default: 30.", false, "30", "0.001"},
+        };
+        inspection.cli.session_options = {
+            {"granite5asr.weight_type", "native|f32|f16|bf16|q8_0", "Shared model weight storage type. Default: native.", false, "native"},
+            {"granite5asr.encoder_graph_arena_mb", "int", "Encoder graph arena size in MB. Positive MiB allocation; invalid/nonpositive values resolve to 1024 MiB. Default: 1024.", false, "1024", "1"},
+            {"granite5asr.vad_model_path", "string", "Path to a Silero VAD model file, not a directory; VAD runs only when this path is a regular file."},
+        };
         inspection.model_root = resources.model_root();
         inspection.metadata.family = family();
         inspection.metadata.variant = "470m-turboctc";
@@ -172,7 +190,13 @@ public:
             {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
         };
         inspection.capabilities.languages = {"en"};
-        inspection.capabilities.supports_timestamps = false;
+        try {
+            const auto tokenizer = engine::tokenizers::load_huggingface_tokenizer_json(
+                resources.require_file("tokenizer_json"));
+            inspection.capabilities.languages = languages_for_tokens(tokenizer->id_to_token());
+        } catch (...) {
+        }
+        inspection.capabilities.supports_timestamps = true;
         inspection.discovered_configs = runtime::discover_named_assets_from_package_spec(
             request.model_path,
             default_spec_path(),
@@ -245,39 +269,124 @@ runtime::IOfflineVoiceTaskSession & Granite5ASRSessionBase::vad_session() {
     return *vad_session_;
 }
 
-runtime::Transcript Granite5ASRSessionBase::transcribe_audio(
+std::vector<runtime::WordTimestamp> words_from_ctc_pieces(
+    const engine::tokenizers::HuggingFaceTokenizerJson & tokenizer,
+    const std::vector<CtcPiece> & pieces,
+    int64_t samples_per_frame,
+    int64_t sample_offset,
+    int64_t max_end_sample,
+    int64_t model_sample_rate,
+    int64_t input_sample_rate) {
+    std::vector<DecodedCtcPiece> decoded;
+    decoded.reserve(pieces.size());
+    for (const auto & piece : pieces) {
+        decoded.push_back(DecodedCtcPiece{
+            tokenizer.decode_ids(std::vector<int32_t>{piece.id}),
+            piece.start_frame,
+            piece.end_frame,
+            piece.log_prob_sum,
+            piece.frames,
+        });
+    }
+    return words_from_decoded_ctc_pieces(
+        decoded, samples_per_frame, sample_offset, max_end_sample, model_sample_rate, input_sample_rate);
+}
+
+TimedTranscript Granite5ASRSessionBase::transcribe_audio(
     const runtime::AudioBuffer & audio,
     const std::unordered_map<std::string, std::string> & options) {
+    TimedTranscript empty;
+    empty.transcript = {"", "en"};
     if (audio.samples.empty()) {
-        return {"", "en"};
+        return empty;
     }
+    const int64_t frame_samples = samples_per_ctc_frame(assets_->config);
+    const int64_t audio_samples = static_cast<int64_t>(audio.samples.size() / std::max(1, audio.channels));
 
-    auto transcribe_clip = [this](const runtime::AudioBuffer & clip) -> std::string {
-        if (clip.samples.empty()) {
-            return "";
+    auto transcribe_clip = [this, frame_samples, audio_samples](const runtime::AudioBuffer & clip, int64_t sample_offset) -> TimedTranscript {
+        TimedTranscript out;
+        if (clip.samples.empty() || assets_->tokenizer == nullptr) {
+            return out;
         }
         const auto features = frontend_.extract(clip);
-        const auto raw_tokens = encoder_->transcribe_features(features);
-        const auto collapsed = ctc_greedy_collapse(raw_tokens, assets_->config.blank_token_id);
-        if (collapsed.empty() || assets_->tokenizer == nullptr) {
-            return "";
+        const auto frames = encoder_->transcribe_features(features);
+        const auto pieces = ctc_greedy_pieces(frames, assets_->config.blank_token_id);
+        if (pieces.empty()) {
+            return out;
         }
-        return assets_->tokenizer->decode_ids(collapsed);
+        const auto & token_table = assets_->tokenizer->id_to_token();
+        std::vector<CtcPiece> spoken;
+        spoken.reserve(pieces.size());
+        for (const auto & piece : pieces) {
+            std::string token;
+            if (piece.id >= 0 && static_cast<size_t>(piece.id) < token_table.size()) {
+                token = token_table[static_cast<size_t>(piece.id)];
+            }
+            const std::string language = language_code_from_token(token);
+            if (!language.empty()) {
+                if (out.transcript.language.empty()) {
+                    out.transcript.language = language;
+                }
+                continue;
+            }
+            spoken.push_back(piece);
+        }
+        if (spoken.empty()) {
+            return out;
+        }
+        std::vector<int32_t> ids;
+        ids.reserve(spoken.size());
+        for (const auto & piece : spoken) {
+            ids.push_back(piece.id);
+        }
+        out.transcript.text = assets_->tokenizer->decode_ids(ids);
+        const int64_t clip_samples = static_cast<int64_t>(clip.samples.size() / std::max(1, clip.channels));
+        const int64_t max_end_sample = std::min(audio_samples, sample_offset + clip_samples);
+        out.words = words_from_ctc_pieces(
+            *assets_->tokenizer,
+            spoken,
+            frame_samples,
+            sample_offset,
+            max_end_sample,
+            assets_->config.frontend.sample_rate,
+            clip.sample_rate);
+        return out;
+    };
+
+    auto take_clip = [&](TimedTranscript && clip) {
+        clip.transcript.text = engine::io::trim_ascii_whitespace(std::move(clip.transcript.text));
+        return clip;
+    };
+    auto append_clip = [&](TimedTranscript & merged, TimedTranscript && clip) {
+        append_chunk_transcript(merged.transcript.text, std::move(clip.transcript.text));
+        merged.words.insert(merged.words.end(), clip.words.begin(), clip.words.end());
+        if (merged.transcript.language.empty() && !clip.transcript.language.empty()) {
+            merged.transcript.language = std::move(clip.transcript.language);
+        }
+    };
+    auto label_language = [](TimedTranscript & clip) {
+        if (clip.transcript.language.empty()) {
+            clip.transcript.language = "en";
+        }
     };
 
     const auto mode = engine::audio::parse_audio_chunk_mode(options);
     if (mode == engine::audio::AudioChunkMode::None) {
-        return {engine::io::trim_ascii_whitespace(transcribe_clip(audio)), "en"};
+        auto clip = take_clip(transcribe_clip(audio, 0));
+        label_language(clip);
+        return clip;
     }
 
     const float duration_sec = static_cast<float>(audio.samples.size()) / static_cast<float>(std::max(1, audio.sample_rate * audio.channels));
     const float chunk_duration_sec = engine::audio::parse_audio_chunk_seconds_override(options).value_or(kDefaultChunkSeconds);
 
     if (duration_sec <= chunk_duration_sec) {
-        return {engine::io::trim_ascii_whitespace(transcribe_clip(audio)), "en"};
+        auto clip = take_clip(transcribe_clip(audio, 0));
+        label_language(clip);
+        return clip;
     }
 
-    std::string full_text;
+    TimedTranscript merged;
     if ((mode == engine::audio::AudioChunkMode::Vad || mode == engine::audio::AudioChunkMode::Auto) &&
         engine::io::is_existing_file(vad_model_path_)) {
         try {
@@ -289,15 +398,17 @@ runtime::Transcript Granite5ASRSessionBase::transcribe_audio(
             const auto spans = engine::audio::plan_vad_audio_chunks(audio, vad_session(), vad_options);
             for (const auto & span : spans) {
                 const auto chunk_buf = engine::audio::slice_audio_buffer(audio, span);
-                append_chunk_transcript(full_text, transcribe_clip(chunk_buf));
+                append_clip(merged, transcribe_clip(chunk_buf, span.start_sample));
             }
-            return {engine::io::trim_ascii_whitespace(std::move(full_text)), "en"};
+            merged.transcript.text = engine::io::trim_ascii_whitespace(std::move(merged.transcript.text));
+            label_language(merged);
+            return merged;
         } catch (...) {
-            // Fallback to fixed chunking
+            merged.words.clear();
+            merged.transcript.text.clear();
         }
     }
 
-    // Fixed chunking
     const int64_t samples = static_cast<int64_t>(std::llround(static_cast<double>(chunk_duration_sec) * static_cast<double>(audio.sample_rate)));
     const int64_t frames = static_cast<int64_t>(audio.samples.size() / std::max(1, audio.channels));
     const auto chunks = engine::audio::plan_audio_chunks(
@@ -306,10 +417,11 @@ runtime::Transcript Granite5ASRSessionBase::transcribe_audio(
     for (const auto & chunk : chunks) {
         runtime::TimeSpan span{chunk.output_start_sample, chunk.output_start_sample + chunk.valid_samples};
         const auto chunk_buf = engine::audio::slice_audio_buffer(audio, span);
-        append_chunk_transcript(full_text, transcribe_clip(chunk_buf));
+        append_clip(merged, transcribe_clip(chunk_buf, span.start_sample));
     }
-
-    return {engine::io::trim_ascii_whitespace(std::move(full_text)), "en"};
+    merged.transcript.text = engine::io::trim_ascii_whitespace(std::move(merged.transcript.text));
+    label_language(merged);
+    return merged;
 }
 
 // ----------------- Offline Session -----------------
@@ -344,7 +456,8 @@ runtime::TaskResult Granite5ASROfflineSession::run(const runtime::TaskRequest & 
     const auto wall_start = Clock::now();
     const auto transcript = transcribe_audio(*request.audio_input, request.options);
     runtime::TaskResult result;
-    result.text_output = transcript;
+    result.text_output = transcript.transcript;
+    result.word_timestamps = transcript.words;
     engine::debug::timing_log_scalar("session.wall_ms", engine::debug::elapsed_ms(wall_start));
     return result;
 }
@@ -387,6 +500,8 @@ void Granite5ASRStreamingSession::start_stream(const runtime::TaskRequest & requ
     streaming_audio_ = runtime::AudioBuffer{};
     streaming_audio_.sample_rate = 16000;
     streaming_audio_.channels = 1;
+    stream_input_rate_ = 0;
+    stream_input_samples_ = 0;
 }
 
 void Granite5ASRStreamingSession::set_stream_event_sink(runtime::StreamEventCallback sink) {
@@ -395,11 +510,22 @@ void Granite5ASRStreamingSession::set_stream_event_sink(runtime::StreamEventCall
 
 void Granite5ASRStreamingSession::reset() {
     streaming_audio_.samples.clear();
+    stream_input_rate_ = 0;
+    stream_input_samples_ = 0;
 }
 
 runtime::StreamEvent Granite5ASRStreamingSession::process_audio_chunk(const runtime::AudioChunk & chunk) {
     require_prepared("Granite 5 ASR process_audio_chunk()");
     if (!chunk.samples.empty()) {
+        const int channels = std::max(1, chunk.channels);
+        const int64_t frames = static_cast<int64_t>(chunk.samples.size() / static_cast<size_t>(channels));
+        const int32_t rate = chunk.sample_rate > 0 ? chunk.sample_rate : 16000;
+        if (stream_input_rate_ == 0) {
+            stream_input_rate_ = rate;
+        }
+        stream_input_samples_ += rate == stream_input_rate_
+            ? frames
+            : scale_sample_to_rate(frames, rate, stream_input_rate_);
         const auto mono = engine::audio::convert_interleaved_audio_to_mono_linear_resampled(
             chunk.samples,
             chunk.sample_rate,
@@ -410,11 +536,31 @@ runtime::StreamEvent Granite5ASRStreamingSession::process_audio_chunk(const runt
     return {};
 }
 
+void Granite5ASRStreamingSession::remap_stream_words(std::vector<runtime::WordTimestamp> & words) const {
+    if (stream_input_rate_ <= 0 || stream_input_rate_ == streaming_audio_.sample_rate) {
+        return;
+    }
+    for (auto & word : words) {
+        word.span.start_sample = scale_sample_to_rate(
+            word.span.start_sample, streaming_audio_.sample_rate, stream_input_rate_);
+        word.span.end_sample = scale_sample_to_rate(
+            word.span.end_sample, streaming_audio_.sample_rate, stream_input_rate_);
+        if (stream_input_samples_ > 0 && word.span.end_sample > stream_input_samples_) {
+            word.span.end_sample = stream_input_samples_;
+        }
+        if (word.span.end_sample <= word.span.start_sample) {
+            word.span.end_sample = word.span.start_sample + 1;
+        }
+    }
+}
+
 runtime::TaskResult Granite5ASRStreamingSession::finish_stream() {
     require_prepared("Granite 5 ASR finish_stream()");
-    const auto transcript = transcribe_audio(streaming_audio_, streaming_request_.options);
+    auto transcript = transcribe_audio(streaming_audio_, streaming_request_.options);
+    remap_stream_words(transcript.words);
     runtime::TaskResult result;
-    result.text_output = transcript;
+    result.text_output = std::move(transcript.transcript);
+    result.word_timestamps = std::move(transcript.words);
     return result;
 }
 
@@ -462,8 +608,10 @@ std::unique_ptr<Granite5ASRLoadedModel> load_granite5asr_model(
     capabilities.supported_tasks = {
         {runtime::VoiceTaskKind::Asr, {runtime::RunMode::Offline, runtime::RunMode::Streaming}},
     };
-    capabilities.languages = {"en"};
-    capabilities.supports_timestamps = false;
+    capabilities.languages = assets->tokenizer != nullptr
+        ? languages_for_tokens(assets->tokenizer->id_to_token())
+        : std::vector<std::string>{"en"};
+    capabilities.supports_timestamps = true;
 
     return std::make_unique<Granite5ASRLoadedModel>(
         std::move(metadata),

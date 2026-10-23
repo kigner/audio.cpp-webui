@@ -23,6 +23,7 @@
 // rather than read in storage order.
 
 #include "engine/framework/assets/torch_bin.h"
+#include "engine/framework/assets/weight_adapter.h"
 
 #include <cstdint>
 #include <cstring>
@@ -134,8 +135,9 @@ void put_tensor_entry(
     uint8_t storage_offset,
     const std::vector<uint8_t> & shape,
     const std::vector<uint8_t> & stride,
-    uint8_t storage_numel) {
-    put_binunicode(pickle, key);
+    uint8_t storage_numel,
+    bool root_tensor = false) {
+    if (!root_tensor) put_binunicode(pickle, key);
     put_text(pickle, "ctorch._utils\n_rebuild_tensor_v2\n");
     pickle.push_back('(');  // MARK: _rebuild_tensor_v2 arguments
     pickle.push_back('(');  // MARK: persistent id
@@ -168,12 +170,15 @@ struct TensorEntry {
 
 // Writes one checkpoint whose tensors all view a single float storage holding
 // 0, 1, ..., storage_numel - 1.
-std::filesystem::path write_checkpoint(const std::vector<TensorEntry> & tensors, uint8_t storage_numel) {
-    std::vector<uint8_t> pickle = {0x80, 0x02, '}', '('};  // PROTO 2, EMPTY_DICT, MARK
+std::filesystem::path write_checkpoint(const std::vector<TensorEntry> & tensors, uint8_t storage_numel,
+    bool root_tensor = false) {
+    require(!root_tensor || tensors.size() == 1, "a root tensor fixture must contain one tensor");
+    std::vector<uint8_t> pickle = {0x80, 0x02};  // PROTO 2
+    if (!root_tensor) pickle.insert(pickle.end(), {'}', '('});  // EMPTY_DICT, MARK
     for (const auto & tensor : tensors) {
-        put_tensor_entry(pickle, tensor.key, tensor.storage_offset, tensor.shape, tensor.stride, storage_numel);
+        put_tensor_entry(pickle, tensor.key, tensor.storage_offset, tensor.shape, tensor.stride, storage_numel, root_tensor);
     }
-    pickle.push_back('u');  // SETITEMS
+    if (!root_tensor) pickle.push_back('u');  // SETITEMS
     pickle.push_back('.');  // STOP
 
     std::vector<uint8_t> storage(static_cast<size_t>(storage_numel) * sizeof(float));
@@ -223,6 +228,38 @@ void test_views_honour_storage_offset() {
                 format(tail));
 }
 
+void test_root_tensor_honours_storage_offset() {
+    const auto path = write_checkpoint({{"", 4, {1, 4}, {4, 1}}}, 8, true);
+    const auto source = engine::assets::open_tensor_source(path);
+    require(source->require_f32("tensor", {1, 4}) == iota(4, 4),
+        "root tensors must preserve shape and storage offset");
+    std::filesystem::remove(path);
+}
+
+void test_container_extensions_do_not_select_adapter_layout() {
+    const auto original = write_checkpoint({
+        {"projection.lora_A", 0, {1, 4}, {4, 1}},
+        {"projection.lora_B", 4, {3, 1}, {1, 1}}}, 7);
+    const auto root = std::filesystem::temp_directory_path() / "audiocpp_tensor_container_test";
+    std::filesystem::create_directories(root);
+    for (const auto * extension : {".pt", ".pth", ".bin", ".ckpt"}) {
+        const auto file = root / (std::string("adapter_model") + extension);
+        std::filesystem::copy_file(original, file, std::filesystem::copy_options::overwrite_existing);
+        require(engine::assets::find_tensor_file(root, "adapter_model") == file,
+            "logical checkpoint resolution differs by container extension");
+        const auto source = engine::assets::open_tensor_source(file);
+        require(source->require_f32("projection.lora_B") == iota(4, 3),
+            "generic tensor reader lost storage offsets");
+        const auto adapter = engine::assets::read_weight_adapter(root);
+        const auto & factors = std::get<engine::assets::LowRankWeightUpdate>(adapter.updates.at("projection").factors);
+        require(factors.a == iota(0, 4) && factors.b == iota(4, 3),
+            "adapter factors differ by container extension");
+        std::filesystem::remove(file);
+    }
+    std::filesystem::remove_all(root);
+    std::filesystem::remove(original);
+}
+
 void test_chunked_matrix_honours_storage_offset() {
     // w = torch.arange(18.).reshape(6, 3); q, k = w.chunk(2, 0); torch.save({"q": q, "k": k}, path)
     // k is w[3:]: storage_offset 9, shape (3, 3), stride (3, 1).
@@ -270,6 +307,8 @@ void test_unsupported_views_are_rejected() {
 int main() {
     try {
         test_views_honour_storage_offset();
+        test_root_tensor_honours_storage_offset();
+        test_container_extensions_do_not_select_adapter_layout();
         test_chunked_matrix_honours_storage_offset();
         test_size_one_dims_ignore_stride();
         test_unsupported_views_are_rejected();

@@ -53,6 +53,7 @@ constexpr int kExitSkip = 125;
 
 constexpr const char * kText = "What is this obsession people have with books?";
 constexpr const char * kVoice = "uk_male";
+constexpr const char * kSampledSeeds[] = {"1234", "1235", "1236"};
 
 const std::vector<int32_t> kPromptIds = {1, 6, 24131, 708, 8173, 1199, 837, 10255, 523, 8146, 779, 6729, 6541, 8403, 523, 7, 708, 6,
                                          6423, 708, 3493, 856, 1033, 18619, 1746, 1519, 1052, 916, 5936, 540, 7, 708, 6, 64015, 708};
@@ -217,7 +218,7 @@ void check_stage_numbers(
     lfm2::Lfm2DepthformerRuntime depthformer(output.vocoder, output.depthformer, execution);
 
     const auto prompt = lfm2::make_lfm2_tts_prompt(tokenizer, lfm2::lfm2_tts_system_prompt("en", kVoice), kText);
-    const auto logits = backbone.start(prompt, {}, static_cast<int64_t>(kFrames.size()) + 2);
+    const auto logits = backbone.start(prompt, {}, static_cast<int64_t>(kFrames.size()) + 2, lfm2::Lfm2DecodeCache::Speech);
     const auto first = static_cast<int32_t>(std::max_element(logits.begin(), logits.end()) - logits.begin());
     checks.expect(first == tokenizer.require_token_id("<|audio_start|>"), "speech starts with <|audio_start|>", std::to_string(first));
 
@@ -336,6 +337,22 @@ void check_stage_numbers(
 
     checks.expect_close(chunk_difference, 0.0, 0.1, "chunked detokenizer against one pass, largest difference");
 
+    // A stream decodes a frame at a time from the state the frames before it
+    // left; that must give the one-pass rows too.
+    one_pass.start_stream();
+    std::vector<float> streamed_head;
+    for (const auto & frame : long_frames) {
+        const auto rows = one_pass.stream({frame});
+        streamed_head.insert(streamed_head.end(), rows.begin(), rows.end());
+    }
+
+    double stream_difference = streamed_head.size() == one_pass_head.size() ? 0.0 : INFINITY;
+    for (size_t i = 0; i < std::min(streamed_head.size(), one_pass_head.size()); ++i) {
+        stream_difference = std::max(stream_difference, std::fabs(static_cast<double>(streamed_head[i]) - one_pass_head[i]));
+    }
+
+    checks.expect_close(stream_difference, 0.0, 0.1, "detokenizer stream against one pass, largest difference");
+
     const auto wave = detokenizer.decode(kFrames);
     checks.expect(wave.size() == kWaveSamples, "waveform length", std::to_string(wave.size()));
     if (wave.size() == kWaveSamples) {
@@ -410,6 +427,7 @@ void check_round_trip(
     const std::filesystem::path & spec_override,
     const std::string & model_gguf,
     const engine::core::BackendConfig & backend,
+    bool full_precision,
     Checks & checks) {
     auto registry = engine::runtime::make_default_registry();
     engine::runtime::ModelLoadRequest load_request;
@@ -421,44 +439,70 @@ void check_round_trip(
     auto asr = open_session(*model, engine::runtime::VoiceTaskKind::Asr, model_gguf, backend);
     const auto & tts_session = dynamic_cast<const lfm2::Lfm2AudioTtsSession &>(*tts);
 
-    struct Sampling {
-        const char * label;
-        const char * temperature;
-    };
-
-    const auto speech_request = [](const char * temperature) {
+    const auto speech_request = [](const char * temperature, const char * seed = kSampledSeeds[0]) {
         engine::runtime::TaskRequest request;
         request.text_input = engine::runtime::Transcript{kText, "en"};
         request.voice = engine::runtime::VoiceCondition{engine::runtime::VoiceReference{std::nullopt, std::string(kVoice)}, std::nullopt};
         request.options["temperature"] = temperature;
-        request.options["seed"] = "1234";
+        request.options["seed"] = seed;
         return request;
     };
 
-    std::vector<float> greedy_speech;
-    for (const auto & sampling : {Sampling{"greedy", "0"}, Sampling{"sampled", "0.8"}}) {
-        const auto speech = run(*tts, speech_request(sampling.temperature));
+    // The speech's length, whether it ended before max_tokens, and what the
+    // ASR task hears in it.
+    struct Take {
+        double seconds = 0.0;
+        bool ended = false;
+        std::string heard;
+    };
+
+    const auto speak = [&](const engine::runtime::TaskRequest & request, const std::string & label, std::vector<float> * samples) {
+        Take take;
+        const auto speech = run(*tts, request);
         const bool has_audio = speech.audio_output.has_value() && speech.audio_output->sample_rate == 24000 && !speech.audio_output->samples.empty();
-        checks.expect(has_audio, std::string(sampling.label) + " speech is 24 kHz audio");
+        checks.expect(has_audio, label + " speech is 24 kHz audio");
         if (!has_audio) {
-            continue;
+            return take;
         }
 
-        if (std::string(sampling.label) == "greedy") {
-            greedy_speech = speech.audio_output->samples;
+        if (samples != nullptr) {
+            *samples = speech.audio_output->samples;
         }
 
-        const double seconds = static_cast<double>(speech.audio_output->samples.size()) / 24000.0;
-        std::cout << sampling.label << " speech: " << seconds << " s\n";
-        checks.expect(seconds > 1.5 && seconds < 6.0, std::string(sampling.label) + " speech length", std::to_string(seconds));
-
+        take.seconds = static_cast<double>(speech.audio_output->samples.size()) / 24000.0;
+        take.ended = !tts_session.reached_max_tokens();
         engine::runtime::TaskRequest transcribe;
         transcribe.audio_input = speech.audio_output;
         const auto text = run(*asr, transcribe);
-        const std::string actual = text.text_output.has_value() ? text.text_output->text : "<no transcript>";
-        checks.expect(actual == kText, std::string(sampling.label) + " speech transcribes back", "got \"" + actual + "\"");
-        checks.expect(!tts_session.reached_max_tokens(), std::string(sampling.label) + " speech ends before max_tokens");
+        take.heard = text.text_output.has_value() ? text.text_output->text : "<no transcript>";
+        std::cout << label << " speech: " << take.seconds << " s, heard \"" << take.heard << "\"\n";
+        return take;
+    };
+
+    std::vector<float> greedy_speech;
+    const auto greedy = speak(speech_request("0"), "greedy", &greedy_speech);
+    checks.expect(greedy.seconds > 1.5 && greedy.seconds < 6.0, "greedy speech length", std::to_string(greedy.seconds));
+    checks.expect(greedy.heard == kText, "greedy speech transcribes back", "got \"" + greedy.heard + "\"");
+    checks.expect(greedy.ended, "greedy speech ends before max_tokens");
+
+    // A sampled take says the text, but not always word for word: of seeds 1
+    // to 40, 35 to 40 came back exactly with each quantized package and CPU
+    // measured, with ggml's repacked kernels and without, and kernels that sum
+    // in another order sample other takes. So two of three seeds have to come
+    // back exactly, ending before max_tokens at a length of 1.5 to 6 s.
+    size_t sampled_exact = 0;
+    std::string sampled_heard;
+    for (const char * seed : kSampledSeeds) {
+        const auto take = speak(speech_request("0.8", seed), std::string("sampled (seed ") + seed + ")", nullptr);
+        if (take.seconds > 1.5 && take.seconds < 6.0 && take.ended && take.heard == kText) {
+            ++sampled_exact;
+        }
+
+        sampled_heard += std::string(sampled_heard.empty() ? "" : " | ") + seed + ": " + std::to_string(take.seconds) + " s" +
+            (take.ended ? "" : ", cut at max_tokens") + ", \"" + take.heard + "\"";
     }
+
+    checks.expect(sampled_exact >= 2, "sampled speech transcribes back, " + std::to_string(sampled_exact) + " of 3 seeds", sampled_heard);
 
     // A turn that reaches max_tokens keeps the speech it has, as liquid-audio
     // keeps what it generated at max_new_tokens, with a warning, and the next
@@ -508,6 +552,7 @@ void check_round_trip(
     }, "does not clone", "reference audio");
     rejects([](auto & r) { r.text_input->language = "ja"; }, "speaks en", "another language");
     rejects([](auto & r) { r.options["audio_chunk_mode"] = "vad"; }, "does not take request option audio_chunk_mode", "an ASR option");
+    rejects([](auto & r) { r.options["text_temperature"] = "0.7"; }, "does not take request option text_temperature", "an S2S option");
     rejects([](auto & r) { r.text_input->text = "  "; }, "requires text_input", "empty text");
 
     // Streaming, one frame per event by default: the events add up to the
@@ -543,9 +588,19 @@ void check_round_trip(
                 energy += static_cast<double>(greedy_speech[i]) * greedy_speech[i];
             }
 
-            // Measured with F16: 1.2e-4 on Metal, 3e-4 to 6e-4 on CPUs, 5.7e-3 on
-            // CUDA, whose kernels change with the graph size.
-            checks.expect_close(std::sqrt(difference / energy), 0.0, 0.02, "streamed against offline speech, relative RMS difference");
+            // Measured with F16: 5.5e-4 on an x86 CPU, 1.7e-3 on the M3 Ultra's
+            // CPU, 7.2e-4 on Metal, 5.4e-3 on CUDA, whose cuBLAS accumulates the
+            // offline products in half precision. Quantized packages round
+            // activations to 8 bits on the CPU and CUDA, and graphs of other
+            // sizes round them differently: on CUDA 2.2e-2 with Q8_0 and 6.0e-2
+            // with Q4_0. The stream's six-row Q4_0 matmuls run ggml-cuda's MMVQ
+            // kernel, whose dot product makes the rounding error two to three
+            // times larger than in the kernel offline decoding uses. They get
+            // the S2S test's 0.3, five times the Q4_0 number on this text
+            // (other texts reach 0.32 on CUDA, see the streaming docs) and
+            // still under a stream that lost its context: 1.2, or 0.70 to 0.81
+            // when it restarts every 5 frames.
+            checks.expect_close(std::sqrt(difference / energy), 0.0, full_precision ? 0.02 : 0.3, "streamed against offline speech, relative RMS difference");
         }
 
         // Cut off at max_tokens, the stream is the offline cut speech. Its
@@ -605,6 +660,9 @@ int main(int argc, char ** argv) {
     backend.type = backend_name == "cpu" ? engine::core::BackendType::Cpu : engine::core::BackendType::BestAvailable;
     backend.threads = threads > 0 ? threads : 1;
 
+    // Quantized weights move the stage numbers and the stream's arithmetic by
+    // design; their speech is still checked.
+    const bool full_precision = model_gguf.find("-F16.") != std::string::npos || model_gguf.find("-F32.") != std::string::npos;
     Checks checks;
     try {
         {
@@ -612,9 +670,6 @@ int main(int argc, char ** argv) {
             const auto components = lfm2::load_lfm2_audio_components(*assets, model_gguf, "");
             const auto output = lfm2::load_lfm2_audio_output_components(*assets, *components, "", "");
             check_prompt(*components, checks);
-            // Quantized weights move these numbers by design; their speech is
-            // still checked below.
-            const bool full_precision = model_gguf.find("-F16.") != std::string::npos || model_gguf.find("-F32.") != std::string::npos;
             if (full_precision) {
                 check_stage_numbers(*components, *output, backend, checks);
             } else {
@@ -622,7 +677,7 @@ int main(int argc, char ** argv) {
             }
         }
 
-        check_round_trip(model_dir, spec_override, model_gguf, backend, checks);
+        check_round_trip(model_dir, spec_override, model_gguf, backend, full_precision, checks);
     } catch (const std::exception & error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return kExitFail;

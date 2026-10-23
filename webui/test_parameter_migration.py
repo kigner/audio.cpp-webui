@@ -43,7 +43,7 @@ class ParameterMigrationTests(unittest.TestCase):
         minimax = {p["name"]: p for p in app.params_for("minimax-h3")}
         self.assertEqual(minimax["dit_acceleration"]["choices"], ["none", "spectrum", "first_block_cache"])
         self.assertEqual(self.detail("neutts-2e")["max_tokens_min"], 0)
-        self.assertEqual(self.detail("glm-tts")["max_tokens_min"], 0)
+        self.assertEqual(self.detail("glm-tts")["max_tokens_min"], 1)
 
     def test_context_and_edit_route_controls_match_the_models(self):
         for ident in ("higgs-audio-stt", "confucius4-r2t2"):

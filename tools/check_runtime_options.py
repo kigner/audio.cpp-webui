@@ -76,7 +76,9 @@ def scan(root=ROOT):
                 declared[(scope, key)] = option
         aliases = compatibility_aliases(text, family)
         rows = cpp_options(text, family)
-        keys = {s for s in re.findall(r'"([\w.]+)"', text) if s.startswith(family + ".") and RUNTIME_KEY.fullmatch(s)}
+        # Trace metric names are output labels, not accepted model options.
+        option_text = re.sub(r'\b(?:trace|timing)_log_\w+\s*\([^;]*;', '', text, flags=re.S)
+        keys = {s for s in re.findall(r'"([\w.]+)"', option_text) if s.startswith(family + ".") and RUNTIME_KEY.fullmatch(s)}
         for body in re.findall(r'(?:parse_\w+_option|find_option(?:_match)?)\(\s*(?:options\.options|options\(\)\.options)\s*,\s*\{([^}]+)\}', text):
             keys.update(s for s in re.findall(r'"([\w.]+)"', body) if s.startswith(family + "."))
         missing = []

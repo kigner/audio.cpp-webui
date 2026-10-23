@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/framework/runtime/session.h"
+#include "engine/framework/modules/speech_encoders/qwen3_audio_encoder_runtime.h"
 
 #include <cstdint>
 #include <limits>
@@ -35,19 +36,8 @@ struct Qwen3ASRPrompt {
     std::vector<int32_t> attention_mask;
 };
 
-struct Qwen3ASRAudioFeatures {
-    std::vector<float> values;
-    std::vector<int32_t> attention_mask;
-    int64_t mel_bins = 0;
-    int64_t frames = 0;
-    int64_t encoder_tokens = 0;
-};
-
-struct Qwen3ASRAudioEmbeddings {
-    std::vector<float> values;
-    int64_t tokens = 0;
-    int64_t hidden_size = 0;
-};
+using Qwen3ASRAudioFeatures = modules::Qwen3AudioFeatures;
+using Qwen3ASRAudioEmbeddings = modules::Qwen3AudioEmbeddings;
 
 struct Qwen3ASRGeneratedTokens {
     std::vector<int32_t> token_ids;

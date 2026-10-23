@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -54,7 +55,8 @@ public:
     Qwen3TalkerCodes generate(
         const Qwen3TalkerPrefill & prefill,
         const Qwen3TTSGenerationOptions & options,
-        float repetition_penalty = 1.05F);
+        float repetition_penalty = 1.05F,
+        const std::function<void(const std::vector<int32_t> &)> & on_frame = {});
     int64_t release_cached_step_graph();
 
 private:
@@ -76,7 +78,11 @@ public:
         size_t talker_constant_context_bytes,
         size_t code_predictor_constant_context_bytes,
         engine::assets::TensorStorageType weight_storage_type,
-        Qwen3TTSPerfMode perf_mode) const;
+        Qwen3TTSPerfMode perf_mode,
+        int64_t kv_cache_alignment = 1,
+        bool packed_projections = false,
+        ggml_type kv_cache_type = GGML_TYPE_F32,
+        bool optimized_kv_cache_write = false) const;
 
     std::shared_ptr<Qwen3TalkerStepRuntime> create_step_runtime(
         std::shared_ptr<const Qwen3TalkerWeightsRuntime> weights,

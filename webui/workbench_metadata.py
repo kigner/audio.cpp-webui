@@ -19,7 +19,7 @@ TASKS = {
     "vc": ("声音转换", ("vc", "svc")),
     "processing": ("音频处理", ("s2s",)),
     "separation": ("音源分离", ("sep",)),
-    "analysis": ("音频分析", ("vad", "diar", "align", "midi", "turn")),
+    "analysis": ("音频分析", ("vad", "diar", "align", "midi", "turn", "cls", "wake")),
     "design": ("声音设计", ("vdes",)),
 }
 
@@ -57,6 +57,7 @@ FRIENDLY = {
     "context": ("上下文提示", "提供有助于识别的背景或专有名词。", "basic"),
     "enable_itn": ("规范数字书写", "将口语中的数字等转换为常用书写形式。", "basic"),
     "pnc": ("标点与大小写", "启用识别结果中的标点和大小写。", "basic"),
+    "punc": ("标点与大小写", "启用识别结果中的标点和大小写。", "basic"),
     "punctuation": ("标点", "在识别结果中保留标点。", "basic"),
     "transcription_mode": ("转写方式", "选择逐字记录或整理后的文字。", "basic"),
     "instruments": ("乐器", "指定需要提取乐谱的乐器。", "basic"),
@@ -71,7 +72,7 @@ FRIENDLY = {
 
 # These names have a user-facing meaning only in the specified families.
 COMMON_FAMILY_PARAMETERS = {
-    "index_tts2": {"duration_factor", "interval_silence_ms"},
+    "index_tts2": {"duration_factor", "duration_scale", "interval_silence_ms"},
     "stable_audio": {"audio_input_kind"},
     "seed_vc": {"route", "length_adjust", "voice_anonymization", "auto_f0_adjust"},
     "vevo2": {"route", "use_pitch_shift"},
@@ -86,14 +87,14 @@ TTS_COMMON_PARAMETERS = {
     "irodori_tts": {"duration_scale", "max_duration_sec"},
     "dramabox": {"duration_scale"},
     "echo_tts": {"max_duration_sec"},
-    "sopro_tts": {"max_seconds"},
+    "sopro_tts": {"max_duration_sec"},
 }
 
 TTS_REFERENCE_PARAMETERS = {
     "qwen3_tts": {"x_vector_only_mode"},
     "irodori_tts": {"no_ref"},
     "echo_tts": {"reference_duration_sec"},
-    "sopro_tts": {"ref_seconds"},
+    "sopro_tts": {"reference_duration_sec"},
     "dramabox": {"reference_duration_sec"},
     "outetts": {"reference_language"},
     "dots_tts": {"source_text", "target_text", "use_xvector", "reference_duration_sec"},
@@ -139,7 +140,7 @@ VC_PARAMETER_TEXT = {
 # ASR controls are exposed only when the local request/result path can use them.
 ASR_COMMON_PARAMETERS = {
     'return_timestamps', 'keep_tags', 'keep_language_tags', 'condition_on_previous_text',
-    'enable_thinking', 'decoding_method', 'enable_endpoint',
+    'enable_thinking', 'decoding_method', 'enable_endpoint', 'punc',
 }
 # Fixed-checkpoint validation or output metadata, not a recognition-language choice.
 ASR_HIDDEN_LANGUAGE = {'kroko_asr', 'lfm2_audio', 'higgs_audio_stt', 'granite5asr', 'niagara_asr', 'firered_audio', 'vibevoice_asr_streaming'}
@@ -281,9 +282,9 @@ def model_detail(backend, entry):
         if family == "sam_audio" and name in {"image", "video", "image_path", "video_path", "reference_image_path", "reference_video_path"}:
             continue
         if family == "qwen3_tts":
-            if name == "speaker" and "custom" not in ident:
+            if name in {"speaker", "voice_id"} and "custom" not in ident:
                 continue
-            if name == "instruction" and not any(x in ident for x in ("custom", "design")):
+            if name in {"instruction", "instruct"} and not any(x in ident for x in ("custom", "design")):
                 continue
         if family == "f5_tts" and name in {"dialect", "strip_diacritics"} and "habibi" not in ident:
             continue
@@ -352,6 +353,7 @@ def model_detail(backend, entry):
     spec = getattr(backend, 'MODEL_SPECS', {}).get(family, {})
     result.update(
         parameters=params, profile=profile,
+        option_aliases=backend._option_aliases(entry) if hasattr(backend, '_option_aliases') else {},
         max_tokens_min=next((p.get('min', 1) for p in spec.get('options', {}).get('request', [])
                              if p['name'] == 'max_tokens'), 1),
         languages=model_languages(entry, spec, prof, params),
@@ -416,21 +418,21 @@ def parameter_applies(entry, name):
         editing = entry['id'] == 'dots-tts-edit' or entry.get('default_options', {}).get('template_name') == 'edit'
         return editing and name == 'instruction'  # Alias is redundant; ordinary TTS never consumes either field.
     if family == 'lfm2_audio':
-        asr = {'language', 'max_tokens', 'audio_chunk_mode', 'audio_chunk_seconds'}
-        return name in asr if task == 'asr' else name not in {'audio_chunk_mode', 'audio_chunk_seconds'}
+        asr = {'language', 'max_tokens', 'audio_chunk_mode', 'audio_chunk_duration_sec'}
+        return name in asr if task == 'asr' else name not in {'audio_chunk_mode', 'audio_chunk_duration_sec'}
     if family == 'firered_audio':
         if name == 'template_name':
             return task == 'gen'  # editing supports both acoustic and semantic routes
         if task == 'asr':
-            return name in {'language', 'max_new_tokens'}
-        if name in {'max_new_tokens', 'enable_thinking', 'top_k', 'top_p', 'temperature'}:
+            return name in {'language', 'max_tokens'}
+        if name in {'max_tokens', 'enable_thinking', 'top_k', 'top_p', 'temperature'}:
             return False
-        if name == 'instruction':
+        if name in {'instruction', 'instruct'}:
             return task == 'vdes'
     if family == 'fireredtts3':
         if name == 'template_name':
             return False
-        if name == 'instruction':
+        if name in {'instruction', 'instruct'}:
             return task == 'vdes'
     if family == 'crisperwhisper' and task == 'align':
         return name not in {'transcription_mode', 'return_timestamps'}

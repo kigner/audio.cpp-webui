@@ -76,7 +76,16 @@ class MobileAccessTests(unittest.TestCase):
     def test_config_is_fixed_for_call_and_models_are_leased(self):
         pipeline = Mock()
         pipeline.drain_events.return_value = []
-        with patch("realtime_server.RealtimePipeline", return_value=pipeline), self.client() as client:
+        released = threading.Event()
+        lease = self.work.lease
+
+        def observe_lease(session_id, config):
+            lease(session_id, config)
+            if config is None:
+                released.set()
+
+        with patch.object(self.work, 'lease', side_effect=observe_lease), \
+                patch("realtime_server.RealtimePipeline", return_value=pipeline), self.client() as client:
             with client.websocket_connect("wss://192.168.1.7/v1/realtime", headers={"Origin":"https://192.168.1.7"}) as ws:
                 self.assertEqual(ws.receive_json()["type"], "session.created")
                 ws.send_json({"type":"session.update", "session":{"instructions":"attacker", "audiocpp":{
@@ -100,17 +109,16 @@ class MobileAccessTests(unittest.TestCase):
                 pipeline.configure.assert_called_once()
                 pipeline.feed_text.assert_not_called()
                 pipeline.feed_audio.assert_called_once_with(b"\0\0")
-            # TestClient sends a disconnect before the worker-thread lease
-            # release necessarily finishes; wait for that observable cleanup.
-            deadline = time.monotonic() + 2
-            while self.work.leases and time.monotonic() < deadline:
-                time.sleep(.01)
+            # WebSocket close and worker cleanup run on different threads.
+            self.assertTrue(released.wait(10), 'Call cleanup did not release its model lease')
             self.assertFalse(self.work.leases)
+            released.clear()
             with client.websocket_connect("wss://192.168.1.7/v1/realtime", headers={"Origin":"https://192.168.1.7"}) as ws:
                 ws.receive_json()
                 ws.send_json({"type":"session.update"})
                 self.assertEqual(ws.receive_json()["type"], "session.updated")
                 self.assertEqual(pipeline.configure.call_args.args[0]["instructions"], "next call instructions")
+        self.assertTrue(released.wait(10), 'Second call did not release its model lease')
         self.assertFalse(self.work.leases)
 
     def test_ws_rejects_missing_pairing_and_foreign_or_missing_origin(self):

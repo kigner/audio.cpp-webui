@@ -2,5 +2,7 @@
   "pocket_tts.weight_type": "Compatibility fallback for pocket_tts.matmul_weight_type; expose the canonical matrix control only.",
   "voxcpm2.denoise": "The runtime explicitly rejects enabled denoise; do not offer this unsupported path.",
   "voxcpm2.load_denoiser": "The runtime explicitly rejects enabled denoise; do not offer this unsupported path.",
-  "voxcpm2.denoiser": "The runtime rejects this option."
+  "voxcpm2.denoiser": "The runtime rejects this option.",
+  "cosyvoice3.conv_weight_type": "Legacy no-op: the session erases this option before validation; it never selects convolution storage.",
+  "firered_audio.helper_graph_arena_mb": "Legacy no-op: the session erases this option before validation; it never affects allocation."
 }

@@ -2,6 +2,7 @@
 #include "tensor_layout_utils.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace engine::modules {
@@ -269,10 +270,20 @@ core::TensorValue AddModule::build(
     if (ctx.ggml == nullptr) {
         throw std::runtime_error("ModuleBuildContext.ggml is null");
     }
-    validate_same_shape(lhs, rhs, "Add rhs");
+    if (allow_broadcast_) {
+        if (!ggml_can_repeat(rhs.tensor, lhs.tensor)) {
+            throw std::runtime_error("Add rhs shape cannot broadcast to lhs");
+        }
+    } else {
+        validate_same_shape(lhs, rhs, "Add rhs");
+    }
+    if (preserve_input_type_ && lhs.type != rhs.type) {
+        throw std::runtime_error("Add input types must match when preserving the result type");
+    }
     const auto lhs_contiguous = tensor_layout::ensure_contiguous_nontransposed_layout_if_needed(ctx, lhs);
     const auto rhs_contiguous = tensor_layout::ensure_contiguous_nontransposed_layout_if_needed(ctx, rhs);
-    return core::wrap_tensor(ggml_add(ctx.ggml, lhs_contiguous.tensor, rhs_contiguous.tensor), lhs.shape, GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_add(ctx.ggml, lhs_contiguous.tensor, rhs_contiguous.tensor), lhs.shape,
+        preserve_input_type_ ? lhs.type : GGML_TYPE_F32);
 }
 
 const core::ModuleSchema & AddModule::static_schema() noexcept {
@@ -447,6 +458,60 @@ core::TensorValue ReduceSumModule::build(core::ModuleBuildContext & ctx, const c
 
 const core::ModuleSchema & ReduceSumModule::static_schema() noexcept {
     return kReduceSumSchema;
+}
+
+ScaleBiasModule::ScaleBiasModule(ScaleBiasConfig config) : config_(config) {}
+
+const core::ModuleSchema & ScaleBiasModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue ScaleBiasModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    auto * output = ggml_scale_bias(ctx.ggml, input.tensor, config_.scale, config_.bias);
+    return core::wrap_tensor(output, input.shape, output->type);
+}
+
+const core::ModuleSchema & ScaleBiasModule::static_schema() noexcept {
+    static const core::ModuleSchema schema{"ScaleBias", "tensor.primitive", kSingleInput, 1, kSingleOutput, 1,
+        "Applies a scalar scale and bias to every element."};
+    return schema;
+}
+
+WeightedStatisticsModule::WeightedStatisticsModule(WeightedStatisticsConfig config) : config_(config) {
+    if (!std::isfinite(config_.variance_min) || config_.variance_min < 0 ||
+        std::isnan(config_.variance_max) || config_.variance_max < config_.variance_min) {
+        throw std::runtime_error("WeightedStatistics variance bounds must be nonnegative and ordered");
+    }
+}
+
+const core::ModuleSchema & WeightedStatisticsModule::schema() const noexcept {
+    return static_schema();
+}
+
+WeightedStatisticsOutputs WeightedStatisticsModule::build(core::ModuleBuildContext & ctx,
+    const core::TensorValue & input, const core::TensorValue & normalized_weights) const {
+    core::validate_shape(normalized_weights, input.shape, "normalized_weights");
+    const auto mean = ReduceSumModule({config_.axis}).build(ctx, MulModule().build(ctx, normalized_weights, input));
+    auto second = MulModule().build(ctx, input, input);
+    second = ReduceSumModule({config_.axis}).build(ctx, MulModule().build(ctx, normalized_weights, second));
+    auto * variance = ggml_sub(ctx.ggml, second.tensor, ggml_sqr(ctx.ggml, mean.tensor));
+    variance = ggml_clamp(ctx.ggml, variance, config_.variance_min, config_.variance_max);
+    return {mean, core::wrap_tensor(ggml_sqrt(ctx.ggml, variance), mean.shape, GGML_TYPE_F32)};
+}
+
+const core::ModuleSchema & WeightedStatisticsModule::static_schema() noexcept {
+    static const core::ModulePortSpec inputs[] = {
+        {"input", core::PortKind::Activation, false},
+        {"normalized_weights", core::PortKind::Activation, false},
+    };
+    static const core::ModulePortSpec outputs[] = {
+        {"mean", core::PortKind::Activation, false},
+        {"stddev", core::PortKind::Activation, false},
+    };
+    static const core::ModuleSchema schema{"WeightedStatistics", "tensor.pooling", inputs, 2, outputs, 2,
+        "Reduces normalized weights into a mean and clamped standard deviation, retaining the reduced axis."};
+    return schema;
 }
 
 }  // namespace engine::modules

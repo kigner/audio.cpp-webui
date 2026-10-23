@@ -2,6 +2,7 @@
 
 #include "engine/framework/modules/structural_modules.h"
 
+#include <array>
 #include <stdexcept>
 #include <string>
 
@@ -71,6 +72,44 @@ core::TensorValue RoPEModule::build(
             *frequency_factors,
             core::TensorShape::from_dims({config_.dimensions / 2}),
             "RoPE frequency factors");
+    }
+    if (config_.intermediate_round_type.has_value()) {
+        if (config_.mode != GGML_ROPE_TYPE_NEOX || config_.dimensions != input.tensor->ne[0]) {
+            throw std::runtime_error("Rounded RoPE requires full-dimension NEOX rotation");
+        }
+        const int64_t half = config_.dimensions / 2;
+        auto * basis = ggml_new_tensor_4d(ctx.ggml, GGML_TYPE_F32, half, 1, input.tensor->ne[2], 1);
+        auto * identity = ggml_concat(ctx.ggml, ggml_fill(ctx.ggml, basis, 1.0f),
+            ggml_fill(ctx.ggml, basis, 0.0f), 0);
+        auto * table = ggml_rope_ext(ctx.ggml, identity, positions.tensor,
+            frequency_factors ? frequency_factors->tensor : nullptr, config_.dimensions,
+            config_.mode, 0, config_.theta, config_.freq_scale, config_.ext_factor,
+            config_.attn_factor, config_.beta_fast, config_.beta_slow);
+        table = *config_.intermediate_round_type == GGML_TYPE_BF16
+            ? ggml_round_bf16(ctx.ggml, table)
+            : ggml_cast(ctx.ggml, ggml_cast(ctx.ggml, table, *config_.intermediate_round_type), GGML_TYPE_F32);
+        auto * cos = ggml_view_4d(ctx.ggml, table, half, 1, table->ne[2], 1,
+            table->nb[1], table->nb[2], table->nb[3], 0);
+        auto * sin = ggml_view_4d(ctx.ggml, table, half, 1, table->ne[2], 1,
+            table->nb[1], table->nb[2], table->nb[3], half * sizeof(float));
+        const auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
+        auto * lower = ggml_view_4d(ctx.ggml, contiguous.tensor, half, input.tensor->ne[1],
+            input.tensor->ne[2], input.tensor->ne[3], contiguous.tensor->nb[1],
+            contiguous.tensor->nb[2], contiguous.tensor->nb[3], 0);
+        auto * upper = ggml_view_4d(ctx.ggml, contiguous.tensor, half, input.tensor->ne[1],
+            input.tensor->ne[2], input.tensor->ne[3], contiguous.tensor->nb[1],
+            contiguous.tensor->nb[2], contiguous.tensor->nb[3], half * sizeof(float));
+        std::array<ggml_tensor *, 4> products{
+            ggml_mul(ctx.ggml, lower, cos), ggml_mul(ctx.ggml, upper, sin),
+            ggml_mul(ctx.ggml, upper, cos), ggml_mul(ctx.ggml, lower, sin)};
+        for (auto *& product : products) {
+            product = *config_.intermediate_round_type == GGML_TYPE_BF16
+                ? ggml_round_bf16(ctx.ggml, product)
+                : ggml_cast(ctx.ggml, ggml_cast(ctx.ggml, product, *config_.intermediate_round_type), GGML_TYPE_F32);
+        }
+        return core::wrap_tensor(ggml_concat(ctx.ggml,
+            ggml_sub(ctx.ggml, products[0], products[1]), ggml_add(ctx.ggml, products[2], products[3]), 0),
+            input.shape, GGML_TYPE_F32);
     }
     return core::wrap_tensor(
         ggml_rope_ext(

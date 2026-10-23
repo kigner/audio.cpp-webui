@@ -59,7 +59,8 @@
         "description": "Non-negative generation seed.",
         "required": false,
         "min": 0,
-        "default": 1234
+        "default": 1234,
+        "max": 4294967295
       },
       {
         "name": "text_chunk_mode",
@@ -95,6 +96,13 @@
         "type": "path",
         "description": "Optional explicit path to espeak-ng-data.",
         "required": false
+      },
+      {
+        "name": "exec_plan",
+        "type": "string",
+        "description": "JSON object of component execution plans. Components: decoder, duration_encoder, duration_flows. Each plan accepts impl, backend, artifacts, and params. impl is default/ggml/rknn. Default keeps existing execution. The decoder's GGML impl supports the session backend; RKNN requires artifacts.main and ENGINE_ENABLE_RKNN, with no backend field. The two duration stages are GGML-only and accept the session backend (device) or cpu (host); with no backend field the text encoder runs on the host on CUDA and on the session backend elsewhere, and the flow graphs run on the session backend. No implementation takes params.",
+        "required": false,
+        "default": "{}"
       }
     ],
     "load": []
@@ -119,6 +127,24 @@
         "Piper-TTS-GGUF/piper-en-us-lessac-medium-orig.gguf"
       ],
       "strip_prefix": "Piper-TTS-GGUF"
+    },
+    {
+      "id": "piper_lessac_medium_decoder_rk3588",
+      "display_name": "Piper Lessac Medium NPU Decoder RKNN (RK3588)",
+      "format": "rknn",
+      "precision": "f16",
+      "target_directory": "Piper-TTS-GGUF",
+      "files": [
+        "rk3588/piper-lessac-w93.rknn"
+      ],
+      "strip_prefix": "rk3588",
+      "description": "Pre-compiled RK3588 engine for the piper_tts RKNN decoder sidecar (piper_tts.exec_plan, artifacts.main); installs beside the GGUF weights and is named by bare file name. Built by tools/rknn from the en_US-lessac-medium streaming decoder export; see docs/build/rockchip-npu.md.",
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "wOvANAI/rknn-tts-engines",
+        "revision": "main",
+        "gated": false
+      }
     }
   ],
   "dependencies": [],
@@ -130,7 +156,7 @@
     ],
     "docs": [
       "docs/tts.md",
-      "docs/community_models/piper_tts.md",
+      "docs/models/piper_tts.md",
       "docs/gguf.md"
     ]
   },

@@ -1,13 +1,24 @@
 #include "engine/models/voxcpm2/session.h"
 
+#include "engine/framework/assets/weight_adapter.h"
+#include "engine/framework/io/filesystem.h"
+#include "engine/framework/io/json.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/io/text.h"
+#include "engine/framework/runtime/errors.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/text/chunking.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <deque>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -54,11 +65,49 @@ const char *chunk_strategy_name(ChunkStrategy strategy) {
 }
 
 std::shared_ptr<const VoxCPM2Assets>
-require_assets(std::shared_ptr<const VoxCPM2Assets> assets) {
+require_assets(std::shared_ptr<const VoxCPM2Assets> assets,
+               const runtime::SessionOptions & options) {
   if (assets == nullptr) {
     throw std::runtime_error("VoxCPM2 session requires assets");
   }
-  return assets;
+  const auto path = runtime::find_option(options.options, {"voxcpm2.lora"});
+  if (!path || path->empty()) {
+    return assets;
+  }
+  const auto adapter_path = std::filesystem::u8path(*path);
+  auto file = adapter_path;
+  if (io::is_existing_directory(adapter_path)) {
+    const auto resolved = engine::assets::find_tensor_file(adapter_path, "lora_weights");
+    if (!resolved) throw std::runtime_error("VoxCPM2 lora_weights checkpoint is missing in " + adapter_path.string());
+    file = *resolved;
+  }
+  const auto config = io::json::parse_file(file.parent_path() / "lora_config.json");
+  const auto & lora = config.require("lora_config");
+  const auto rank = io::json::require_i64(lora, "r");
+  if (rank <= 0) {
+    throw std::runtime_error("VoxCPM2 LoRA rank must be positive");
+  }
+  engine::assets::WeightAdapterReadOptions read_options;
+  read_options.scale_override = io::json::require_f32(lora, "alpha") / static_cast<float>(rank);
+  read_options.strength = runtime::parse_finite_float_option(
+      options.options, {"voxcpm2.lora_scale"}).value_or(1.0F);
+  auto adapter = engine::assets::read_weight_adapter(file, read_options);
+  for (const auto & [name, update] : adapter.updates) {
+    const auto * factors = std::get_if<engine::assets::LowRankWeightUpdate>(&update.factors);
+    if (factors == nullptr || factors->r != rank) {
+      throw std::runtime_error("VoxCPM2 LoRA factors do not match lora_config.json: " + name);
+    }
+  }
+  engine::assets::WeightAdapterBindings bindings;
+  for (const auto & tensor : assets->model_weights->tensors()) {
+    bindings.add(tensor.name, tensor.name);
+  }
+  auto plan = engine::assets::bind_weight_adapter(
+      *assets->model_weights, std::move(adapter), bindings, engine::assets::WeightMergeMode::DeltaF32);
+  auto adapted = std::make_shared<VoxCPM2Assets>(*assets);
+  adapted->model_weights = engine::assets::make_weight_adapter_source(
+      assets->model_weights, std::move(plan), "voxcpm2.lora");
+  return adapted;
 }
 
 void reject_enabled_denoise(
@@ -188,21 +237,32 @@ void validate_session_options(
     if (key.rfind("voxcpm2.", 0) != 0) {
       continue;
     }
-    if (key == "voxcpm2.weight_context_mb" ||
+    if (key == "voxcpm2.lora" || key == "voxcpm2.lora_scale" ||
+        key == "voxcpm2.weight_context_mb" ||
         key == "voxcpm2.text_embedding_graph_context_mb" ||
+        key == "voxcpm2.text_embedding_graph_arena_mb" ||
         key == "voxcpm2.lm_step_graph_context_mb" ||
+        key == "voxcpm2.lm_step_graph_arena_mb" ||
         key == "voxcpm2.projection_graph_context_mb" ||
+        key == "voxcpm2.projection_graph_arena_mb" ||
         key == "voxcpm2.local_encoder_graph_context_mb" ||
+        key == "voxcpm2.local_encoder_graph_arena_mb" ||
         key == "voxcpm2.dit_graph_context_mb" ||
+        key == "voxcpm2.dit_graph_arena_mb" ||
         key == "voxcpm2.audiovae_weight_context_mb" ||
         key == "voxcpm2.audiovae_graph_context_mb" ||
+        key == "voxcpm2.audiovae_graph_arena_mb" ||
         key == "voxcpm2.audiovae_encoder_graph_context_mb" ||
+        key == "voxcpm2.audiovae_encoder_graph_arena_mb" ||
         key == "voxcpm2.audiovae_latent_capacity" ||
+        key == "voxcpm2.audiovae_tile_frames" ||
+        key == "voxcpm2.exec_plan" ||
         key == "voxcpm2.audiovae_encoder_sample_capacity" ||
         key == "voxcpm2.weight_type" ||
         key == "voxcpm2.audiovae_weight_type" ||
         key == "voxcpm2.prompt_cache_slots" ||
         key == "voxcpm2.mem_saver" ||
+        key == "voxcpm2.perf_mode" ||
         key == "voxcpm2.denoise" || key == "voxcpm2.load_denoiser") {
       continue;
     }
@@ -235,15 +295,17 @@ VoxCPM2SessionBase::VoxCPM2SessionBase(runtime::TaskSpec task,
                                        runtime::SessionOptions options,
                                        std::shared_ptr<const VoxCPM2Assets> assets)
     : RuntimeSessionBase(options), task_(task),
-      assets_(require_assets(std::move(assets))),
+      assets_(require_assets(std::move(assets), options)),
       encoded_prompt_cache_(prompt_cache_slots_from_options(options.options)) {
   if (task_.mode != runtime::RunMode::Offline &&
       task_.mode != runtime::RunMode::Streaming) {
     throw std::runtime_error(
         "VoxCPM2 only supports offline and streaming sessions");
   }
-  if (task_.task != runtime::VoiceTaskKind::Tts) {
-    throw std::runtime_error("VoxCPM2 only supports the Tts task");
+  if (task_.task != runtime::VoiceTaskKind::Tts &&
+      task_.task != runtime::VoiceTaskKind::VoiceCloning &&
+      task_.task != runtime::VoiceTaskKind::VoiceDesign) {
+    throw std::runtime_error("VoxCPM2 supports TTS, voice cloning, and voice design");
   }
 
   reject_enabled_denoise(options.options, {"voxcpm2.denoise"});
@@ -256,35 +318,46 @@ VoxCPM2SessionBase::VoxCPM2SessionBase(runtime::TaskSpec task,
       generator_config_.weight_context_bytes);
   generator_config_.text_embedding_graph_context_bytes =
       runtime::parse_size_mb_option(
-          options.options, {"voxcpm2.text_embedding_graph_context_mb"},
+          options.options, {"voxcpm2.text_embedding_graph_arena_mb", "voxcpm2.text_embedding_graph_context_mb"},
           generator_config_.text_embedding_graph_context_bytes);
   generator_config_.lm_step_graph_context_bytes = runtime::parse_size_mb_option(
-      options.options, {"voxcpm2.lm_step_graph_context_mb"},
+      options.options, {"voxcpm2.lm_step_graph_arena_mb", "voxcpm2.lm_step_graph_context_mb"},
       generator_config_.lm_step_graph_context_bytes);
   generator_config_.projection_graph_context_bytes =
       runtime::parse_size_mb_option(
-          options.options, {"voxcpm2.projection_graph_context_mb"},
+          options.options, {"voxcpm2.projection_graph_arena_mb", "voxcpm2.projection_graph_context_mb"},
           generator_config_.projection_graph_context_bytes);
   generator_config_.local_encoder_graph_context_bytes =
       runtime::parse_size_mb_option(
-          options.options, {"voxcpm2.local_encoder_graph_context_mb"},
+          options.options, {"voxcpm2.local_encoder_graph_arena_mb", "voxcpm2.local_encoder_graph_context_mb"},
           generator_config_.local_encoder_graph_context_bytes);
   generator_config_.dit_graph_context_bytes = runtime::parse_size_mb_option(
-      options.options, {"voxcpm2.dit_graph_context_mb"},
+      options.options, {"voxcpm2.dit_graph_arena_mb", "voxcpm2.dit_graph_context_mb"},
       generator_config_.dit_graph_context_bytes);
   generator_config_.prompt_cache_slots = encoded_prompt_cache_.capacity();
+  const auto perf_mode =
+      runtime::find_option(options.options, {"voxcpm2.perf_mode"})
+          .value_or("off");
+  if (perf_mode != "off" && perf_mode != "cuda_perf") {
+    throw std::runtime_error("voxcpm2.perf_mode must be off or cuda_perf");
+  }
+  generator_config_.optimized = perf_mode == "cuda_perf";
+  debug::trace_log_scalar("voxcpm2.perf_mode", perf_mode);
   decoder_config_.weight_context_bytes = runtime::parse_size_mb_option(
       options.options, {"voxcpm2.audiovae_weight_context_mb"},
       decoder_config_.weight_context_bytes);
   decoder_config_.graph_context_bytes = runtime::parse_size_mb_option(
-      options.options, {"voxcpm2.audiovae_graph_context_mb"},
+      options.options, {"voxcpm2.audiovae_graph_arena_mb", "voxcpm2.audiovae_graph_context_mb"},
       decoder_config_.graph_context_bytes);
   decoder_config_.encoder_graph_context_bytes = runtime::parse_size_mb_option(
-      options.options, {"voxcpm2.audiovae_encoder_graph_context_mb"},
+      options.options, {"voxcpm2.audiovae_encoder_graph_arena_mb", "voxcpm2.audiovae_encoder_graph_context_mb"},
       decoder_config_.encoder_graph_context_bytes);
   decoder_config_.latent_frame_capacity = runtime::parse_positive_i64_option(
       options.options, {"voxcpm2.audiovae_latent_capacity"},
       decoder_config_.latent_frame_capacity);
+  decoder_config_.tile_frames = runtime::parse_i64_option(
+      options.options, {"voxcpm2.audiovae_tile_frames"})
+      .value_or(decoder_config_.tile_frames);
   decoder_config_.encoder_sample_capacity = runtime::parse_positive_i64_option(
       options.options, {"voxcpm2.audiovae_encoder_sample_capacity"},
       decoder_config_.encoder_sample_capacity);
@@ -298,10 +371,41 @@ VoxCPM2SessionBase::VoxCPM2SessionBase(runtime::TaskSpec task,
         runtime::parse_bool_option(*mem_saver, "voxcpm2.mem_saver");
   }
 
+  const auto exec_plan = runtime::parse_exec_plan(
+      options.options, "voxcpm2.exec_plan",
+      {{"audiovae", "ggml",
+        {{"ggml", {execution_context().backend_type()}, {}, {}, {"threads"}}}}});
+  const auto &audiovae_plan = exec_plan.at("audiovae");
+  if (const auto threads = audiovae_plan.params.find("threads");
+      threads != audiovae_plan.params.end()) {
+    const auto &value = threads->second;
+    if (!value.is_number() || !std::isfinite(value.as_number()) ||
+        value.as_number() < 0 ||
+        value.as_number() > std::numeric_limits<int>::max() ||
+        std::floor(value.as_number()) != value.as_number()) {
+      throw std::runtime_error(
+          "voxcpm2.exec_plan.audiovae.params.threads must be a nonnegative int");
+    }
+    const auto audiovae_threads = static_cast<int>(value.as_i64());
+    if (audiovae_threads > 0) {
+      if (execution_context().backend_type() != core::BackendType::Cpu) {
+        throw std::runtime_error(
+            "voxcpm2.exec_plan.audiovae.params.threads > 0 requires a CPU session");
+      }
+      core::BackendConfig decoder_backend = execution_context().config();
+      decoder_backend.threads = audiovae_threads;
+      decoder_execution_context_ =
+          std::make_unique<core::ExecutionContext>(decoder_backend);
+    }
+  }
+
   generator_ = std::make_unique<VoxCPM2FeatureGeneratorRuntime>(
       assets_, execution_context(), generator_config_);
   decoder_ = std::make_unique<VoxCPM2AudioVAEDecoderRuntime>(
-      assets_, execution_context(), decoder_config_);
+      assets_,
+      decoder_execution_context_ ? *decoder_execution_context_
+                                 : execution_context(),
+      decoder_config_);
 }
 
 VoxCPM2SessionBase::~VoxCPM2SessionBase() = default;
@@ -452,44 +556,24 @@ VoxCPM2SessionBase::run_streaming_request(
                                  reference_audio);
 
   runtime::TaskResult result;
-  runtime::AudioBuffer merged;
-  merged.sample_rate = assets_->config.audio_vae.output_sample_rate;
-  merged.channels = 1;
-  double decoder_ms = 0.0;
+  runtime::StreamingAudioConfig stream_config;
+  stream_config.frames_per_chunk = static_cast<size_t>(runtime::parse_positive_i64_option(
+      request.options, {"stream_frames_per_event"}, 4));
+  stream_config.policy = runtime::parse_streaming_audio_chunk_policy(
+      runtime::find_option(request.options, {"stream_chunk_policy"}).value_or("grow"));
+  stream_config.frame_width = static_cast<size_t>(assets_->config.patch_size * assets_->config.feat_dim);
+  stream_config.left_context_frames = static_cast<size_t>(generation_options.stream_left_context);
+  const size_t samples_per_patch = static_cast<size_t>(assets_->config.patch_size *
+      product(assets_->config.audio_vae.decoder_rates));
   size_t emitted_chunks = 0;
-  auto emit_chunk = [&](const VoxCPM2StreamingChunk &chunk) {
-    const auto decoder_start = Clock::now();
-    auto audio = decoder_->decode_features(chunk.decode_features,
-                                           chunk.decode_patches);
-    if (chunk.context_patches > 0) {
-      // Left-context patches were decoded for the decoder's history only.
-      const int64_t context_samples =
-          chunk.context_patches * assets_->config.patch_size *
-          product(assets_->config.audio_vae.decoder_rates);
-      if (context_samples > static_cast<int64_t>(audio.samples.size())) {
-        throw std::runtime_error(
-            "VoxCPM2 streaming context trim exceeds chunk audio length");
-      }
-      audio.samples.erase(audio.samples.begin(),
-                          audio.samples.begin() +
-                              static_cast<std::ptrdiff_t>(context_samples));
-    }
-    decoder_ms += engine::debug::elapsed_ms(decoder_start, Clock::now());
-    if (emitted_chunks == 0) {
-      merged.sample_rate = audio.sample_rate;
-      merged.channels = audio.channels;
-    } else if (audio.sample_rate != merged.sample_rate ||
-               audio.channels != merged.channels) {
-      throw std::runtime_error(
-          "VoxCPM2 streaming decoder chunk format changed");
-    }
-    merged.samples.insert(merged.samples.end(), audio.samples.begin(),
-                          audio.samples.end());
+  size_t emitted_patches = 0;
+  auto publish = [&](const runtime::StreamEvent &audio_event) {
+    emitted_patches += audio_event.audio_output->samples.size() / samples_per_patch;
     runtime::NamedAudioBuffer named;
     named.id = "chunk_" + std::to_string(emitted_chunks);
-    named.audio = std::move(audio);
+    named.audio = *audio_event.audio_output;
     named.meta.insert_or_assign(
-        "generated_patches", std::to_string(chunk.generated_patches));
+        "generated_patches", std::to_string(emitted_patches));
     if (stream_event_sink) {
       runtime::StreamEvent event;
       event.named_audio_outputs.push_back(named);
@@ -498,20 +582,149 @@ VoxCPM2SessionBase::run_streaming_request(
     result.named_audio_outputs.push_back(std::move(named));
     ++emitted_chunks;
   };
+  auto decode = [&](const runtime::StreamingAudioWindow<float> &window) {
+    auto audio = decoder_->decode_features(
+        std::vector<float>(window.data, window.data + window.frames() * window.frame_width),
+        static_cast<int64_t>(window.frames()));
+    const size_t context_samples = window.left_frames * samples_per_patch;
+    if (context_samples > audio.samples.size()) {
+      throw std::runtime_error("VoxCPM2 streaming context trim exceeds chunk audio length");
+    }
+    audio.samples.erase(audio.samples.begin(), audio.samples.begin() + context_samples);
+    return audio;
+  };
+  bool started = false;
+  auto feed = [&](const std::vector<float> &reference,
+                  const std::vector<float> &frames) {
+    if (!started) {
+      streaming_audio_.begin(stream_config, decode, publish, reference);
+      started = true;
+    }
+    streaming_audio_.push(frames);
+  };
+
+  // With a dedicated AudioVAE backend, decoding (and publishing) moves to a
+  // worker thread fed in patch order, so the generator never waits for the
+  // decoder. Only the worker touches streaming_audio_ and the sink, and it is
+  // joined before this function returns, so callbacks stay sequential and
+  // never outlive the request.
+  const bool async_decode = decoder_execution_context_ != nullptr;
+  std::mutex queue_mutex;
+  std::condition_variable queue_cv;
+  struct PendingFrames {
+    std::vector<float> reference;
+    std::vector<float> frames;
+  };
+  std::deque<PendingFrames> queue;
+  bool generation_done = false;
+  std::exception_ptr worker_error;
+  std::thread worker;
+  if (async_decode) {
+    worker = std::thread([&] {
+      try {
+        for (;;) {
+          PendingFrames item;
+          {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            queue_cv.wait(lock, [&] { return generation_done || !queue.empty(); });
+            if (queue.empty()) {
+              break;
+            }
+            item = std::move(queue.front());
+            queue.pop_front();
+          }
+          feed(item.reference, item.frames);
+        }
+        result.audio_output = streaming_audio_.finish();
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        worker_error = std::current_exception();
+        queue.clear();
+      }
+    });
+  }
+  auto stop_worker = [&] {
+    if (!worker.joinable()) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex);
+      generation_done = true;
+    }
+    queue_cv.notify_one();
+    worker.join();
+  };
+  struct WorkerJoin {
+    decltype(stop_worker) &stop;
+    ~WorkerJoin() { stop(); }
+  } worker_join{stop_worker};
+
+  bool queued_reference = false;
+  auto emit_chunk = [&](const VoxCPM2StreamingChunk &chunk) {
+    const auto new_begin = chunk.decode_features.begin() +
+        static_cast<std::ptrdiff_t>(chunk.context_patches * stream_config.frame_width);
+    std::vector<float> reference;
+    // In async mode `started` belongs to the worker; the generator side only
+    // tracks whether it already queued the first (reference-carrying) item.
+    if (async_decode ? !queued_reference : !started) {
+      reference.assign(chunk.decode_features.begin(), new_begin);
+    }
+    std::vector<float> frames(new_begin, chunk.decode_features.end());
+    if (!async_decode) {
+      feed(reference, frames);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex);
+      if (worker_error) {
+        // The decoder or the sink failed (e.g. the client went away): stop
+        // generating; the error is rethrown after the join.
+        throw std::runtime_error("VoxCPM2 streaming decoder stopped");
+      }
+      queue.push_back({std::move(reference), std::move(frames)});
+      queued_reference = true;
+    }
+    queue_cv.notify_one();
+  };
 
   const auto generator_start = Clock::now();
-  (void)generator_->generate_streaming(request.text_input->text, prompt,
-                                       generation_options, emit_chunk);
+  double decode_wait_ms = 0.0;
+  try {
+    (void)generator_->generate_streaming(request.text_input->text, prompt,
+                                         generation_options, emit_chunk);
+  } catch (...) {
+    stop_worker();
+    if (worker_error) {
+      std::rethrow_exception(worker_error);
+    }
+    throw;
+  }
+  const auto generation_end = Clock::now();
+  if (async_decode) {
+    stop_worker();
+    decode_wait_ms = engine::debug::elapsed_ms(generation_end, Clock::now());
+    if (worker_error) {
+      std::rethrow_exception(worker_error);
+    }
+  } else {
+    result.audio_output = streaming_audio_.finish();
+  }
   const auto generator_end = Clock::now();
   const double generator_with_callbacks_ms =
       engine::debug::elapsed_ms(generator_start, generator_end);
 
-  result.audio_output = std::move(merged);
-
   const auto wall_end = Clock::now();
-  debug::timing_log_scalar(
-      "voxcpm2.generator_ms",
-      std::max(0.0, generator_with_callbacks_ms - decoder_ms));
+  const double decoder_ms = streaming_audio_.decode_ms();
+  if (async_decode) {
+    debug::timing_log_scalar(
+        "voxcpm2.generator_ms",
+        engine::debug::elapsed_ms(generator_start, generation_end));
+    debug::timing_log_scalar("voxcpm2.audiovae_decode_wait_ms", decode_wait_ms);
+  } else {
+    debug::timing_log_scalar(
+        "voxcpm2.generator_ms",
+        std::max(0.0, generator_with_callbacks_ms - decoder_ms));
+  }
   debug::timing_log_scalar("voxcpm2.generator_streaming_callbacks_ms",
                            generator_with_callbacks_ms);
   debug::timing_log_scalar("voxcpm2.audiovae_decoder_ms", decoder_ms);
@@ -708,7 +921,7 @@ void VoxCPM2SessionBase::validate_request(
     }
   }
   if (!request.input_artifacts.empty()) {
-    throw std::runtime_error(
+    throw runtime::InvalidRequestError(
         "VoxCPM2 C++ session does not consume input artifacts");
   }
 }
@@ -760,59 +973,8 @@ void VoxCPM2StreamingSession::prepare(
   prepare_impl(request);
 }
 
-runtime::StreamingPolicy VoxCPM2StreamingSession::streaming_policy() const {
-  runtime::StreamingPolicy policy;
-  policy.input = runtime::StreamingInputKind::None;
-  policy.output = runtime::StreamingOutputKind::FinalResult;
-  return policy;
-}
-
-void VoxCPM2StreamingSession::start_stream(const runtime::TaskRequest &request) {
-  reset();
-  result_ = run_streaming_request(request, stream_event_sink_);
-  started_ = true;
-}
-
-void VoxCPM2StreamingSession::set_stream_event_sink(runtime::StreamEventCallback sink) {
-  stream_event_sink_ = std::move(sink);
-}
-
-std::optional<runtime::StreamEvent> VoxCPM2StreamingSession::next_stream_event() {
-  if (!started_) {
-    throw std::runtime_error("VoxCPM2 streaming has not been started");
-  }
-  if (next_chunk_index_ >= result_.named_audio_outputs.size()) {
-    return std::nullopt;
-  }
-  const auto & named = result_.named_audio_outputs[next_chunk_index_++];
-  runtime::StreamEvent event;
-  event.named_audio_outputs.push_back(named);
-  return event;
-}
-
-runtime::TaskResult VoxCPM2StreamingSession::finish_stream() {
-  if (!started_) {
-    throw std::runtime_error("VoxCPM2 streaming has not been started");
-  }
-  started_ = false;
-  next_chunk_index_ = 0;
-  return std::move(result_);
-}
-
-void VoxCPM2StreamingSession::reset() {
-  result_ = runtime::TaskResult{};
-  next_chunk_index_ = 0;
-  started_ = false;
-}
-
-runtime::StreamEvent VoxCPM2StreamingSession::process_audio_chunk(
-    const runtime::AudioChunk &chunk) {
-  (void)chunk;
-  throw std::runtime_error("VoxCPM2 streaming does not consume audio chunks");
-}
-
-runtime::TaskResult VoxCPM2StreamingSession::finalize() {
-  return finish_stream();
+runtime::TaskResult VoxCPM2StreamingSession::generate_stream(const runtime::TaskRequest &request) {
+  return run_streaming_request(request, stream_event_sink());
 }
 
 } // namespace engine::models::voxcpm2

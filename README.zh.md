@@ -181,7 +181,9 @@ AUDIOCPP_BACKEND=cpu ./venv/bin/python webui/webui.py
 
 ## 模型支持
 
-Aixora Audio 模型中心提供 **113 个模型家族、157 个模型条目**。下表按主要用途列出支持的模型；具体版本、语言、参考输入和参数可在界面中查看。
+Aixora Audio 当前源码版的模型中心提供 **129 个模型家族、184 个模型条目**。下表按主要用途列出支持的模型；具体版本、语言、参考输入和参数可在界面中查看。
+
+本次后端更新新增 Fish Drama3、Ming 3.0 TTS / Audio、XTTS v2、Voxtral TTS、Plapre、Hviske ASR v6、Whistle ASR，以及 MossFormer2、TF-GridNet 分离，AST / CED 声音分类、FireRed VAD、Micro Wake Word、OpenWakeWord 和 Sherpa KWS。声音分类和唤醒词检测位于 **音频工具**。同时包含上游原生 WebUI，由 `audiocpp_server` 提供访问。
 
 | 类别 | 支持的模型 |
 |---|---|

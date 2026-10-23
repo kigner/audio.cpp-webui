@@ -18,7 +18,7 @@ class TtsControlsTests(unittest.TestCase):
         self.addCleanup(output.cleanup)
         for name, kwargs in [('OUTPUT_DIR', {'new': output.name}),
                              ('get_language', {'return_value': 'zh'}),
-                             ('_ensure_with_options', {}), ('_ui_log', {}),
+                             ('ensure_model_loaded', {}), ('_ui_log', {}),
                              ('_ensure_wav', {'side_effect': lambda p: p})]:
             patch = mock.patch.object(app, name, **kwargs)
             patch.start()
@@ -47,9 +47,9 @@ class TtsControlsTests(unittest.TestCase):
         return self.post.call_args.kwargs['json']
 
     def test_builtin_voice_catalog_and_language_map(self):
-        for ident, count, default in [('kitten-tts', 8, 'Leo'), ('kokoro-tts', 54, 'af_heart')]:
+        for ident, count, default in [('kitten-tts', 16, 'Leo'), ('kokoro-tts', 54, 'af_heart')]:
             detail = self.detail(ident)
-            voice = next(p for p in detail['parameters'] if p['name'] == 'voice')
+            voice = next(p for p in detail['parameters'] if p['name'] == 'voice_id')
             self.assertEqual(len(voice['choices']), count)
             self.assertEqual(voice['default'], default)
             self.assertEqual(voice['level'], 'basic')
@@ -61,7 +61,7 @@ class TtsControlsTests(unittest.TestCase):
     def test_common_and_reference_controls_stay_out_of_model_settings(self):
         cases = [('kitten-tts2', 'preset', None), ('dramabox', 'duration_scale', None),
                  ('irodori-tts', 'duration_scale', None), ('echo-tts', 'max_duration_sec', None),
-                 ('sopro-tts', 'max_seconds', None), ('sopro-tts', 'ref_seconds', 'reference'),
+                 ('sopro-tts', 'max_duration_sec', None), ('sopro-tts', 'reference_duration_sec', 'reference'),
                  ('qwen3-tts', 'x_vector_only_mode', 'reference'), ('irodori-tts', 'no_ref', 'reference'),
                  ('echo-tts', 'reference_duration_sec', 'reference'), ('outetts', 'reference_language', 'reference'),
                  ('dots-tts-edit', 'source_text', 'reference'), ('dots-tts-edit', 'target_text', 'reference')]
@@ -77,7 +77,7 @@ class TtsControlsTests(unittest.TestCase):
         self.assertTrue(turbo['profile']['send_seed'])
         self.assertFalse(turbo['profile']['send_max_tokens'])
         names = {p['name'] for p in turbo['parameters']}
-        self.assertTrue({'temperature', 'top_p', 'top_k', 'repetition_penalty', 'max_new_tokens'} <= names)
+        self.assertTrue({'temperature', 'top_p', 'top_k', 'repetition_penalty', 'max_tokens'} <= names)
         for ident in ['index-tts2', 'index-tts2.5']:
             names = {p['name'] for p in self.detail(ident)['parameters']}
             self.assertTrue({'emotion_vector', 'do_sample', 'top_p', 'top_k', 'temperature', 'length_penalty', 'num_beams', 'repetition_penalty'} <= names)
@@ -119,7 +119,7 @@ class TtsControlsTests(unittest.TestCase):
         self.assertNotIn('voice_ref', payload)
         self.assertNotIn('reference_text', payload)
         self.assertNotIn('max_tokens', payload)
-        self.assertEqual(payload['options']['max_new_tokens'], 500)
+        self.assertEqual(payload['options']['max_tokens'], 500)
         self.assertEqual(payload['seed'], 0)
 
     def test_moss_clone_accepts_positional_samples_without_single_reference(self):

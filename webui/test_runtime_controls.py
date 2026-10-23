@@ -51,7 +51,10 @@ class RuntimeControlsTests(unittest.TestCase):
 
     def test_rejected_and_compatibility_only_options_are_not_offered(self):
         all_names = {p['name'] for d in self.details.values() for p in d['parameters']}
-        self.assertNotIn('session_options.pocket_tts.weight_type', all_names)
+        # Pocket now supports independent matmul and convolution storage types.
+        pocket = self.params('pocket-tts')
+        self.assertIn('q8_0', pocket['session_options.pocket_tts.weight_type']['choices'])
+        self.assertNotIn('q8_0', pocket['session_options.pocket_tts.conv_weight_type']['choices'])
         for scope in ('session', 'load'):
             for key in ('denoise', 'load_denoiser', 'denoiser'):
                 self.assertNotIn(f'{scope}_options.voxcpm2.{key}', all_names)
@@ -88,7 +91,10 @@ class RuntimeControlsTests(unittest.TestCase):
                 (root / path).mkdir(parents=True)
             (root / 'webui/configs/models_catalog.json').write_text(json.dumps({'models': [{'family': 'demo'}]}))
             (root / 'webui/configs/model_params.json').write_text('{}')
-            (root / 'src/models/demo/loader.cpp').write_text('cli.session_options = {{"demo.weight_type", "native|f32", "Format"}};')
+            (root / 'src/models/demo/loader.cpp').write_text(
+                'cli.session_options = {{"demo.weight_type", "native|f32", "Format"}};'
+                'timing_log_scalar("demo.threads", 4);')
+            self.assertEqual(len(audit.scan(root)['demo']['missing']), 1)
             self.assertEqual(audit.scan(root)['demo']['missing'][0]['name'], 'demo.weight_type')
             (root / 'model_specs/demo.json').write_text(json.dumps({'options': {'session': [
                 {'name': 'weight_type', 'type': 'enum', 'values': ['native', 'q8_0']} ]}}))

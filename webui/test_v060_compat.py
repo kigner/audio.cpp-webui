@@ -71,6 +71,16 @@ class V060BackendCompatibilityTests(unittest.TestCase):
 
     def test_all_backend_streaming_tts_families_are_exposed(self):
         expected_rates = {
+            "qwen3_tts": 24000,
+            "fish_audio": 44100,
+            "plapre": 24000,
+            "vibevoice": 24000,
+            "kokoro_tts": 24000,
+            "higgs_audio_tts": 24000,
+            "irodori_tts": 48000,
+            "moss_tts_nano": 48000,
+            "fish_drama3": 44100,
+            "voxtral_tts": 24000,
             "confucius4_tts": 22050,
             "dots_tts": 48000,
             "neutts": 24000,

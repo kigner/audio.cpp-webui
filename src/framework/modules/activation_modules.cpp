@@ -1,4 +1,6 @@
 #include "engine/framework/modules/activation_modules.h"
+#include "engine/framework/modules/primitive_modules.h"
+#include "engine/framework/modules/structural_modules.h"
 
 #include <stdexcept>
 
@@ -64,6 +66,16 @@ const core::ModuleSchema kSqrtSchema = {
     "Applies square root elementwise.",
 };
 
+const core::ModuleSchema kBf16RoundSchema = {
+    "Bf16Round",
+    "tensor.precision",
+    kActivationInputs,
+    1,
+    kActivationOutputs,
+    1,
+    "Rounds activations to BF16 values while retaining F32 storage.",
+};
+
 const core::ModuleSchema kGeluSchema = {
     "GELU",
     "nn.activation",
@@ -82,6 +94,16 @@ const core::ModuleSchema kSiluSchema = {
     kActivationOutputs,
     1,
     "Applies SiLU activation elementwise.",
+};
+
+const core::ModuleSchema kGegluSchema = {
+    "GEGLU",
+    "nn.activation",
+    kActivationInputs,
+    1,
+    kActivationOutputs,
+    1,
+    "Applies exact-erf GELU to the second half and multiplies by the first half.",
 };
 
 const core::ModuleSchema kSeluSchema = {
@@ -416,6 +438,18 @@ const core::ModuleSchema & SqrtModule::static_schema() noexcept {
     return kSqrtSchema;
 }
 
+const core::ModuleSchema & Bf16RoundModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue Bf16RoundModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    return build_unary(ctx, input, ggml_round_bf16);
+}
+
+const core::ModuleSchema & Bf16RoundModule::static_schema() noexcept {
+    return kBf16RoundSchema;
+}
+
 GeluModule::GeluModule(GeluConfig config) : config_(config) {
 }
 
@@ -444,11 +478,39 @@ const core::ModuleSchema & GeluModule::static_schema() noexcept {
     return kGeluSchema;
 }
 
+const core::ModuleSchema & GegluModule::schema() const noexcept {
+    return static_schema();
+}
+
+core::TensorValue GegluModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    if (input.shape.last_dim() % 2 != 0 ||
+        (input.type != GGML_TYPE_F16 && input.type != GGML_TYPE_F32)) {
+        throw std::runtime_error("GEGLU requires an even last dimension and F16 or F32 input");
+    }
+    const auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
+    auto output_shape = input.shape;
+    output_shape.dims[output_shape.rank - 1] /= 2;
+    return core::wrap_tensor(ggml_geglu_erf_swapped(ctx.ggml, contiguous.tensor), output_shape, input.type);
+}
+
+const core::ModuleSchema & GegluModule::static_schema() noexcept {
+    return kGegluSchema;
+}
+
 const core::ModuleSchema & SiluModule::schema() const noexcept {
     return static_schema();
 }
 
 core::TensorValue SiluModule::build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const {
+    if (preserve_input_type_) {
+        core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+        const auto contiguous = core::ensure_backend_addressable_layout(ctx, input);
+        return core::wrap_tensor(ggml_silu(ctx.ggml, contiguous.tensor), input.shape, input.type);
+    }
     return build_unary(ctx, input, ggml_silu);
 }
 
@@ -629,6 +691,51 @@ core::TensorValue Snake1dModule::build(
     return core::wrap_tensor(ggml_add(ctx.ggml, input_f32.tensor, frac.tensor), input_f32.shape, GGML_TYPE_F32);
 }
 
+PReluModule::PReluModule(PReluConfig config) : config_(config) {}
+
+const core::ModuleSchema & PReluModule::schema() const noexcept {
+    return static_schema();
+}
+
+const core::ModuleSchema & PReluModule::static_schema() noexcept {
+    static const core::ModulePortSpec inputs[] = {
+        {"input", core::PortKind::Activation, false},
+        {"slope", core::PortKind::Parameter, false},
+    };
+    static const core::ModuleSchema schema = {
+        "PReLU", "nn.activation", inputs, 2, kActivationOutputs, 1,
+        "Applies learned scalar or channel-wise negative slopes.",
+    };
+    return schema;
+}
+
+core::TensorValue PReluModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const core::TensorValue & slope) const {
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    if (config_.channel_axis >= input.shape.rank) {
+        throw std::runtime_error("PReLU channel axis is outside input rank");
+    }
+    auto alpha = slope;
+    if (!same_shape(alpha.shape, input.shape)) {
+        const auto channels = alpha.shape.num_elements();
+        if (channels != 1 && channels != input.shape.dims[config_.channel_axis]) {
+            throw std::runtime_error("PReLU slope must be scalar or match the channel dimension");
+        }
+        auto shape = input.shape;
+        for (size_t axis = 0; axis < shape.rank; ++axis) shape.dims[axis] = 1;
+        shape.dims[config_.channel_axis] = channels;
+        alpha = core::reshape_tensor(ctx, alpha, shape);
+        alpha = RepeatModule({input.shape}).build(ctx, alpha);
+    }
+    const auto x = core::ensure_backend_addressable_layout(ctx, input);
+    const auto positive = ReluModule().build(ctx, x);
+    auto negative = core::wrap_tensor(ggml_sub(ctx.ggml, x.tensor, positive.tensor), x.shape);
+    negative = MulModule().build(ctx, negative, alpha);
+    return AddModule().build(ctx, positive, negative);
+}
+
 const core::ModuleSchema & Snake1dModule::static_schema() noexcept {
     return kSnake1dSchema;
 }
@@ -669,6 +776,17 @@ core::TensorValue SnakeBeta1dModule::build(
     if (config_.logscale) {
         alpha = core::wrap_tensor(ggml_exp(ctx.ggml, alpha.tensor), alpha.shape, GGML_TYPE_F32);
         beta = core::wrap_tensor(ggml_exp(ctx.ggml, beta.tensor), beta.shape, GGML_TYPE_F32);
+    }
+    if (ctx.backend_type == core::BackendType::Cuda && input_f32.tensor->ne[2] == 1 && input_f32.tensor->ne[3] == 1) {
+        auto * denom = ggml_scale_bias(ctx.ggml, beta.tensor, 1.0F, 1.0e-9F);
+        auto * inverse_beta = ggml_div(ctx.ggml, ggml_fill(ctx.ggml, denom, 1.0F), denom);
+        // Prepare both channel parameters before the consecutive CUDA-fusible activation chain.
+        auto * parameters = ggml_concat(ctx.ggml, alpha.tensor, inverse_beta, 1);
+        auto * channel_alpha = ggml_view_2d(ctx.ggml, parameters, 1, config_.hidden_size, parameters->nb[1], 0);
+        auto * ax = ggml_mul(ctx.ggml, input_f32.tensor, channel_alpha);
+        auto * squared = ggml_sqr(ctx.ggml, ggml_sin(ctx.ggml, ax));
+        auto * periodic = ggml_mul(ctx.ggml, squared, inverse_beta);
+        return core::wrap_tensor(ggml_add(ctx.ggml, input_f32.tensor, periodic), input_f32.shape, GGML_TYPE_F32);
     }
     const auto ax = core::wrap_tensor(ggml_mul(ctx.ggml, input_f32.tensor, alpha.tensor), input_f32.shape, GGML_TYPE_F32);
     const auto s = core::wrap_tensor(ggml_sin(ctx.ggml, ax.tensor), input_f32.shape, GGML_TYPE_F32);

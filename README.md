@@ -181,7 +181,9 @@ Replace `cpu` in the last line if you built a CUDA or Vulkan backend. Open the w
 
 ## Model support
 
-Aixora Audio's model center offers **113 model families and 157 model entries**. The table below groups them by primary use. Check the interface for versions, languages, reference inputs and parameters.
+Aixora Audio's source version offers **129 model families and 184 model entries** in Model center. The table below groups them by primary use. Check the interface for versions, languages, reference inputs and parameters.
+
+The latest backend integration adds Fish Drama3, Ming 3.0 TTS / Audio, XTTS v2, Voxtral TTS, Plapre, Hviske ASR v6 and Whistle ASR; MossFormer2 and TF-GridNet separation; AST / CED sound classification; FireRed VAD; and Micro Wake Word, OpenWakeWord and Sherpa KWS. Sound classification and wake-word detection are under **Audio tools**. The upstream native WebUI is also included and is served by `audiocpp_server`.
 
 | Category | Supported models |
 |---|---|

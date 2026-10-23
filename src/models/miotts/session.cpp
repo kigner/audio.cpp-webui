@@ -4,6 +4,7 @@
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/speech_encoders/wavlm_encoder.h"
 #include "engine/framework/runtime/options.h"
+#include "engine/framework/runtime/spec_backed_model.h"
 #include "engine/framework/text/chunking.h"
 #include "engine/framework/text/utf8.h"
 #include "engine/models/miocodec/assets.h"
@@ -25,6 +26,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -51,6 +53,33 @@ constexpr double kBestOfNSilenceWeight = 0.4;
 constexpr double kBestOfNRepeatWeight = 0.2;
 constexpr double kBestOfNHeuristicWeight = 0.3;
 constexpr int64_t kReferenceTextChunkCodepoints = 180;
+constexpr int64_t kCjkTextChunkCodepoints = 120;
+
+// Each chunk gets max_tokens (700 tokens, 28 s). Japanese is spoken at about 5-6 characters a second, so a 180-codepoint
+// chunk of it needs more than that and its end was cut; 120 codepoints leave room. Callers have validated the UTF-8.
+int64_t default_text_chunk_size(std::string_view text) {
+    size_t cjk = 0;
+    size_t other = 0;
+    for (size_t pos = 0; pos < text.size();) {
+        const auto ch = static_cast<unsigned char>(text[pos]);
+        if (ch < 0x80U) {
+            other += std::isalnum(ch) != 0;
+            ++pos;
+        } else if ((ch & 0xE0U) == 0xC0U) {
+            ++other;
+            pos += 2;
+        } else if ((ch & 0xF0U) == 0xE0U) {
+            const uint32_t cp = ((ch & 0x0FU) << 12) | ((static_cast<unsigned char>(text[pos + 1]) & 0x3FU) << 6) |
+                (static_cast<unsigned char>(text[pos + 2]) & 0x3FU);
+            cjk += (cp >= 0x3040U && cp <= 0x30FFU) || (cp >= 0x3400U && cp <= 0x4DBFU) ||
+                (cp >= 0x4E00U && cp <= 0x9FFFU) || (cp >= 0xAC00U && cp <= 0xD7A3U);
+            pos += 3;
+        } else {
+            pos += 4;
+        }
+    }
+    return cjk > other ? kCjkTextChunkCodepoints : kReferenceTextChunkCodepoints;
+}
 
 std::shared_ptr<const MioTTSAssets> require_assets(std::shared_ptr<const MioTTSAssets> assets) {
     if (assets == nullptr) {
@@ -200,17 +229,23 @@ ResolvedBestOfN best_of_n_from_request(
     int session_max,
     const std::string & session_language) {
     ResolvedBestOfN out;
+    const auto options = runtime::apply_option_v1_compatibility(
+        request.options,
+        {{"miotts.best_of_n", "best_of_n"},
+         {"miotts.best_of_n_enabled", "best_of_n_enabled"},
+         {"miotts.best_of_n_language", "best_of_n_language"}},
+        "MioTTS", "request");
     out.enabled = session_enabled;
     out.n = clamp_best_of_n(session_default, session_max);
     out.language = normalized_best_of_n_language(session_language);
-    if (const auto value = runtime::parse_int_option(request.options, {"miotts.best_of_n"})) {
+    if (const auto value = runtime::parse_int_option(options, {"best_of_n"})) {
         out.n = clamp_best_of_n(*value, session_max);
         out.enabled = out.n > 1;
     }
-    if (const auto value = runtime::find_option(request.options, {"miotts.best_of_n_enabled"})) {
-        out.enabled = runtime::parse_bool_option(*value, "miotts.best_of_n_enabled");
+    if (const auto value = runtime::find_option(options, {"best_of_n_enabled"})) {
+        out.enabled = runtime::parse_bool_option(*value, "best_of_n_enabled");
     }
-    if (const auto value = runtime::find_option(request.options, {"miotts.best_of_n_language"})) {
+    if (const auto value = runtime::find_option(options, {"best_of_n_language"})) {
         out.language = normalized_best_of_n_language(*value);
     }
     if (!out.enabled) {
@@ -567,16 +602,21 @@ MioTTSSession::MioTTSSession(
     : runtime::RuntimeSessionBase(options),
       task_(task),
       assets_(require_assets(std::move(assets))) {
-    if (task_.task != runtime::VoiceTaskKind::Tts) {
-        throw std::runtime_error("MioTTS only supports VoiceTaskKind::Tts");
+    if (task_.task != runtime::VoiceTaskKind::Tts &&
+        task_.task != runtime::VoiceTaskKind::VoiceCloning) {
+        throw std::runtime_error("MioTTS supports TTS and voice cloning");
     }
     if (task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("MioTTS currently supports offline sessions");
     }
     const auto lm_weight_type = option_weight_type(options, "miotts.weight_type", engine::assets::TensorStorageType::Native);
     validate_matmul_weight_storage(lm_weight_type, "miotts.weight_type");
-    text_chunk_size_ = engine::text::parse_text_chunk_size_override(options.options)
-        .value_or(kReferenceTextChunkCodepoints);
+    const auto chunk_options = runtime::apply_option_v1_compatibility(
+        options.options, {{"text_chunk_size", "miotts.text_chunk_size"}}, "MioTTS", "session");
+    const auto chunk_size = runtime::find_option(chunk_options, {"miotts.text_chunk_size", "chunk_size"});
+    if (chunk_size.has_value()) {
+        text_chunk_size_ = engine::text::parse_text_chunk_size_override({{"text_chunk_size", *chunk_size}}).value();
+    }
     if (const auto value = runtime::find_option(options.options, {"miotts.best_of_n_enabled"})) {
         best_of_n_enabled_ = runtime::parse_bool_option(*value, "miotts.best_of_n_enabled");
     }
@@ -719,14 +759,12 @@ runtime::TaskResult MioTTSSession::run(const runtime::TaskRequest & request) {
         best_of_n_default_,
         best_of_n_max_,
         best_of_n_language_);
-    const auto text_chunks = text_chunk_size_override.has_value()
-        ? engine::text::split_text_chunks(request.text_input->text, *text_chunk_size_override)
-        : engine::text::split_text_chunks(request.text_input->text, text_chunk_size_);
+    const int64_t text_chunk_size = text_chunk_size_override.value_or(
+        text_chunk_size_.value_or(default_text_chunk_size(request.text_input->text)));
+    const auto text_chunks = engine::text::split_text_chunks(request.text_input->text, text_chunk_size);
     engine::debug::trace_log_scalar("miotts.best_of_n.enabled", best_of_n.enabled);
     engine::debug::trace_log_scalar("miotts.best_of_n.n", best_of_n.n);
-    engine::debug::trace_log_scalar(
-        "miotts.text_chunk_size",
-        text_chunk_size_override.value_or(text_chunk_size_));
+    engine::debug::trace_log_scalar("miotts.text_chunk_size", text_chunk_size);
     engine::debug::trace_log_scalar("miotts.text_chunk_count", static_cast<int64_t>(text_chunks.size()));
     for (size_t chunk_index = 0; chunk_index < text_chunks.size(); ++chunk_index) {
         const std::string prefix = "miotts.text_chunk_" + std::to_string(chunk_index);

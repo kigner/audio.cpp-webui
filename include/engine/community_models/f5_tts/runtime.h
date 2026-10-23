@@ -11,6 +11,8 @@
 
 namespace engine::models::f5_tts {
 
+struct F5RuntimeState;
+
 // F5TTS_v1_Base / Habibi architecture (validated against the checkpoint:
 // 22 blocks, dim 1024, 16 heads x 64, ff_mult 2, text_dim 512, conv_layers 4,
 // 100 mel channels, embedding rows 2731).
@@ -42,12 +44,12 @@ struct F5ComputeDevice {
     bool use_cuda = false;
     int device = 0;      // CUDA device index
     int threads = 0;     // CPU threads; 0 = hardware concurrency
-    // FP16 linear weights: GEMMs get ~3x faster on tensor cores but each
-    // mul_mat converts the F32 activations to F16 first; at F5's GEMM sizes
-    // (K=1024/2048, N~1022) the conversion overhead outweighs the gain on an
-    // RTX 3090 (measured 4.0s -> 5.0s per clip). Off by default.
-    bool fp16_weights = false;
+    std::shared_ptr<F5RuntimeState> state = nullptr;
 };
+
+std::shared_ptr<F5RuntimeState> create_f5_lora_state(
+    const std::string & weights_path, const std::filesystem::path & adapter_path,
+    float strength, const F5ComputeDevice & device);
 
 // Debug taps for parity testing: when non-null, intermediate stage outputs are
 // appended (column layout, [features, T] flattened feature-major).

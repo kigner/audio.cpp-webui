@@ -37,7 +37,7 @@ class ModelPresentationTests(unittest.TestCase):
 
     def test_lfm_recognition_and_generation_do_not_share_task_options(self):
         asr = {p for p in self.names('lfm2-audio') if '_options.' not in p}
-        self.assertEqual(asr, {'max_tokens', 'audio_chunk_mode', 'audio_chunk_seconds'})
+        self.assertEqual(asr, {'max_tokens', 'audio_chunk_mode', 'audio_chunk_duration_sec'})
         for ident in ('lfm2-audio-tts', 'lfm2-audio-tts-jp'):
             self.assertNotIn('audio_chunk_mode', self.names(ident))
             self.assertIn('temperature', self.names(ident))
@@ -47,16 +47,16 @@ class ModelPresentationTests(unittest.TestCase):
 
     def test_model_defining_controls_are_common_and_runtime_stays_advanced(self):
         expected = {
-            'index-tts2': {'emotion_text', 'emotion_alpha', 'use_emotion_text', 'duration_factor'},
+            'index-tts2': {'emotion_text', 'emotion_alpha', 'use_emotion_text', 'duration_scale'},
             'index-tts2.5': {'emotion_text', 'emotion_alpha', 'use_emotion_text'},
             'neutts-2e': {'voice_id', 'emotion'},
-            'supertonic': {'voice', 'speaking_rate'},
+            'supertonic': {'voice_id', 'speed'},
             'chatterbox': {'exaggeration'},
-            'qwen3-tts-1.7b-custom': {'speaker', 'instruction'},
+            'qwen3-tts-1.7b-custom': {'voice_id', 'instruct'},
             'maya1': {'instruct'}, 'habibi-tts': {'dialect', 'speed'},
             'ace-step': {'task_route', 'bpm', 'keyscale', 'timesignature', 'audio_cover_strength'},
             'stable-audio-small-music': {'audio_input_kind'},
-            'kroko-asr': {'hotwords'}, 'canary-asr': {'target_language', 'pnc'},
+            'kroko-asr': {'hotwords'}, 'canary-asr': {'target_language', 'punc'},
             'crisperwhisper': {'transcription_mode'},
             'seed-vc': {'route', 'length_adjust', 'voice_anonymization'},
             'vevo2': {'route', 'use_pitch_shift'}, 'rvc': {'semitone_shift', 'speaker_id'},
@@ -82,15 +82,15 @@ class ModelPresentationTests(unittest.TestCase):
             self.assertNotIn('instruct', self.names(ident))
 
     def test_firered_routes_do_not_expose_other_tasks(self):
-        self.assertNotIn('instruction', self.names('firered-audio'))
+        self.assertNotIn('instruct', self.names('firered-audio'))
         self.assertNotIn('num_inference_steps', self.names('firered-audio'))
-        self.assertNotIn('instruction', self.names('firered-audio-clone'))
-        self.assertIn('instruction', self.names('firered-audio-design'))
+        self.assertNotIn('instruct', self.names('firered-audio-clone'))
+        self.assertIn('instruct', self.names('firered-audio-design'))
         self.assertNotIn('enable_thinking', self.names('firered-audio-tts'))
         self.assertNotIn('template_name', self.names('fireredtts3-design'))
 
     def test_legacy_variant_controls_keep_local_defaults_unless_profile_overrides(self):
-        for key in ('speaker', 'instruction'):
+        for key in ('voice_id', 'instruct'):
             self.assertNotIn(key, self.names('qwen3-tts'))
             self.assertIn(key, self.names('qwen3-tts-1.7b-custom'))
         self.assertNotIn('x_vector_only_mode', self.names('qwen3-tts-1.7b-custom'))

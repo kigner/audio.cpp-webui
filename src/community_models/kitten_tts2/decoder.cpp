@@ -1,29 +1,43 @@
 #include "engine/community_models/kitten_tts2/decoder.h"
-#include "engine/models/chatterbox/s3gen_inference.h"
+#include "engine/framework/codecs/s3gen_runtime.h"
+#include "engine/framework/debug/profiler.h"
+#include "engine/models/chatterbox/components.h"
+#ifdef ENGINE_HAVE_NEON
+#include "engine/community_models/kitten_tts2/neon_vocoder.h"
+#endif
 
 #include <cmath>
+#include <chrono>
 #include <stdexcept>
 
 namespace engine::community_models::kitten_tts2 {
-namespace s3 = engine::models::chatterbox;
+namespace s3 = engine::codecs::s3gen;
 struct WaveformDecoder::Impl {
-    const core::ExecutionContext & execution;
-    std::shared_ptr<const s3::S3FlowEncoderWeights> encoder;
-    std::shared_ptr<const s3::S3FlowDecoderWeights> decoder;
-    s3::HiFTVocoderComponent vocoder;
-    s3::S3GenSessionCache cache;
-    Impl(std::shared_ptr<const assets::TensorSource> source, const core::ExecutionContext & context)
-        : execution(context),
-          encoder(s3::load_s3_flow_encoder_weights(*source, context, assets::TensorStorageType::F32)),
-          decoder(s3::load_s3_flow_decoder_weights(*source, context, assets::TensorStorageType::F32)),
-          vocoder(s3::HiFTVocoderComponent::load_from_source(source, context, assets::TensorStorageType::F32)),
-          cache(context.config()) {
-        if (!s3::s3_flow_decoder_is_meanflow(*decoder))
-            throw std::runtime_error("Kitten TTS 2 requires the S3 meanflow decoder checkpoint");
+    s3::S3GenRuntime runtime;
+#ifdef ENGINE_HAVE_NEON
+    std::unique_ptr<NeonVocoder> neon_vocoder;
+    int threads = 1;
+#endif
+    Impl(std::shared_ptr<const assets::TensorSource> source, const core::ExecutionContext & context,
+        bool use_neon)
+        : runtime(std::move(source), context, [] {
+              s3::S3GenConfig config;
+              config.decoder.variant = s3::S3FlowVariant::MeanFlow;
+              return config;
+          }(), {assets::TensorStorageType::F32, context.backend_type() == core::BackendType::Cpu}) {
+        if (use_neon) {
+#ifdef ENGINE_HAVE_NEON
+            threads = context.config().threads;
+            neon_vocoder = std::make_unique<NeonVocoder>(*runtime.vocoder().weights());
+#else
+            throw std::runtime_error("Kitten NEON vocoder requires ENGINE_ENABLE_NEON=ON");
+#endif
+        }
     }
 };
 WaveformDecoder::WaveformDecoder(std::shared_ptr<const assets::TensorSource> source,
-    const core::ExecutionContext & execution) : impl_(std::make_unique<Impl>(std::move(source), execution)) {}
+    const core::ExecutionContext & execution, bool neon_vocoder)
+    : impl_(std::make_unique<Impl>(std::move(source), execution, neon_vocoder)) {}
 WaveformDecoder::~WaveformDecoder() = default;
 
 std::vector<float> WaveformDecoder::decode(const std::vector<int32_t> & codes,
@@ -32,7 +46,7 @@ std::vector<float> WaveformDecoder::decode(const std::vector<int32_t> & codes,
     if (codes.empty()) throw std::runtime_error("Kitten TTS 2 generated no speech tokens");
     if (prompt_tokens.empty() || prompt_mel.empty() || prompt_mel.size() % 80 || embedding.size() != 192)
         throw std::runtime_error("invalid Kitten TTS 2 decoder conditioning");
-    s3::EmbedReferenceOutputs ref;
+    s3::S3GenConditioning ref;
     ref.prompt_tokens.assign(prompt_tokens.begin(), prompt_tokens.end());
     ref.prompt_token_count = ref.prompt_tokens.size();
     ref.prompt_feat = prompt_mel;
@@ -42,9 +56,28 @@ std::vector<float> WaveformDecoder::decode(const std::vector<int32_t> & codes,
     ref.embedding_size = 192;
     auto tokens = codes;
     tokens.insert(tokens.end(), 3, 4299); // Upstream S3 lookahead preserves the final syllable.
-    auto result = s3::compute_s3gen_inference(impl_->cache, *impl_->encoder, *impl_->decoder,
-        impl_->vocoder, ref, tokens, tokens.size(), 2, 0.0f, false, {}, seed, seed,
-        impl_->execution.config());
+    s3::S3GenTimingBreakdown timing;
+    s3::S3GenInferenceOutputs result;
+#ifdef ENGINE_HAVE_NEON
+    if (impl_->neon_vocoder) {
+        const auto mel = impl_->runtime.token_to_mel(ref, tokens, tokens.size(), 2, 0.0f, false, {}, seed, &timing);
+        // Preserve S3's shared flow/source RNG offset; only the neural vocoder changes.
+        const auto prior_noise = static_cast<uint64_t>(mel.channels * (ref.prompt_feat_frames + mel.frames));
+        const auto started = std::chrono::steady_clock::now();
+        const auto f0 = impl_->runtime.vocoder().predict_f0(mel.mel, mel.frames);
+        result.waveform = impl_->neon_vocoder->synthesize(mel.mel, mel.frames, f0,
+            impl_->threads, seed, prior_noise);
+        timing.vocoder_ms = debug::elapsed_ms(started);
+    } else
+#endif
+    {
+        result = impl_->runtime.synthesize(
+            ref, tokens, tokens.size(), 2, 0.0f, false, {}, seed, seed, &timing);
+    }
+    debug::timing_log_scalar("kitten_tts2.token2mel_encoder_ms", timing.token2mel_encoder_ms);
+    debug::timing_log_scalar("kitten_tts2.token2mel_cfm_ms", timing.token2mel_cfm_ms);
+    debug::timing_log_scalar("kitten_tts2.vocoder_ms", timing.vocoder_ms);
+    models::chatterbox::apply_s3_trim_fade(result.waveform, 24000);
     if (result.waveform.empty()) throw std::runtime_error("Kitten decoder returned empty audio");
     for (float value : result.waveform)
         if (!std::isfinite(value)) throw std::runtime_error("Kitten decoder returned non-finite audio");

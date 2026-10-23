@@ -139,11 +139,27 @@ public:
         if ((task_.task != runtime::VoiceTaskKind::Tts && task_.task != runtime::VoiceTaskKind::VoiceCloning) ||
             task_.mode != runtime::RunMode::Offline)
             throw std::runtime_error("Kitten TTS 2 supports offline TTS and voice cloning sessions");
-        runtime::validate_spec_backed_session_options(options, *contract_, family_name, "Kitten TTS 2");
+        bool neon_vocoder = false;
+        if (options.options.count("kitten_tts2.exec_plan")) {
+            auto validation_options = options;
+            // Older embedded contracts omit exec_plan; its parser validates the complete value below.
+            if (!contract_->session_option_keys.count("kitten_tts2.exec_plan"))
+                validation_options.options.erase("kitten_tts2.exec_plan");
+            runtime::validate_spec_backed_session_options(validation_options, *contract_, family_name, "Kitten TTS 2");
+            const auto plan = runtime::parse_exec_plan(options.options, "kitten_tts2.exec_plan",
+                {{"vocoder", "ggml", {{"ggml", {execution_context().backend_type()}, {}, {}, {}},
+                    {"neon", {core::BackendType::Cpu}, {}, {}, {}}}}});
+            neon_vocoder = plan.at("vocoder").impl == "neon";
+        } else {
+            runtime::validate_spec_backed_session_options(options, *contract_, family_name, "Kitten TTS 2");
+        }
+#ifndef ENGINE_HAVE_NEON
+        if (neon_vocoder) throw std::runtime_error("Kitten NEON vocoder requires ENGINE_ENABLE_NEON=ON");
+#endif
         load_voices(assets_->resources.require_file("default_voices"));
-        waveform_ = std::make_unique<WaveformDecoder>(assets_->resources.open_tensor_source("s3gen"), execution_context());
+        waveform_ = std::make_unique<WaveformDecoder>(assets_->resources.open_tensor_source("s3gen"), execution_context(), neon_vocoder);
         const auto type = runtime::parse_tensor_storage_option(options.options, "kitten_tts2.weight_type",
-            assets::TensorStorageType::Q8_0,
+            assets::TensorStorageType::Native,
             {assets::TensorStorageType::Native, assets::TensorStorageType::F32,
              assets::TensorStorageType::F16, assets::TensorStorageType::BF16,
              assets::TensorStorageType::Q4_0, assets::TensorStorageType::Q8_0});
@@ -313,7 +329,8 @@ private:
         store_ = std::make_unique<core::BackendWeightStore>(execution_context().backend(), execution_context().backend_type(),
             "kitten_tts2.lm.weights", 4 * 1024 * 1024);
         modules::CausalDecoderRuntimeWeights weights;
-        weights.token_embedding = store_->load_tensor(source, "model.embed_tokens.weight", assets::TensorStorageType::F16, {vocab,hidden});
+        weights.token_embedding = store_->load_tensor(source, "model.embed_tokens.weight",
+            assets::TensorStorageType::Native, {vocab,hidden});
         for (int64_t i = 0; i < layers; ++i) {
             const std::string p = "model.layers." + std::to_string(i);
             modules::DecoderLayerWeights layer;
@@ -327,7 +344,16 @@ private:
             layer.k_norm = binding::norm_weight_from_source(*store_,source,p+".self_attn.k_norm",dim);
             layer.mlp.gate_proj = {load_projection(*store_,source,p+".mlp.gate_proj.weight",type,intermediate,hidden),std::nullopt};
             layer.mlp.up_proj = {load_projection(*store_,source,p+".mlp.up_proj.weight",type,intermediate,hidden),std::nullopt};
-            layer.mlp.down_proj = {load_projection(*store_,source,p+".mlp.down_proj.weight",type,hidden,intermediate),std::nullopt};
+            const auto down_name = p + ".mlp.down_proj.weight";
+            // The folded model's large SwiGLU activations can overflow CUDA's
+            // Q4 activation-sum intermediates. Keep only these down projections
+            // in BF16 on CUDA; their ternary values remain exact. CPU retains Q4.
+            const bool q4_down = type == assets::TensorStorageType::Q4_0 ||
+                (type == assets::TensorStorageType::Native &&
+                 assets::tensor_storage_type_for_dtype(source.require_metadata(down_name).dtype) == assets::TensorStorageType::Q4_0);
+            const auto down_type = q4_down && execution_context().backend_type() == core::BackendType::Cuda
+                ? assets::TensorStorageType::BF16 : type;
+            layer.mlp.down_proj = {load_projection(*store_,source,down_name,down_type,hidden,intermediate),std::nullopt};
             weights.stack.layers.push_back(std::move(layer));
         }
         weights.final_norm = binding::norm_weight_from_source(*store_,source,"model.norm",hidden);

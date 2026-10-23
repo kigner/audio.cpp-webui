@@ -4,6 +4,8 @@
 #include "engine/framework/runtime/session.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace engine::models::piper_tts {
@@ -17,9 +19,20 @@ struct PiperTtsGenerationOptions {
 
 class PiperVitsRuntime {
 public:
+    // `rknn_decoder_path` (optional) routes the decoder stage to a pre-compiled RKNN
+    // engine on a Rockchip NPU; empty keeps the ggml decoder.
+    // `rknn_encoder_path` (optional) routes the duration encoder to a comma-separated
+    // ladder of pre-compiled RKNN engines; utterances longer than the widest bin fall
+    // back to the ggml encoder for that step.
+    // `duration_encoder_backend` / `duration_flows_backend` (optional) pin the two duration
+    // stages to a backend of their own, independently of each other and of the decoder.
     PiperVitsRuntime(
         std::shared_ptr<const PiperTtsAssets> assets,
-        core::BackendConfig backend_config);
+        core::BackendConfig backend_config,
+        std::string rknn_decoder_path = {},
+        std::optional<core::BackendType> duration_encoder_backend = {},
+        std::optional<core::BackendType> duration_flows_backend = {},
+        std::string rknn_encoder_path = {});
     ~PiperVitsRuntime();
 
     runtime::AudioBuffer synthesize(

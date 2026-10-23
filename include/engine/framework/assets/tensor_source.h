@@ -39,6 +39,15 @@ enum class TensorStorageType {
     Q6_K,
     Q8_0,
     NVFP4,
+    // drama3-small: i-quants (routed expert banks).
+    IQ2_XXS,
+    IQ2_XS,
+    IQ2_S,
+    IQ3_XXS,
+    IQ3_S,
+    IQ4_NL,
+    IQ4_XS,
+    TQ2_1,
 };
 
 struct TensorMetadata {
@@ -162,6 +171,9 @@ void set_backend_tensor_from_f32_parallel(
     ggml_type type,
     std::vector<std::byte> * retained_bytes = nullptr);
 std::shared_ptr<const TensorSource> open_tensor_source(const std::filesystem::path & path);
+// Finds a logical checkpoint by stem, preferring safetensors over PyTorch and GGUF.
+std::optional<std::filesystem::path> find_tensor_file(
+    const std::filesystem::path & directory, std::string_view stem);
 std::shared_ptr<const TensorSource> open_tensor_source(
     const std::filesystem::path & path, TensorSourceOptions options);
 std::shared_ptr<const TensorSource> open_tensor_source(
@@ -191,11 +203,16 @@ struct GgufTensorTypeOverride {
     std::string pattern;
     TensorStorageType storage_type = TensorStorageType::Native;
 };
+struct WeightAdapter;
+enum class WeightMergeMode;
 struct GgufConversionOptions {
     std::optional<TensorStorageType> bnb_nf4_type;
     std::vector<std::string> excluded_tensor_prefixes;
     std::vector<GgufTensorTypeOverride> type_overrides;
     std::vector<std::string> folded_weight_norm_patterns;
+    // Bound tensor names; applied before conversion and quantization.
+    std::shared_ptr<const WeightAdapter> weight_adapter;
+    std::optional<WeightMergeMode> weight_adapter_merge_mode;
 };
 void convert_tensor_sources_to_gguf(const std::vector<TensorSourceInput> & inputs,
                                     const std::filesystem::path & output_path, TensorStorageType weight_type,

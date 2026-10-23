@@ -14,7 +14,7 @@ const TASKS = [
   {id:'vc',label:'声音转换',action:'开始转换',types:['vc','svc']},
   {id:'processing',label:'音频处理',action:'开始处理',types:['s2s']},
   {id:'separation',label:'音源分离',action:'开始分离',types:['sep']},
-  {id:'analysis',label:'检测与分析',action:'开始分析',types:['vad','diar','align','midi','turn']},
+  {id:'analysis',label:'检测与分析',action:'开始分析',types:['vad','diar','align','midi','turn','cls','wake']},
   {id:'design',label:'声音设计',action:'生成声音',types:['vdes']},
 ];
 const PRIMARY_TASKS = ['tts','asr','music','vc','design'];
@@ -32,8 +32,10 @@ const TOOLS = [
   {id:'turn',task:'analysis',type:'turn',label:'说完检测',action:'开始检测',result:'检测结果',description:'判断一段语音是否已经说完',icon:'chat'},
   {id:'align',task:'analysis',type:'align',label:'字幕对齐',action:'开始对齐',result:'对齐结果',description:'为原文匹配音频时间戳',icon:'text'},
   {id:'midi',task:'analysis',type:'midi',label:'乐谱提取',action:'提取乐谱',result:'提取结果',description:'从音频提取 MIDI 或乐谱',icon:'music'},
+  {id:'cls',task:'analysis',type:'cls',label:'声音分类',action:'开始分析',result:'分类结果',description:'识别录音中的声音类别',icon:'wave'},
+  {id:'wake',task:'analysis',type:'wake',label:'唤醒词检测',action:'开始检测',result:'检测结果',description:'检测录音中的唤醒词或关键词',icon:'chat'},
 ];
-const TASK_NAMES = {tts:'语音合成',clon:'声音克隆',asr:'语音识别',gen:'音乐与音效',vc:'声音转换',svc:'歌声转换',s2s:'音频处理',sep:'音源分离',vad:'语音片段检测',diar:'说话人区分',align:'字幕对齐',midi:'乐谱提取',turn:'说完检测',spk:'说话人识别',vdes:'声音设计'};
+const TASK_NAMES = {tts:'语音合成',clon:'声音克隆',asr:'语音识别',gen:'音乐与音效',vc:'声音转换',svc:'歌声转换',s2s:'音频处理',sep:'音源分离',vad:'语音片段检测',diar:'说话人区分',align:'字幕对齐',midi:'乐谱提取',turn:'说完检测',spk:'说话人识别',cls:'声音分类',wake:'唤醒词检测',vdes:'声音设计'};
 const LANGUAGE_NAMES={english:'英语',chinese:'中文',japanese:'日语',french:'法语',german:'德语',italian:'意大利语',portuguese:'葡萄牙语',spanish:'西班牙语',korean:'韩语',russian:'俄语',arabic:'阿拉伯语',hindi:'印地语',vietnamese:'越南语',cantonese:'粤语',thai:'泰语',indonesian:'印尼语',turkish:'土耳其语',dutch:'荷兰语',ukrainian:'乌克兰语',polish:'波兰语',romanian:'罗马尼亚语',greek:'希腊语',czech:'捷克语',finnish:'芬兰语',zh_anhui:'安徽方言',zh_fujian:'福建方言',zh_gansu:'甘肃方言',zh_guizhou:'贵州方言',zh_hebei:'河北方言',zh_henan:'河南方言',zh_hubei:'湖北方言',zh_hunan:'湖南方言',zh_jiangxi:'江西方言',zh_liaoning:'辽宁方言',zh_minnan:'闽南语',zh_ningxia:'宁夏方言',zh_shaanxi:'陕西方言',zh_shandong:'山东方言',zh_shanghai:'上海话',zh_shanxi:'山西方言',zh_sichuan:'四川话',zh_tianjin:'天津话',zh_wenzhou:'温州话',zh_wu:'吴语',zh_yunnan:'云南方言',auto:'自动'};
 const state = {catalog:null,task:'tts',tool:null,key:'tts',route:'tts',analysisType:'',page:'workspace',model:null,detail:null,detailSeq:0,librarySeq:0,libraryModel:null,workspaces:{},overrides:{},downloads:[],job:null,playback:null,submitting:false,jobTimer:null,voices:[],recorders:new Set(),uploading:0,runtime:null,loading:null,realtime:null};
 const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
@@ -285,7 +287,7 @@ async function selectModel(id, failOnError=false) {
   updateRunButton();
   try {
     const detail=await api(`/models/${encodeURIComponent(id)}`);if(seq!==state.detailSeq||key!==state.key||id!==state.model)return;
-    state.detail=detail;restoreSavedRoute(detail,modelOptions());$('options-json').value=modelOptions().json;
+    state.detail=detail;restoreSavedOptions(detail,modelOptions());restoreSavedRoute(detail,modelOptions());$('options-json').value=modelOptions().json;
     renderInputs();renderParameters();updateRunButton();updateLoadStatus();
   }catch(error){if(seq!==state.detailSeq||key!==state.key)return;state.detail=null;updateRunButton();if(failOnError)throw error;showToast(friendlyError(error));}
 }
@@ -328,6 +330,22 @@ $('model-picker-popover').addEventListener('toggle',event=>$('model-picker-trigg
 $('model-picker-popover').addEventListener('keydown',event=>{if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;const rows=[...$('model-picker-list').querySelectorAll('.model-row-select')],index=rows.indexOf(document.activeElement);if(!rows.length||(index<0&&document.activeElement!==$('model-picker-search'))||index<0&&['Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?rows.length-1:(index+(event.key==='ArrowDown'?1:-1)+rows.length)%rows.length;rows[next].focus();});
 window.addEventListener('resize',positionModelPicker);
 window.addEventListener('scroll',positionModelPicker,true);
+function canonicalOptions(detail, options) {
+  const result={...options};
+  for(const scope of ['session_options','load_options'])if(result[scope]&&typeof result[scope]==='object'&&!Array.isArray(result[scope]))result[scope]={...result[scope]};
+  const locations=name=>{const [scope,...parts]=name.split('.');return [[result,name],...(['session_options','load_options'].includes(scope)&&result[scope]&&typeof result[scope]==='object'?[[result[scope],parts.join('.')]]:[])];};
+  for(const [oldName,name] of Object.entries(detail?.option_aliases||{})){
+    const old=locations(oldName).filter(([object,key])=>Object.hasOwn(object,key));if(!old.length)continue;
+    if(!locations(name).some(([object,key])=>Object.hasOwn(object,key)))result[name]=old[0][0][old[0][1]];
+    for(const [object,key] of old)delete object[key];
+  }
+  return result;
+}
+function restoreSavedOptions(detail, saved) {
+  const values=canonicalOptions(detail,saved.values);
+  for(const key of Object.keys(saved.values))delete saved.values[key];Object.assign(saved.values,values);
+  try{const extra=JSON.parse(saved.json||'{}');if(extra&&typeof extra==='object'&&!Array.isArray(extra)){const migrated=canonicalOptions(detail,extra);if(JSON.stringify(migrated)!==JSON.stringify(extra))saved.json=JSON.stringify(migrated,null,2);}}catch{}
+}
 function restoreSavedRoute(detail, saved) {
   if(detail?.family!=='seed_vc'&&!(detail?.task==='vc'&&detail.vc_controls?.routes?.length))return;
   const route=detail.parameters?.find(param=>param.name==='route');if(!route)return;
@@ -339,13 +357,13 @@ function restoreSavedRoute(detail, saved) {
   if(restored)showToast('原转换路线不适用于当前模型入口，已恢复默认路线。');
 }
 function collectOptions(detail=state.detail, saved=modelOptions()) {
-  let options={...saved.values};
+  let options=canonicalOptions(detail,saved.values);
   if(detail?.task==='asr')options=Object.fromEntries(Object.entries(options).filter(([name])=>detail.parameters?.some(p=>p.name===name)));
   for(const param of detail?.parameters||[])if(param.json_list&&Object.hasOwn(options,param.name)&&typeof options[param.name]==='string'){
     try{const parsed=JSON.parse(options[param.name]);if(!Array.isArray(parsed))throw new Error();options[param.name]=parsed;}catch{throw new Error(`${param.label||param.name} 需要 JSON 数组，例如 [1, 2]。`);}
   }
   const raw=saved.json.trim();
-  if(raw){let extra;try{extra=JSON.parse(raw);}catch{throw new Error('高级参数 JSON 格式不正确。');}if(!extra||Array.isArray(extra)||typeof extra!=='object')throw new Error('高级参数必须是 JSON 对象。');options={...options,...extra};}
+  if(raw){let extra;try{extra=JSON.parse(raw);}catch{throw new Error('高级参数 JSON 格式不正确。');}if(!extra||Array.isArray(extra)||typeof extra!=='object')throw new Error('高级参数必须是 JSON 对象。');options={...options,...canonicalOptions(detail,extra)};}
   if(detail?.task==='tts')for(const param of detail.parameters||[])if(['bool','boolean'].includes(param.type)&&typeof options[param.name]==='string'){
     const value=options[param.name].toLowerCase();if(['true','1','yes','on','false','0','no','off'].includes(value))options[param.name]=['true','1','yes','on'].includes(value);
   }
@@ -1040,12 +1058,12 @@ function aceParameterRoutes(){return state.detail?.music_inputs?.ace_step?.param
 function aceGuidanceAvailable(options){const variant=options['load_options.ace_step.dit_model_path']||options.load_options?.['ace_step.dit_model_path']||state.detail?.music_inputs?.ace_step?.dit_variant;return aceRoute(options)!=='remix'&&(!variant||!variant.includes('turbo'));}
 function setModelOption(key,value){
   const saved=modelOptions();if(value===undefined)delete saved.values[key];else saved.values[key]=value;
-  const aliases=state.task==='vc'?Object.entries(state.detail?.vc_controls?.aliases||{}).filter(([,name])=>name===key).map(([alias])=>alias):[];
+  const aliases=Object.entries({...state.detail?.option_aliases,...(state.task==='vc'?state.detail?.vc_controls?.aliases:{})}).filter(([,name])=>name===key).map(([alias])=>alias);
   for(const alias of aliases)delete saved.values[alias];
   try{
     const extra=JSON.parse(saved.json||'{}');if(!extra||typeof extra!=='object'||Array.isArray(extra))return;
     const [scope,...parts]=key.split('.'),nested=parts.join('.');let changed=false;
-    for(const [object,name] of [[extra,key],...aliases.map(alias=>[extra,alias]),...(['session_options','load_options'].includes(scope)?[[extra[scope],nested]]:[])]){
+    for(const [object,name] of [[extra,key],...aliases.flatMap(alias=>{const [oldScope,...oldParts]=alias.split('.');return [[extra,alias],...(['session_options','load_options'].includes(oldScope)?[[extra[oldScope],oldParts.join('.')]]:[])];}),...(['session_options','load_options'].includes(scope)?[[extra[scope],nested]]:[])]){
       if(object&&Object.hasOwn(object,name)){if(value===undefined)delete object[name];else object[name]=value;changed=true;}
     }
     if(changed){saved.json=JSON.stringify(extra,null,2);$('options-json').value=saved.json;}
@@ -1254,7 +1272,7 @@ function parameterControl(param) {
     try{if(!Object.hasOwn(collectOptions(),key))current=!(formValues()._referenceMode==='upload'?formValues().voice:modelOptions().inputs.builtin_voice);}catch{}
   }
   const type=param.type,designLanguage=state.task==='design'&&key==='language';let input,choices=param.choices||param.values;
-  const voiceLanguages=state.task==='tts'&&key==='voice'?state.detail?.tts_controls?.voice_languages:null;
+  const voiceLanguages=state.task==='tts'&&['voice','voice_id'].includes(key)?state.detail?.tts_controls?.voice_languages:null;
   if(voiceLanguages){
     let language=fieldValues('language').language;try{language=collectOptions().language??language;}catch{}
     if(language)choices=choicesOf(choices).filter(choice=>voiceLanguages[choice.value]===language);
@@ -1404,7 +1422,7 @@ function renderParameters() {
       input.addEventListener('change',()=>{
         setModelOption('language',undefined);
         const voices=state.detail.tts_controls?.voice_languages;
-        if(voices&&input.value){const voice=options.voice??state.detail.parameters.find(p=>p.name==='voice')?.default;if(voices[voice]!==input.value)setModelOption('voice',Object.keys(voices).find(v=>voices[v]===input.value));}
+        if(voices&&input.value){const voiceKey=state.detail.parameters.find(p=>['voice_id','voice'].includes(p.name))?.name||'voice_id';const voice=options[voiceKey]??state.detail.parameters.find(p=>p.name===voiceKey)?.default;if(voices[voice]!==input.value)setModelOption(voiceKey,Object.keys(voices).find(v=>voices[v]===input.value));}
         renderParameters();
       });
     }
@@ -1451,7 +1469,7 @@ function collectInputs() {
   if(inputs.rvc_no_index===true)delete inputs.rvc_retrieval_index;
   if(state.task==='tts'&&inputs.builtin_voice&&profile.send_reference_text!==false)inputs.reference_text=values.reference_text||'';
   if(state.task==='tts'&&state.detail.tts_controls?.voice_languages){
-    const voice=$('param-voice')?.value;if(voice&&!inputs.language){inputs.language=state.detail.tts_controls.voice_languages[voice];}
+    const voice=($('param-voice_id')||$('param-voice'))?.value;if(voice&&!inputs.language){inputs.language=state.detail.tts_controls.voice_languages[voice];}
   }
   if(state.task==='tts'&&state.detail.tts_controls?.speakers&&modelOptions().inputs.multi_speaker){
     inputs.speaker_references=modelOptions().inputs.speaker_references.map((slot,index)=>slot.builtin_voice?{builtin_voice:slot.builtin_voice,reference_text:slot.reference_text}:{voice:slot[`speaker_${index}`]||'',reference_text:slot.reference_text});
@@ -1474,7 +1492,8 @@ function validateInputs(inputs,options={}) {
   if(hasSpeakers&&state.detail.tts_controls?.speakers?.allow_empty===false){const last=speakerReferences.findLastIndex(slot=>slot.voice||slot.builtin_voice);if(speakerReferences.slice(0,last+1).some(slot=>!slot.voice&&!slot.builtin_voice))throw new Error('VibeVoice 的说话人参考不能跳过空位，请从 Speaker 0 起依次选择。');}
   if(state.task==='tts'&&state.detail.family==='irodori_tts'&&options.no_ref===false&&!inputs.voice&&!inputs.builtin_voice)throw new Error('关闭“不使用参考音频”后，请选择或上传参考音频。');
   const voiceLanguages=state.detail.tts_controls?.voice_languages,language=options.language||inputs.language;
-  if(voiceLanguages&&language&&options.voice&&voiceLanguages[options.voice]!==language)throw new Error('所选音色与语言不匹配，请选择对应音色，或将语言设为跟随音色。');
+  const selectedVoice=options.voice_id??options.voice;
+  if(voiceLanguages&&language&&selectedVoice&&voiceLanguages[selectedVoice]!==language)throw new Error('所选音色与语言不匹配，请选择对应音色，或将语言设为跟随音色。');
   const xVectorOnly=state.detail.family==='qwen3_tts'&&(options.x_vector_only_mode===true||['true','1','yes','on'].includes(String(options.x_vector_only_mode)));
   const referenceText=inputs.reference_text||state.voices.find(voice=>voice.name===inputs.builtin_voice)?.text||'';
   if(!xVectorOnly&&(profile.require_reference_text||state.detail.requires_reference_text||(profile.require_reference_text_with_voice&&(inputs.voice||inputs.builtin_voice)))&&!referenceText.trim())throw new Error('这个模型需要参考原文，请填写参考音频实际说出的内容。');

@@ -37,6 +37,7 @@ _LOADER_CALL_RE = re.compile(r"\bmake_([a-z0-9_]+)_loader(?:\s*\(\s*\))?")
 # with the reason. Keep this empty unless there is one.
 UNLISTED_FAMILIES: dict[str, str] = {
     "liveavatar": "Image-conditioned raw video generation needs a separate video UI; use the CLI.",
+    "latentsync": "Video lip synchronisation needs video inputs and output handling; use the native UI or CLI.",
 }
 
 

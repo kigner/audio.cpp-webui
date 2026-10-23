@@ -17,11 +17,15 @@ export interface CatalogEntry {
   path: string;
   task: string;
   mode: string;
+  workflow?: string;
+  weights_url?: string;
+  arena?: boolean;
   download_id?: string;
   install_packages?: InstallPackageChoice[];
   min_vram_gb?: number;
   input_hint?: string;
   input_hint_en?: string;
+  default_text?: string;
   default_options?: Record<string, unknown>;
   load_options?: StringMap;
   session_options?: StringMap;
@@ -29,11 +33,15 @@ export interface CatalogEntry {
   required_request_options?: string[];
   builtin_voices?: string[];
   default_voice?: string;
+  // A model the server config defines under an id the catalog does not have.
+  configured?: boolean;
 }
 
 export interface ParamSpec {
   name: string;
   type: 'slider' | 'number' | 'bool' | 'text' | 'choice';
+  scope?: 'request' | 'session';
+  session_option?: string;
   label: string;
   label_en?: string;
   info?: string;
@@ -56,6 +64,8 @@ export interface LoadedModel {
   path: string;
   session_options?: StringMap;
   loaded: boolean;
+  // Registered from the server config rather than loaded through the UI.
+  configured?: boolean;
 }
 
 export interface ServerHealth {

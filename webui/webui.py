@@ -716,7 +716,7 @@ ASR_TASKS = ("asr",)
 GEN_TASKS = ("gen",)   # music/SFX generation, served via the generic /v1/tasks/run route
 VC_TASKS = ("vc", "svc", "s2s")           # 声音转换：源音频 + 目标音色，走 /v1/tasks/run
 SEP_TASKS = ("sep",)                      # 音源分离：多轨 named_audio_outputs
-ANALYZE_TASKS = ("vad", "diar", "align", "midi", "turn")
+ANALYZE_TASKS = ("vad", "diar", "align", "midi", "turn", "cls", "wake")
 VDES_TASKS = ("vdes",)                    # 声音设计：文字 + 音色描述，走 /v1/audio/speech
 
 # Per-family behavior for the TTS tab, keyed by catalog `family`. This is how we
@@ -1160,9 +1160,21 @@ DEFAULT_PROFILE = {"input_hint": "", "input_hint_en": "", "wrap_speaker_script":
 # One "Speaker N:" line (any speaker index) is enough to treat text as a script.
 _SPEAKER_RE = re.compile(r"^\s*Speaker\s+\d+\s*:", re.IGNORECASE | re.MULTILINE)
 
+_UPDATED_STREAMING_RATES = {
+    "qwen3_tts": 24000, "fish_audio": 44100, "plapre": 24000,
+    "vibevoice": 24000, "kokoro_tts": 24000, "higgs_audio_tts": 24000,
+    "irodori_tts": 48000, "moss_tts_nano": 48000, "fish_drama3": 44100,
+    "voxtral_tts": 24000,
+}
+
 
 def profile_for(entry):
     prof = {**DEFAULT_PROFILE, **MODEL_PROFILES.get(entry.get("family", ""), {})}
+    family = entry.get("family", "")
+    if family in _UPDATED_STREAMING_RATES and entry.get("task") in TTS_TASKS:
+        prof.update(supports_streaming=True, stream_sample_rate=_UPDATED_STREAMING_RATES[family])
+        if family == "moss_tts_nano":
+            prof["stream_channels"] = 2
     prof["input_hint_en"] = MODEL_HINTS_EN.get(entry.get("family", ""), "")
     if entry.get("profile"):
         prof.update(entry["profile"])
@@ -1174,7 +1186,8 @@ def profile_for(entry):
         prof["default_options"] = {**prof.get("default_options", {}), **entry["default_options"]}
     # A family may stream one task only (LFM2: TTS yes, ASR no).
     if entry.get("streaming_tasks") is not None:
-        prof["supports_streaming"] = entry.get("task") in entry["streaming_tasks"]
+        prof["supports_streaming"] = (entry.get("task") in entry["streaming_tasks"] or
+                                     family in _UPDATED_STREAMING_RATES and entry.get("task") in TTS_TASKS)
     return prof
 
 
@@ -2491,6 +2504,73 @@ def delete_builtin_voice(current):
 
 
 # --- config-driven advanced-parameter controls (TTS tab) -------------------
+_OPTION_RENAMES = {
+    "instruction": "instruct", "speaker": "voice_id", "voice": "voice_id",
+    "pnc": "punc", "punctuation": "punc", "max_new_tokens": "max_tokens",
+    "max_seconds": "max_duration_sec", "min_seconds": "min_duration_sec",
+    "ref_seconds": "reference_duration_sec", "speaking_rate": "speed",
+    "sampler": "sampler_mode", "audio_chunk_seconds": "audio_chunk_duration_sec",
+    "cfg_strength": "guidance_scale", "lang": "language",
+    "duration_factor": "duration_scale", "retrieval_index_path": "index_path",
+    "g2p_dict": "g2p_dict_file",
+}
+
+
+def _canonical_option_name(family, name):
+    """Migrate an old control only when the current contract declares its target."""
+    scope, key = (name.split("_options.", 1) if "_options." in name else ("request", name))
+    key = key.removeprefix(family + ".")
+    declared = {s: {p["name"].removeprefix(family + ".") for p in rows}
+                for s, rows in MODEL_SPECS.get(family, {}).get("options", {}).items()}
+    all_names = set().union(*declared.values()) if declared else set()
+    if key not in all_names:
+        current = _OPTION_RENAMES.get(key, key.replace("_graph_context_mb", "_graph_arena_mb"))
+        if current in all_names:
+            key = current
+    scopes = [s for s, names in declared.items() if key in names]
+    if not scopes:
+        return name  # Preserve global/extension keys such as load_options.use_gpu.
+    if scope not in scopes and len(scopes) == 1:
+        scope = scopes[0]
+    return key if scope == "request" else f"{scope}_options.{family}.{key}"
+
+
+def _canonicalize_options(entry, options):
+    if not entry:
+        return dict(options)
+    mapped = []
+    for name, value in options.items():
+        if name in {"session_options", "load_options"}:
+            if not isinstance(value, dict):
+                raise gr.Error(f"{name} must be a JSON object")
+            rows = [(name + "." + key, item) for key, item in value.items()]
+        else:
+            rows = [(name, value)]
+        for key, item in rows:
+            target = _canonical_option_name(entry["family"], key)
+            mapped.append((target, item, target == key))
+    # An explicit current spelling wins when old saved values contain both.
+    return {key: value for key, value, direct in sorted(mapped, key=lambda row: row[2])}
+
+
+def _option_aliases(entry):
+    """Publish migrations so saved browser controls match the current contract."""
+    family = entry.get("family", "")
+    candidates = set(_OPTION_RENAMES)
+    local = MODEL_PARAMS.get(entry.get("id"), MODEL_PARAMS.get(family, []))
+    candidates.update(p["name"] for p in local)
+    for scope, rows in MODEL_SPECS.get(family, {}).get("options", {}).items():
+        if scope == "request":
+            continue
+        for option in rows:
+            key = option["name"].removeprefix(family + ".")
+            for old_scope in ("session", "load"):
+                for old_key in {key, key.replace("_graph_arena_mb", "_graph_context_mb")}:
+                    candidates.add(f"{old_scope}_options.{family}.{old_key}")
+    return {name: current for name in sorted(candidates)
+            if (current := _canonical_option_name(family, name)) != name}
+
+
 def params_for(model_id):
     """Advanced-parameter specs: catalog id override, then family fallback."""
     entry = catalog_by_id(model_id) if model_id else None
@@ -2499,12 +2579,13 @@ def params_for(model_id):
     specs = MODEL_PARAMS.get(entry.get("id", ""))
     if specs is None:
         specs = MODEL_PARAMS.get(entry.get("family", ""), [])
-    local = [dict(p) for p in specs] if isinstance(specs, list) else []
     family = entry.get("family", "")
+    local = [{**p, "name": _canonical_option_name(family, p["name"])} for p in specs] if isinstance(specs, list) else []
     if family in {"kitten_tts", "kokoro_tts"}:
         ui = MODEL_SPECS.get(family, {}).get("ui", {})
-        if ui.get("builtin_voices") and not any(p["name"] == "voice" for p in local):
-            local.append({"name": "voice", "type": "choice", "label": "预设音色",
+        voice_name = _canonical_option_name(family, "voice")
+        if ui.get("builtin_voices") and not any(p["name"] == voice_name for p in local):
+            local.append({"name": voice_name, "type": "choice", "label": "预设音色",
                           "choices": ui["builtin_voices"], "default": ui.get("default_voice")})
     contract = MODEL_SPECS.get(family, {}).get("options", {})
     by_name = {p["name"]: p for p in local}
@@ -4138,11 +4219,11 @@ def _tts_preset_options(entry, language, options):
     if not lang:
         return  # the backend infers the language from the selected voice
     voices = MODEL_SPECS['kokoro_tts']['ui']['builtin_voices']
-    voice = options.get('voice')
+    voice = options.get('voice_id', options.get('voice'))
     if not voice:
         voice = next((v for v in voices if languages[v[0]] == lang), None)
         if voice:
-            options['voice'] = voice
+            options[_canonical_option_name('kokoro_tts', 'voice')] = voice
     elif lang in languages.values() and languages.get(str(voice)[0]) != lang:
         raise gr.Error(_t("所选 Kokoro 音色与语言不匹配，请选择该语言的音色，或将语言设为跟随音色。",
                           "The Kokoro voice does not match the language; choose a matching voice or follow the voice language."))
@@ -4171,6 +4252,9 @@ def _validate_vc_options(entry, options):
 
 def _ensure_with_options(model, tasks, options, runtime=None, **kwargs):
     """Keep load/session settings out of request options and reload when changed."""
+    migrated = _canonicalize_options(catalog_by_id(model), options)
+    options.clear()
+    options.update(migrated)
     for scope in ("session_options", "load_options"):
         values = options.pop(scope, {})
         if not isinstance(values, dict):
@@ -4233,6 +4317,7 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
 
         entry = catalog_by_id(model)
         prof = profile_for(entry) if entry else DEFAULT_PROFILE
+        family = entry.get("family", "") if entry else ""
 
         if prof.get("wrap_speaker_script"):     # e.g. VibeVoice needs Speaker N: lines
             text = _as_speaker_script(text)
@@ -4295,7 +4380,8 @@ def do_tts(model, text, language, uploaded_voice, builtin_voice,
 
         # 预置音色家族（Supertonic 的 M1-M5/F1-F5）：控件里的 voice 是请求顶层的
         # cached-voice id，不是 options 项，从 options 里挪出去；有参考音频时以参考为准。
-        voice_preset = options.pop("voice", None)
+        voice_key = "voice_id" if family in {"kokoro_tts", "kitten_tts", "supertonic"} else "voice"
+        voice_preset = options.pop(voice_key, None)
         # Irodori 会话默认 no_ref=true（无参考直接生成），带参考时须显式关掉才走克隆。
         if prof.get("no_ref_toggle") and voice_path:
             options.setdefault("no_ref", False)
@@ -4442,7 +4528,8 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
         options["source_audio"] = _ensure_wav(voice_path)
         voice_path = None
     # Supertonic 等预置音色家族要求 voice 位于请求顶层，而不是 options。
-    voice_preset = options.pop("voice", None)
+    voice_key = "voice_id" if family in {"kokoro_tts", "kitten_tts", "supertonic"} else "voice"
+    voice_preset = options.pop(voice_key, None)
 
     seed, seed_note = _resolve_seed(options.pop("seed", seed))
     payload = {
@@ -4514,6 +4601,11 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
                     if not pcm:
                         continue
                     arr = np.frombuffer(pcm, dtype=np.int16)
+                    channels = int(prof.get("stream_channels", 1))
+                    if channels > 1:
+                        if arr.size % channels:
+                            raise gr.Error("流式音频的声道数据不完整，请重试。")
+                        arr = arr.reshape(-1, channels).astype(np.int32).mean(axis=1).astype(np.int16)
                     all_parts.append(arr)
                     pending.append(arr)
                     pending_samples += arr.size
@@ -4646,15 +4738,7 @@ def _asr_transcribe_stream(model, entry, wav_path, extras, tag="ASR", server_url
             etype = event.get("type")
             if etype == "transcript.text.delta":
                 delta = event.get("delta") or ""
-                if entry.get("family") == "voxtral_realtime":
-                    # Voxtral currently emits the cumulative transcript (and may
-                    # dispatch the same event twice), despite the server exposing
-                    # it as a delta. Replace instead of appending for this family.
-                    if delta == text:
-                        continue
-                    text = delta
-                else:
-                    text += delta
+                text += delta
                 yield text, False, None
             elif etype == "transcript.text.done":
                 final = (event.get("text") or text).strip()
@@ -5658,6 +5742,7 @@ def refresh():
 _REALTIME_NATIVE_STREAM_FAMILIES = {
     "dots_tts", "voxcpm2", "voxcpm1", "pocket_tts", "audio8_tts",
     "breeze_tts", "kugelaudio", "lfm2_audio", "soprano_tts",
+    "qwen3_tts", "fish_audio", "fish_drama3", "vibevoice", "higgs_audio_tts", "irodori_tts", "voxtral_tts",
 }
 
 
@@ -5677,7 +5762,9 @@ def realtime_tts_models():
         if entry.get("task") not in TTS_TASKS or not entry.get("installed"):
             continue
         profile = profile_for(entry)
-        supports = bool(profile.get("supports_streaming"))
+        # The realtime PCM transport is mono. Stereo TTS remains available as a
+        # complete WAV; the workbench stream downmixes it before playback.
+        supports = bool(profile.get("supports_streaming")) and int(profile.get("stream_channels", 1)) == 1
         family = entry.get("family") or ""
         defaults = {}
         if entry.get("id") == "dots-tts-meanflow":

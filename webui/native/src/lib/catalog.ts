@@ -1,5 +1,5 @@
-import rawCatalog from '../../../configs/models_catalog.json';
-import rawParams from '../../../configs/model_params.json';
+import rawCatalog from '../../configs/models_catalog.json';
+import rawParams from '../../configs/model_params.json';
 import type { CatalogEntry, InstallPackageChoice, ParamSpec } from './types';
 
 interface PackageEntry {
@@ -39,6 +39,27 @@ const packages: PackageEntry[] = Object.values(specModules).flatMap((spec) =>
 );
 
 const specsByFamily = new Map(Object.values(specModules).map((spec) => [spec.family, spec]));
+const exposeAllGgufPackageFamilies = new Set([
+  'canary_asr',
+  'cohere_asr',
+  'moss_transcribe_diarize',
+  'confucius4_r2t2',
+  'audiosr',
+  'controlfoley',
+  'breeze_tts',
+  'cosyvoice3',
+  'firered_audio',
+  'fireredtts3',
+  'irodori_tts',
+  'kitten_tts2',
+  'kokoro_tts',
+  'meanvc2',
+  'midashenglm_gen',
+  'sanotts',
+  'mossformer2',
+  'plapre',
+  'voxtral_tts'
+]);
 
 const hanCharacters = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 
@@ -104,7 +125,49 @@ function relatedPackages(entry: CatalogEntry): PackageEntry[] {
   return family;
 }
 
+function relatedExposeAllGgufPackages(entry: CatalogEntry): PackageEntry[] {
+  const family = packages.filter((candidate) =>
+    candidate.family === entry.family && candidate.format === 'gguf');
+  if (!family.length) return [];
+  if (entry.family === 'sanotts') return family;
+  if (!entry.download_id) return family;
+  const exact = family.find((candidate) => candidate.id === entry.download_id);
+  if (!exact) return relatedPackages(entry);
+  const matches = family.filter((candidate) => candidate.target_directory === exact.target_directory);
+  return matches.length ? matches : [exact];
+}
+
+function exposedPackageRank(entry: PackageEntry, selectedId?: string): number {
+  if (selectedId && entry.id === selectedId) return 0;
+  if (entry.default) return 1;
+  if (['q4_k', 'q4_0', 'q8_0', 'q8'].includes(entry.precision)) return 2;
+  if (['f16', 'fp16', 'bf16'].includes(entry.precision)) return 3;
+  if (entry.precision === 'f32') return 4;
+  if (entry.precision === 'orig') return 5;
+  return 6;
+}
+
 function packageLabel(entry: PackageEntry): string {
+  if (entry.family === 'sanotts') {
+    if (entry.id.includes('_heart_nano_')) return 'Heart Nano';
+    if (entry.id.includes('_heart_')) return 'Heart';
+    if (entry.id.includes('_amy_')) return 'Amy';
+    if (entry.id.includes('_hfc_')) return 'HFC';
+    if (entry.id.includes('_kristin_')) return 'Kristin';
+    if (entry.id.includes('_vi_')) return 'Vietnamese';
+    if (entry.id.includes('_id_')) return 'Indonesian';
+    if (entry.id.includes('_cs_')) return 'Czech';
+    if (entry.id.includes('_de_')) return 'German';
+    if (entry.id.includes('_es_')) return 'Spanish';
+    if (entry.id.includes('_fr_')) return 'French';
+    if (entry.id.includes('_it_')) return 'Italian';
+    if (entry.id.includes('_pt_')) return 'Portuguese (Brazil)';
+    if (entry.id.includes('_ro_')) return 'Romanian';
+    if (entry.id.includes('_ru_')) return 'Russian';
+    if (entry.id.includes('_tr_')) return 'Turkish';
+    if (entry.id.includes('_ne_')) return 'Nepali';
+    if (entry.id.includes('_hi_')) return 'Hindi';
+  }
   if (entry.family === 'ace_step') {
     const precision = entry.precision === 'bf16'
       ? 'BF16'
@@ -115,6 +178,27 @@ function packageLabel(entry: PackageEntry): string {
     if (entry.id.includes('_xl_sft_')) return `GGUF Turbo XL SFT ${precision}`;
     if (entry.id.includes('_turbo_')) return `GGUF Turbo ${precision}`;
     return `GGUF ${precision}`;
+  }
+  if (entry.family === 'irodori_tts' && entry.id.includes('_anime_')) return 'Anime Q8';
+  if (entry.family === 'yue2') {
+    if (entry.id === 'yue2_main_q8_0') return 'Main Q8_0';
+    if (entry.id === 'yue2_main_q4_0') return 'Main Q4_0';
+    if (entry.id === 'yue2_main_bf16') return 'Main BF16';
+    if (entry.id === 'yue2_vae_f16') return 'VAE F16';
+    if (entry.id === 'yue2_vae_f32') return 'VAE F32';
+    return entry.display_name || 'Yue2 component';
+  }
+  if (entry.family === 'auk') {
+    if (entry.id === 'auk_base_f32') return 'Base F32';
+    if (entry.id === 'auk_base_f16') return 'Base F16';
+    if (entry.id === 'auk_base_q8_0') return 'Base Q8_0';
+    if (entry.id === 'auk_flash_f32') return 'AuK-Flash F32';
+    if (entry.id === 'auk_flash_f16') return 'AuK-Flash F16';
+    if (entry.id === 'auk_flash_q8_0') return 'AuK-Flash Q8_0';
+    if (entry.id === 'auk_qwen_bf16') return 'Qwen BF16';
+    if (entry.id === 'auk_qwen_q8_0') return 'Qwen Q8_0';
+    if (entry.id === 'auk_vae_f32') return 'VAE F32';
+    return entry.display_name || 'AuK component';
   }
   if (entry.format === 'safetensors') return 'Safetensors';
   if (entry.id.includes('int8_dit')) return 'GGUF Q4 ConvRot';
@@ -130,7 +214,8 @@ function packageModelPath(entry: PackageEntry): string {
   if (entry.format === 'gguf' && entry.family === 'minimax_h3') {
     const entryName = entry.id.includes('int8_dit') ? 'dit_int8.gguf' : 'dit.gguf';
     modelFile = entry.files?.find((file) => file.toLowerCase().endsWith(`/${entryName}`));
-  } else if (entry.format === 'gguf' && entry.family === 'minimax_music3') {
+  } else if (entry.format === 'gguf' &&
+      ['auk', 'lfm2_audio', 'liveavatar', 'minimax_music3', 'yue2'].includes(entry.family)) {
     return `models/${entry.target_directory}`;
   } else if (entry.format === 'gguf') {
     modelFile = entry.files?.find((file) => file.toLowerCase().endsWith('.gguf'));
@@ -145,36 +230,104 @@ function packageModelPath(entry: PackageEntry): string {
 }
 
 function packageSessionOptions(entry: PackageEntry): Record<string, string> | undefined {
-  if (entry.family !== 'minimax_music3') return undefined;
-  if (entry.id === 'minimax_music3_q8_0') {
-    return {
-      'minimax_music3.language_model_gguf': 'language_model_q8_0.gguf',
-      'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_q8_0.gguf',
-      'minimax_music3.flow_transformer_gguf': 'transformer_q8_0.gguf'
-    };
+  if (entry.family === 'lfm2_audio') {
+    // Every quantization installs into the same directory as Liquid's GGUF
+    // repo, so name this package's backbone; the loader pairs its mmproj.
+    const backbone = entry.files?.find((file) => !file.startsWith('mmproj-'));
+    return backbone ? { 'lfm2_audio.model_gguf': backbone } : undefined;
   }
-  if (entry.id === 'minimax_music3_bf16') {
-    return {
-      'minimax_music3.language_model_gguf': 'language_model_bf16.gguf',
-      'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_bf16.gguf',
-      'minimax_music3.flow_transformer_gguf': 'transformer_bf16.gguf'
-    };
-  }
-  if (entry.id === 'minimax_music3_q4_0') {
-    return {
-      'minimax_music3.language_model_gguf': 'language_model_q4_0.gguf',
-      'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_q8_0.gguf',
-      'minimax_music3.flow_transformer_gguf': 'transformer_q4_0.gguf'
-    };
+  if (entry.family === 'minimax_music3') {
+    if (entry.id === 'minimax_music3_q8_0') {
+      return {
+        'minimax_music3.language_model_gguf': 'language_model_q8_0.gguf',
+        'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_q8_0.gguf',
+        'minimax_music3.flow_transformer_gguf': 'transformer_q8_0.gguf'
+      };
+    }
+    if (entry.id === 'minimax_music3_bf16') {
+      return {
+        'minimax_music3.language_model_gguf': 'language_model_bf16.gguf',
+        'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_bf16.gguf',
+        'minimax_music3.flow_transformer_gguf': 'transformer_bf16.gguf'
+      };
+    }
+    if (entry.id === 'minimax_music3_q4_0') {
+      return {
+        'minimax_music3.language_model_gguf': 'language_model_q4_0.gguf',
+        'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_q8_0.gguf',
+        'minimax_music3.flow_transformer_gguf': 'transformer_q4_0.gguf'
+      };
+    }
   }
   return undefined;
 }
 
 function installChoices(entry: CatalogEntry): InstallPackageChoice[] {
-  const related = relatedPackages(entry);
-  if (entry.family === 'ace_step' || entry.family === 'minimax_music3') {
+  if (['maya1', 'gigaam_asr', 'samsone', 'sam_audio', 'tone_color_vc', 'moss_ttsd', 'moss_voicegen',
+    'kugelaudio', 'crisperwhisper', 'index_echo', 'audio_flamingo', 'owsm', 'owsm_ctc', 'reuse', 'sidon', 'smart_turn'].includes(entry.family)) {
+    const stem = (entry.download_id || '').replace(/_(?:q8_0|q4_k|bf16|f16|f32|orig)(?:_codec_f16(?:_decode)?)?$/, '');
+    return packages.filter((candidate) => candidate.family === entry.family && candidate.format === 'gguf' &&
+      candidate.id.replace(/_(?:q8_0|q4_k|bf16|f16|f32|orig)(?:_codec_f16(?:_decode)?)?$/, '') === stem)
+      .sort((left, right) => Number(right.id === entry.download_id) - Number(left.id === entry.download_id))
+      .map((candidate) => ({ id: candidate.id, label: packageLabel(candidate), path: packageModelPath(candidate),
+        format: candidate.format, precision: candidate.precision }));
+  }
+  const exposesAllGguf = exposeAllGgufPackageFamilies.has(entry.family);
+  if (entry.family === 'auk') {
+    const related = packages.filter((candidate) =>
+      candidate.family === entry.family && candidate.format === 'gguf');
+    const order = new Map([
+      ['auk_base_f32', 0],
+      ['auk_base_f16', 1],
+      ['auk_base_q8_0', 2],
+      ['auk_flash_f32', 3],
+      ['auk_flash_f16', 4],
+      ['auk_flash_q8_0', 5],
+      ['auk_qwen_bf16', 6],
+      ['auk_qwen_q8_0', 7],
+      ['auk_vae_f32', 8]
+    ]);
+    return related
+      .sort((left, right) => (order.get(left.id) ?? 99) - (order.get(right.id) ?? 99))
+      .map((candidate) => ({
+        id: candidate.id,
+        label: packageLabel(candidate),
+        path: packageModelPath(candidate),
+        format: candidate.format,
+        precision: candidate.precision,
+        session_options: packageSessionOptions(candidate)
+      }));
+  }
+  if (entry.family === 'yue2') {
+    const related = packages.filter((candidate) =>
+      candidate.family === entry.family && candidate.format === 'gguf');
+    const order = new Map([
+      ['yue2_main_q8_0', 0],
+      ['yue2_main_q4_0', 1],
+      ['yue2_main_bf16', 2],
+      ['yue2_vae_f16', 3],
+      ['yue2_vae_f32', 4]
+    ]);
     return related
       .filter((candidate) => candidate.format === 'gguf')
+      .sort((left, right) => (order.get(left.id) ?? 99) - (order.get(right.id) ?? 99))
+      .map((candidate) => ({
+        id: candidate.id,
+        label: packageLabel(candidate),
+        path: packageModelPath(candidate),
+        format: candidate.format,
+        precision: candidate.precision,
+        session_options: packageSessionOptions(candidate)
+      }));
+  }
+  const related = exposesAllGguf ? relatedExposeAllGgufPackages(entry) : relatedPackages(entry);
+  if (entry.family === 'ace_step' || entry.family === 'minimax_music3' ||
+      exposesAllGguf) {
+    return related
+      .filter((candidate) => candidate.format === 'gguf')
+      .sort((left, right) => exposesAllGguf
+        ? exposedPackageRank(left, entry.download_id) - exposedPackageRank(right, entry.download_id)
+        : Number(right.default === true) - Number(left.default === true))
       .map((candidate) => ({
         id: candidate.id,
         label: packageLabel(candidate),
@@ -229,8 +382,10 @@ export const catalog = (rawCatalog.models as CatalogEntry[]).flatMap((entry) => 
     required_request_options: spec?.options?.request
       ?.filter((option) => option.required === true)
       .map((option) => option.name),
-    builtin_voices: spec?.ui?.builtin_voices,
-    default_voice: spec?.ui?.default_voice
+    // A catalog entry may narrow the family's voices, e.g. one checkpoint of
+    // a family that speaks with a single voice.
+    builtin_voices: entry.builtin_voices ?? spec?.ui?.builtin_voices,
+    default_voice: entry.default_voice ?? spec?.ui?.default_voice
   }];
 });
 
@@ -262,5 +417,8 @@ export const taskLabels: Record<string, string> = {
   diar: 'Speaker diarization',
   align: 'Forced alignment',
   vdes: 'Voice design',
-  spk: 'Speaker analysis'
+  spk: 'Speaker analysis',
+  turn: 'Turn detection',
+  wake: 'Wake-word detection',
+  cls: 'Audio classification'
 };

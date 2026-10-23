@@ -1,5 +1,7 @@
 #include "engine/community_models/outetts/session.h"
 
+#include "engine/framework/assets/weight_adapter.h"
+
 #include "engine/framework/audio/fft.h"
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/runtime/spec_backed_model.h"
@@ -39,10 +41,28 @@ constexpr size_t kDefaultLlamaWeightContextBytes = 4096ull * 1024ull * 1024ull;
 #endif
 
 std::shared_ptr<const OuteTTSAssets> require_assets(
-    std::shared_ptr<const OuteTTSAssets> assets) {
+    std::shared_ptr<const OuteTTSAssets> assets, const runtime::SessionOptions & options) {
   if (assets == nullptr)
     throw std::runtime_error("OuteTTS session requires assets");
-  return assets;
+  const auto path = runtime::find_option(options.options, {"outetts.lora"});
+  if (!path || path->empty()) {
+    return assets;
+  }
+  engine::assets::WeightAdapterReadOptions read_options;
+  read_options.require_scaling_metadata = true;
+  read_options.strength = runtime::parse_finite_float_option(
+      options.options, {"outetts.lora_scale"}).value_or(1.0F);
+  auto adapter = engine::assets::read_weight_adapter(std::filesystem::u8path(*path), read_options);
+  engine::assets::WeightAdapterBindings bindings;
+  for (const auto & tensor : assets->model_weights->tensors()) {
+    bindings.add(tensor.name, tensor.name);
+  }
+  auto plan = engine::assets::bind_weight_adapter(
+      *assets->model_weights, std::move(adapter), bindings, engine::assets::WeightMergeMode::DeltaF32);
+  auto adapted = std::make_shared<OuteTTSAssets>(*assets);
+  adapted->model_weights = engine::assets::make_weight_adapter_source(
+      assets->model_weights, std::move(plan), "outetts.lora");
+  return adapted;
 }
 
 std::shared_ptr<const engine::model_spec::ModelContract> require_contract(
@@ -55,6 +75,8 @@ std::shared_ptr<const engine::model_spec::ModelContract> require_contract(
 
 bool is_legacy_session_option(std::string_view key) {
   return key == "outetts.dac_graph_context_mb" ||
+         key == "outetts.forced_aligner_path" ||
+         key == "outetts.aligner_path" ||
          key == "outetts.aligner_model_path" ||
          key == "outetts.forced_aligner_model_path";
 }
@@ -67,6 +89,7 @@ void validate_session_option_keys(
     if (key.rfind(family_prefix, 0) == 0 &&
         contract.session_option_keys.find(key) ==
             contract.session_option_keys.end() &&
+        key != "outetts.lora" && key != "outetts.lora_scale" &&
         !is_legacy_session_option(key)) {
       throw std::runtime_error(
           "unknown OuteTTS session option: " + key);
@@ -482,7 +505,7 @@ resolve_aligner_assets(const runtime::SessionOptions &options,
                        const OuteTTSAssets &model_assets) {
   const auto model_path = runtime::find_option(
       options.options,
-      {"outetts.aligner_path", "outetts.aligner_model_path",
+      {"outetts.forced_aligner_path", "outetts.aligner_path", "outetts.aligner_model_path",
        "outetts.forced_aligner_model_path"});
   if (model_path.has_value()) {
     return engine::models::qwen3_asr::load_qwen3_asr_assets(
@@ -526,7 +549,7 @@ OuteTTSSession::OuteTTSSession(runtime::TaskSpec task,
                                std::shared_ptr<const
                                    engine::model_spec::ModelContract> contract)
     : RuntimeSessionBase(options), task_(task),
-      assets_(require_assets(std::move(assets))),
+      assets_(require_assets(std::move(assets), options)),
       contract_(require_contract(std::move(contract))),
       tokenizer_(assets_),
       dac_(assets_, execution_context(),
@@ -631,7 +654,7 @@ OuteTTSVoiceProfile OuteTTSSession::prepare_voice_profile(
       throw std::runtime_error(
           "OuteTTS voice cloning requires a GGUF with an embedded Qwen3 "
           "Forced Aligner or --session-option "
-          "outetts.aligner_path=<path>");
+          "outetts.forced_aligner_path=<path>");
     }
     aligner_session_ = std::make_unique<
         engine::models::qwen3_forced_aligner::Qwen3ForcedAlignerSession>(

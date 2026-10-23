@@ -365,6 +365,140 @@ LABELS.update({
 })
 
 
+LABELS.update(dict(line.split('=', 1) for line in '''
+retake_seed=重新生成种子
+retake_variance=重新生成变化幅度
+audio_codes=音频编码标记
+stream_chunk_policy=流式分块方式
+punc=标点与大小写恢复
+stop_on_eos=遇结束标记停止
+video_file=参考视频文件
+exec_plan=模块运行方案
+max_audio_steps=音频生成步数上限
+min_audio_steps=音频生成步数下限
+smooth_window_ms=平滑窗口（毫秒）
+max_speech_duration_sec=最长语音片段（秒）
+merge_silence_duration_ms=合并静音间隔（毫秒）
+speech_pad_ms=语音片段补边（毫秒）
+speech_start_pad_ms=语音起点补边（毫秒）
+codec_encoder_bf16_compute=编解码器编码使用 BF16 计算
+encode_reference_only=仅编码参考声音
+references=参考声音列表
+previous_takes=已有生成片段
+previous_takes_file=已有片段文件
+backbone_prefill_cache_mb=主干预填充缓存（MB）
+tower_prefill_cache_mb=声学网络预填充缓存（MB）
+profile_first_audio=记录首段音频耗时
+context_length=上下文长度
+cpu_expert_layers=在 CPU 计算的专家层数
+disk_experts=从磁盘载入专家权重
+pin_experts=锁定专家权重内存
+expert_cache_size=专家缓存数量
+disk_expert_read_threads=磁盘专家读取线程数
+codec_encoder_f32_accumulation=编解码器编码使用 F32 累加
+codec_encoder_chunk_samples=编码器分块采样点数
+allow_incomplete_generation=允许未完整结束的生成
+filter_nan_logits=过滤无效采样分数
+reference_prefill_mode=参考声音预填充方式
+cased=保留大小写
+text=文本
+speaker_embedding_file=说话人特征文件
+t_schedule_mode=采样时间步方案
+sway_coeff=采样曲线系数
+codec_decode_chunk_steps=编解码器解码分块步数
+codec_decode_overlap_steps=编解码器解码重叠步数
+codec_encode_chunk_steps=编解码器编码分块步数
+codec_encode_overlap_steps=编解码器编码重叠步数
+predictor_duration_graph_arena_mb=时长预测图内存（MB）
+predictor_text_graph_arena_mb=文本预测图内存（MB）
+predictor_tail_graph_arena_mb=预测器尾部图内存（MB）
+return_codes=返回音频编码
+max_pass_duration_sec=单次处理时长上限（秒）
+cpu_repack=重排 CPU 权重
+conversation_cache_slots=对话缓存数量
+sliding_window_size=滑动窗口大小
+prompt=任务提示词
+max_audio_tokens=音频标记上限
+sigma=噪声尺度
+raw_text=原始文本
+trim_silence=裁剪末尾静音
+reference_cache=缓存参考声音
+instruction_schema=声音指令字段语言
+pitch=音高
+volume=音量
+use_speaker_embedding=使用说话人特征
+zero_speaker_embedding=清空说话人特征
+first_block_cache_start_percent=首块缓存起始比例
+first_block_cache_end_percent=首块缓存结束比例
+flow_uncond_interval=流模型无条件分支间隔
+flow_uncond_warmup=流模型无条件分支预热
+ensemble_takes=集成生成次数
+ensemble_prefix_frames=集成前缀帧数
+flow_chunk_hop_frames=流模型分块帧移
+presence_penalty=出现惩罚
+frequency_penalty=频率惩罚
+normalize_output=规范输出音量
+active_codebooks=启用的编码本数量
+prefill_mode=预填充方式
+min_frames=最少生成帧数
+duration_frames=目标时长帧数
+word_duration_frames=单词时长帧数
+context_text=上下文原文
+context_audio_file=上下文音频文件
+same_speaker=使用同一说话人
+pronunciations=自定义发音
+edit_start_frame=编辑起始帧
+edit_end_frame=编辑结束帧
+silence_duration_sec=片段静音间隔（秒）
+text_chunk_tokens=文本分段标记数
+noise_clamp=噪声截断范围
+eos_threshold=结束标记阈值
+voice_embedding_file=音色特征文件
+truncate_clone_audio=裁剪克隆参考音频
+export_voice_state_file=导出音色状态文件
+offline_graph_capacity_mode=离线计算图容量策略
+stitch_decode=合并文本分段后解码
+packed_projections=打包投影权重
+kv_cache_write=注意力缓存写入方式
+kv_cache_type=注意力缓存精度
+talker_kv_cache_alignment=语音模型缓存对齐
+stream_decoder=流式解码器
+keywords=关键词列表
+max_active_paths=最大搜索路径数
+keywords_score=关键词分数加成
+keywords_threshold=关键词检测阈值
+num_trailing_blanks=末尾空白标记数
+apg_scale=自适应引导强度
+duration_padding_sec=时长补边（秒）
+truncate_output_to_duration=按目标时长裁剪输出
+chunked_decode=分块解码
+inpaint_mask_start_sec=重绘起点（秒）
+inpaint_mask_end_sec=重绘终点（秒）
+prosody_ref=韵律参考音频
+style_ref=风格参考音频
+style_ref_text=风格参考原文
+use_prosody_code=使用韵律编码
+source_shift_steps=源音频移调（半音）
+prosody_shift_steps=韵律参考移调（半音）
+style_shift_steps=风格参考移调（半音）
+diffusion_noise_file=扩散噪声文件
+auto_frame_cap=自动限制音频帧数
+text_chunk_min_size=最小文本分段长度
+speaker_embedding=说话人特征
+reference_codes=参考音频编码
+reference_codes_file=参考音频编码文件
+babble_retries=异常语音重试次数
+g2p_dict_file=发音词典文件
+cfm_noise_file=流匹配噪声文件
+stream_left_context=流式左侧上下文
+chunk_strategy=分块策略
+audiovae_tile_frames=音频 VAE 分块帧数
+max_mel_tokens=声学标记上限
+kv_cache_alignment=注意力缓存对齐
+vae_tile_frames=VAE 分块帧数
+'''.strip().splitlines()))
+
+
 def option_label(name):
     key = name.rsplit('.', 1)[-1]
     if key in LABELS or key in SPECIAL:
@@ -405,6 +539,7 @@ HELP = {
     'instruct': '输入当前任务需要的声音或音频指令。',
     'instruction': '描述声音风格或表达方式。',
     'duration_sec': '目标时长，单位为秒；AuK 无参考音频时必须设置正数。',
+    'stitch_decode': '将各文本段的语音标记合并后一次解码；显存占用会随整段音频时长增加。',
 }
 
 

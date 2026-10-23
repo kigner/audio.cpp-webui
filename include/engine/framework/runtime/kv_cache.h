@@ -2,6 +2,7 @@
 
 #include "engine/framework/core/module.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -27,6 +28,27 @@ inline int64_t ring_stored_position(
     int64_t current_end,
     int64_t pinned_prefix_steps) {
     return row < pinned_prefix_steps ? row : current_end - valid_steps + row;
+}
+
+// Bucketed capacity for a static-cache AR loop: prompt rows plus a small
+// generated window to start, doubling buckets up to prompt + max_tokens. A
+// family that sizes its step graph from this number builds (and attends over)
+// the cache the request can fill, not the model's full cache length.
+inline int64_t bucketed_cache_steps(
+    int64_t prompt_steps,
+    int64_t max_tokens,
+    int64_t initial_generated_steps = 128,
+    int64_t minimum_bucket_steps = 128) {
+    const int64_t maximum = prompt_steps + max_tokens;
+    const int64_t required = prompt_steps + std::min(max_tokens, initial_generated_steps);
+    int64_t bucket = minimum_bucket_steps;
+    while (bucket < required && bucket <= maximum / 2) {
+        bucket *= 2;
+    }
+    if (bucket < required) {
+        bucket = required;
+    }
+    return std::min(bucket, maximum);
 }
 
 struct TransformerKVCacheOptions {
@@ -57,6 +79,12 @@ public:
         TransformerKVCacheOptions options);
 
     void import_state(const TransformerKVState & state);
+    // Import a contiguous, same-precision prefix starting at position zero.
+    // Backend copies preserve device residency; unused cache rows are zeroed.
+    void import_prefix(
+        const std::vector<core::TensorValue> & keys,
+        const std::vector<core::TensorValue> & values,
+        int64_t steps);
     void clear_on_backend();
     TransformerKVState export_state() const;
 
@@ -122,9 +150,11 @@ public:
         TransformerKVCacheOptions options);
 
     void import_state(const TransformerBatchedKVState & state);
+    void clear_on_backend();
     TransformerBatchedKVState export_state() const;
 
     void advance_after_direct_append(int64_t steps);
+    void advance_after_direct_append(const std::vector<int64_t> & steps_by_batch);
 
     int64_t batch_size() const noexcept;
     int64_t valid_steps() const noexcept;
@@ -132,6 +162,8 @@ public:
     int64_t cache_steps() const noexcept;
     const std::vector<int64_t> & valid_steps_by_batch() const noexcept;
     const std::vector<int64_t> & current_end_by_batch() const noexcept;
+    const core::TensorValue & key_tensor(size_t layer) const;
+    const core::TensorValue & value_tensor(size_t layer) const;
 
 private:
     struct LayerCache {
@@ -160,6 +192,7 @@ core::TensorValue view_transformer_kv_cache_steps(
     int64_t heads,
     int64_t head_dim,
     const char * label,
-    ggml_type view_type = GGML_TYPE_F32);
+    ggml_type view_type = GGML_TYPE_F32,
+    int64_t batch = 0);
 
 }  // namespace engine::runtime

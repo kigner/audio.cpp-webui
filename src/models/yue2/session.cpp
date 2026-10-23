@@ -6,6 +6,8 @@
 #include "engine/framework/io/filesystem.h"
 #include "engine/framework/runtime/options.h"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <stdexcept>
@@ -45,6 +47,53 @@ engine::assets::TensorStorageType parse_weight_type(
             assets::TensorStorageType::Q4_0,
             assets::TensorStorageType::Q4_K,
         });
+}
+
+struct PerfSettings {
+    bool packed_projections = false;
+    int64_t kv_cache_alignment = 1;
+    bool mem_saver = true;
+    int64_t vae_tile_frames = 0;
+};
+
+struct PerfPreset {
+    std::string_view name;
+    PerfSettings defaults;
+};
+
+constexpr std::array<PerfPreset, 2> kPerfPresets{{
+    {"off", {}},
+    {"cuda_perf", {true, 256, false, 512}},
+}};
+
+PerfSettings perf_settings_from_options(const runtime::SessionOptions & options, int64_t model_vae_tile_frames) {
+    const auto name = runtime::find_option(options.options, {"yue2.perf_mode"}).value_or("off");
+    const auto preset = std::find_if(kPerfPresets.begin(), kPerfPresets.end(),
+        [&](const auto & entry) { return entry.name == name; });
+    if (preset == kPerfPresets.end()) {
+        throw std::runtime_error("Invalid yue2.perf_mode: " + name);
+    }
+    auto settings = preset->defaults;
+    if (const auto value = runtime::find_option(options.options, {"yue2.packed_projections"})) {
+        settings.packed_projections = runtime::parse_bool_option(*value, "yue2.packed_projections");
+    }
+    settings.kv_cache_alignment = runtime::parse_positive_i64_option(
+        options.options, {"yue2.kv_cache_alignment"}, settings.kv_cache_alignment);
+    if (const auto value = runtime::find_option(options.options, {"yue2.mem_saver"})) {
+        settings.mem_saver = runtime::parse_bool_option(*value, "yue2.mem_saver");
+    }
+    if (settings.vae_tile_frames > 0) {
+        settings.vae_tile_frames = std::min(model_vae_tile_frames, settings.vae_tile_frames);
+    }
+    settings.vae_tile_frames = runtime::parse_positive_i64_option(
+        options.options, {"yue2.vae_tile_frames"}, settings.vae_tile_frames);
+    debug::trace_log_scalar("yue2.perf_mode", name);
+    debug::trace_log_scalar("yue2.packed_projections", settings.packed_projections);
+    debug::trace_log_scalar("yue2.kv_cache_alignment", settings.kv_cache_alignment);
+    debug::trace_log_scalar("yue2.mem_saver", settings.mem_saver);
+    debug::trace_log_scalar("yue2.vae_tile_frames",
+        settings.vae_tile_frames > 0 ? settings.vae_tile_frames : model_vae_tile_frames);
+    return settings;
 }
 
 core::AttentionPreference attention_preference_from_options(const runtime::SessionOptions & options) {
@@ -175,26 +224,43 @@ const runtime::CapabilitySet & yue2_capabilities() noexcept {
 runtime::ModelCliInterface yue2_cli_interface() {
     runtime::ModelCliInterface out;
     out.request_options = {
-        {"style", "string", "Music style prompt.", true},
-        {"lyrics", "string", "Lyrics to generate.", false},
-        {"abc", "string", "ABC score conditioning text.", false},
-        {"abc_file", "path", "Path to ABC score conditioning text.", false},
-        {"cot", "off|melody|full", "Planning mode.", false, "off"},
-        {"export_semantic", "bool", "Attach the semantic token stream as a result artifact.", false, "false"},
-        {"stop_after", "abc|semantic|audio", "Last stage to run; semantic implies export_semantic.", false, "audio"},
-        {"seed", "int", "Generation seed.", false, "1234"},
-        {"guidance_scale", "float", "Classifier-free guidance scale (legacy alias: cfg_scale).", false, "1.0", "0.0", "20.0"},
-        {"num_inference_steps", "int", "NAR ODE steps.", false, "8", "1"},
+        {"style", "string", "Song style/tags.", true},
+        {"lyrics", "string", "Lyrics text. Leave empty for instrumental generation; if omitted, the CLI text input is used."},
+        {"abc", "string", "External ABC score text for melody/full routes."},
+        {"abc_file", "string", "Path to an external ABC score file for melody/full routes."},
+        {"cot", "off|melody|full", "Symbolic planning route. off skips ABC generation; melody/full generate or consume ABC before music tokens. Default: full.", false, "full"},
+        {"export_semantic", "bool", "Attach the semantic token stream as a semantic artifact (JSON array of codec indices); default false.", false, "false"},
+        {"stop_after", "abc|semantic|audio", "Last stage to run. abc writes the generated score only; semantic also writes the semantic token export; audio renders the full song. Default: audio.", false, "audio"},
+        {"seed", "int", "Generation seed. Must be nonnegative and less than 2^63. Default: 1234.", false, "1234", "0"},
+        {"guidance_scale", "float", "Semantic classifier-free guidance scale. Default follows the upstream route defaults. Omitted defaults to 1.01 with cot=off, otherwise 1.0.", false, std::nullopt, "0", "20"},
+        {"num_inference_steps", "int", "NAR midpoint ODE steps. Default: 8.", false, "8", "1"},
+        {"semantic_prefix", "string", "JSON array of semantic codec indices to force as the start of the music stream."},
+        {"semantic_prefix_file", "string", "Path to a JSON array of semantic codec indices to force as the start of the music stream."},
+        {"nar_noise_file", "string", "Path to a raw float32 noise file for NAR generation, shaped [frames,64]."},
+        {"abc_temperature", "float", "ABC planner sampling temperature.", false, std::nullopt, "0", "5"},
+        {"abc_top_p", "float", "ABC planner nucleus sampling probability. Must be in (0, 1].", false, std::nullopt, std::nullopt, "1"},
+        {"abc_top_k", "int", "ABC planner top-k sampling limit.", false, std::nullopt, "1"},
+        {"abc_repetition_penalty", "float", "ABC planner repetition penalty. Must be positive."},
+        {"abc_penalty_window", "int", "ABC planner repetition penalty window.", false, std::nullopt, "1"},
+        {"abc_min_tokens", "int", "Minimum ABC planner tokens before EOS is accepted.", false, std::nullopt, "0"},
+        {"abc_max_tokens", "int", "Maximum ABC planner tokens. Zero is allowed when min_tokens is also zero.", false, std::nullopt, "0"},
+        {"semantic_temperature", "float", "Semantic codec sampling temperature.", false, std::nullopt, "0", "5"},
+        {"semantic_top_p", "float", "Semantic codec nucleus sampling probability. Must be in (0, 1].", false, std::nullopt, std::nullopt, "1"},
+        {"semantic_top_k", "int", "Semantic codec top-k sampling limit.", false, std::nullopt, "1"},
+        {"semantic_repetition_penalty", "float", "Semantic codec repetition penalty. Must be positive."},
+        {"semantic_penalty_window", "int", "Semantic codec repetition penalty window.", false, std::nullopt, "1"},
+        {"semantic_min_tokens", "int", "Minimum semantic tokens before EOS is accepted.", false, std::nullopt, "0"},
+        {"semantic_max_tokens", "int", "Maximum semantic codec tokens. Zero is allowed when min_tokens is also zero.", false, std::nullopt, "0"},
     };
     out.session_options = {
-        {"yue2.ar_lora", "path", "Unfused AR LoRA safetensors file; relative paths use the model root."},
+        {"yue2.ar_lora", "path", "AR adapter safetensors file; native, PEFT, and ComfyUI LoRA layouts. Relative paths use the model root."},
         {"yue2.ar_lora_scale", "float", "AR LoRA delta scale; zero disables the adapter.", false, "1.0"},
-        {"yue2.nar_lora", "path", "Unfused NAR LoRA safetensors file; relative paths use the model root."},
+        {"yue2.nar_lora", "path", "NAR adapter safetensors file; relative paths use the model root."},
         {"yue2.nar_lora_scale", "float", "NAR delta scale; full projection replacements are unscaled. Zero disables the adapter.", false, "1.0"},
         {"yue2.model_gguf", "string", "Yue2 main AR/NAR component GGUF file relative to the model root.", false, "yue2-3b-q8_0.gguf"},
         {"yue2.vae_gguf", "string", "Yue2 VAE component GGUF file relative to the model root.", false, "yue2-vae-f16.gguf"},
-        {"yue2.model_weight_type", "native|f32|f16|bf16|q8_0|q4_0|q4_k", "Yue2 main model weight storage type.", false, "native"},
-        {"yue2.vae_weight_type", "native|f32|f16|bf16|q8_0|q4_0|q4_k", "Yue2 VAE weight storage type.", false, "native"},
+        {"yue2.model_weight_type", "native|f32|f16|bf16|q8_0|q4_0|q4_k", "YuE2 MoT weight storage type. Omitted inherits weight_type."},
+        {"yue2.vae_weight_type", "native|f32|f16|bf16|q8_0|q4_0|q4_k", "YuE2 VAE weight storage type. Omitted inherits weight_type."},
         {"yue2.model_weight_context_mb", "int", "Yue2 main model weight context size in MiB.", false, "32", "1"},
         {"yue2.vae_weight_context_mb", "int", "Yue2 VAE weight context size in MiB.", false, "32", "1"},
         {"yue2.ar_prefill_graph_arena_mb", "int", "AR prefill graph arena size in MiB.", false, "32", "1"},
@@ -202,7 +268,13 @@ runtime::ModelCliInterface yue2_cli_interface() {
         {"yue2.nar_graph_arena_mb", "int", "NAR acoustic flow graph arena size in MiB.", false, "32", "1"},
         {"yue2.vae_graph_arena_mb", "int", "VAE decode graph arena size in MiB.", false, "32", "1"},
         {"yue2.attention", "auto|flash|eager", "NAR acoustic-flow attention lowering; auto uses flash except on CUDA sm70 (no kernel) and Intel Vulkan (eager measured faster).", false, "auto"},
-        {"yue2.attention_tile_rows", "int", "Query rows per tile in the eager NAR attention; 0 keeps a tile's score matrix under 3 GiB.", false, "0", "0"},
+        {"yue2.attention_tile_rows", "int", "Query rows per tile in eager NAR attention; nonpositive values choose automatic tiling to keep each score matrix under 3 GiB.", false, "0", std::nullopt},
+        {"yue2.perf_mode", "off|cuda_perf", "Performance preset; cuda_perf packs AR projections, aligns KV capacity to 256 tokens, retains stages and caps VAE tiles at 512 frames. Explicit controls override the preset.", false, "off"},
+        {"yue2.packed_projections", "bool", "Pack AR QKV and gate/up projections without changing weight dtype. Default false, true with cuda_perf. Explicit values override the preset."},
+        {"yue2.kv_cache_alignment", "int", "AR KV capacity alignment in tokens; values above 1 also use cached CUDA CFG attention windows of this size. Default 1, or 256 with cuda_perf; may use more memory and change numerics. Explicit values override the preset.", false, std::nullopt, "1"},
+        {"yue2.mem_saver", "bool", "Release AR/NAR runtimes and VAE graphs after generation. Default true, false with cuda_perf. Disabling retains stages and can substantially increase peak VRAM."},
+        {"yue2.vae_tile_frames", "int", "Latent core frames per VAE tile; defaults to model configuration, capped at 512 with cuda_perf. Explicit values override the cap. The halo is unchanged.", false, std::nullopt, "1"},
+        {"yue2.weight_type", "native|f32|f16|bf16|q8_0|q4_0|q4_k", "Shared weight storage type. Default: native.", false, "native"},
     };
     return out;
 }
@@ -219,6 +291,7 @@ Yue2Session::Yue2Session(
     if (task_.task != runtime::VoiceTaskKind::AudioGeneration || task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("Yue2 supports only offline gen/music");
     }
+    const auto perf = perf_settings_from_options(options, assets_->config.vae.decode_core_frames);
     pipeline_ = std::make_unique<Yue2PipelineRuntime>(
         execution_context(),
         assets_,
@@ -231,7 +304,11 @@ Yue2Session::Yue2Session(
         runtime::parse_size_mb_option(options.options, {"yue2.nar_graph_arena_mb"}, 32ull * 1024ull * 1024ull),
         runtime::parse_size_mb_option(options.options, {"yue2.vae_graph_arena_mb"}, 32ull * 1024ull * 1024ull),
         attention_preference_from_options(options),
-        runtime::parse_i64_option(options.options, {"yue2.attention_tile_rows"}).value_or(0));
+        runtime::parse_i64_option(options.options, {"yue2.attention_tile_rows"}).value_or(0),
+        perf.mem_saver,
+        perf.packed_projections,
+        perf.kv_cache_alignment,
+        perf.vae_tile_frames);
 }
 
 Yue2Session::~Yue2Session() = default;

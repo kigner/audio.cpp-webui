@@ -103,7 +103,8 @@ class QwenTtsReferenceTests(unittest.TestCase):
                                           transcript="旧参考原文", options={"speaker": "Vivian"})
         self.assertTrue(output.endswith(".wav"), message)
         payload = self.post.call_args.kwargs["json"]
-        self.assertEqual(payload["options"]["speaker"], "Vivian")
+        self.assertEqual(payload["options"]["voice_id"], "Vivian")
+        self.assertNotIn("speaker", payload["options"])
         self.assertNotIn("voice_ref", payload)
         self.assertNotIn("reference_text", payload)
 

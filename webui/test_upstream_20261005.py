@@ -69,7 +69,7 @@ class UpstreamWebUIContractTests(unittest.TestCase):
         self.assertTrue(qwen_controls)
         self.assertNotIn("text_chunk_size", qwen_controls)
         controls = {p["name"] for p in app.params_for("sopro-tts")}
-        self.assertIn("load_options.sopro_tts.matmul_weight_type", controls)
+        self.assertIn("session_options.sopro_tts.matmul_weight_type", controls)
 
     def test_generated_advanced_controls_construct_for_every_catalog_entry(self):
         seen = set()
@@ -100,8 +100,7 @@ class UpstreamWebUIContractTests(unittest.TestCase):
         self.assertEqual(options, {"stop_after": "abc", "semantic_prefix": [1, 2]})
         self.loaded.assert_called_once_with(
             "yue2", app.GEN_TASKS,
-            session_options={"yue2.ar_lora": "D:/adapter.safetensors"},
-            load_options={"mem_saver": "true"})
+            session_options={"yue2.ar_lora": "D:/adapter.safetensors", "yue2.mem_saver": "true"})
 
     def test_tts_progress_follows_loading_actual_chunks_and_merge(self):
         response = mock.Mock(status_code=200, content=b"RIFF")

@@ -27,6 +27,24 @@ struct LeakyReluConfig {
     float negative_slope = 0.01F;
 };
 
+struct PReluConfig {
+    size_t channel_axis = 1;
+};
+
+class PReluModule {
+public:
+    explicit PReluModule(PReluConfig config = {});
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const core::TensorValue & slope) const;
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    PReluConfig config_;
+};
+
 class LeakyReluModule {
 public:
     explicit LeakyReluModule(LeakyReluConfig config = {});
@@ -61,6 +79,13 @@ public:
     static const core::ModuleSchema & static_schema() noexcept;
 };
 
+class Bf16RoundModule {
+public:
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
+    static const core::ModuleSchema & static_schema() noexcept;
+};
+
 class GeluModule {
 public:
     explicit GeluModule(GeluConfig config = {});
@@ -74,11 +99,22 @@ private:
     GeluConfig config_;
 };
 
-class SiluModule {
+class GegluModule {
 public:
     const core::ModuleSchema & schema() const noexcept;
     core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
     static const core::ModuleSchema & static_schema() noexcept;
+};
+
+class SiluModule {
+public:
+    SiluModule() = default;
+    explicit SiluModule(bool preserve_input_type) : preserve_input_type_(preserve_input_type) {}
+    const core::ModuleSchema & schema() const noexcept;
+    core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
+    static const core::ModuleSchema & static_schema() noexcept;
+private:
+    bool preserve_input_type_ = false;
 };
 
 class SeluModule {

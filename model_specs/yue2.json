@@ -116,15 +116,15 @@
       {
         "name": "guidance_scale",
         "type": "float",
-        "description": "Semantic classifier-free guidance scale. Default follows the upstream route defaults.",
+        "description": "Semantic classifier-free guidance scale. Default follows the upstream route defaults. Omitted defaults to 1.01 with cot=off, otherwise 1.0.",
         "required": false,
-        "min": 0.0,
-        "max": 20.0
+        "min": 0,
+        "max": 20
       },
       {
         "name": "seed",
         "type": "int",
-        "description": "Generation seed.",
+        "description": "Generation seed. Must be nonnegative and less than 2^63.",
         "required": false,
         "min": 0,
         "default": 1234
@@ -148,10 +148,9 @@
       {
         "name": "abc_top_p",
         "type": "float",
-        "description": "ABC planner nucleus sampling probability.",
+        "description": "ABC planner nucleus sampling probability. Must be in (0, 1].",
         "required": false,
-        "min": 0.0,
-        "max": 1.0
+        "max": 1
       },
       {
         "name": "abc_top_k",
@@ -163,9 +162,8 @@
       {
         "name": "abc_repetition_penalty",
         "type": "float",
-        "description": "ABC planner repetition penalty.",
-        "required": false,
-        "min": 0.001
+        "description": "ABC planner repetition penalty. Must be positive.",
+        "required": false
       },
       {
         "name": "abc_penalty_window",
@@ -184,9 +182,9 @@
       {
         "name": "abc_max_tokens",
         "type": "int",
-        "description": "Maximum ABC planner tokens.",
+        "description": "Maximum ABC planner tokens. Zero is allowed when min_tokens is also zero.",
         "required": false,
-        "min": 1
+        "min": 0
       },
       {
         "name": "semantic_temperature",
@@ -199,10 +197,9 @@
       {
         "name": "semantic_top_p",
         "type": "float",
-        "description": "Semantic codec nucleus sampling probability.",
+        "description": "Semantic codec nucleus sampling probability. Must be in (0, 1].",
         "required": false,
-        "min": 0.0,
-        "max": 1.0
+        "max": 1
       },
       {
         "name": "semantic_top_k",
@@ -214,9 +211,8 @@
       {
         "name": "semantic_repetition_penalty",
         "type": "float",
-        "description": "Semantic codec repetition penalty.",
-        "required": false,
-        "min": 0.001
+        "description": "Semantic codec repetition penalty. Must be positive.",
+        "required": false
       },
       {
         "name": "semantic_penalty_window",
@@ -235,16 +231,16 @@
       {
         "name": "semantic_max_tokens",
         "type": "int",
-        "description": "Maximum semantic codec tokens.",
+        "description": "Maximum semantic codec tokens. Zero is allowed when min_tokens is also zero.",
         "required": false,
-        "min": 1
+        "min": 0
       }
     ],
     "session": [
       {
         "name": "ar_lora",
         "type": "string",
-        "description": "Unfused AR LoRA safetensors file. Absolute path or relative to the model root. Requires session reload.",
+        "description": "AR adapter safetensors file; native, PEFT, and ComfyUI LoRA layouts. Absolute path or relative to the model root. Requires session reload.",
         "required": false
       },
       {
@@ -257,7 +253,7 @@
       {
         "name": "nar_lora",
         "type": "string",
-        "description": "Unfused NAR adapter safetensors file. Absolute path or relative to the model root. Requires session reload.",
+        "description": "NAR adapter safetensors file. Absolute path or relative to the model root. Requires session reload.",
         "required": false
       },
       {
@@ -295,9 +291,8 @@
           "q4_0",
           "q4_k"
         ],
-        "description": "YuE2 MoT weight storage type.",
-        "required": false,
-        "default": "native"
+        "description": "YuE2 MoT weight storage type. Omitted inherits weight_type.",
+        "required": false
       },
       {
         "name": "model_gguf",
@@ -325,9 +320,8 @@
           "q4_0",
           "q4_k"
         ],
-        "description": "YuE2 VAE weight storage type.",
-        "required": false,
-        "default": "native"
+        "description": "YuE2 VAE weight storage type. Omitted inherits weight_type.",
+        "required": false
       },
       {
         "name": "model_weight_context_mb",
@@ -380,20 +374,58 @@
       {
         "name": "attention",
         "type": "enum",
+        "description": "NAR acoustic-flow attention lowering; auto selects the backend-appropriate implementation.",
         "required": false,
         "values": [
           "auto",
           "flash",
           "eager"
         ],
-        "description": "NAR acoustic-flow attention lowering; auto uses flash except on CUDA sm70 (no kernel) and Intel Vulkan (eager measured faster)."
+        "default": "auto"
+      },
+      {
+        "name": "perf_mode",
+        "type": "enum",
+        "description": "Performance preset; cuda_perf packs AR projections, aligns KV capacity to 256 tokens, retains stages and caps VAE tiles at 512 frames. Explicit controls override the preset. May change audio and substantially increase peak VRAM.",
+        "values": [
+          "off",
+          "cuda_perf"
+        ],
+        "required": false,
+        "default": "off"
+      },
+      {
+        "name": "packed_projections",
+        "type": "bool",
+        "description": "Pack AR QKV and gate/up projections without changing weight dtype. Default false, true with cuda_perf. Explicit values override the preset.",
+        "required": false
+      },
+      {
+        "name": "kv_cache_alignment",
+        "type": "int",
+        "description": "AR KV capacity alignment in tokens; values above 1 also use cached CUDA CFG attention windows of this size. Default 1, or 256 with cuda_perf; may use more memory and change numerics. Explicit values override the preset.",
+        "required": false,
+        "min": 1
+      },
+      {
+        "name": "mem_saver",
+        "type": "bool",
+        "description": "Release AR/NAR runtimes and VAE graphs after generation. Default true, false with cuda_perf. Disabling retains stages and can substantially increase peak VRAM.",
+        "required": false
+      },
+      {
+        "name": "vae_tile_frames",
+        "type": "int",
+        "description": "Latent core frames per VAE tile; defaults to model configuration, capped at 512 with cuda_perf. Explicit values override the cap. The halo is unchanged; different boundaries can change numerical results.",
+        "required": false,
+        "min": 1
       },
       {
         "name": "attention_tile_rows",
         "type": "int",
+        "description": "Query rows per eager NAR attention tile; nonpositive values select automatic tiling to keep each score matrix below 3 GiB.",
         "required": false,
-        "min": 0,
-        "description": "Query rows per tile in the eager NAR attention; 0 keeps a tile's score matrix under 3 GiB."
+        "default": 0
       }
     ],
     "load": []
@@ -483,13 +515,20 @@
     {
       "format": "gguf",
       "roots": {
-        "model": "."
+        "model": ".",
+        "weights": "$gguf"
       },
       "files": {
         "model_config": "model:sidecars/yue2-model-config.json",
         "generation_config": "model:sidecars/yue2-generation-config.json",
         "tiktoken": "model:sidecars/yue2-qwen.tiktoken",
         "vae_config": "model:sidecars/yue2-vae-config.json"
+      },
+      "tensors": {
+        "model_weights": {
+          "source": "weights:",
+          "prefix": "model_weights"
+        }
       }
     },
     {
