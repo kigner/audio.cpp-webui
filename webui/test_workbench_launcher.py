@@ -52,6 +52,75 @@ class LauncherTests(unittest.TestCase):
             finally:
                 first.close()
 
+    def test_different_ui_port_reopens_same_installation(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(launcher, "LOG_DIR", Path(root)), \
+                patch.object(launcher, "existing_health", return_value=None) as health, \
+                patch.object(launcher, "port_in_use", return_value=True), \
+                patch.object(launcher, "open_existing") as opened:
+            first = launcher.lock_instance(12345)
+            try:
+                health.side_effect = lambda port: {"runtime_revision": launcher.runtime_revision()} if port == 12345 else None
+                self.assertIsNone(launcher.lock_instance(23456))
+                opened.assert_called_once_with(12345)
+                self.assertEqual((Path(root) / "workbench.port").read_text(), "12345")
+            finally:
+                first.close()
+
+    def test_different_ui_port_waits_for_startup_and_recovers_after_exit(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(launcher, "LOG_DIR", Path(root)), \
+                patch.object(launcher, "existing_health", return_value=None), \
+                patch.object(launcher, "port_in_use", return_value=False):
+            first = launcher.lock_instance(12345)
+            try:
+                with patch.object(launcher.time, "monotonic", side_effect=[0, 181]), \
+                        patch.object(launcher.time, "sleep"):
+                    with self.assertRaisesRegex(RuntimeError, "still starting or stopping"):
+                        launcher.lock_instance(23456)
+                self.assertEqual((Path(root) / "workbench.port").read_text(), "12345")
+            finally:
+                first.close()
+            second = launcher.lock_instance(23456)
+            try:
+                self.assertEqual((Path(root) / "workbench.port").read_text(), "23456")
+            finally:
+                second.close()
+
+    def test_previous_launcher_on_another_port_is_found_during_upgrade(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(launcher, "LOG_DIR", Path(root)), \
+                patch.object(launcher, "existing_health") as health, \
+                patch.object(launcher, "port_in_use", return_value=True), \
+                patch.object(launcher, "instance_idle", return_value=True), \
+                patch.object(launcher, "stop_instance") as stop, patch.object(launcher.time, "sleep"):
+            (Path(root) / "workbench-12345.lock").write_bytes(b"0")
+            health.side_effect = lambda port: {"runtime_revision": "old"} if port == 12345 and not stop.called else None
+            handle = launcher.lock_instance(23456)
+            try:
+                stop.assert_called_once_with(12345)
+                self.assertEqual((Path(root) / "workbench.port").read_text(), "23456")
+            finally:
+                handle.close()
+
+    def test_other_port_with_active_call_is_not_restarted(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(launcher, "LOG_DIR", Path(root)), \
+                patch.object(launcher, "existing_health") as health, \
+                patch.object(launcher, "port_in_use", return_value=True), \
+                patch.object(launcher, "instance_idle", return_value=False), \
+                patch.object(launcher, "stop_instance") as stop:
+            (Path(root) / "workbench.port").write_text("12345", encoding="ascii")
+            health.side_effect = lambda port: {"runtime_revision": "old"} if port == 12345 else None
+            with self.assertRaisesRegex(RuntimeError, "current task or voice call"):
+                launcher.lock_instance(23456)
+            stop.assert_not_called()
+
+    def test_stale_or_invalid_port_record_does_not_prevent_start(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(launcher, "LOG_DIR", Path(root)), \
+                patch.object(launcher, "existing_health", return_value=None), \
+                patch.object(launcher, "port_in_use", return_value=False):
+            for value in ("invalid", "65536", "23456"):
+                (Path(root) / "workbench.port").write_text(value, encoding="ascii")
+                handle = launcher.lock_instance(12345)
+                handle.close()
+
     def test_old_idle_service_is_restarted_instead_of_reusing_missing_routes(self):
         with tempfile.TemporaryDirectory() as root, patch.object(launcher, "LOG_DIR", Path(root)), \
                 patch.object(launcher, "existing_health", side_effect=[{"pid": 123}, None]), \

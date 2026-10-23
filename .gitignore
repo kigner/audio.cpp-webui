@@ -28,6 +28,7 @@ __pycache__/
 /logs/
 /ideas/
 /docs/
+/webui/configs/mobile_access/
 # Local downstream release planning; public usage stays in README files.
 /updater/RELEASE.zh.md
 /windows_prebuild/

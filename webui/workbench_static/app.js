@@ -1,6 +1,8 @@
 import {t, uiText, uiAttr, rawText, sourceText, html, textHTML, applyLanguage, getLanguage, setLanguage} from './i18n.js';
 import {createScenarioStudio} from './scenarios.js?v=scenario-editors-24';
 import {createSpeakType} from './speaktype.js?v=2';
+import {createMobileAccess} from './mobile-access.js';
+const mobileAccess=createMobileAccess({navigate,showToast});
 const speakType=createSpeakType({root:document.getElementById('page-speaktype'),api,showToast});
 const scenarioStudio=createScenarioStudio({root:document.getElementById('page-scenario-studio'),api,showToast,navigate,plainMessage});
 const API = '/api/workbench';
@@ -199,10 +201,11 @@ function setParameters(open,focus=true) {
   syncDrawers();if(focus&&!$('parameter-toggle').hidden)$('parameter-toggle').focus();
 }
 function selectSettingsTab(tab) {
-  if(!['appearance','runtime','api'].includes(tab))tab='appearance';
+  if(!['appearance','runtime','mobile','api'].includes(tab))tab='appearance';
   document.querySelectorAll('[data-settings-tab]').forEach(b=>{const active=b.dataset.settingsTab===tab;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));});
-  for(const [key,id] of Object.entries({appearance:'settings-appearance',runtime:'settings-runtime-section',api:'page-api'}))$(id).hidden=key!==tab;
+  for(const [key,id] of Object.entries({appearance:'settings-appearance',runtime:'settings-runtime-section',mobile:'settings-mobile',api:'page-api'}))$(id).hidden=key!==tab;
   if(tab==='api')loadApiDocs();if(tab==='runtime')loadRuntimeInfo();
+  if(tab==='mobile')void mobileAccess.refresh();
 }
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==$('realtime-frame').contentWindow)return;

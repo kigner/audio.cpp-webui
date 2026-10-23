@@ -1431,7 +1431,33 @@ window.addEventListener("message", (event) => {
   if (event.origin !== window.location.origin || event.source !== window.parent) return;
   if (event.data?.type === "audiocpp:theme") applyTheme(event.data.theme, event.data.palette);
   if (event.data?.type === "audiocpp:realtime-stop") void doStop();
+  if (event.data?.type === "audiocpp:mobile-edit" && !settingsModal.open) settingsBtn.click();
+  if (event.data?.type === "audiocpp:mobile-save") void saveMobileConfiguration();
+  if (event.data?.type === "audiocpp:mobile-ping") window.parent.postMessage({type:"audiocpp:realtime-ready"}, location.origin);
 });
+
+async function saveMobileConfiguration() {
+  try {
+    if (!realtimeConfigReady) await refreshEnvDefaults();
+    await refreshReferenceLibrary();
+    if (!realtimeConfigReady) throw new Error("无法读取实时语音配置，请稍后重试。");
+    const response = await fetch("/api/workbench/mobile/config", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        config: {...appConfigFromSettings(settings), instructions: characterInstructions(settings)},
+        character: {id: currentCharacter(settings.characters).id,
+                    name: currentCharacter(settings.characters).name,
+                    animation: currentCharacter(settings.characters).animation},
+        noise_gate: Number(settings.noiseGate),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "保存失败，请重试。");
+    window.parent.postMessage({type:"audiocpp:mobile-saved"}, location.origin);
+  } catch (error) {
+    window.parent.postMessage({type:"audiocpp:mobile-saved", error:error.message}, location.origin);
+  }
+}
 
 // ── Init ───────────────────────────────────────────────────────────────
 chat = new ChatView();
@@ -1450,6 +1476,7 @@ window.addEventListener("character-error", event => showRealtimeError(event.deta
 requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("booting")));
 
 applyLanguage();
+if (window.parent !== window) window.parent.postMessage({type:"audiocpp:realtime-ready"}, location.origin);
 window.addEventListener('message',event=>{
   if(event.origin===location.origin&&event.source===window.parent&&event.data?.type==='audiocpp:language')setLanguage(event.data.language);
 });

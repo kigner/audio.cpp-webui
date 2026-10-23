@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/workbench-static/palettes.css?v=aixora-1">
   <script type="module" src="/workbench-static/app.js?v=aixora-languages-112"></script>
   <link rel="stylesheet" href="/workbench-static/speaktype.css?v=1">
+  <link rel="stylesheet" href="/workbench-static/mobile-access.css?v=1">
 </head>
 <body>
   <svg class="icon-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -119,11 +120,29 @@
       </section>
       <section id="page-settings" class="page settings-page management-page" aria-labelledby="settings-heading" hidden>
         <header class="page-heading page-topbar"><h1 id="settings-heading" data-i18n="系统设置">系统设置</h1></header>
-        <nav id="settings-tabs" class="settings-tabs" aria-label="设置分类" data-i18n-aria-label="设置分类"><button class="active" data-settings-tab="appearance" aria-current="page" data-i18n="外观">外观</button><button data-settings-tab="runtime" data-i18n="模型运行">模型运行</button><button data-settings-tab="api" data-i18n="API 与开发">API 与开发</button></nav>
+        <nav id="settings-tabs" class="settings-tabs" aria-label="设置分类" data-i18n-aria-label="设置分类"><button class="active" data-settings-tab="appearance" aria-current="page" data-i18n="外观">外观</button><button data-settings-tab="runtime" data-i18n="模型运行">模型运行</button><button data-settings-tab="mobile" data-i18n="手机访问">手机访问</button><button data-settings-tab="api" data-i18n="API 与开发">API 与开发</button></nav>
         <section id="settings-appearance" class="card settings-section" aria-labelledby="appearance-heading"><h2 id="appearance-heading" class="sr-only" data-i18n="外观">外观</h2><div class="palette-options" role="group" aria-label="界面配色" data-i18n-aria-label="界面配色"><button type="button" class="palette-option" data-palette-choice="classic" aria-pressed="true"><span class="palette-swatch swatch-classic" aria-hidden="true"></span><strong data-i18n="经典蓝紫">经典蓝紫</strong></button><button type="button" class="palette-option" data-palette-choice="studio" aria-pressed="false"><span class="palette-swatch swatch-studio" aria-hidden="true"></span><strong data-i18n="石墨琥珀">石墨琥珀</strong></button></div><label class="field-label" for="ui-language" data-i18n="界面语言">界面语言</label><select id="ui-language"><option value="zh">中文</option><option value="en">English</option></select><label class="field-label" for="theme-select" data-i18n="明暗模式">明暗模式</label><select id="theme-select"><option value="light" data-i18n="浅色">浅色</option><option value="dark" data-i18n="深色">深色</option><option value="system" data-i18n="跟随系统">跟随系统</option></select></section>
         <section id="settings-runtime-section" class="settings-section" aria-labelledby="runtime-heading" hidden>
           <div class="card"><h2 id="runtime-heading" class="sr-only" data-i18n="模型运行">模型运行</h2><p id="settings-runtime" class="muted" data-i18n="正在读取服务状态…">正在读取服务状态…</p><div class="reference-actions"><button id="unload-model" class="button secondary" title="释放当前任务模型的内存" data-i18n-title="释放当前任务模型的内存" data-i18n="卸载当前模型">卸载当前模型</button><button id="unload-all-models" class="button secondary" title="释放当前模型和常驻识别模型的内存" data-i18n-title="释放当前模型和常驻识别模型的内存" data-i18n="卸载所有内存模型">卸载所有内存模型</button></div><p class="field-help" data-i18n="参考音频识别首次加载 Qwen3-ASR 0.6B 后保持常驻，点击“卸载所有内存模型”可释放内存。">参考音频识别首次加载 Qwen3-ASR 0.6B 后保持常驻，点击“卸载所有内存模型”可释放内存。</p></div>
           <div class="card"><div class="card-heading"><h2 data-i18n="本地服务">本地服务</h2><button id="refresh-runtime-logs" class="text-button" type="button" data-i18n="刷新日志">刷新日志</button></div><p id="runtime-health" class="muted small" data-i18n="正在读取运行状态…">正在读取运行状态…</p><pre id="runtime-logs" class="runtime-logs" aria-label="服务日志" data-i18n-aria-label="服务日志">暂无日志</pre><div class="runtime-actions"><a id="download-runtime-logs" class="button secondary small-button" href="/api/workbench/runtime/logs" download data-i18n="下载诊断日志">下载诊断日志</a><button id="shutdown-service" class="button danger small-button" type="button" data-i18n="退出工作空间服务">退出工作空间服务</button></div></div>
+        </section>
+        <section id="settings-mobile" class="settings-section" aria-labelledby="mobile-heading" hidden>
+          <div class="card mobile-access-card">
+            <h2 id="mobile-heading" data-i18n="手机访问">手机访问</h2>
+            <p class="muted small" data-i18n="用手机与电脑上的语音助手通话，角色、声音和模型都在电脑上设置。">用手机与电脑上的语音助手通话，角色、声音和模型都在电脑上设置。</p>
+            <p id="mobile-summary" class="mobile-access-summary small"></p>
+            <div class="mobile-access-actions"><button id="mobile-edit" class="button secondary" data-i18n="调整语音配置">调整语音配置</button><button id="mobile-save" class="button" data-i18n="保存当前语音配置">保存当前语音配置</button></div>
+            <p class="field-help" data-i18n="保存实时语音中当前选用的角色与设置；修改后再次保存，下次手机通话时生效。">保存实时语音中当前选用的角色与设置；修改后再次保存，下次手机通话时生效。</p>
+          </div>
+          <div class="card mobile-access-card">
+            <label class="mobile-access-toggle"><input id="mobile-enabled" type="checkbox" disabled><span data-i18n="允许局域网访问">允许局域网访问</span></label>
+            <p id="mobile-state" class="muted small" role="status" aria-live="polite"></p>
+            <div id="mobile-connection" hidden>
+              <div class="mobile-access-connect"><img id="mobile-qr" alt="手机访问二维码" data-i18n-alt="手机访问二维码"><div><label for="mobile-address" class="field-label" data-i18n="电脑局域网地址">电脑局域网地址</label><select id="mobile-address"></select><input id="mobile-url" readonly aria-label="手机访问地址" data-i18n-aria-label="手机访问地址"><button id="mobile-copy" class="button secondary small-button" data-i18n="复制地址">复制地址</button></div></div>
+              <ol class="mobile-access-steps"><li data-i18n="手机与电脑连接同一 Wi-Fi，用相机扫码并轻点链接。">手机与电脑连接同一 Wi-Fi，用相机扫码并轻点链接。</li><li data-i18n="首次出现证书警告时，核对地址是这台电脑，选择“显示详情／高级 → 继续访问”。">首次出现证书警告时，核对地址是这台电脑，选择“显示详情／高级 → 继续访问”。</li><li data-i18n="打开通话页，点击“开始通话”，允许麦克风访问。">打开通话页，点击“开始通话”，允许麦克风访问。</li></ol>
+              <p class="field-help" data-i18n="地址打不开时，请检查电脑防火墙是否允许 Python 通过专用网络。更换网络后，关闭再开启此开关以刷新地址。">地址打不开时，请检查电脑防火墙是否允许 Python 通过专用网络。更换网络后，关闭再开启此开关以刷新地址。</p>
+            </div>
+          </div>
         </section>
         <section id="page-api" class="settings-section" aria-labelledby="api-heading" hidden><h2 id="api-heading" class="sr-only" data-i18n="API 与开发">API 与开发</h2><div class="card api-connection"><div><span class="field-label" data-i18n="服务地址">服务地址</span><code id="api-base">正在读取…</code></div><div><span class="field-label" data-i18n="当前模型">当前模型</span><span id="api-model">—</span></div></div><div id="api-endpoints" class="api-endpoints"></div></section>
       </section>

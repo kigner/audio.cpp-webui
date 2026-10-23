@@ -33,7 +33,7 @@ def runtime_revision():
     for name in ("webui.py", "workbench_launcher.py", "workbench_server.py", "workbench_metadata.py",
                  "workbench_references.py", "workbench_asr.py", "workbench_downloads.py",
                  "workbench_scenarios.py", "scenario_media.py", "workbench_speaktype.py",
-                 "realtime_server.py", "realtime_pipeline.py"):
+                 "realtime_server.py", "realtime_pipeline.py", "mobile_access.py"):
         path = WEBUI_DIR / name
         digest.update(name.encode("utf-8") + b"\0")
         digest.update(path.read_bytes() if path.is_file() else b"missing")
@@ -81,10 +81,58 @@ def open_existing(port):
         webbrowser.open(f"http://127.0.0.1:{port}/")
 
 
+def running_instance(port):
+    """Find this installation, including launches made with a different UI port."""
+    candidates = [port]
+    try:
+        candidates.append(int((LOG_DIR / "workbench.port").read_text(encoding="ascii")))
+    except (OSError, ValueError):
+        pass
+    # Older launchers used a per-port lock; recognise an instance during upgrade.
+    for path in LOG_DIR.glob("workbench-*.lock"):
+        try:
+            candidates.append(int(path.stem.removeprefix("workbench-")))
+        except ValueError:
+            pass
+    for candidate in dict.fromkeys(candidates):
+        if 1 <= candidate <= 65535 and (candidate == port or port_in_use(candidate)):
+            info = existing_health(candidate)
+            if info:
+                return candidate, info
+    return port, None
+
+
+def _lock_file(handle):
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _wait_for_legacy_exit(port, deadline):
+    """An old service closes its port before its mobile/backend cleanup finishes."""
+    path = LOG_DIR / f"workbench-{port}.lock"
+    if not path.is_file():
+        return
+    with path.open("r+b") as handle:
+        while True:
+            try:
+                _lock_file(handle)
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Workbench is still stopping. Check the startup log and try again.")
+                time.sleep(.3)
+
+
 def lock_instance(port):
     """Return a locked file, or None after reopening a healthy instance."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handle = (LOG_DIR / f"workbench-{port}.lock").open("a+b")
+    # Models and the mobile listener are shared by the whole installation.
+    handle = (LOG_DIR / "workbench.lock").open("a+b")
     handle.seek(0, 2)
     if handle.tell() == 0:
         handle.write(b"0")
@@ -92,14 +140,14 @@ def lock_instance(port):
     deadline = time.monotonic() + 180
     revision = runtime_revision()
     while True:
-        info = existing_health(port)
+        active_port, info = running_instance(port)
         if info:
             if info.get("runtime_revision") == revision:
                 handle.close()
-                open_existing(port)
+                open_existing(active_port)
                 return None
             try:
-                idle = instance_idle(port)
+                idle = instance_idle(active_port)
             except BaseException:
                 handle.close()
                 raise
@@ -108,26 +156,30 @@ def lock_instance(port):
                 raise RuntimeError("Workbench updated. Run run_webui.bat again after the current task or voice call ends.")
             print("[webui] Workbench updated. Restarting the service...", flush=True)
             try:
-                stop_instance(port)
+                stop_instance(active_port)
+                _wait_for_legacy_exit(active_port, deadline)
             except BaseException:
                 handle.close()
                 raise
             time.sleep(.3)
             continue
         try:
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return handle
+            _lock_file(handle)
         except OSError:
             if time.monotonic() >= deadline:
                 handle.close()
                 raise RuntimeError("Workbench is still starting or stopping. Check the startup log and try again.")
             time.sleep(.3)
+            continue
+        try:
+            record = LOG_DIR / "workbench.port"
+            temporary = record.with_suffix(".port.tmp")
+            temporary.write_text(str(port), encoding="ascii")
+            temporary.replace(record)
+            return handle
+        except BaseException:
+            handle.close()
+            raise
 
 
 class Tee:
@@ -196,7 +248,8 @@ def main(argv=None):
         print(f"\n[webui] {time.strftime('%Y-%m-%d %H:%M:%S')} Python: {sys.executable}", flush=True)
         port = ui_port()
         if args.stop:
-            stop_instance(port)
+            active_port, _ = running_instance(port)
+            stop_instance(active_port)
             return 0
         if os.environ.get("AUDIOCPP_WEBUI_LEGACY") != "1":
             lock = lock_instance(port)

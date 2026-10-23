@@ -2,7 +2,7 @@ import {attachLipSync} from '../avatar/audio-bridge.js';
 import {createCharacter} from './character.js';
 import {CHARACTER_DEFAULTS} from './profile.js';
 
-export async function mountLiveCharacter(profile) {
+export async function mountLiveCharacter(profile, {framing} = {}) {
   const stage = document.getElementById('live-character-stage');
   const backdrop = document.querySelector('.scene-background');
   let character, bridge, activeClient, output, epoch = 0, disposed = false;
@@ -61,7 +61,7 @@ export async function mountLiveCharacter(profile) {
       characterUrl = url;
       epoch++; bridge?.dispose(); bridge = null;
       character?.dispose(); character = null;
-      characterReady = createCharacter(stage,url,{onLayout(bounds){
+      characterReady = createCharacter(stage,url,{framing,onLayout(bounds){
         if(disposed||characterUrl!==url)return;
         characterLayout=bounds;applySceneLayout();
       }}).then(value => {

@@ -1,6 +1,7 @@
 """Local workbench HTTP adapter. Reuses the established model/task implementations."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -564,6 +565,11 @@ def create_workbench_app(backend, *, realtime=True, download_manager=None, asr_m
     work.asr = asr_manager
     app.state.workbench = work
     try:
+        from .mobile_access import install_mobile_routes
+    except ImportError:
+        from mobile_access import install_mobile_routes
+    mobile = install_mobile_routes(app, work)
+    try:
         from .workbench_scenarios import install_scenario_routes
     except ImportError:
         from workbench_scenarios import install_scenario_routes
@@ -585,9 +591,11 @@ def create_workbench_app(backend, *, realtime=True, download_manager=None, asr_m
     @contextlib.asynccontextmanager
     async def lifespan(_app):
         try:
+            await asyncio.to_thread(mobile.resume)
             yield
         finally:
             app.state.shutting_down = True
+            await asyncio.to_thread(mobile.stop, timeout=None)
             speaktype.close()
             with work.lock:
                 for job in work.jobs.values():

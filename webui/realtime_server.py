@@ -269,6 +269,8 @@ def create_app(
     lease_callback: Optional[SessionLease] = None,
     asr_catalog_provider: Optional[ModelCatalogProvider] = None,
     managed_asr_loader: Optional[ManagedAsrLoader] = None,
+    fixed_config_provider: Optional[Callable] = None,
+    serve_static: bool = True,
 ) -> FastAPI:
     """Create a standalone app or the host app for the integrated WebUI.
 
@@ -394,10 +396,19 @@ def create_app(
             if not allowed:
                 await ws.close(code=1008, reason="Realtime connections must use the same origin.")
                 return
+        # A call-only host owns the configuration. Take one snapshot per call;
+        # browser session.update messages cannot replace its credentials/models.
+        connection_defaults = defaults
+        if fixed_config_provider is not None:
+            try:
+                connection_defaults = {**defaults, **fixed_config_provider()}
+            except ValueError:
+                await ws.close(code=1013, reason="Please save the voice configuration on the computer first.")
+                return
         await ws.accept()
         session_id = _generate_id("session")
 
-        initial_cfg = _resolve_tts_config(defaults, model_catalog_provider)
+        initial_cfg = _resolve_tts_config(connection_defaults, model_catalog_provider)
         session_cfg = dict(initial_cfg)
         pipeline = RealtimePipeline(**_pipeline_config(initial_cfg))
         pipeline.start()
@@ -510,7 +521,8 @@ def create_app(
                                 "type": "audiocpp_pipeline_error",
                                 "code": event.code,
                                 "stage": event.stage,
-                                "message": event.message,
+                                "message": ("语音服务暂时不可用，请在电脑上检查配置后重试。"
+                                            if fixed_config_provider is not None else event.message),
                             },
                         }, event)
                     elif isinstance(event, ResponseDone):
@@ -547,9 +559,15 @@ def create_app(
                 msg_type = msg.get("type", "")
 
                 if msg_type == "session.update":
+                    if fixed_config_provider is not None and configured:
+                        await ws.send_json({"type": "session.updated"})
+                        continue
                     session = msg.get("session")
+                    if fixed_config_provider is not None:
+                        session = {}
                     if isinstance(session, dict):
-                        cfg = _config_from_session(session)
+                        cfg = (dict(connection_defaults) if fixed_config_provider is not None
+                               else _config_from_session(session))
                         if cfg:
                             candidate = dict(session_cfg)
                             candidate.update(cfg)
@@ -567,6 +585,10 @@ def create_app(
                                     await asyncio.to_thread(lease_callback, session_id, resolved)
                                     leased = True
                                     lease_updated = True
+                                if (fixed_config_provider is not None and managed_asr_loader is not None
+                                        and resolved.get("asr_server", "").rstrip("/")
+                                        == defaults["asr_server"].rstrip("/")):
+                                    await asyncio.to_thread(managed_asr_loader, resolved["asr_model"])
                                 if (resolved["tts_server_source"] == "managed"
                                         and managed_tts_loader is not None):
                                     mode = ("streaming" if resolved["tts_streaming"]
@@ -616,6 +638,8 @@ def create_app(
                                         "request_id": msg.get("request_id")})
 
                 elif msg_type == "user.text":
+                    if fixed_config_provider is not None:
+                        continue
                     text = msg.get("text")
                     if not configured or (lease_callback is not None and not leased):
                         await ws.send_json({"type": "error", "error": {
@@ -645,15 +669,18 @@ def create_app(
                 await send_task
             except asyncio.CancelledError:
                 pass
-            pipeline.stop()
-            if leased and lease_callback is not None:
-                await asyncio.to_thread(lease_callback, session_id, None)
+            try:
+                pipeline.stop()
+            finally:
+                if leased and lease_callback is not None:
+                    await asyncio.to_thread(lease_callback, session_id, None)
 
     # Shared Studio translations also serve standalone realtime pages.
-    app.mount("/workbench-static", RealtimeStaticFiles(
-        directory=os.path.join(os.path.dirname(__file__), "workbench_static")), name="studio-copy")
+    if serve_static:
+        app.mount("/workbench-static", RealtimeStaticFiles(
+            directory=os.path.join(os.path.dirname(__file__), "workbench_static")), name="studio-copy")
     # Serve static orb frontend
-    if os.path.isdir(STATIC_DIR):
+    if serve_static and os.path.isdir(STATIC_DIR):
         app.mount(static_prefix, RealtimeStaticFiles(directory=STATIC_DIR, html=True), name="realtime-static")
 
     return app

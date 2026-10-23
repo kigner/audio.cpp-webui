@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151310">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Aixora">
+  <title>手机访问 · Aixora Audio</title>
+  <link rel="icon" href="/assets/icon.png">
+  <link rel="apple-touch-icon" href="/assets/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="stylesheet" href="/assets/companion/live.css">
+  <link rel="stylesheet" href="/assets/call.css">
+  <script type="module" src="/assets/call.js"></script>
+</head>
+<body data-character="system">
+  <div class="scene-background" aria-hidden="true"></div>
+  <div id="live-character-stage" aria-hidden="true"></div>
+  <div class="scene-shade" aria-hidden="true"></div>
+  <main id="call-screen">
+    <button id="reveal" aria-label="显示或隐藏通话操作"></button>
+    <header class="chrome">
+      <button id="help" class="icon-button" aria-label="使用帮助" title="使用帮助"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .5c0 2-2.5 2-2.5 4M12 17h.01"/></svg></button>
+      <button id="fullscreen" class="icon-button" aria-label="全屏" title="全屏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg></button>
+    </header>
+    <h1 id="character" class="chrome">语音助手</h1>
+    <p id="status" role="status" aria-live="polite">正在连接电脑…</p>
+    <div id="notice" hidden><p id="error" role="alert"></p><button id="dismiss-notice" class="icon-button" aria-label="关闭提示"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+    <div id="controls" class="controls chrome">
+      <button id="start" class="start-button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 4 1 1 5-2 2c1 2 3 4 5 5l2-2 5 1 1 4c0 2-3 3-5 2C9 19 5 15 3 8 2 6 3 3 5 3Z"/></svg><span>开始通话</span></button>
+      <button id="mute" class="round-button" aria-label="静音" aria-pressed="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11v1a6 6 0 0 0 12 0v-1m-6 7v3m-3 0h6"/><path class="mute-slash" d="m3 3 18 18"/></svg><span>静音</span></button>
+      <button id="end" class="round-button danger" aria-label="结束通话" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10c5-4 13-4 18 0v5l-5-1v-3a12 12 0 0 0-8 0v3l-5 1Z"/></svg><span>挂断</span></button>
+    </div>
+    <span id="muted-indicator" hidden>麦克风已静音</span>
+  </main>
+  <dialog id="help-dialog" aria-labelledby="help-title">
+    <h2 id="help-title">手机访问</h2>
+    <p>点击“开始通话”并允许麦克风。通话时按钮会自动隐藏，轻点画面即可唤回。</p>
+    <p>角色、声音和动画在电脑上设置，保存后从下次通话生效。通话时请保持页面在前台。</p>
+    <h3>iPhone 全屏打开</h3>
+    <p>在 Safari 的“分享”菜单中选择“添加到主屏幕”，再从主屏幕图标打开。若出现“作为网页 App 打开”，请保持开启。</p>
+    <button id="close-help" class="start-button">知道了</button>
+  </dialog>
+</body>
+</html>

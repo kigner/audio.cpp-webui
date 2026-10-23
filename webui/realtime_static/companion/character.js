@@ -86,7 +86,7 @@ function compile(gl, type, source) {
   if (!gl.getShaderParameter(shader,gl.COMPILE_STATUS)) {const error=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(error);}
   return shader;
 }
-export async function createCharacter(container, assetUrl = new URL('./assets/character.json', import.meta.url), {onLayout} = {}) {
+export async function createCharacter(container, assetUrl = new URL('./assets/character.json', import.meta.url), {onLayout, framing} = {}) {
   const response=await fetch(assetUrl);
   if(!response.ok)throw new Error('人物素材配置无法读取。');
   const assets=await response.json();
@@ -161,7 +161,17 @@ export async function createCharacter(container, assetUrl = new URL('./assets/ch
         x=width-inset-right*scale;
       }
     }
-    bounds={x,y:height-scene.height*scale,width:scene.width*scale,height:scene.height*scale};
+    let y=height-scene.height*scale;
+    if(framing==='mobile'){
+      // Frame the face and upper body on portrait phones. A seated character's
+      // room follows this same transform, so her sofa stays under her.
+      scale=height*.94/scene.height;
+      const [offsetX,,referenceScale]=assets.referenceTransform||[0,0,1];
+      const faceX=rig.headRegion[0]*referenceScale+offsetX;
+      x=width>height?width-scene.width*scale:width/2-faceX*scale;
+      y=height*.09;
+    }
+    bounds={x,y,width:scene.width*scale,height:scene.height*scale};
     onLayout?.(assets.sceneLayout?{...bounds}:null);
     const w=width/scale,h=height/scale;
     gl.uniform4f(location.crop,-bounds.x/scale,-bounds.y/scale,w,h);resume();
