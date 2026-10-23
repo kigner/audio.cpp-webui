@@ -42,6 +42,14 @@ Aixora Audio brings local audio models into one workspace. Turn text into voiceo
 
 Realtime calls also have improved lifecycle handling: going back turns off the microphone, and starting again reuses the matching loaded models. Character names and voices do not override the reply language in automatic mode. Separation results use grouped waveform players, and video dubbing shows the reference-audio settings needed by the selected model.
 
+## 2026-10-23 source update
+
+- Integrated upstream `audio.cpp` through `c8365f39`, including the C++ backend, model implementations and the complete native WebUI. The native WebUI and the Aixora workspace remain available in parallel, with separate model-catalog and parameter configuration and separate model managers.
+- Added 27 workspace model entries across 16 families, including Ming3-TTS, Ming3-Audio, XTTS v2, Voxtral TTS, sound classification, wake-word detection and additional source-separation models. Model center now contains **184 entries across 129 families**.
+- Adapted model parameters, migration of saved settings, streaming sample rates and stereo output. Preserved Qwen3-ASR timestamp corrections and Qwen3-TTS long-text chunking and truncation checks.
+
+Windows CUDA builds and regression checks passed. **Qwen3-TTS 0.6B and Qwen3-ASR 0.6B also passed manual testing**.
+
 ## Quick start
 
 1. Extract the complete Windows portable package and double-click **`run_webui.bat`** in its root directory.
