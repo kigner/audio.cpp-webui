@@ -2700,5 +2700,12 @@
   "地址已复制": "Address copied",
   "请复制选中的地址": "Copy the selected address",
   "保存超时，请打开实时语音后重试。": "Saving timed out. Open Realtime Voice and try again.",
-  "已保存，下次手机通话时生效。": "Saved. Applies to the next mobile call."
+  "已保存，下次手机通话时生效。": "Saved. Applies to the next mobile call.",
+  "播放": "Play",
+  "音量": "Volume",
+  "流式试听": "Streaming Playback",
+  "继续试听": "Resume Playback",
+  "暂停试听": "Pause Playback",
+  "播放时间": "Playback Time",
+  "点击播放开始试听。": "Click Play to start listening."
 }

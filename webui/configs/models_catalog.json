@@ -11,7 +11,7 @@
     { "id": "dots-tts-soar",          "display_name": "DotTTS SOAR (tts + clone)",             "family": "dots_tts",             "path": "models/DotTTS-SOAR-GGUF",               "task": "tts",   "mode": "offline", "download_id": "dots_tts_soar_q8_0",      "min_vram_gb": 8 },
     { "id": "dots-tts-meanflow",      "display_name": "DotTTS MeanFlow (tts + clone)",         "family": "dots_tts",             "path": "models/DotTTS-MF-GGUF",                 "task": "tts",   "mode": "offline", "download_id": "dots_tts_mf_q8_0",        "min_vram_gb": 8 },
     { "id": "dots-tts-edit",          "display_name": "DotTTS Edit (speech editing, GGUF Q8)", "family": "dots_tts",             "path": "models/DotTTS-Edit-GGUF",               "task": "tts",   "mode": "offline", "download_id": "dots_tts_edit_q8_0",      "min_vram_gb": 8,
-      "default_options": { "template_name": "edit" },
+      "default_options": { "template_name": "edit" }, "streaming_tasks": [],
       "profile": { "voice_input_role": "source_audio", "require_voice": true, "send_reference_text": false },
       "input_hint": "**DotTTS Edit**：选择要编辑的源语音，在合成文本框填写结构化编辑指令；源音频原文、编辑后文本和源音色选项位于参考音频下方。",
       "input_hint_en": "**DotTTS Edit**: select the source speech and enter a structured edit instruction in the synthesis box. Source text, target text and source voice options appear below the reference audio." },

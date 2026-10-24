@@ -469,9 +469,11 @@ class Workbench:
                     if values.get("rvc_no_index") is True:
                         rvc_index = None
                         opts.pop("retrieval_index_path", None)
+                        opts.pop("retrieval_index_file", None)
                         opts["retrieval_blend"] = 0
                     elif (values.get("rvc_no_index") is False and (rvc_model or opts.get("voice_model_path"))
-                          and float(opts.get("retrieval_blend", 0)) > 0 and not (rvc_index or opts.get("retrieval_index_path"))):
+                          and float(opts.get("retrieval_blend", 0)) > 0
+                          and not (rvc_index or opts.get("retrieval_index_file") or opts.get("retrieval_index_path"))):
                         raise ValueError('请为自定义 RVC 音色选择索引文件，或勾选“不使用音色索引”。')
                 path, final_message = b.do_vc(model, audio, voice, builtin,
                     self.input_path(rvc_model, audio=False),

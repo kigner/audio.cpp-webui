@@ -49,10 +49,10 @@ class WorkbenchQaRepairMetadataTests(unittest.TestCase):
     def test_dot_instruction_is_only_present_for_edit_and_never_duplicates_alias(self):
         for ident in ("dots-tts-soar", "dots-tts-meanflow", "dots-tts-edit"):
             entry = {"id": ident, "family": "dots_tts", "task": "tts"}
-            self.assertEqual(metadata.parameter_applies(entry, "instruction"), ident.endswith("edit"))
-            self.assertFalse(metadata.parameter_applies(entry, "instruct"))
+            self.assertEqual(metadata.parameter_applies(entry, "instruct"), ident.endswith("edit"))
+            self.assertFalse(metadata.parameter_applies(entry, "instruction"))
         # An explicitly declared editing template is also an editing contract.
-        self.assertTrue(metadata.parameter_applies({"id": "edit-variant", "family": "dots_tts", "task": "tts", "default_options": {"template_name": "edit"}}, "instruction"))
+        self.assertTrue(metadata.parameter_applies({"id": "edit-variant", "family": "dots_tts", "task": "tts", "default_options": {"template_name": "edit"}}, "instruct"))
 
     def test_voxcpm_loader_precision_is_hidden_but_consumed_session_precision_remains(self):
         entry = {"id": "voxcpm1", "family": "voxcpm1", "task": "tts"}

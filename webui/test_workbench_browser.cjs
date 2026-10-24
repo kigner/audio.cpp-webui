@@ -3517,6 +3517,145 @@ cases.push(['upstream parameter aliases preserve saved ASR values and nested run
   assert.equal(backend.requests[0].options.load_options?.['demo.mem_saver'],undefined);
 }]);
 
+cases.push(['upstream review VC saved aliases yield one editable canonical request',async(page,backend)=>{
+  Object.assign(backend.models.find(m=>m.id==='voice-convert'),{
+    family:'seed_vc',profile:{accepts_voice_reference:false,send_seed:false},
+    option_aliases:{length_adjust:'duration_scale'},
+    parameters:[{name:'duration_scale',label:'时长伸缩',type:'number',default:1,min:.05,level:'effect',scope:'request'}],
+  });
+  await task(page,'vc','Voice conversion');await upload(page,'#task-form [data-input-key="audio"]','source.wav');
+  assert.equal(await page.locator('#param-length_adjust').count(),0);
+  await advanced(page);await page.locator('#options-json').fill('{"length_adjust":1.1,"duration_scale":1.4}');
+  await page.keyboard.press('Escape');await waitValue(page,'#param-duration_scale','1.4');
+  await page.locator('#param-duration_scale').fill('1.6');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'Migrated conversion missing');
+  assert.equal(backend.requests[0].options.duration_scale,1.6);
+  assert.equal(backend.requests[0].options.length_adjust,undefined);
+}]);
+
+cases.push(['upstream review RVC canonical index validates and no-index clears it',async(page,backend)=>{
+  Object.assign(backend.models.find(m=>m.id==='voice-convert'),{
+    family:'rvc',voice_mode:'rvc',profile:{model_as_target_voice:true,accepts_voice_reference:false,send_seed:false},
+    option_aliases:{retrieval_index_path:'retrieval_index_file'},
+    parameters:presetParameters('rvc').map(p=>p.name==='retrieval_index_path'?{...p,name:'retrieval_index_file'}:p),
+  });
+  await task(page,'vc','Voice conversion');await upload(page,'#task-form [data-input-key="audio"]','source.wav');
+  await page.locator('[data-input-key="rvc_use_builtin"]').uncheck();
+  await page.locator('[data-input-key="rvc_no_index"]').uncheck();
+  await advanced(page);await page.locator('#param-voice_model_path').fill('custom.pth');
+  await page.locator('#param-retrieval_index_file').fill('custom.index');await page.keyboard.press('Escape');
+  await page.locator('#param-retrieval_blend').evaluate(input=>{input.value='.6';input.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'Canonical RVC index incorrectly rejected');
+  assert.equal(backend.requests[0].options.retrieval_index_file,'custom.index');
+  assert.equal(backend.requests[0].options.retrieval_index_path,undefined);
+  backend.finish('job-1','',['converted.wav']);await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  await page.locator('[data-input-key="rvc_no_index"]').check();await advanced(page);
+  assert.equal(await page.locator('#param-retrieval_index_file').isDisabled(),true);
+  await page.keyboard.press('Escape');await page.locator('#run-button').click();
+  await waitUntil(()=>backend.requests.length===2,'No-index conversion missing');
+  assert.equal(backend.requests[1].options.retrieval_index_file,undefined);
+  assert.equal(backend.requests[1].options.retrieval_index_path,undefined);
+  assert.equal(backend.requests[1].options.retrieval_blend,0);
+}]);
+
+cases.push(['upstream review DotTTS Edit restores visible instructions without streaming',async(page,backend)=>{
+  Object.assign(backend.models.find(m=>m.id==='tts-one'),{
+    family:'dots_tts',streaming:false,voice_mode:'reference',
+    profile:{accepts_voice_reference:true,require_voice:true,voice_input_role:'source_audio',send_reference_text:false,send_seed:false},
+    option_aliases:{instruction:'instruct'},
+    parameters:[{name:'instruct',label:'编辑指令',type:'text',rows:2,level:'expert',scope:'request'}],
+  });
+  await page.reload();await task(page,'tts','TTS One');
+  assert.equal(await page.locator('[data-input-key="stream"]').count(),0);
+  await advanced(page);await page.locator('#options-json').fill('{"instruction":"old edit"}');await page.keyboard.press('Escape');
+  await pick(page,'tts-two');await pick(page,'tts-one');await advanced(page);
+  await waitValue(page,'#param-instruct','old edit');assert.equal(await page.locator('#param-instruction').count(),0);
+  await page.locator('#param-instruct').fill('updated edit');await page.keyboard.press('Escape');
+  await page.locator('[data-input-key="text"]').fill('Target text.');
+  await upload(page,'#task-form [data-input-key="voice"]','source.wav');
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'Offline Edit request missing');
+  assert.equal(backend.requests[0].options.instruct,'updated edit');
+  assert.equal(backend.requests[0].options.instruction,undefined);
+  assert.equal(Boolean(backend.requests[0].inputs.stream),false);
+}]);
+
+async function startStreamPlayerFixture(page,backend,seconds=4){
+  await page.evaluate(()=>{
+    const createGain=AudioContext.prototype.createGain;
+    AudioContext.prototype.createGain=function(){const gain=createGain.call(this);window.streamTestContext=this;window.streamTestGain=gain;return gain;};
+  });
+  await task(page,'tts','TTS One');
+  await page.locator('[data-input-key="text"]').fill('流式播放控件测试。');
+  await page.locator('[data-input-key="stream"]').check();
+  await page.locator('#run-button').click();
+  await waitUntil(()=>backend.requests.length===1,'Streaming task was not submitted');
+  backend.jobs.get('job-1').audio_segments=[{index:1,sample_rate:24000,pcm:Buffer.alloc(Math.round(24000*seconds)*2).toString('base64')}];
+  await page.locator('#result-content .stream-player').waitFor({state:'visible'});
+  assert.equal(backend.jobs.get('job-1').status,'running');
+  assert.equal(await page.locator('#result-content audio').count(),0);
+  await page.waitForFunction(()=>window.streamTestContext?.state==='running');
+}
+
+cases.push(['stream player appears before completion and controls the buffered audio',async(page,backend)=>{
+  await startStreamPlayerFixture(page,backend);
+  await page.locator('.stream-player button').click();
+  await page.waitForFunction(()=>window.streamTestContext.state==='suspended');
+  const paused=await page.locator('.stream-player progress').evaluate(el=>el.value);
+  await page.waitForTimeout(350);
+  assert.ok(Math.abs(await page.locator('.stream-player progress').evaluate(el=>el.value)-paused)<0.02,'Pausing must stop playback progress');
+  await page.locator('.stream-player').evaluate(el=>{window.streamTestPlayer=el;});
+  backend.jobs.get('job-1').audio_segments.push({index:2,sample_rate:16000,pcm:Buffer.alloc(16000*3*2).toString('base64')});
+  await page.waitForFunction(()=>document.querySelector('.stream-player progress')?.max===7);
+  assert.equal(await page.locator('.stream-player').evaluate(el=>el===window.streamTestPlayer),true,'Polling must preserve the player');
+  assert.equal(await page.evaluate(()=>window.streamTestContext.state),'suspended');
+  await page.locator('.stream-player input').evaluate(el=>{el.value='0.25';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.ok(Math.abs(await page.evaluate(()=>window.streamTestGain.gain.value)-0.25)<0.001,'Volume must control the actual audio output');
+  await page.locator('.stream-player button').click();
+  await page.waitForFunction(()=>window.streamTestContext.state==='running');
+  await page.waitForFunction(value=>document.querySelector('.stream-player progress').value>value+0.1,paused);
+  await page.locator('.stream-player button').click();
+  await page.waitForFunction(()=>window.streamTestContext.state==='suspended');
+  await page.evaluate(()=>window.dispatchEvent(new StorageEvent('storage',{key:'audiocpp-ui-language',newValue:'en'})));
+  assert.equal(await page.locator('.stream-player button').textContent(),'Play');
+  assert.equal(await page.locator('.stream-player input').getAttribute('aria-label'),'Volume');
+  if(await page.locator('#workspace-settings').isVisible())await page.locator('#parameter-toggle').click();
+  for(const width of [390,320]){
+    await page.setViewportSize({width,height:900});await page.locator('.stream-player').scrollIntoViewIfNeeded();
+    const layout=await page.locator('.stream-player').evaluate(el=>({left:el.getBoundingClientRect().left,right:el.getBoundingClientRect().right,overflow:el.scrollWidth>el.clientWidth+1,width:innerWidth}));
+    assert.ok(layout.left>=0&&layout.right<=layout.width+1&&!layout.overflow,'Live player must fit narrow screens');
+    await assertVisibleControl(page,'.stream-player button','Pause/resume control clipped');
+    await assertVisibleControl(page,'.stream-player input','Volume control clipped');
+    await snapshot(page,`stream-player-${width}`);
+  }
+  backend.finish('job-1','',['speech.wav']);await page.waitForFunction(()=>document.querySelector('#job-status').dataset.state==='done');
+  assert.equal(await page.locator('.stream-player').isVisible(),true,'Completed generation must keep paused audio controllable');
+  assert.equal(await page.locator('#job-status a[download="speech.wav"]').count(),1,'Complete audio must remain downloadable');
+  await page.locator('#stop-stream-playback').click();
+  await page.locator('#result-content audio').waitFor({state:'visible'});
+  assert.equal(await page.locator('.stream-player').count(),0);
+  assert.equal(await page.evaluate(()=>window.streamTestContext.state),'closed');
+  assert.equal(await page.locator('#result-content audio').evaluate(el=>el.controls&&el.paused),true);
+}]);
+
+cases.push(['stream player closes when generation is cancelled',async(page,backend)=>{
+  await startStreamPlayerFixture(page,backend);
+  await page.locator('#cancel-job').click();
+  Object.assign(backend.jobs.get('job-1'),{status:'cancelled',message:'任务已停止。',audio_segments:[]});backend.status.busy=false;backend.status.job=null;
+  await waitText(page,'#job-status','任务已停止。');
+  assert.equal(await page.locator('.stream-player').count(),0);
+  assert.equal(await page.locator('#stop-stream-playback').isVisible(),false);
+  assert.equal(await page.evaluate(()=>window.streamTestContext.state),'closed');
+}]);
+
+cases.push(['stream player hands off to the complete file without replaying it',async(page,backend)=>{
+  await startStreamPlayerFixture(page,backend,0.3);
+  backend.finish('job-1','',['speech.wav']);
+  await page.locator('#result-content audio').waitFor({state:'visible'});
+  assert.equal(await page.locator('.stream-player').count(),0);
+  assert.equal(await page.evaluate(()=>window.streamTestContext.state),'closed');
+  assert.equal(await page.locator('#result-content audio').evaluate(el=>el.paused&&el.currentTime===0),true,'Completing the stream must not autoplay the file a second time');
+}]);
+
 (async () => {
   const options = {headless:true};
   if (process.env.AUDIOCPP_BROWSER_EXECUTABLE) options.executablePath = process.env.AUDIOCPP_BROWSER_EXECUTABLE;

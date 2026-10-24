@@ -22,7 +22,7 @@ class VoiceConversionControlsTests(unittest.TestCase):
     def test_common_controls_cover_conversion_models_without_changing_tts(self):
         original = copy.deepcopy(app.MODEL_PARAMS)
         for ident, expected in {
-            'chatterbox-vc': {'num_inference_steps', 's3gen_cfg_rate'},
+            'chatterbox-vc': {'num_inference_steps', 'flow_guidance_scale'},
             'seed-vc': {'num_inference_steps', 'intelligibility_guidance_scale', 'similarity_guidance_scale'},
             'seed-vc-svc': {'num_inference_steps', 'inference_guidance_scale', 'auto_f0_adjust', 'semitone_shift'},
             'vevo2': {'route', 'num_inference_steps', 'use_pitch_shift'},
@@ -55,7 +55,7 @@ class VoiceConversionControlsTests(unittest.TestCase):
             self.assertEqual(parameters['route']['default'], expected[0])
             if ident.startswith('seed-vc'):
                 self.assertEqual(parameters['f0_condition']['default'], ident.endswith('-svc'))
-                self.assertGreater(parameters['length_adjust']['min'], 0)
+                self.assertGreater(parameters['duration_scale']['min'], 0)
 
     def test_route_filter_preserves_runtime_and_unknown_expert_options(self):
         values = {'num_inference_steps': 17, 'inference_guidance_scale': 0.4,

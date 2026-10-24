@@ -456,6 +456,19 @@ APP_VERSION = _current_app_version()
 APP_VERSION_SUFFIX = f" v{APP_VERSION}" if APP_VERSION else ""
 SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = _load_spec_packages()
 
+def _server_exe_for_backend(backend):
+    """Keep a checkout's runtime aligned with its source, while sharing models."""
+    bundled = os.path.join(BUNDLE_ROOT, backend, SERVER_EXE_NAME)
+    development = _dev_server_exe(backend)
+    if (os.path.exists(os.path.join(PROJECT_ROOT, ".git"))
+            and not os.environ.get("AUDIOCPP_BUNDLE")
+            and os.path.isfile(development)):
+        return development
+    if os.path.isfile(bundled):
+        return bundled
+    return development if os.path.isfile(development) else bundled
+
+
 def _detect_backend():
     """Honor the override, then select a usable CUDA/Vulkan build, else CPU."""
     env = os.environ.get("AUDIOCPP_BACKEND", "").strip().lower()
@@ -468,18 +481,13 @@ def _detect_backend():
             from .backend_probe import select_backend
         except ImportError:
             from backend_probe import select_backend
-        def executable(backend):
-            bundled = os.path.join(BUNDLE_ROOT, backend, SERVER_EXE_NAME)
-            return bundled if os.path.isfile(bundled) else _dev_server_exe(backend)
-        selected = select_backend(executable("gpu"), executable("vulkan"))
+        selected = select_backend(_server_exe_for_backend("gpu"), _server_exe_for_backend("vulkan"))
         return "gpu" if selected == "cuda" else selected
     else:
         has_nvidia = shutil.which("nvidia-smi") is not None
-    if has_nvidia and (os.path.isfile(os.path.join(BUNDLE_ROOT, "gpu", SERVER_EXE_NAME))
-                       or os.path.isfile(_dev_server_exe("gpu"))):
+    if has_nvidia and os.path.isfile(_server_exe_for_backend("gpu")):
         return "gpu"
-    if (os.path.isfile(os.path.join(BUNDLE_ROOT, "cpu", SERVER_EXE_NAME))
-            or os.path.isfile(_dev_server_exe("cpu"))):
+    if os.path.isfile(_server_exe_for_backend("cpu")):
         return "cpu"
     return "gpu"
 
@@ -489,9 +497,7 @@ BACKEND = _detect_backend()
 # cuda|cpu|vulkan|metal, and its config default is "cuda" — which a CPU-only
 # build rejects at startup, so the temp config must always spell it out.
 SERVER_BACKEND = "cuda" if BACKEND == "gpu" else BACKEND
-SERVER_EXE = os.path.join(BUNDLE_ROOT, BACKEND, SERVER_EXE_NAME)
-if not os.path.isfile(SERVER_EXE) and os.path.isfile(_dev_server_exe(BACKEND)):
-    SERVER_EXE = _dev_server_exe(BACKEND)
+SERVER_EXE = _server_exe_for_backend(BACKEND)
 LOG_PATH = os.path.join(LOG_DIR, "audiocpp_server_webui.log")
 LOAD_TIMEOUT = int(os.environ.get("AUDIOCPP_LOAD_TIMEOUT", "300"))
 
@@ -2514,6 +2520,11 @@ _OPTION_RENAMES = {
     "duration_factor": "duration_scale", "retrieval_index_path": "index_path",
     "g2p_dict": "g2p_dict_file",
 }
+_FAMILY_OPTION_RENAMES = {
+    "seed_vc": {"length_adjust": "duration_scale"},
+    "chatterbox": {"s3gen_cfg_rate": "flow_guidance_scale"},
+    "rvc": {"retrieval_index_path": "retrieval_index_file", "pitch_path": "pitch_file"},
+}
 
 
 def _canonical_option_name(family, name):
@@ -2524,7 +2535,8 @@ def _canonical_option_name(family, name):
                 for s, rows in MODEL_SPECS.get(family, {}).get("options", {}).items()}
     all_names = set().union(*declared.values()) if declared else set()
     if key not in all_names:
-        current = _OPTION_RENAMES.get(key, key.replace("_graph_context_mb", "_graph_arena_mb"))
+        renames = {**_OPTION_RENAMES, **_FAMILY_OPTION_RENAMES.get(family, {})}
+        current = renames.get(key, key.replace("_graph_context_mb", "_graph_arena_mb"))
         if current in all_names:
             key = current
     scopes = [s for s, names in declared.items() if key in names]
@@ -2556,7 +2568,7 @@ def _canonicalize_options(entry, options):
 def _option_aliases(entry):
     """Publish migrations so saved browser controls match the current contract."""
     family = entry.get("family", "")
-    candidates = set(_OPTION_RENAMES)
+    candidates = set(_OPTION_RENAMES) | set(_FAMILY_OPTION_RENAMES.get(family, {}))
     local = MODEL_PARAMS.get(entry.get("id"), MODEL_PARAMS.get(family, []))
     candidates.update(p["name"] for p in local)
     for scope, rows in MODEL_SPECS.get(family, {}).get("options", {}).items():
@@ -3001,6 +3013,7 @@ def _start_server(entry):
     extra = f", threads={_model_threads(backend)}" if backend == "cpu" else ""
     _ui_log("starting audiocpp_server (backend={backend}{extra}), loading model {label} …".format(
             backend=backend, extra=extra, label=entry['label']))
+    _ui_log("server executable: {path}".format(path=SERVER_EXE))
     threading.Thread(target=_pump_server_output, args=(proc,),
                      daemon=True).start()
 
@@ -4197,10 +4210,13 @@ def _tts_reference_text_required(entry, prof, has_reference, options):
     return bool(required)
 
 
-def _validate_tts_options(entry, options):
+def _validate_tts_options(entry, options, *, streaming=False):
     if not entry or entry.get("family") != "dots_tts":
         return
     if options.get("template_name", "tts") == "edit":
+        if streaming:
+            raise gr.Error(_t("DotTTS Edit 只支持离线生成，请关闭流式选项。",
+                              "DotTTS Edit supports offline generation only; turn off streaming."))
         return
     if any(str(options.get(key) or "").strip() for key in ("instruction", "instruct")):
         raise gr.Error(_t(
@@ -4499,7 +4515,7 @@ def do_tts_stream(model, text, language, uploaded_voice, builtin_voice,
             "该模型必须提供参考音色：请上传/录制参考音频，或选择内置音色。",
             "This model requires a voice reference: upload/record one or pick a built-in voice."))
     has_reference = bool(uploaded_voice or (builtin_voice and builtin_voice != "(none)") or _tts_has_speaker_samples(entry, options))
-    _validate_tts_options(entry, options)
+    _validate_tts_options(entry, options, streaming=True)
     if _tts_reference_text_required(entry, prof, has_reference, options) and not (reference_text or "").strip():
         raise gr.Error(_t(
             "该模型必须填写与参考音频一致的参考文本。",
@@ -5306,8 +5322,8 @@ def do_vc(model, source_audio, target_upload, builtin_voice, rvc_voice_model,
             retrieval_index_path = _uploaded_file_path(rvc_retrieval_index, "RVC retrieval index")
             if voice_model_path and "voice_model_path" not in options:
                 options["voice_model_path"] = voice_model_path
-            if retrieval_index_path and "retrieval_index_path" not in options:
-                options["retrieval_index_path"] = retrieval_index_path
+            if retrieval_index_path and "retrieval_index_file" not in options:
+                options["retrieval_index_file"] = retrieval_index_path
         if options:
             req["options"] = options
 

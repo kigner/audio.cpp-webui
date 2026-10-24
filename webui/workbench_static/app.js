@@ -377,7 +377,7 @@ function collectOptions(detail=state.detail, saved=modelOptions()) {
     if(detail.profile?.send_seed===false)delete options.seed;
     if(detail.family==='rvc'){
       if(formValues().rvc_use_builtin===true)delete options.voice_model_path;
-      if(formValues().rvc_no_index===true){delete options.retrieval_index_path;options.retrieval_blend=0;}
+      if(formValues().rvc_no_index===true){delete options.retrieval_index_path;delete options.retrieval_index_file;options.retrieval_blend=0;}
     }
   }
   if(detail?.task==='asr')for(const param of detail.parameters||[])if(!asrParameterActive(param,detail,options,saved.inputs))delete options[param.name];
@@ -1309,7 +1309,7 @@ function parameterControl(param) {
   input.id=`param-${key.replace(/[^\w-]/g,'-')}`;
   if(state.task==='vc'&&state.detail?.family==='rvc'){
     const values=formValues();
-    input.disabled=key==='voice_id'&&values.rvc_use_builtin===false||key==='voice_model_path'&&values.rvc_use_builtin===true||['retrieval_blend','retrieval_index_path'].includes(key)&&values.rvc_no_index===true;
+    input.disabled=key==='voice_id'&&values.rvc_use_builtin===false||key==='voice_model_path'&&values.rvc_use_builtin===true||['retrieval_blend','retrieval_index_path','retrieval_index_file'].includes(key)&&values.rvc_no_index===true;
   }
   if(state.task==='design'&&(state.detail?.family==='irodori_tts'&&key==='duration_scale'||state.detail?.family==='qwen3_tts'&&key==='temperature'))input.min=param.step||0.05;
   const label=(designLanguage?'合成语言':state.task==='music'?{task_route:'创作方式',audio_cover_strength:'贴近原曲',cover_noise_strength:'保旋律强度',flow_edit_n_min:'流编辑起始比例',flow_edit_n_max:'流编辑结束比例',flow_edit_n_avg:'每步平均次数'}[key]:'')||param.label||key;let help=designLanguage?'选择试听文本的合成语种；不会翻译文本。':plainMessage(param.help||param.info||param.description),group;
@@ -1501,7 +1501,7 @@ function validateInputs(inputs,options={}) {
   if(state.task==='vc'&&state.detail.family==='rvc'){
     const custom=inputs.rvc_voice_model||options.voice_model_path;
     if(inputs.rvc_use_builtin===false&&!custom)throw new Error('请选择 RVC 文件，或勾选“使用内置音色”。');
-    if(inputs.rvc_no_index===false&&custom&&Number(options.retrieval_blend)>0&&!inputs.rvc_retrieval_index&&!options.retrieval_index_path)throw new Error('请为自定义 RVC 音色选择索引文件，或勾选“不使用音色索引”。');
+    if(inputs.rvc_no_index===false&&custom&&Number(options.retrieval_blend)>0&&!inputs.rvc_retrieval_index&&!options.retrieval_index_file&&!options.retrieval_index_path)throw new Error('请为自定义 RVC 音色选择索引文件，或勾选“不使用音色索引”。');
   }
   if(inputs.dialogue&&inputs.stream)throw new Error('说话人对话模式与流式处理不能同时开启，请选择一种。');
   if(inputs.detailed&&(inputs.dialogue||inputs.stream))throw new Error('详细结果仅支持普通离线转写，请关闭说话人对话和流式处理。');
@@ -1530,7 +1530,7 @@ async function submitTask(action='generate'){
     renderWorkspaceResults();
     ($('result-content').closest('.tts-result-section')||$('result-content').closest('.result-card')).scrollIntoView({block:'nearest'});
     state.submitting=true;updateRunButton();
-    updateActiveJobBanner();stopStreamPlayback();if(record.stream)beginStreamPlayback();
+    updateActiveJobBanner();stopStreamPlayback();if(record.stream)beginStreamPlayback(record);
     const job=await api('/jobs',{method:'POST',body:{task:record.task,model:record.model,inputs,options,...(action==='analyze_source'?{action}:{})}});record.id=job.id;
     if(record.task==='vc'&&source)record.sourceBlob=source;
     if((workspace(key).resultEpoch||0)===resultEpoch){
@@ -1577,13 +1577,44 @@ function setJobStatus(message,status,artifacts) {
 }
 function stopStreamPlayback() {
   const playback=state.playback;state.playback=null;$('stop-stream-playback').hidden=true;if(!playback)return;
+  clearInterval(playback.timer);
   for(const source of playback.sources){try{source.stop();}catch{}source.disconnect();}playback.sources.clear();
+  playback.gain.disconnect();
   if(playback.context.state!=='closed')playback.context.close().catch(()=>{});
 }
-function beginStreamPlayback() {
+function updateStreamPlayback(playback) {
+  const elapsed=playback.parts.reduce((sum,part)=>sum+Math.max(0,Math.min(part.duration,playback.context.currentTime-part.start)),0);
+  const clock=value=>`${Math.floor(value/60)}:${String(Math.floor(value%60)).padStart(2,'0')}`;
+  rawText(playback.time,`${clock(elapsed)} / ${clock(playback.duration)}`);
+  playback.progress.max=playback.duration||1;playback.progress.value=Math.min(elapsed,playback.duration);
+  uiText(playback.toggle,playback.paused?'播放':'暂停');
+  uiAttr(playback.toggle,'aria-label',playback.paused?'继续试听':'暂停试听');
+}
+function beginStreamPlayback(record) {
   const AudioContextClass=window.AudioContext||window.webkitAudioContext;
   if(!AudioContextClass){showToast('此浏览器不支持流式试听，完成后仍可播放完整音频。');return;}
-  try{const context=new AudioContextClass();const playback={context,sources:new Set(),nextTime:0,finished:false};state.playback=playback;$('stop-stream-playback').hidden=false;context.resume().catch(()=>{if(state.playback===playback){stopStreamPlayback();showToast('浏览器未允许自动试听，完成后请播放完整音频。');}});}
+  try{
+    const context=new AudioContextClass(),gain=context.createGain();gain.connect(context.destination);
+    const playback={context,gain,record,sources:new Set(),parts:[],duration:0,nextTime:0,finished:false,paused:false};
+    playback.controls=node('div','stream-player audio-artifact');playback.controls.setAttribute('role','group');uiAttr(playback.controls,'aria-label','流式试听');
+    playback.toggle=button('暂停','button secondary small-button',async()=>{
+      if(state.playback!==playback)return;
+      playback.toggle.disabled=true;
+      try{
+        const paused=!playback.paused;await(paused?context.suspend():context.resume());
+        if(state.playback===playback){playback.paused=paused;updateStreamPlayback(playback);}
+      }catch{showToast('点击播放开始试听。');}
+      finally{playback.toggle.disabled=false;}
+    });
+    playback.time=node('span','stream-player-time');uiAttr(playback.time,'aria-label','播放时间');
+    playback.progress=node('progress','stream-player-progress');uiAttr(playback.progress,'aria-label','播放进度');
+    const volume=node('label','stream-player-volume'),slider=node('input');slider.type='range';slider.min='0';slider.max='1';slider.step='0.05';slider.value='1';uiAttr(slider,'aria-label','音量');
+    slider.addEventListener('input',()=>{gain.gain.value=Number(slider.value);});volume.append(node('span','','音量'),slider);
+    playback.controls.append(playback.toggle,playback.time,volume,playback.progress);
+    state.playback=playback;playback.timer=setInterval(()=>updateStreamPlayback(playback),200);updateStreamPlayback(playback);
+    $('stop-stream-playback').hidden=false;
+    context.resume().catch(()=>{if(state.playback===playback){playback.paused=true;updateStreamPlayback(playback);showToast('点击播放开始试听。');}});
+  }
   catch{showToast('无法启动流式试听，完成后仍可播放完整音频。');}
 }
 function finishStreamPlayback() {const playback=state.playback;if(!playback)return;playback.finished=true;if(!playback.sources.size)stopStreamPlayback();}
@@ -1592,11 +1623,11 @@ function playStreamSegments(segments) {
   for(const segment of [...(segments||[])].sort((a,b)=>Number(a.index)-Number(b.index))){
     const index=Number(segment.index);if(!Number.isInteger(index)||index<=state.job.lastAudioIndex)continue;state.job.lastAudioIndex=index;
     const playback=state.playback;if(!playback)continue;
-    try{const sampleRate=Number(segment.sample_rate);if(!Number.isFinite(sampleRate)||sampleRate<8000||sampleRate>192000)throw new Error('invalid sample rate');const raw=atob(segment.pcm||'');if(!raw.length||raw.length%2)continue;const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);const data=new DataView(bytes.buffer);const buffer=playback.context.createBuffer(1,raw.length/2,sampleRate);const samples=buffer.getChannelData(0);for(let i=0;i<samples.length;i++)samples[i]=data.getInt16(i*2,true)/32768;const source=playback.context.createBufferSource();source.buffer=buffer;source.connect(playback.context.destination);const start=Math.max(playback.nextTime,playback.context.currentTime+0.06);playback.nextTime=start+buffer.duration;playback.sources.add(source);source.onended=()=>{source.disconnect();playback.sources.delete(source);if(state.playback===playback&&playback.finished&&!playback.sources.size)stopStreamPlayback();};source.start(start);}
+    try{const sampleRate=Number(segment.sample_rate);if(!Number.isFinite(sampleRate)||sampleRate<8000||sampleRate>192000)throw new Error('invalid sample rate');const raw=atob(segment.pcm||'');if(!raw.length||raw.length%2)continue;const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);const data=new DataView(bytes.buffer);const buffer=playback.context.createBuffer(1,raw.length/2,sampleRate);const samples=buffer.getChannelData(0);for(let i=0;i<samples.length;i++)samples[i]=data.getInt16(i*2,true)/32768;const source=playback.context.createBufferSource();source.buffer=buffer;source.connect(playback.gain);const start=Math.max(playback.nextTime,playback.context.currentTime+0.06);playback.nextTime=start+buffer.duration;playback.duration+=buffer.duration;playback.parts.push({start,duration:buffer.duration});playback.sources.add(source);source.onended=()=>{source.disconnect();playback.sources.delete(source);if(state.playback===playback&&playback.finished&&!playback.sources.size){stopStreamPlayback();if(state.key===playback.record.key)renderWorkspaceResults();}};source.start(start);updateStreamPlayback(playback);}
     catch{stopStreamPlayback();showToast('流式试听中断，任务会继续生成完整音频。');}
   }
 }
-$('stop-stream-playback').addEventListener('click',()=>{stopStreamPlayback();showToast('已停止试听，生成任务会继续。');});
+$('stop-stream-playback').addEventListener('click',()=>{const generating=!!state.job?.stream;stopStreamPlayback();renderWorkspaceResults();if(generating)showToast('已停止试听，生成任务会继续。');});
 async function pollJob() {
   if(!state.job)return;const record=state.job,id=record.id;
   try{
@@ -1639,10 +1670,12 @@ function renderWorkspaceResults() {
   renderResult(result,record);
 }
 function renderResult(job,record) {
-  const signature=JSON.stringify([state.task,record?.sourceUrl,job.status,job.text,job.artifacts]);
+  const playback=state.playback,streaming=!!(record&&playback?.record===record&&playback.duration>0);
+  const signature=JSON.stringify([state.task,record?.sourceUrl,job.status,job.text,job.artifacts,streaming]);
   if(state.renderedResult?.record===record&&state.renderedResult.signature===signature)return;
   state.renderedResult={record,signature};
   const children=[],downloads=[];
+  if(streaming)children.push(playback.controls);
   if(record?.sourceUrl){
     const source=node('div',state.task==='separation'?'artifact separation-track':'artifact');source.append(node('span','artifact-name','原始音频'));
     const group=state.task==='separation'?node('div','separation-audio-group'):source;if(group!==source)source.append(group);
@@ -1650,7 +1683,7 @@ function renderResult(job,record) {
   }
   if(job.text||state.task==='asr'){const text=typeof job.text==='string'?job.text:JSON.stringify(job.text,null,2),box=node('textarea','result-text');box.value=record?.editedSource===text?record.editedText:text;uiAttr(box, 'aria-label', state.task==='asr'?'识别文字结果':'文字结果');box.spellcheck=false;box.readOnly=!record||!['done','error','cancelled'].includes(job.status);box.addEventListener('input',()=>{if(record){record.editedSource=text;record.editedText=box.value;}});children.push(box);}
   const files=node('div','result-files'),inlineAudio=singleAudioArtifact(job.artifacts);
-  for(const artifact of job.artifacts||[]){const url=safeArtifactUrl(artifact.url);if(!url)continue;if(state.task==='asr'&&!isAudioArtifact(artifact)){if(/\.json$/i.test(artifact.name||''))downloads.push(button('下载详情','button secondary small-button',event=>runAction(event.currentTarget,()=>downloadAsrDetails(artifact))));continue;}const item=node('div','artifact');if(artifact!==inlineAudio||state.task==='separation'){const heading=node('div','artifact-heading');heading.append(artifactLink(artifact));item.append(heading);}
+  for(const artifact of job.artifacts||[]){const url=safeArtifactUrl(artifact.url);if(!url||streaming&&artifact===inlineAudio)continue;if(state.task==='asr'&&!isAudioArtifact(artifact)){if(/\.json$/i.test(artifact.name||''))downloads.push(button('下载详情','button secondary small-button',event=>runAction(event.currentTarget,()=>downloadAsrDetails(artifact))));continue;}const item=node('div','artifact');if(artifact!==inlineAudio||state.task==='separation'){const heading=node('div','artifact-heading');heading.append(artifactLink(artifact));item.append(heading);}
     if(isAudioArtifact(artifact)){
       item.classList.add('audio-artifact');const group=state.task==='separation'?node('div','separation-audio-group'):item;
       if(group!==item){item.classList.add('separation-track');group.setAttribute('role','group');uiAttr(group, 'aria-label', artifact.name||'分离音轨');item.append(group);}

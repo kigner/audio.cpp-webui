@@ -74,7 +74,7 @@ FRIENDLY = {
 COMMON_FAMILY_PARAMETERS = {
     "index_tts2": {"duration_factor", "duration_scale", "interval_silence_ms"},
     "stable_audio": {"audio_input_kind"},
-    "seed_vc": {"route", "length_adjust", "voice_anonymization", "auto_f0_adjust"},
+    "seed_vc": {"route", "duration_scale", "voice_anonymization", "auto_f0_adjust"},
     "vevo2": {"route", "use_pitch_shift"},
     "personaplex": {"system_prompt"},
     "muscriptor": {"output_format"},
@@ -115,7 +115,7 @@ TTS_PARAMETER_TEXT = {
 }
 
 VC_COMMON_PARAMETERS = {
-    'chatterbox': {'num_inference_steps', 's3gen_cfg_rate'},
+    'chatterbox': {'num_inference_steps', 'flow_guidance_scale'},
     'seed_vc': {'num_inference_steps', 'intelligibility_guidance_scale',
                 'similarity_guidance_scale', 'inference_guidance_scale'},
     'vevo2': {'num_inference_steps'},
@@ -124,8 +124,8 @@ VC_COMMON_PARAMETERS = {
 }
 VC_PARAMETER_TEXT = {
     'route': ('转换路线', '选择当前模型入口支持的转换路线。'),
-    's3gen_cfg_rate': ('音色引导强度', '调整 Chatterbox 转换时的音色引导程度。'),
-    'length_adjust': ('时长伸缩', '输出时长的倍率；1 保持原时长，数值必须大于 0。'),
+    'flow_guidance_scale': ('音色引导强度', '调整 Chatterbox 转换时的音色引导程度。'),
+    'duration_scale': ('时长伸缩', '输出时长的倍率；1 保持原时长，数值必须大于 0。'),
     'intelligibility_guidance_scale': ('内容清晰度引导', 'Seed-VC V2 对源音频内容的引导强度。'),
     'similarity_guidance_scale': ('音色相似度引导', 'Seed-VC V2 对目标音色的引导强度。'),
     'inference_guidance_scale': ('转换引导强度', 'Seed-VC V1 的扩散引导强度。'),
@@ -305,7 +305,7 @@ def model_detail(backend, entry):
         if result['task'] == 'vc' and family == 'seed_vc':
             if name == 'f0_condition':
                 p['default'] = entry.get('task') == 'svc'
-            if name == 'length_adjust':
+            if name == 'duration_scale':
                 p['minimum'] = p.get('step', 0.05)
         if family == "ace_step" and name == "num_inference_steps":
             p["route_defaults"] = {"remix": 16}
@@ -416,7 +416,7 @@ def parameter_applies(entry, name):
             return editing and name != 'source_audio'
     if family == 'dots_tts' and name in {'instruction', 'instruct'}:
         editing = entry['id'] == 'dots-tts-edit' or entry.get('default_options', {}).get('template_name') == 'edit'
-        return editing and name == 'instruction'  # Alias is redundant; ordinary TTS never consumes either field.
+        return editing and name == 'instruct'  # Keep only the current backend spelling.
     if family == 'lfm2_audio':
         asr = {'language', 'max_tokens', 'audio_chunk_mode', 'audio_chunk_duration_sec'}
         return name in asr if task == 'asr' else name not in {'audio_chunk_mode', 'audio_chunk_duration_sec'}

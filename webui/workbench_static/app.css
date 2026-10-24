@@ -759,3 +759,9 @@ body.workspace-mode #page-workspace[data-task=tts] :is(#task-inputs,#common-opti
 #task-inputs .speaker-reference-card .upload-actions{flex-wrap:wrap}
 #task-inputs .speaker-reference-card .field-label{white-space:normal}
 @media(max-width:600px){#task-inputs .speaker-reference-panel{grid-template-columns:minmax(0,1fr)}}
+.stream-player{display:grid;grid-template-columns:auto auto minmax(90px,1fr);align-items:center;gap:8px 12px;width:100%;min-width:0;padding:8px 10px;border-radius:8px;background:var(--surface-soft)}
+.stream-player-time{font-size:12.6px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stream-player-volume{display:flex;align-items:center;justify-self:end;gap:6px;width:min(100%,150px);min-width:0;font-size:12.6px;white-space:nowrap}
+.stream-player-volume input{width:100%;min-width:0;height:24px;padding:0;accent-color:var(--accent)}
+.stream-player-progress{grid-column:1/-1;width:100%;height:5px;accent-color:var(--accent)}
+@media(max-width:480px){.stream-player{grid-template-columns:auto 1fr}.stream-player-volume{grid-column:1/-1;justify-self:stretch;width:100%}}

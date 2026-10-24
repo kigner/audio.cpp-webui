@@ -1,4 +1,3 @@
-import base64
 import os
 import tempfile
 import unittest
@@ -67,39 +66,15 @@ class V070LocalWebUICompatibilityTests(unittest.TestCase):
         self.assertEqual(payload["options"]["source_text"], "old")
         self.assertEqual(payload["options"]["target_text"], "new")
 
-    def test_dottts_edit_streaming_uses_the_same_source_audio_contract(self):
-        class FakeResponse:
-            status_code = 200
-            text = ""
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-        events = [
-            {"type": "speech.audio.delta",
-             "audio": base64.b64encode(b"\x01\x00\x02\x00").decode("ascii")},
-            {"type": "speech.audio.done", "timing": {"ttft_ms": 25.0}},
-        ]
-        with tempfile.TemporaryDirectory() as output_dir, \
-                mock.patch.object(app, "OUTPUT_DIR", output_dir), \
-                mock.patch.object(app, "ensure_model_loaded") as ensure_loaded, \
-                mock.patch.object(app, "_ensure_wav", side_effect=lambda path: path), \
-                mock.patch.object(app, "_iter_sse_events", return_value=events), \
-                mock.patch.object(app.requests, "post", return_value=FakeResponse()) as post:
-            outputs = list(app.do_tts_stream(
-                "dots-tts-edit", "<edit>replace this sentence</edit>", "",
-                "source.wav", "(none)", "", 1234, 500, {}, ""))
-
-        self.assertTrue(outputs)
-        ensure_loaded.assert_called_once_with(
-            "dots-tts-edit", app.TTS_TASKS, mode="streaming")
-        payload = post.call_args.kwargs["json"]
-        self.assertNotIn("voice_ref", payload)
-        self.assertEqual(payload["options"]["source_audio"], "source.wav")
-        self.assertEqual(payload["options"]["template_name"], "edit")
+    def test_dottts_edit_rejects_streaming_before_loading_or_posting(self):
+        with mock.patch.object(app, "ensure_model_loaded") as ensure_loaded, \
+                mock.patch.object(app.requests, "post") as post:
+            with self.assertRaises(app.gr.Error):
+                list(app.do_tts_stream(
+                    "dots-tts-edit", "<edit>replace this sentence</edit>", "",
+                    "source.wav", "(none)", "", 1234, 500, {}, ""))
+        ensure_loaded.assert_not_called()
+        post.assert_not_called()
 
     def test_habibi_requires_matching_reference_text_before_loading(self):
         with mock.patch.object(app, "ensure_model_loaded") as ensure_loaded:

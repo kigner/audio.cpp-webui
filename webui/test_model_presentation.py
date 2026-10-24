@@ -58,7 +58,7 @@ class ModelPresentationTests(unittest.TestCase):
             'stable-audio-small-music': {'audio_input_kind'},
             'kroko-asr': {'hotwords'}, 'canary-asr': {'target_language', 'punc'},
             'crisperwhisper': {'transcription_mode'},
-            'seed-vc': {'route', 'length_adjust', 'voice_anonymization'},
+            'seed-vc': {'route', 'duration_scale', 'voice_anonymization'},
             'vevo2': {'route', 'use_pitch_shift'}, 'rvc': {'semitone_shift', 'speaker_id'},
             'muscriptor-small': {'instruments', 'output_format'},
         }
@@ -79,7 +79,7 @@ class ModelPresentationTests(unittest.TestCase):
             self.assertNotIn('lang', self.names(ident))
             self.assertTrue(self.details[ident]['languages'])
         for ident in ('dots-tts-soar', 'dots-tts-meanflow', 'dots-tts-edit'):
-            self.assertNotIn('instruct', self.names(ident))
+            self.assertEqual('instruct' in self.names(ident), ident == 'dots-tts-edit')
 
     def test_firered_routes_do_not_expose_other_tasks(self):
         self.assertNotIn('instruct', self.names('firered-audio'))
