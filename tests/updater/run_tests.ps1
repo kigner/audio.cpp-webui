@@ -684,13 +684,25 @@ function Test-UpgradeMatrixFromSupportedVersions {
 function Test-ReleaseBuilder {
     $root = Join-Path $testRoot "release-builder"
     $portable = Join-Path $root "portable"
+    $baseline = Join-Path $root "baseline"
     foreach ($directory in @("cpu", "gpu", "vulkan")) {
         New-Item -ItemType Directory -Path (Join-Path $portable $directory) -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $baseline $directory) -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_cli.exe") -Value "$directory cli" -Encoding ASCII
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_server.exe") -Value "$directory server" -Encoding ASCII
         Set-Content -LiteralPath (Join-Path $portable "$directory\audiocpp_gguf.exe") -Value "$directory gguf" -Encoding ASCII
         Set-Content -LiteralPath (Join-Path $portable "$directory\runtime.dll") -Value "$directory runtime" -Encoding ASCII
+        Copy-Item -LiteralPath (Join-Path $portable "$directory\runtime.dll") -Destination (Join-Path $baseline "$directory\runtime.dll")
+        Copy-Item -LiteralPath (Join-Path $portable "$directory\audiocpp_gguf.exe") -Destination (Join-Path $baseline "$directory\audiocpp_gguf.exe")
+        Set-Content -LiteralPath (Join-Path $baseline "$directory\audiocpp_cli.exe") -Value "old cli" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $baseline "$directory\audiocpp_server.exe") -Value "old server" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $baseline "$directory\changed-runtime.dll") -Value "old runtime" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $portable "$directory\changed-runtime.dll") -Value "new runtime" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $portable "$directory\espeak_test_library.dll") -Value "test library" -Encoding ASCII
     }
+    Write-Json @{ product = "audiocpp-portable"; version = "0.7.0" } (Join-Path $baseline "version.json")
+    Copy-Item -LiteralPath (Join-Path $repoRoot "run_webui.bat") -Destination (Join-Path $baseline "run_webui.bat")
+    Copy-Item -LiteralPath (Join-Path $repoRoot "update.bat") -Destination (Join-Path $baseline "update.bat")
     $secret = Join-Path $root "test-secret.key"
     Set-Content -LiteralPath $secret -Value "test secret" -Encoding ASCII
     $signer = Join-Path $root "test-signer.cmd"
@@ -718,33 +730,38 @@ function Test-ReleaseBuilder {
     $builder = Join-Path $repoRoot "scripts\build_update_release.ps1"
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $builderOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $builder `
+    $missingBaselineOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $builder `
         -Version "0.7.1" -PortableRoot $portable -OutputDir $output -MinisignSecretKey $secret `
+        -MinisignPublicKey $publicKey -MinisignPath $signer -AllowDirty 2>&1)
+    Assert-True ($LASTEXITCODE -ne 0 -and ($missingBaselineOutput -join "`n") -match "BaselineRoot") "builder accepted an incremental release without its baseline"
+    Assert-True (-not (Test-Path -LiteralPath $output)) "missing-baseline failure created release output"
+    $builderOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $builder `
+        -Version "0.7.1" -PortableRoot $portable -BaselineRoot $baseline -AssetRevision "r2" -OutputDir $output -MinisignSecretKey $secret `
         -MinisignPublicKey $publicKey -MinisignPath $signer -PythonDepsSource $pythonDepsSource `
         -IncludeUpdater -UpdaterMinisignBinary $signer -ReleaseNotesPath $releaseNotes -Stable -AllowDirty 2>&1)
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousErrorAction
     Assert-True ($exitCode -eq 0) "release builder failed: $($builderOutput -join "`n")"
     foreach ($name in @(
-        "audiocpp-app-v0.7.1.zip",
-        "audiocpp-core-cpu-win-x64-v0.7.1.zip",
-        "audiocpp-core-cuda-win-x64-v0.7.1.zip",
-        "audiocpp-core-vulkan-win-x64-v0.7.1.zip",
-        "audiocpp-python-deps-py311-win-x64-v0.7.1.zip",
-        "audiocpp-updater-v$testUpdaterVersion.zip",
-        "manifest-v0.7.1.json",
-        "manifest-v0.7.1.json.minisig",
+        "audiocpp-app-v0.7.1-r2.zip",
+        "audiocpp-core-cpu-win-x64-v0.7.1-r2.zip",
+        "audiocpp-core-cuda-win-x64-v0.7.1-r2.zip",
+        "audiocpp-core-vulkan-win-x64-v0.7.1-r2.zip",
+        "audiocpp-python-deps-py311-win-x64-v0.7.1-r2.zip",
+        "audiocpp-updater-v$testUpdaterVersion-r2.zip",
+        "manifest-v0.7.1-r2.json",
+        "manifest-v0.7.1-r2.json.minisig",
         "stable.json",
         "stable-v0.7.0.json",
         "stable-v0.7.0.huggingface.json",
         "huggingface-upload.json",
-        "SHA256SUMS.txt",
-        "SHA256SUMS.txt.minisig",
+        "SHA256SUMS-r2.txt",
+        "SHA256SUMS-r2.txt.minisig",
         "release-notes.md"
     )) {
         Assert-True (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf) "release builder did not create $name"
     }
-    $manifest = Read-JsonFile (Join-Path $output "manifest-v0.7.1.json")
+    $manifest = Read-JsonFile (Join-Path $output "manifest-v0.7.1-r2.json")
     Assert-True (@($manifest.components).Count -eq 6) "release manifest does not contain all six component types"
     Assert-True (@($manifest.preserve) -contains "webui/voice/**") "release manifest omitted voice preservation"
     Assert-True ([string]$manifest.supported_from -eq ">=0.7.0") "release manifest did not enforce the new baseline"
@@ -757,11 +774,12 @@ function Test-ReleaseBuilder {
     }
     Assert-True ((Get-Content -LiteralPath (Join-Path $output "release-notes.md") -Raw) -match "Custom release notes") "release builder did not use custom release notes"
     $appExpanded = Join-Path $root "app-expanded"
-    Expand-Archive -LiteralPath (Join-Path $output "audiocpp-app-v0.7.1.zip") -DestinationPath $appExpanded
+    Expand-Archive -LiteralPath (Join-Path $output "audiocpp-app-v0.7.1-r2.zip") -DestinationPath $appExpanded
     $appIndex = Read-JsonFile (Join-Path $appExpanded "files.json")
     Assert-True (@($appIndex.remove) -contains "run_server.bat") "app archive omitted retired launcher cleanup"
     Assert-True (@($appIndex.remove) -contains "webui/native/src/routes/+page.ts") "app archive omitted old native source cleanup"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $appExpanded "payload/run_server.bat"))) "default app archive still includes standalone API launcher"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $appExpanded "payload/update.bat"))) "app archive repeated the unchanged baseline updater launcher"
     foreach ($relative in @(
         "payload\tools\model_manager_v2.py",
         "payload\tools\model_manager_deprecated.py",
@@ -774,19 +792,22 @@ function Test-ReleaseBuilder {
         Assert-True (Test-Path -LiteralPath (Join-Path $appExpanded $relative) -PathType Leaf) "app ZIP omitted $relative"
     }
     foreach ($directory in @("cpu", "gpu", "vulkan")) {
-        $archive = Join-Path $output "audiocpp-core-$($directory -replace 'gpu', 'cuda')-win-x64-v0.7.1.zip"
+        $archive = Join-Path $output "audiocpp-core-$($directory -replace 'gpu', 'cuda')-win-x64-v0.7.1-r2.zip"
         $expanded = Join-Path $root "core-$directory-expanded"
         Expand-Archive -LiteralPath $archive -DestinationPath $expanded
-        Assert-True (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\audiocpp_gguf.exe") -PathType Leaf) "core-$directory ZIP omitted audiocpp_gguf.exe"
-        Assert-True (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\runtime.dll") -PathType Leaf) "core-$directory ZIP omitted its runtime DLL"
+        Assert-True (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\audiocpp_server.exe") -PathType Leaf) "core-$directory ZIP omitted its changed server"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\audiocpp_gguf.exe"))) "core-$directory repeated the unchanged GGUF executable"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\runtime.dll"))) "core-$directory repeated its unchanged runtime DLL"
+        Assert-True ((Get-Content -LiteralPath (Join-Path $expanded "payload\$directory\changed-runtime.dll") -Raw) -match 'new runtime') "core-$directory omitted a same-size runtime DLL with a different hash"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $expanded "payload\$directory\espeak_test_library.dll"))) "core-$directory included a test-only DLL"
     }
     $stable = Read-JsonFile (Join-Path $output "stable.json")
     Assert-True ([string]$stable.version -eq '0.6.0') "legacy stable.json crossed the full-package baseline"
     Assert-True ([string]$stable.manifest_url -match '/v0\.6\.0-windows-prebuilt/manifest-v0\.6\.0\.json$') "legacy stable.json was not retained"
     $newStable = Read-JsonFile (Join-Path $output 'stable-v0.7.0.json')
-    Assert-True ([string]$newStable.manifest_url -match '/v0\.7\.1-windows-prebuilt/manifest-v0\.7\.1\.json$') "new channel points at the wrong manifest"
+    Assert-True ([string]$newStable.manifest_url -match '/v0\.7\.1-windows-prebuilt/manifest-v0\.7\.1-r2\.json$') "new channel points at the wrong manifest"
     $hfStable = Read-JsonFile (Join-Path $output 'stable-v0.7.0.huggingface.json')
-    Assert-True ([string]$hfStable.manifest_url -eq 'v0.7.1/manifest-v0.7.1.json') "HF pointer must use relative assets so its mirror can work independently"
+    Assert-True ([string]$hfStable.manifest_url -eq 'v0.7.1/manifest-v0.7.1-r2.json') "HF pointer must use relative assets so its mirror can work independently"
     $upload = Read-JsonFile (Join-Path $output 'huggingface-upload.json')
     Assert-True ($upload.full_bundle -eq 'Aixora-Studio.zip') "full package name changed"
     $promote = @($upload.files | Where-Object { $_.phase -eq 'promote-after-verification' })

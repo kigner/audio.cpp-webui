@@ -2,8 +2,10 @@
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [string]$PortableRoot = "",
+    [string]$BaselineRoot = "",
     [string]$OutputDir = "",
     [string]$ReleaseTag = "",
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9.-]*$')][string]$AssetRevision = "",
     [string]$Repository = "kigner/audio.cpp-webui",
     [string]$HuggingFaceRepository = "kigner/audio.cpp-webui",
     [string]$ReleaseNotesPath = "",
@@ -33,8 +35,9 @@ if ([version]$MinimumUpdater -lt [version]"1.2.0") { throw "This release require
 # Always retain the baseline floor, even when a caller supplies a broader range.
 $SupportedFrom = (">=$updateBaseline " + $SupportedFrom).Trim()
 $hfReleasePath = "updates/v$updateBaseline/v$Version"
+$assetSuffix = if ($AssetRevision -eq "") { "" } else { "-$AssetRevision" }
 if ($PortableRoot -eq "") { $PortableRoot = Join-Path $repoRoot "audiocpp-portable" }
-if ($OutputDir -eq "") { $OutputDir = Join-Path $repoRoot "dist\releases\v$Version" }
+if ($OutputDir -eq "") { $OutputDir = Join-Path $repoRoot "dist\releases\v$Version$assetSuffix" }
 if ($ReleaseTag -eq "") { $ReleaseTag = "v$Version-windows-prebuilt" }
 $PortableRoot = [IO.Path]::GetFullPath($PortableRoot)
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
@@ -115,12 +118,34 @@ function New-ComponentArchive {
         [string]$ComponentVersion = $Version,
         [string[]]$RemovePaths = @()
     )
+    $selected = @()
+    $reused = 0
+    foreach ($input in $Inputs) {
+        $relative = ([string]$input.Path).Replace('\', '/')
+        if ($relative -match '(^|/)\.\.(/|$)|^[A-Za-z]:|^/') { throw "Unsafe release path: $relative" }
+        $source = [string]$input.Source
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Release input is missing: $source" }
+        if ($BaselineRoot -ne "") {
+            $previous = Join-Path $BaselineRoot $relative.Replace('/', '\')
+            if ((Test-Path -LiteralPath $previous -PathType Leaf) -and
+                (Get-Item -LiteralPath $previous).Length -eq (Get-Item -LiteralPath $source).Length -and
+                (Get-FileHash -LiteralPath $previous -Algorithm SHA256).Hash -eq
+                (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash) {
+                $reused++
+                continue
+            }
+        }
+        $selected += $input
+    }
+    Write-Host "${Id}: $($selected.Count) changed/new files, $reused unchanged baseline files reused."
+    if ($selected.Count -eq 0 -and $RemovePaths.Count -eq 0) { return $null }
+
     $stage = Join-Path $stageRoot $Id
     $payload = Join-Path $stage "payload"
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -ItemType Directory -Path $payload -Force | Out-Null
 
-    foreach ($input in $Inputs) {
+    foreach ($input in $selected) {
         Copy-PayloadFile -Source ([string]$input.Source) -RelativePath ([string]$input.Path) -PayloadRoot $payload
     }
     $index = [ordered]@{
@@ -258,7 +283,8 @@ function New-CoreInputs {
             Path = "$Directory/$name"
         }
     }
-    foreach ($dll in @(Get-ChildItem -LiteralPath (Join-Path $PortableRoot $Directory) -Filter '*.dll' -File | Sort-Object Name)) {
+    foreach ($dll in @(Get-ChildItem -LiteralPath (Join-Path $PortableRoot $Directory) -Filter '*.dll' -File |
+            Where-Object { $_.Name -notin @('espeak_test_library.dll', 'espeak_test_missing_symbol.dll') } | Sort-Object Name)) {
         $inputs += [pscustomobject]@{ Source = $dll.FullName; Path = "$Directory/$($dll.Name)" }
     }
     return @($inputs)
@@ -281,7 +307,7 @@ function New-PythonDepsArchive {
     }
     $index = [ordered]@{ schema = 1; component = "python-deps"; files = @(Get-FileIndex $stage) }
     $index | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stage "files.json") -Encoding UTF8
-    $fileName = "audiocpp-python-deps-py311-win-x64-v$Version.zip"
+    $fileName = "audiocpp-python-deps-py311-win-x64-v$Version$assetSuffix.zip"
     $zip = Join-Path $OutputDir $fileName
     if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal
@@ -335,6 +361,21 @@ Assert-SafeOutputDirectory
 if (-not (Test-Path -LiteralPath $PortableRoot -PathType Container)) {
     throw "Portable bundle root not found: $PortableRoot"
 }
+if ($BaselineRoot -eq "" -and [version]$Version -gt [version]$updateBaseline) {
+    throw "Incremental releases require -BaselineRoot pointing to the original $updateBaseline full package."
+}
+if ($BaselineRoot -ne "") {
+    $BaselineRoot = [IO.Path]::GetFullPath($BaselineRoot)
+    $baselineVersion = Get-Content -LiteralPath (Join-Path $BaselineRoot 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$baselineVersion.version -ne $updateBaseline) {
+        throw "BaselineRoot must contain the original $updateBaseline full package."
+    }
+    foreach ($required in @('run_webui.bat', 'cpu/audiocpp_cli.exe', 'gpu/audiocpp_server.exe', 'vulkan/audiocpp_server.exe')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $BaselineRoot $required) -PathType Leaf)) {
+            throw "BaselineRoot is missing $required."
+        }
+    }
+}
 if (-not (Test-Path -LiteralPath $MinisignSecretKey -PathType Leaf)) {
     throw "Minisign secret key not found: $MinisignSecretKey"
 }
@@ -368,23 +409,25 @@ if (-not $AllowDirty) {
     if ($dirty.Count -gt 0) { throw "Tracked working tree changes exist. Build release assets from a clean tested commit." }
 }
 
-if (Test-Path -LiteralPath $OutputDir) { Remove-Item -LiteralPath $OutputDir -Recurse -Force }
+if (Test-Path -LiteralPath $OutputDir) { throw "Output directory already exists; keep reviewed release assets and choose a new directory: $OutputDir" }
 New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 
-$app = New-ComponentArchive "app" "audiocpp-app-v$Version.zip" (Get-AppInputs) $Version -RemovePaths (Get-AppRemovePaths)
-$cpu = New-ComponentArchive "core-cpu" "audiocpp-core-cpu-win-x64-v$Version.zip" (New-CoreInputs "cpu") $Version
-$cuda = New-ComponentArchive "core-cuda" "audiocpp-core-cuda-win-x64-v$Version.zip" (New-CoreInputs "gpu") $Version
-$vulkan = New-ComponentArchive "core-vulkan" "audiocpp-core-vulkan-win-x64-v$Version.zip" (New-CoreInputs "vulkan") $Version
-$components = @($app, $cpu, $cuda, $vulkan)
+$app = New-ComponentArchive "app" "audiocpp-app-v$Version$assetSuffix.zip" (Get-AppInputs) $Version -RemovePaths (Get-AppRemovePaths)
+$cpu = New-ComponentArchive "core-cpu" "audiocpp-core-cpu-win-x64-v$Version$assetSuffix.zip" (New-CoreInputs "cpu") $Version
+$cuda = New-ComponentArchive "core-cuda" "audiocpp-core-cuda-win-x64-v$Version$assetSuffix.zip" (New-CoreInputs "gpu") $Version
+$vulkan = New-ComponentArchive "core-vulkan" "audiocpp-core-vulkan-win-x64-v$Version$assetSuffix.zip" (New-CoreInputs "vulkan") $Version
+$components = @(@($app, $cpu, $cuda, $vulkan) | Where-Object { $null -ne $_ })
 $hasPythonDeps = $PythonDepsSource -ne ""
 if ($hasPythonDeps) { $components += New-PythonDepsArchive $PythonDepsSource }
 $hasUpdater = [bool]$IncludeUpdater
 if ($hasUpdater) {
     $updaterVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "updater\updater.version") -Raw).Trim()
-    $components += New-ComponentArchive "updater" "audiocpp-updater-v$updaterVersion.zip" (Get-UpdaterInputs) $updaterVersion
+    $updater = New-ComponentArchive "updater" "audiocpp-updater-v$updaterVersion$assetSuffix.zip" (Get-UpdaterInputs) $updaterVersion
+    if ($null -ne $updater) { $components += $updater }
 }
+if ($components.Count -eq 0) { throw "No changed files or dependency updates were selected." }
 
-$manifestName = "manifest-v$Version.json"
+$manifestName = "manifest-v$Version$assetSuffix.json"
 $manifestPath = Join-Path $OutputDir $manifestName
 $manifest = [ordered]@{
     schema = 1
@@ -446,7 +489,7 @@ if ($ReleaseNotesPath -ne "") {
 - Versions below $updateBaseline must install the full Aixora-Studio.zip package; their legacy channel remains at 0.6.0.
 - Components: app, core-cpu, core-cuda, core-vulkan$(if ($hasPythonDeps) { ', python-deps' })$(if ($hasUpdater) { ', updater' })
 - Python dependency changes: $(if ($hasPythonDeps) { 'yes' } else { 'no' })
-- Backend EXEs and bundled DLLs are included in their respective components.
+- Only files changed since the full-package baseline are downloaded; unchanged runtime libraries are reused.
 
 ## User data
 
@@ -458,12 +501,12 @@ from `_update\\backup\\`.
 }
 
 $sumCandidates = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object {
-    $_.Name -notin @("SHA256SUMS.txt", "SHA256SUMS.txt.minisig")
+    $_.Name -notin @("SHA256SUMS$assetSuffix.txt", "SHA256SUMS$assetSuffix.txt.minisig")
 } | Sort-Object Name)
 $sumLines = @($sumCandidates | ForEach-Object {
     "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
 })
-$sumsPath = Join-Path $OutputDir "SHA256SUMS.txt"
+$sumsPath = Join-Path $OutputDir "SHA256SUMS$assetSuffix.txt"
 Set-Content -LiteralPath $sumsPath -Value $sumLines -Encoding ASCII
 Invoke-Minisign $sumsPath "$sumsPath.minisig"
 
