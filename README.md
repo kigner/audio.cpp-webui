@@ -9,11 +9,11 @@
 <p align="center"><strong>Your local audio studio</strong><br />Speech synthesis · Speech recognition · Music and sound effects · Realtime voice · Video translation and dubbing</p>
 
 > [!IMPORTANT]
-> **2026-10-18 · A new interface for Aixora Audio 0.7.0**
+> **Aixora Audio 0.7.5 is available**
 >
-> The redesigned workspace is now in the source tree: unified sidebar navigation, task-oriented pages, subtitle creation, video translation and dubbing, realtime voice chat and global dictation. The default appearance is **Classic blue-purple + Light**, with models, reference audio and runtime status managed in one interface.
+> Realtime voice calls from your phone, more supported models, an updated audio backend and bug fixes.
 >
-> **[Aixora Audio v0.7.0 is available](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0).** Download the complete Windows package from the release page, with Hugging Face, hf-mirror, Baidu Netdisk and Google Drive links.
+> **[View the 0.7.5 release](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.5).** Already using the 0.7.0 portable package? Run **`update.bat`**. For a first installation, download the [complete 0.7.0 package](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0), then run `update.bat`.
 
 <p align="center">
   <a href="webui/README.md">User guide</a> ·
@@ -34,21 +34,11 @@ Aixora Audio brings local audio models into one workspace. Turn text into voiceo
 | Speech synthesis and voice cloning | Enter text, choose a preset voice or reference recording, generate and listen; streaming models can play audio as it is generated |
 | Speech recognition and subtitles | Transcribe recordings or videos, inspect timestamps, correct text and export subtitles |
 | Video translation and dubbing | Transcribe, translate and review, generate speech per segment, then mix and export with optional background-music preservation |
-| Realtime voice chat | Choose a character and voice, then talk through a microphone or type; automatic language mode follows the language you speak |
+| Realtime voice chat | Choose a character and voice, then talk on your computer or scan a QR code to call from your phone on the same Wi-Fi; automatic language mode follows the language you speak |
 | Global dictation | Dictate into other applications using a shortcut, with recognition status shown in a floating toolbar |
 | Music, sound effects and voice design | Generate audio from prompts or lyrics, describe a voice, or convert speech and singing voices |
-| Audio tools | Separate vocals and accompaniment, audition stems, enhance and denoise, align text and convert formats |
+| Audio tools | Separate vocals and accompaniment, audition stems, enhance and denoise, classify sounds, detect wake words, align text and convert formats |
 | Model and reference-audio management | Download, load and remove models, save reference recordings with transcripts, and inspect devices and logs |
-
-Realtime calls also have improved lifecycle handling: going back turns off the microphone, and starting again reuses the matching loaded models. Character names and voices do not override the reply language in automatic mode. Separation results use grouped waveform players, and video dubbing shows the reference-audio settings needed by the selected model.
-
-## 2026-10-23 source update
-
-- Integrated upstream `audio.cpp` through `c8365f39`, including the C++ backend, model implementations and the complete native WebUI. The native WebUI and the Aixora workspace remain available in parallel, with separate model-catalog and parameter configuration and separate model managers.
-- Added 27 workspace model entries across 16 families, including Ming3-TTS, Ming3-Audio, XTTS v2, Voxtral TTS, sound classification, wake-word detection and additional source-separation models. Model center now contains **184 entries across 129 families**.
-- Adapted model parameters, migration of saved settings, streaming sample rates and stereo output. Preserved Qwen3-ASR timestamp corrections and Qwen3-TTS long-text chunking and truncation checks.
-
-Windows CUDA builds and regression checks passed. **Qwen3-TTS 0.6B and Qwen3-ASR 0.6B also passed manual testing**.
 
 ## Quick start
 
@@ -56,6 +46,7 @@ Windows CUDA builds and regression checks passed. **Qwen3-TTS 0.6B and Qwen3-ASR
 2. Once the browser opens at **`http://127.0.0.1:7899`** by default, install the models you need in **Model center**.
 3. Open a task page, select and load a model, enter text or upload your material, then generate.
 4. Realtime voice chat and global dictation are under **Scenarios**. Configure the service URL, model name and API key in the relevant conversation or translation settings.
+5. For phone calls, open **System settings → Mobile access** on your computer, enable mobile access, and scan the QR code with a phone on the same Wi-Fi network.
 
 The portable package includes Python and runtime dependencies. The launcher selects an available backend in **CUDA → Vulkan → CPU** order; you can override it with `AUDIOCPP_BACKEND`. Languages, reference inputs and parameters are shown for the selected model.
 
@@ -189,25 +180,25 @@ Replace `cpu` in the last line if you built a CUDA or Vulkan backend. Open the w
 
 ## Model support
 
-Aixora Audio's source version offers **129 model families and 184 model entries** in Model center. The table below groups them by primary use. Check the interface for versions, languages, reference inputs and parameters.
-
-The latest backend integration adds Fish Drama3, Ming 3.0 TTS / Audio, XTTS v2, Voxtral TTS, Plapre, Hviske ASR v6 and Whistle ASR; MossFormer2 and TF-GridNet separation; AST / CED sound classification; FireRed VAD; and Micro Wake Word, OpenWakeWord and Sherpa KWS. Sound classification and wake-word detection are under **Audio tools**. The upstream native WebUI is also included and is served by `audiocpp_server`.
+Aixora Audio's Model center includes **129 model families and 184 model entries**. The table below groups them by use. Select a model in the interface to see its versions, languages, reference inputs and parameters.
 
 | Category | Supported models |
 |---|---|
-| Speech synthesis and voice design | OmniVoice, Pocket TTS, DotTTS (SOAR / MeanFlow / Edit), NeuTTS 2E, Qwen3-TTS (0.6B / 1.7B)<br>MioTTS 1.7B, VoxCPM2, VibeVoice 1.5B, IndexTTS2 / IndexTTS2.5, Irodori-TTS (v4 / v3)<br>MOSS-TTS-Local v1.5, MOSS-TTS-Nano 100M, Supertonic 3, Higgs Audio v3 TTS 4B, Fish Audio S2 Pro<br>GLM-TTS, Llama-OuteTTS 1.0 1B, VieNeu-TTS v3 Turbo, Inflect Micro v2, DramaBox<br>Confucius4-TTS, Habibi / F5-TTS, MagpieTTS Multilingual 357M, Chatterbox, MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B, AuK, BreezeTTS 2, Chatterbox Turbo, CosyVoice3<br>Echo-TTS, FireRedTTS3, KittenTTS Mini 0.8, Kitten TTS 2, Kokoro 82M<br>KugelAudio-0-Open, Maya1, MiraTTS, MOSS-TTS-v1.5, MOSS-TTSD<br>Piper TTS, sanoTTS Nano, Soprano, Sopro V2 Turbo, VoxCPM1<br>ZipVoice |
-| Speech recognition and audio understanding | Qwen3-ASR (0.6B / 1.7B), Citrinet ASR, Nemotron 3.5 ASR 0.6B, Higgs Audio v3 STT, Hviske v5.3<br>VibeVoice ASR, Voxtral Mini 4B Realtime, Fun-ASR-Nano 2512, Parakeet-TDT 0.6B v3, Kroko Community ASR<br>SenseVoice-Small, Audio8-ASR-0.1B, Audio Flamingo 3 / Next, Canary 180M Flash, Cohere Transcribe<br>Confucius4-R2T2, CrisperWhisper 2.0, FireRedAudio, GigaAM ASR, Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT, LFM2.5-Audio (English / Japanese), Moonshine Streaming ASR, MOSS-Transcribe-Diarize, Niagara ASR<br>OWSM, OWSM-CTC, SAMSONE, VibeVoice-ASR-BitNet, VibeVoice ASR Streaming |
+| Speech synthesis and voice design | OmniVoice, Pocket TTS, DotTTS (SOAR / MeanFlow / Edit), NeuTTS 2E, Qwen3-TTS (0.6B / 1.7B)<br>MioTTS 1.7B, VoxCPM2, VibeVoice 1.5B, IndexTTS2 / IndexTTS2.5, Irodori-TTS (v4 / v3)<br>MOSS-TTS-Local v1.5, MOSS-TTS-Nano 100M, Supertonic 3, Higgs Audio v3 TTS 4B, Fish Audio S2 Pro<br>GLM-TTS, Llama-OuteTTS 1.0 1B, VieNeu-TTS v3 Turbo, Inflect Micro v2, DramaBox<br>Confucius4-TTS, Habibi / F5-TTS, MagpieTTS Multilingual 357M, Chatterbox, MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B, AuK, BreezeTTS 2, Chatterbox Turbo, CosyVoice3<br>Echo-TTS, FireRedTTS3, KittenTTS Mini 0.8, Kitten TTS 2, Kokoro 82M<br>KugelAudio-0-Open, Maya1, MiraTTS, MOSS-TTS-v1.5, MOSS-TTSD<br>Piper TTS, sanoTTS Nano, Soprano, Sopro V2 Turbo, VoxCPM1, ZipVoice<br>Fish Audio Drama 3 / Drama3-small, Ming 3.0 TTS 0.5B, Ming 3.0 Audio Tiny, XTTS v2, Voxtral 4B TTS<br>Plapre 3, LFM2.5-Audio (English / Japanese), FireRedAudio |
+| Speech recognition and audio understanding | Qwen3-ASR (0.6B / 1.7B), Citrinet ASR, Nemotron 3.5 ASR 0.6B, Higgs Audio v3 STT, Hviske (v5.3 / v6)<br>VibeVoice ASR, Voxtral Mini 4B Realtime, Fun-ASR-Nano 2512, Parakeet-TDT 0.6B v3, Kroko Community ASR<br>SenseVoice-Small, Audio8-ASR-0.1B, Audio Flamingo 3 / Next, Canary 180M Flash, Cohere Transcribe<br>Confucius4-R2T2, CrisperWhisper 2.0, FireRedAudio, GigaAM ASR, Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT, LFM2.5-Audio (English / Japanese), Moonshine Streaming ASR, MOSS-Transcribe-Diarize, Niagara ASR<br>OWSM, OWSM-CTC, SAMSONE, VibeVoice-ASR-BitNet, VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny, Whistle ASR |
 | Music and sound effects | ACE-Step 1.5, Stable Audio 3 (Small Music / Small SFX / Medium), HeartMuLa 3B, MiniMax-H3, MiniMax Music 3<br>ControlFoley, MiDashengLM-Gen, YuE2 |
-| Speech conversation | PersonaPlex |
+| Speech conversation | PersonaPlex, Ming 3.0 Audio Tiny |
 | Voice conversion and audio codecs | MeanVC2, Vevo2, Seed-VC, RVC, MioCodec<br>Tone Color VC |
-| Source separation | HTDemucs, BS-RoFormer, Mel-Band RoFormer, HTDemucs 6-stem, SAM Audio |
+| Source separation | HTDemucs, BS-RoFormer, Mel-Band RoFormer, HTDemucs 6-stem, SAM Audio, MossFormer2, TF-GridNet |
 | Audio enhancement and restoration | Apollo, AudioSR, RNNoise, DeepFilterNet2, ZipEnhancer, GTCRN (Streaming / DNS3 / VCTK), FlashSR, RE-USE, Sidon v0.1<br>UniverSR |
-| Voice activity and end-of-turn detection | Silero VAD, MarbleNet VAD, PulseVAD, Smart Turn v3.2 |
+| Voice activity and end-of-turn detection | Silero VAD, MarbleNet VAD, PulseVAD, FireRed VAD / Stream-VAD, Smart Turn v3.2 |
+| Sound classification | AST AudioSet, CED (Base / Mini / Small / Tiny) |
+| Wake-word detection | microWakeWord, OpenWakeWord, Sherpa Zipformer KWS (Chinese / English) |
 | Speaker diarization | Sortformer Diarization 4spk, Nemotron 3 Diarization, Sortformer Diarization v2.1 |
 | Subtitle and text alignment | Qwen3 Forced Aligner, MMS-300M Forced Aligner |
 | Music transcription | MuScriptor Small, SheetSage2 |
 
-Download models from **Model center**. MiraTTS and Sortformer v2 require manual weight installation.
+Download models from **Model center**. Sound classification and wake-word detection are under **Audio tools**. MiraTTS and Sortformer v2 require manual weight installation.
 
 ## Acknowledgments
 

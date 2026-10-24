@@ -9,11 +9,11 @@
 <p align="center"><strong>你的本地声音工作室</strong><br />语音合成 · 语音识别 · 音乐与音效 · 实时语音 · 视频翻译配音</p>
 
 > [!IMPORTANT]
-> **2026-10-18 · Aixora Audio 0.7.0 全新界面**
+> **Aixora Audio 0.7.5 已发布**
 >
-> 新版工作空间现已加入源码：统一的侧边导航、按任务组织的操作页面，以及字幕制作、视频翻译配音、实时语音聊天和全局语音录入。默认采用 **经典蓝紫＋浅色**，模型、参考音频和运行状态都可以在同一个界面管理。
+> 新增手机端实时语音访问，扩展模型支持，同步音频后端并修复已知问题。
 >
-> **[Aixora Audio v0.7.0 已发布](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0)。** 前往发布页下载 Windows 完整版整合包，支持 Hugging Face、国内 HF 镜像、百度网盘和 Google Drive。
+> **[查看 0.7.5 发布页](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.5)。** 已安装 0.7.0 整合包的用户直接运行 **`update.bat`**。首次使用请先下载 [0.7.0 完整版整合包](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0)，再运行 `update.bat` 更新。
 
 <p align="center">
   <a href="webui/README.zh.md">中文使用说明</a> ·
@@ -34,21 +34,11 @@ Aixora Audio 把本地音频模型放进一个方便操作的工作空间。输�
 | 语音合成与声音克隆 | 输入文字，选择预设音色或参考录音，生成并试听；支持流式模型边生成边播放 |
 | 语音识别与字幕 | 转写录音或视频，查看时间戳、校对文本，导出字幕 |
 | 视频翻译配音 | 识别原文、翻译校对、逐句配音、混音导出，支持保留背景音乐 |
-| 实时语音聊天 | 选择角色和音色，通过麦克风或文字交流；自动语言模式跟随你的说话语言 |
+| 实时语音聊天 | 选择角色和音色，在电脑上交流，或用同一 Wi-Fi 下的手机扫码通话；自动语言模式跟随你的说话语言 |
 | 全局语音录入 | 在其他应用的输入框里使用快捷键听写，悬浮条显示识别状态 |
 | 音乐、音效与声音设计 | 用提示词或歌词生成声音，描述想要的音色，转换说话声和歌声 |
-| 音频工具 | 分离人声与伴奏、分轨试听、增强和降噪、对齐文本、转换格式 |
+| 音频工具 | 分离人声与伴奏、分轨试听、增强和降噪、声音分类、唤醒词检测、对齐文本、转换格式 |
 | 模型与参考音频管理 | 下载、加载和删除模型，保存参考录音与原文，查看运行设备和日志 |
-
-本次也改进了实时通话：点击返回会关闭麦克风，再次开麦会复用已加载的对应模型；角色名和音色不会改变自动模式的回复语言。音轨分离结果支持分组波形播放器，视频配音会根据模型显示需要的参考音频设置。
-
-## 2026-10-23 源码更新
-
-- 合入上游 `audio.cpp` 至 `c8365f39`，同步 C++ 后端、模型实现和完整原生 WebUI。原生 WebUI 与 Aixora 工作空间并行保留，模型清单、参数配置和模型管理器各自独立。
-- 工作空间新增 16 个模型家族、27 个模型条目，包括 Ming3-TTS、Ming3-Audio、XTTS v2、Voxtral TTS，以及声音分类、唤醒词检测和新的音源分离模型；模型中心现有 **129 个家族、184 个条目**。
-- 适配新版模型参数、已保存设置的参数迁移、流式采样率和双声道输出，保留 Qwen3-ASR 时间戳修正及 Qwen3-TTS 长文本切分和截断检测。
-
-Windows CUDA 编译与回归检查通过；**Qwen3-TTS 0.6B、Qwen3-ASR 0.6B 已实测通过**。
 
 ## 快速开始
 
@@ -56,6 +46,7 @@ Windows CUDA 编译与回归检查通过；**Qwen3-TTS 0.6B、Qwen3-ASR 0.6B 已
 2. 浏览器默认打开 **`http://127.0.0.1:7899`** 后，进入 **模型中心** 安装需要的模型。
 3. 打开功能页，选择并加载模型，输入文字或上传素材，开始生成。
 4. 实时语音聊天和全局语音录入都在 **场景应用** 中。对话和翻译服务在相应设置里填写地址、模型名和 API Key。
+5. 手机通话：在电脑上打开 **系统设置 → 手机访问**，开启后用同一 Wi-Fi 下的手机扫描二维码。
 
 整合包包含 Python 和运行依赖。启动时会按 **CUDA → Vulkan → CPU** 选择可用后端，也可以通过 `AUDIOCPP_BACKEND` 指定。模型支持的语言、参考输入和参数会随选择显示在页面上。
 
@@ -189,25 +180,25 @@ AUDIOCPP_BACKEND=cpu ./venv/bin/python webui/webui.py
 
 ## 模型支持
 
-Aixora Audio 当前源码版的模型中心提供 **129 个模型家族、184 个模型条目**。下表按主要用途列出支持的模型；具体版本、语言、参考输入和参数可在界面中查看。
-
-本次后端更新新增 Fish Drama3、Ming 3.0 TTS / Audio、XTTS v2、Voxtral TTS、Plapre、Hviske ASR v6、Whistle ASR，以及 MossFormer2、TF-GridNet 分离，AST / CED 声音分类、FireRed VAD、Micro Wake Word、OpenWakeWord 和 Sherpa KWS。声音分类和唤醒词检测位于 **音频工具**。同时包含上游原生 WebUI，由 `audiocpp_server` 提供访问。
+Aixora Audio 的模型中心提供 **129 个模型家族、184 个模型条目**。下表按用途列出模型；选择模型后，可以在界面中查看版本、语言、参考输入和参数。
 
 | 类别 | 支持的模型 |
 |---|---|
-| 语音合成与声音设计 | OmniVoice、Pocket TTS、DotTTS（SOAR / MeanFlow / Edit）、NeuTTS 2E、Qwen3-TTS（0.6B / 1.7B）<br>MioTTS 1.7B、VoxCPM2、VibeVoice 1.5B、IndexTTS2 / IndexTTS2.5、Irodori-TTS（v4 / v3）<br>MOSS-TTS-Local v1.5、MOSS-TTS-Nano 100M、Supertonic 3、Higgs Audio v3 TTS 4B、Fish Audio S2 Pro<br>GLM-TTS、Llama-OuteTTS 1.0 1B、VieNeu-TTS v3 Turbo、Inflect Micro v2、DramaBox<br>Confucius4-TTS、Habibi / F5-TTS、MagpieTTS Multilingual 357M、Chatterbox、MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B、AuK、BreezeTTS 2、Chatterbox Turbo、CosyVoice3<br>Echo-TTS、FireRedTTS3、KittenTTS Mini 0.8、Kitten TTS 2、Kokoro 82M<br>KugelAudio-0-Open、Maya1、MiraTTS、MOSS-TTS-v1.5、MOSS-TTSD<br>Piper TTS、sanoTTS Nano、Soprano、Sopro V2 Turbo、VoxCPM1<br>ZipVoice |
-| 语音识别与音频理解 | Qwen3-ASR（0.6B / 1.7B）、Citrinet ASR、Nemotron 3.5 ASR 0.6B、Higgs Audio v3 STT、Hviske v5.3<br>VibeVoice ASR、Voxtral Mini 4B Realtime、Fun-ASR-Nano 2512、Parakeet-TDT 0.6B v3、Kroko Community ASR<br>SenseVoice-Small、Audio8-ASR-0.1B、Audio Flamingo 3 / Next、Canary 180M Flash、Cohere Transcribe<br>Confucius4-R2T2、CrisperWhisper 2.0、FireRedAudio、GigaAM ASR、Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT、LFM2.5-Audio（英语 / 日语）、Moonshine Streaming ASR、MOSS-Transcribe-Diarize、Niagara ASR<br>OWSM、OWSM-CTC、SAMSONE、VibeVoice-ASR-BitNet、VibeVoice ASR Streaming |
+| 语音合成与声音设计 | OmniVoice、Pocket TTS、DotTTS（SOAR / MeanFlow / Edit）、NeuTTS 2E、Qwen3-TTS（0.6B / 1.7B）<br>MioTTS 1.7B、VoxCPM2、VibeVoice 1.5B、IndexTTS2 / IndexTTS2.5、Irodori-TTS（v4 / v3）<br>MOSS-TTS-Local v1.5、MOSS-TTS-Nano 100M、Supertonic 3、Higgs Audio v3 TTS 4B、Fish Audio S2 Pro<br>GLM-TTS、Llama-OuteTTS 1.0 1B、VieNeu-TTS v3 Turbo、Inflect Micro v2、DramaBox<br>Confucius4-TTS、Habibi / F5-TTS、MagpieTTS Multilingual 357M、Chatterbox、MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B、AuK、BreezeTTS 2、Chatterbox Turbo、CosyVoice3<br>Echo-TTS、FireRedTTS3、KittenTTS Mini 0.8、Kitten TTS 2、Kokoro 82M<br>KugelAudio-0-Open、Maya1、MiraTTS、MOSS-TTS-v1.5、MOSS-TTSD<br>Piper TTS、sanoTTS Nano、Soprano、Sopro V2 Turbo、VoxCPM1、ZipVoice<br>Fish Audio Drama 3 / Drama3-small、Ming 3.0 TTS 0.5B、Ming 3.0 Audio Tiny、XTTS v2、Voxtral 4B TTS<br>Plapre 3、LFM2.5-Audio（英语 / 日语）、FireRedAudio |
+| 语音识别与音频理解 | Qwen3-ASR（0.6B / 1.7B）、Citrinet ASR、Nemotron 3.5 ASR 0.6B、Higgs Audio v3 STT、Hviske（v5.3 / v6）<br>VibeVoice ASR、Voxtral Mini 4B Realtime、Fun-ASR-Nano 2512、Parakeet-TDT 0.6B v3、Kroko Community ASR<br>SenseVoice-Small、Audio8-ASR-0.1B、Audio Flamingo 3 / Next、Canary 180M Flash、Cohere Transcribe<br>Confucius4-R2T2、CrisperWhisper 2.0、FireRedAudio、GigaAM ASR、Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT、LFM2.5-Audio（英语 / 日语）、Moonshine Streaming ASR、MOSS-Transcribe-Diarize、Niagara ASR<br>OWSM、OWSM-CTC、SAMSONE、VibeVoice-ASR-BitNet、VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny、Whistle ASR |
 | 音乐与音效 | ACE-Step 1.5、Stable Audio 3（Small Music / Small SFX / Medium）、HeartMuLa 3B、MiniMax-H3、MiniMax Music 3<br>ControlFoley、MiDashengLM-Gen、YuE2 |
-| 语音对话 | PersonaPlex |
+| 语音对话 | PersonaPlex、Ming 3.0 Audio Tiny |
 | 声音转换与音频编码 | MeanVC2、Vevo2、Seed-VC、RVC、MioCodec<br>Tone Color VC |
-| 音轨分离 | HTDemucs、BS-RoFormer、Mel-Band RoFormer、HTDemucs 六轨版、SAM Audio |
+| 音轨分离 | HTDemucs、BS-RoFormer、Mel-Band RoFormer、HTDemucs 六轨版、SAM Audio、MossFormer2、TF-GridNet |
 | 音频增强与修复 | Apollo、AudioSR、RNNoise、DeepFilterNet2、ZipEnhancer、GTCRN（Streaming / DNS3 / VCTK）、FlashSR、RE-USE、Sidon v0.1<br>UniverSR |
-| 语音检测与对话结束判断 | Silero VAD、MarbleNet VAD、PulseVAD、Smart Turn v3.2 |
+| 语音检测与对话结束判断 | Silero VAD、MarbleNet VAD、PulseVAD、FireRed VAD / Stream-VAD、Smart Turn v3.2 |
+| 声音分类 | AST AudioSet、CED（Base / Mini / Small / Tiny） |
+| 唤醒词检测 | microWakeWord、OpenWakeWord、Sherpa Zipformer KWS（中文 / 英文） |
 | 说话人分离 | Sortformer Diarization 4spk、Nemotron 3 Diarization、Sortformer Diarization v2.1 |
 | 字幕与文本对齐 | Qwen3 Forced Aligner、MMS-300M Forced Aligner |
 | 音乐转谱 | MuScriptor Small、SheetSage2 |
 
-在 **模型中心** 选择并下载模型。MiraTTS 与 Sortformer v2 的权重需要手动安装。
+在 **模型中心** 选择并下载模型。声音分类和唤醒词检测位于 **音频工具**。MiraTTS 与 Sortformer v2 的权重需要手动安装。
 
 ## 致谢
 
