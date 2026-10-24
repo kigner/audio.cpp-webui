@@ -128,7 +128,27 @@ function fixture() {
       const contentType={'.html':'text/html','.js':'application/javascript','.mjs':'application/javascript','.css':'text/css','.png':'image/png'}[path.extname(full)]||'application/octet-stream';
       return route.fulfill({status:200,contentType,body});
     }
-    if(pathname==='/api/realtime/config'||pathname==='/config')return json({api_base:'/api/realtime',tts_models:[],asr_models:[]});
+    if(pathname==='/api/realtime/config'||pathname==='/config')return json(state.realtimeConfig||{api_base:'/api/realtime',tts_models:[],asr_models:[]});
+    if(pathname===`${API}/mobile/qr`)return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>'});
+    if(pathname===`${API}/mobile/config`) {
+      const body=clone(request.postDataJSON());
+      (state.mobileSaves||=[]).push(body);
+      const gate=state.mobileSaveGate;state.mobileSaveGate=null;if(gate)await gate.promise;
+      if(state.mobileSaveError)return route.fulfill({status:503,json:{detail:'Fixture: mobile sync unavailable'}});
+      state.mobileConfig=body;
+      return json(mobileStatus());
+    }
+    if(pathname===`${API}/mobile`) {
+      if(request.method()==='POST'){
+        const body=request.postDataJSON();(state.mobileToggles||=[]).push(body);state.mobileRunning=body.enabled;
+      }
+      return json(mobileStatus());
+    }
+    function mobileStatus(){
+      const saved=state.mobileConfig;
+      return {enabled:!!state.mobileRunning,running:!!state.mobileRunning,configured:!!saved,error:'',addresses:[],urls:[],
+        character:saved?.character.name||'',models:saved?.config||{}};
+    }
     if (pathname === `${API}/catalog`) return json({version:'browser-fixture', models,
       tasks:[{id:'tts', types:['tts','clon']}, {id:'asr', types:['asr']},
         {id:'music', types:['gen']}, {id:'vc',types:['vc']}, {id:'design',types:['vdes']},
@@ -3577,6 +3597,246 @@ cases.push(['upstream review DotTTS Edit restores visible instructions without s
   assert.equal(backend.requests[0].options.instruct,'updated edit');
   assert.equal(backend.requests[0].options.instruction,undefined);
   assert.equal(Boolean(backend.requests[0].inputs.stream),false);
+}]);
+
+function mobileRealtimeConfig(backend){
+  backend.realtimeConfig={api_base:'/api/realtime',tts_model:'tts-one',asr_model:'asr-one',llm_model:'fixture-chat',
+    tts_models:['tts-one','tts-two'].map(id=>({id,label:id,family:'supertonic',accepts_voice_reference:false,
+      voice_parameter:'voice',voices:[{label:'F1',value:'F1'},{label:'F2',value:'F2'}]})),
+    asr_models:[{id:'asr-one',label:'ASR One'},{id:'asr-two',label:'ASR Two'}]};
+}
+async function openMobileSettings(page,backend){
+  mobileRealtimeConfig(backend);
+  await page.evaluate(()=>{location.hash='settings/mobile';});
+  await page.locator('#settings-mobile').waitFor({state:'visible'});
+  await waitText(page,'#mobile-config-state','已同步');
+  return page.frameLocator('#realtime-frame');
+}
+async function editMobileSettings(page){
+  await page.locator('#mobile-edit').click();
+  const frame=page.frameLocator('#realtime-frame');
+  await frame.locator('#settings-modal[open]').waitFor();
+  return frame;
+}
+async function changeRealtimeLlm(frame,value){
+  await frame.locator('[data-settings-tab="llm"]').click();
+  await frame.locator('#llm-model').fill(value);
+  await frame.locator('#settings-save').click();
+  await frame.locator('#settings-modal[open]').waitFor({state:'hidden'});
+}
+
+cases.push(['mobile voice settings return to their entry and sync with one save',async(page,backend)=>{
+  await openMobileSettings(page,backend);
+  assert.equal(await page.locator('#mobile-save').count(),0);
+  assert.equal(await page.locator('#mobile-enabled').isChecked(),false);
+  assert.deepEqual(backend.mobileToggles||[],[],'Opening mobile settings must not enable LAN access');
+  const frame=await editMobileSettings(page);
+  await frame.locator('[data-character-id="office"]').click();
+  await frame.locator('#character-name').fill('手机助手');
+  await frame.locator('[data-settings-tab="tts"]').click();
+  await frame.locator('#tts-model').selectOption('tts-two');
+  await frame.locator('#tts-voice').selectOption('F2');
+  await frame.locator('[data-settings-tab="asr"]').click();
+  await frame.locator('#asr-model').fill('asr-two');
+  await frame.locator('[data-settings-tab="llm"]').click();
+  await frame.locator('#llm-key').fill('fixture-mobile-key-not-a-real-credential');
+  await changeRealtimeLlm(frame,'fixture-chat-two');
+  await waitUntil(()=>backend.mobileConfig?.character.name==='手机助手','Saved character did not sync');
+  assert.equal(backend.mobileConfig.character.id,'office');
+  assert.equal(backend.mobileConfig.config.tts_model,'tts-two');
+  assert.equal(backend.mobileConfig.config.asr_model,'asr-two');
+  assert.equal(backend.mobileConfig.config.llm_model,'fixture-chat-two');
+  assert.equal(backend.mobileConfig.config.llm_api_key,'fixture-mobile-key-not-a-real-credential');
+  assert.deepEqual(backend.mobileConfig.config.tts_options,{voice:'F2'});
+  await frame.locator('#scene-back').click();
+  await page.locator('#settings-mobile').waitFor({state:'visible'});
+  assert.equal(new URL(page.url()).hash,'#settings/mobile');
+  await waitText(page,'#mobile-summary','手机助手 · asr-two · fixture-chat-two · tts-two');
+  await waitText(page,'#mobile-config-state','已同步');
+  assert.equal(await page.locator('#mobile-enabled').isChecked(),false);
+  assert.deepEqual(backend.mobileToggles||[],[]);
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await snapshot(page,'mobile-settings-auto-sync');
+  await page.setViewportSize({width:1440,height:1000});
+  await page.locator('[data-route="scenarios"]').click();
+  await page.locator('[data-scenario="realtime-chat"]').click();
+  await frame.locator('#scene-back').click();
+  await page.locator('#page-scenarios').waitFor({state:'visible'});
+  assert.equal(new URL(page.url()).hash,'#scenarios','A previous mobile visit must not affect the scene entry');
+}]);
+
+cases.push(['mobile voice settings also follow saves from the scenario entry',async(page,backend)=>{
+  mobileRealtimeConfig(backend);
+  await page.locator('[data-route="scenarios"]').click();
+  await page.locator('[data-scenario="realtime-chat"]').click();
+  const frame=page.frameLocator('#realtime-frame');
+  await frame.locator('#call-more summary').click();
+  await frame.locator('#settings-btn').click();
+  await changeRealtimeLlm(frame,'saved-from-scene');
+  await waitUntil(()=>backend.mobileConfig?.config.llm_model==='saved-from-scene','Scene settings did not sync');
+  await frame.locator('#scene-back').click();
+  await page.locator('#page-scenarios').waitFor({state:'visible'});
+  await page.evaluate(()=>{location.hash='settings/mobile';});
+  await waitText(page,'#mobile-summary','saved-from-scene');
+  await waitText(page,'#mobile-config-state','已同步');
+  assert.deepEqual(backend.mobileToggles||[],[]);
+}]);
+
+cases.push(['mobile voice settings ignore cancelled drafts and their unsaved credentials',async(page,backend)=>{
+  await openMobileSettings(page,backend);
+  const before=clone(backend.mobileConfig),count=backend.mobileSaves.length;
+  const frame=await editMobileSettings(page);
+  await frame.locator('[data-character-id="living"]').click();
+  await frame.locator('#character-name').fill('未保存的角色');
+  await frame.locator('[data-settings-tab="llm"]').click();
+  await frame.locator('#llm-model').fill('unsaved-model');
+  await frame.locator('#llm-key').fill('unsaved-key');
+  await frame.locator('.modal-footer [value="close"]').click();
+  assert.equal(backend.mobileSaves.length,count,'Cancelling must not sync the draft');
+  await frame.locator('#scene-back').click();
+  await page.locator('#settings-mobile').waitFor({state:'visible'});
+  await waitText(page,'#mobile-config-state','已同步');
+  assert.deepEqual(backend.mobileConfig,before);
+  assert.equal(backend.mobileSaves.length,count,'Returning after cancel must keep the saved configuration');
+}]);
+
+cases.push(['mobile voice settings serialize quick saves so the latest configuration wins',async(page,backend)=>{
+  await openMobileSettings(page,backend);
+  backend.mobileRunning=true;
+  const frame=await editMobileSettings(page),gate=deferred(),count=backend.mobileSaves.length;
+  backend.mobileSaveGate=gate;
+  await changeRealtimeLlm(frame,'first-save');
+  await waitUntil(()=>backend.mobileSaves.length>count,'First mobile save was not submitted');
+  await frame.locator('#call-more summary').click();await frame.locator('#settings-btn').click();
+  await changeRealtimeLlm(frame,'latest-save');
+  assert.equal(backend.mobileSaves.length,count+1,'Only one configuration request may be in flight');
+  gate.resolve();
+  await waitUntil(()=>backend.mobileConfig?.config.llm_model==='latest-save','Latest configuration was lost');
+  await frame.locator('#scene-back').click();
+  await page.locator('#settings-mobile').waitFor({state:'visible'});
+  await waitText(page,'#mobile-summary','latest-save');
+  await waitText(page,'#mobile-config-state','已同步');
+  assert.equal(await page.locator('#mobile-enabled').isChecked(),true,'Syncing must keep the existing LAN state');
+  assert.deepEqual(backend.mobileToggles||[],[]);
+}]);
+
+cases.push(['mobile voice settings show sync failures and retry the saved configuration on return',async(page,backend)=>{
+  await openMobileSettings(page,backend);
+  const previous=clone(backend.mobileConfig),frame=await editMobileSettings(page);
+  backend.mobileSaveError=true;backend.expectedHttpErrors++;
+  await changeRealtimeLlm(frame,'retry-saved-model');
+  await waitText(page,'#mobile-config-state','语音配置同步失败');
+  assert.deepEqual(backend.mobileConfig,previous,'A failed sync must not change the server snapshot');
+  assert.equal(await frame.locator('body').evaluate(()=>localStorage.getItem('audiocpp.llm.model')),'retry-saved-model');
+  backend.mobileSaveError=false;
+  await frame.locator('#scene-back').click();
+  await page.locator('#settings-mobile').waitFor({state:'visible'});
+  await waitText(page,'#mobile-config-state','已同步');
+  await waitText(page,'#mobile-summary','retry-saved-model');
+  assert.deepEqual(backend.mobileToggles||[],[]);
+}]);
+
+cases.push(['mobile voice settings keep direct realtime links and home returns usable',async(page)=>{
+  await page.goto(`${ORIGIN}/#scenarios/realtime-chat`);
+  await page.reload();
+  const frame=page.frameLocator('#realtime-frame');
+  await frame.locator('#scene-back').click();
+  await page.locator('#page-scenarios').waitFor({state:'visible'});
+  await page.locator('a.brand[href="#home"]').click();
+  await page.locator('.home-shortcut[data-route="scenarios/realtime-chat"]').click();
+  await frame.locator('#scene-back').click();
+  await page.locator('#page-home').waitFor({state:'visible'});
+}]);
+
+cases.push(['mobile voice settings preserve existing phone configuration when another browser opens settings',async(page,backend)=>{
+  mobileRealtimeConfig(backend);
+  backend.mobileConfig={character:{id:'office',name:'原手机助手'},config:{asr_model:'asr-two',tts_model:'tts-two',llm_model:'existing-phone-chat'}};
+  const previous=clone(backend.mobileConfig);
+  await page.evaluate(()=>{location.hash='settings/mobile';});
+  await waitText(page,'#mobile-summary','原手机助手 · asr-two · existing-phone-chat · tts-two');
+  assert.equal(await page.locator('#realtime-frame').getAttribute('src'),null,'Viewing the QR page must not load browser defaults over an existing snapshot');
+  assert.deepEqual(backend.mobileSaves||[],[]);
+  assert.deepEqual(backend.mobileConfig,previous);
+  const frame=await editMobileSettings(page);
+  await changeRealtimeLlm(frame,'explicit-new-browser-save');
+  await waitUntil(()=>backend.mobileConfig.config.llm_model==='explicit-new-browser-save','An explicit save must still update mobile settings');
+  assert.deepEqual(backend.mobileToggles||[],[]);
+}]);
+
+cases.push(['model input isolation discards restored credentials without changing realtime cache',async(page)=>{
+  await page.addInitScript(()=>{
+    localStorage.setItem('audiocpp.llm.key','fixture-realtime-key-not-a-real-credential');
+    localStorage.setItem('audiocpp.realtime.characters','fixture-saved-character-cache');
+    const observer=new MutationObserver(()=>{
+      const search=document.getElementById('model-search'),token=document.getElementById('hf-token');
+      if(search&&token){search.value='fixture-saved-character-name';token.value='fixture-realtime-key-not-a-real-credential';observer.disconnect();}
+    });
+    observer.observe(document,{childList:true,subtree:true});
+  });
+  await page.reload();await page.locator('[data-route="models"]').click();
+  await page.locator('#model-list [data-model="tts-missing"]').waitFor();
+  assert.equal(await page.locator('#model-search').inputValue(),'');
+  assert.equal(await page.locator('#hf-token').inputValue(),'');
+  assert.ok(await page.locator('#model-list [data-model]').count()>0);
+  assert.equal(await page.evaluate(()=>localStorage.getItem('audiocpp.llm.key')),'fixture-realtime-key-not-a-real-credential');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('audiocpp.realtime.characters')),'fixture-saved-character-cache');
+  await page.locator('#model-list [data-model="tts-missing"]').click();
+  const request=page.waitForRequest(r=>r.url().endsWith('/api/workbench/downloads/tts-missing')&&r.method()==='POST');
+  await page.locator('#model-detail').getByRole('button',{name:'下载模型',exact:true}).click();
+  assert.equal((await request).postDataJSON().token,'','Realtime credentials must never become a download token');
+}]);
+
+cases.push(['model input isolation keeps only the model search query across page changes',async(page)=>{
+  await page.locator('[data-route="models"]').click();await page.locator('#model-search').fill('ASR One');
+  assert.equal(await page.locator('#model-list [data-model]').count(),1);
+  assert.equal(await page.locator('#model-list [data-model="asr-one"]').count(),1);
+  const url=page.url();await page.locator('#model-search').press('Enter');assert.equal(page.url(),url);
+  await page.locator('[data-route="tts"]').click();
+  await page.evaluate(()=>{document.getElementById('model-search').value='fixture-unrelated-browser-restoration';});
+  await page.locator('[data-route="models"]').click();
+  assert.equal(await page.locator('#model-search').inputValue(),'ASR One');
+  assert.equal(await page.locator('#model-list [data-model="asr-one"]').count(),1);
+  await page.reload();await page.locator('#model-search').waitFor({state:'visible'});
+  assert.equal(await page.locator('#model-search').inputValue(),'','A new document must start with an independent empty query');
+}]);
+
+cases.push(['model input isolation separates search from explicitly entered download credentials',async(page)=>{
+  await page.evaluate(()=>localStorage.setItem('audiocpp.llm.key','fixture-realtime-key-not-a-real-credential'));
+  await page.locator('[data-route="models"]').click();
+  const ownership=await page.evaluate(()=>{
+    const search=document.getElementById('model-search'),token=document.getElementById('hf-token');
+    return {searchForm:search.form?.id,tokenForm:token.form?.id,searchName:search.name,tokenName:token.name,
+      searchAutocomplete:search.autocomplete,tokenAutocomplete:token.autocomplete};
+  });
+  assert.equal(ownership.searchForm,'model-search-form');assert.equal(ownership.tokenForm,'model-download-credentials');
+  assert.notEqual(ownership.searchName,ownership.tokenName);assert.equal(ownership.searchAutocomplete,'off');assert.equal(ownership.tokenAutocomplete,'new-password');
+  await page.locator('.download-auth summary').click();await page.locator('#hf-token').fill('fixture-hf-token-not-a-real-credential');
+  const url=page.url();await page.locator('#hf-token').press('Enter');assert.equal(page.url(),url);
+  await page.locator('#model-list [data-model="tts-missing"]').click();
+  const request=page.waitForRequest(r=>r.url().endsWith('/api/workbench/downloads/tts-missing')&&r.method()==='POST');
+  await page.locator('#model-detail').getByRole('button',{name:'下载模型',exact:true}).click();
+  assert.equal((await request).postDataJSON().token,'fixture-hf-token-not-a-real-credential');
+  await waitValue(page,'#hf-token','');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('audiocpp.llm.key')),'fixture-realtime-key-not-a-real-credential');
+}]);
+
+cases.push(['model input isolation rejects late browser autofill while preserving manual edits',async(page)=>{
+  await page.locator('[data-route="models"]').click();await page.locator('#model-search').fill('ASR One');
+  await page.evaluate(()=>{
+    for(const [id,value] of [['model-search','fixture-unrelated-saved-role'],['hf-token','fixture-unrelated-saved-key']]){
+      const input=document.getElementById(id),matches=input.matches.bind(input);
+      input.matches=selector=>[':autofill',':-webkit-autofill'].includes(selector)||matches(selector);
+      input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+  });
+  assert.equal(await page.locator('#model-search').inputValue(),'ASR One');
+  assert.equal(await page.locator('#hf-token').inputValue(),'');
+  assert.equal(await page.locator('#model-list [data-model="asr-one"]').count(),1);
+  await page.evaluate(()=>{for(const id of ['model-search','hf-token'])delete document.getElementById(id).matches;});
+  await page.locator('#model-search').fill('TTS');assert.ok(await page.locator('#model-list [data-model="tts-one"]').count());
+  await page.locator('.download-auth summary').click();await page.locator('#hf-token').fill('fixture-explicit-hf-token');
+  assert.equal(await page.locator('#hf-token').inputValue(),'fixture-explicit-hf-token');
 }]);
 
 async function startStreamPlayerFixture(page,backend,seconds=4){

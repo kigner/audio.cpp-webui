@@ -197,15 +197,16 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
       if (url.pathname.endsWith('/qr')) return route.fulfill({body:await fs.readFile(fixture.qr),contentType:'image/png'});
       if (route.request().method() === 'POST') {
         const body = route.request().postDataJSON();
-        if (url.pathname.endsWith('/config')) {saved = body; state.configured = true;}
+        if (url.pathname.endsWith('/config')) {
+          saved = body; state = {...state,configured:true,character:body.character.name,models:body.config};
+        }
         else state = {...fixture.status,enabled:body.enabled,running:body.enabled};
       }
       return route.fulfill({json:state});
     });
     await desktop.goto(`${process.env.AUDIOCPP_WORKBENCH_URL || 'http://127.0.0.1:7860'}/#settings/mobile`);
     await desktop.locator('#settings-mobile').waitFor({state:'visible'});
-    assert.equal(await desktop.locator('#mobile-enabled').isDisabled(),true);
-    await desktop.locator('#mobile-save').click();
+    assert.equal(await desktop.locator('#mobile-save').count(),0,'Saved realtime settings sync without a second button');
     await desktop.waitForFunction(() => !document.getElementById('mobile-enabled').disabled);
     assert(saved.config.tts_model && saved.config.asr_model && saved.config.llm_model);
     assert(saved.character.name && typeof saved.config.instructions === 'string');

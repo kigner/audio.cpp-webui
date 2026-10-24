@@ -128,6 +128,10 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     const openLlm = async () => {await open();await page.locator('[data-settings-tab="llm"]').click();};
     const firstKey = 'fixture-key-not-a-real-credential';
     await openLlm();
+    assert.equal(await page.locator('#llm-key').getAttribute('autocomplete'),'new-password');
+    const credentialForm=await page.locator('#llm-key').evaluate(input=>({form:input.form?.id,name:input.name,autocomplete:input.form?.autocomplete}));
+    assert.deepEqual(credentialForm,{form:'realtime-settings-form',name:'aixora_realtime_llm_api_key',autocomplete:'off'});
+    assert.equal(await page.locator('#character-name').getAttribute('name'),'aixora_realtime_character_name');
     await page.locator('#llm-key').fill(firstKey);
     await save();
     await page.waitForFunction(key=>localStorage.getItem('audiocpp.llm.key')===key,firstKey);

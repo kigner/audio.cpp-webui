@@ -152,7 +152,7 @@
     </div>
 
     <dialog id="settings-modal" class="modal">
-      <form method="dialog" class="modal-content">
+      <form id="realtime-settings-form" method="dialog" class="modal-content" autocomplete="off">
           <header class="modal-header"><h2 data-i18n="聊天设置">聊天设置</h2><button class="icon-btn" value="close" aria-label="关闭" data-i18n-aria-label="关闭">×</button></header>
         <nav class="scene-settings-tabs" role="tablist" aria-label="聊天设置分类" data-i18n-aria-label="聊天设置分类"><button type="button" role="tab" data-settings-tab="character" data-i18n="角色">角色</button><button type="button" role="tab" data-settings-tab="llm" data-i18n="对话">对话</button><button type="button" role="tab" data-settings-tab="tts" data-i18n="声音">声音</button><button type="button" role="tab" data-settings-tab="asr" data-i18n="识别">识别</button><button type="button" role="tab" data-settings-tab="connection" data-i18n="连接">连接</button></nav>
         <div class="tab-panels">
@@ -162,7 +162,7 @@
               <audio id="character-builtin-preview" controls preload="metadata" aria-label="模型内置音色试听" hidden data-i18n-aria-label="模型内置音色试听"></audio>
               <label class="field"><span class="sr-only" data-i18n="模型内置音色">模型内置音色</span><select id="character-builtin-voice" aria-label="模型内置音色" data-i18n-aria-label="模型内置音色"></select></label>
             </div>
-            <div class="character-name-row field"><label for="character-name" data-i18n="角色">角色</label><input id="character-name" maxlength="40" autocomplete="off" /><button id="character-name-save" type="button" class="btn plain" data-i18n="保存">保存</button></div>
+            <div class="character-name-row field"><label for="character-name" data-i18n="角色">角色</label><input id="character-name" name="aixora_realtime_character_name" maxlength="40" autocomplete="off" /><button id="character-name-save" type="button" class="btn plain" data-i18n="保存">保存</button></div>
             <small id="character-name-status" role="status"></small>
             <div id="tts-reference-fields">
               <div class="reference-library-heading"><span data-i18n="角色参考音频">角色参考音频</span><button type="button" id="tts-reference-refresh" class="btn plain" data-i18n="刷新列表">刷新列表</button></div>
@@ -234,7 +234,7 @@
           <section id="settings-llm" class="settings-section">
               <h3 data-i18n="对话模型">对话模型</h3>
               <div class="field-row"><label class="field"><span data-i18n="对话服务地址">对话服务地址</span><input id="llm-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com/v1" title="需兼容 Chat Completions 接口" / data-i18n-title="需兼容 Chat Completions 接口"></label><label class="field"><span data-i18n="对话模型">对话模型</span><input id="llm-model" autocomplete="off" placeholder="deepseek-chat" /></label></div>
-              <label class="field"><span data-i18n="API 密钥">API 密钥</span><input id="llm-key" type="password" autocomplete="off" spellcheck="false" placeholder="API Key" /><small id="llm-key-status" role="status" data-i18n="保存在此浏览器；输入后点击保存设置。">保存在此浏览器；输入后点击保存设置。</small></label>
+              <label class="field"><span data-i18n="API 密钥">API 密钥</span><input id="llm-key" name="aixora_realtime_llm_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="API Key" /><small id="llm-key-status" role="status" data-i18n="保存在此浏览器；输入后点击保存设置。">保存在此浏览器；输入后点击保存设置。</small></label>
             <label class="field"><span data-i18n="你希望它怎样回答？">你希望它怎样回答？</span><textarea id="instructions" rows="3" placeholder="例如：你是一位耐心的英语口语老师，回复简短自然。" data-i18n-placeholder="例如：你是一位耐心的英语口语老师，回复简短自然。"></textarea></label>
           </section>
           <section id="settings-tts" class="settings-section">
@@ -258,7 +258,7 @@
       </form>
     </dialog>
 
-<script type="module" src="main.js?v=languages-2"></script>
+<script type="module" src="main.js?v=mobile-sync-3"></script>
 <script type="module" src="scene.js?v=languages-6"></script>
   </body>
 </html>

@@ -1,7 +1,7 @@
 import {t, uiText, uiAttr, rawText, sourceText, html, textHTML, applyLanguage, getLanguage, setLanguage} from './i18n.js';
 import {createScenarioStudio} from './scenarios.js?v=scenario-editors-24';
 import {createSpeakType} from './speaktype.js?v=2';
-import {createMobileAccess} from './mobile-access.js';
+import {createMobileAccess} from './mobile-access.js?v=auto-sync-2';
 const mobileAccess=createMobileAccess({navigate,showToast});
 const speakType=createSpeakType({root:document.getElementById('page-speaktype'),api,showToast});
 const scenarioStudio=createScenarioStudio({root:document.getElementById('page-scenario-studio'),api,showToast,navigate,plainMessage});
@@ -39,7 +39,7 @@ const TASK_NAMES = {tts:'语音合成',clon:'声音克隆',asr:'语音识别',ge
 const LANGUAGE_NAMES={english:'英语',chinese:'中文',japanese:'日语',french:'法语',german:'德语',italian:'意大利语',portuguese:'葡萄牙语',spanish:'西班牙语',korean:'韩语',russian:'俄语',arabic:'阿拉伯语',hindi:'印地语',vietnamese:'越南语',cantonese:'粤语',thai:'泰语',indonesian:'印尼语',turkish:'土耳其语',dutch:'荷兰语',ukrainian:'乌克兰语',polish:'波兰语',romanian:'罗马尼亚语',greek:'希腊语',czech:'捷克语',finnish:'芬兰语',zh_anhui:'安徽方言',zh_fujian:'福建方言',zh_gansu:'甘肃方言',zh_guizhou:'贵州方言',zh_hebei:'河北方言',zh_henan:'河南方言',zh_hubei:'湖北方言',zh_hunan:'湖南方言',zh_jiangxi:'江西方言',zh_liaoning:'辽宁方言',zh_minnan:'闽南语',zh_ningxia:'宁夏方言',zh_shaanxi:'陕西方言',zh_shandong:'山东方言',zh_shanghai:'上海话',zh_shanxi:'山西方言',zh_sichuan:'四川话',zh_tianjin:'天津话',zh_wenzhou:'温州话',zh_wu:'吴语',zh_yunnan:'云南方言',auto:'自动'};
 const state = {catalog:null,task:'tts',tool:null,key:'tts',route:'tts',analysisType:'',page:'workspace',model:null,detail:null,detailSeq:0,librarySeq:0,libraryModel:null,workspaces:{},overrides:{},downloads:[],job:null,playback:null,submitting:false,jobTimer:null,voices:[],recorders:new Set(),uploading:0,runtime:null,loading:null,realtime:null};
 const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
-let toastTimer,initializing=true,statusPoll=null,runtimeRevision=0;
+let toastTimer,initializing=true,statusPoll=null,runtimeRevision=0,libraryQuery='',realtimeReturnRoute='scenarios';
 
 function node(tag, className='', text) { const n=document.createElement(tag);if(className)n.className=className;if(text!==undefined&&text!=='')uiText(n,text);return n; }
 function rawNode(tag, className='', text) {const n=node(tag,className);if(text!==undefined)rawText(n,text);return n;}
@@ -116,6 +116,7 @@ async function navigate(route, updateHash=true, modelId) {
   const scenario=route==='scenarios/subtitles'?'subtitles':route==='scenarios/video-dubbing'?'dubbing':null;
   const page=task||tool?'workspace':settings?'settings':route==='scenarios/speaktype'?'speaktype':route==='scenarios/realtime-chat'?'realtime':scenario?'scenario-studio':route;
   if(!['home','workspace','tools','scenarios','scenario-studio','speaktype','realtime','models','settings','references'].includes(page))return navigate('home',updateHash);
+  if(page==='realtime'&&state.page!=='realtime')realtimeReturnRoute=initializing?'scenarios':state.route;
   if(page!=='speaktype')speakType.hide();
   if(state.route!==route){stopRecordings();window.scrollTo(0,0);}closeModelPicker(false);setParameters(false,false);
   state.route=route;state.page=page;
@@ -154,7 +155,7 @@ async function navigate(route, updateHash=true, modelId) {
   else if(scenario)await scenarioStudio.open(scenario);
   else if(page==='references'){renderReferenceEditor();if(!initializing)await refreshReferences();}
   else if(page==='realtime'){const frame=$('realtime-frame');if(!frame.hasAttribute('src'))frame.src=frame.dataset.src;}
-  else if(page==='models')pollDownloads();
+  else if(page==='models'){renderLibrary();pollDownloads();}
   else if(page==='settings')selectSettingsTab(route.split('/')[1]||'appearance');
   if(page!=='workspace')document.body.classList.remove('workspace-mode');
   updateActiveJobBanner();
@@ -211,7 +212,7 @@ function selectSettingsTab(tab) {
 }
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==$('realtime-frame').contentWindow)return;
-  if(event.data?.type==='audiocpp:back'){navigate('scenarios');if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});}
+  if(event.data?.type==='audiocpp:back'){navigate(realtimeReturnRoute);if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});}
   if(event.data?.type==='audiocpp:realtime-state'){state.realtime=event.data;updateRealtimeBadge();updateRunButton();}
 });
 document.querySelectorAll('[data-route]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.route)));
@@ -246,7 +247,14 @@ $('return-active-job').addEventListener('click',async()=>{const record=state.job
 $('end-realtime-session').addEventListener('click',()=>$('realtime-frame').contentWindow?.postMessage({type:'audiocpp:realtime-stop'},location.origin));
 $('browse-models').addEventListener('click',()=>{$('model-task-filter').value=state.task;renderLibrary();navigate('models');});
 fillSelect($('model-task-filter'),[{label:'所有用途',value:''},...TASKS.map(t=>({label:t.label,value:t.id}))],'');
-['model-search','model-task-filter','model-state-filter'].forEach(id=>$(id).addEventListener('input',renderLibrary));
+// Search and download credentials have separate form owners and session state.
+// Discard browser-restored values before either can be used by the model center.
+$('model-search').value='';$('hf-token').value='';
+['model-search-form','model-download-credentials'].forEach(id=>$(id).addEventListener('submit',event=>event.preventDefault()));
+function isAutofilled(input) {return [':autofill',':-webkit-autofill'].some(selector=>CSS.supports(`selector(${selector})`)&&input.matches(selector));}
+$('model-search').addEventListener('input',event=>{if(!isAutofilled(event.target))libraryQuery=event.target.value;renderLibrary();});
+$('hf-token').addEventListener('input',event=>{if(isAutofilled(event.target))event.target.value='';});
+['model-task-filter','model-state-filter'].forEach(id=>$(id).addEventListener('input',renderLibrary));
 $('refresh-catalog').addEventListener('click',event=>runAction(event.currentTarget,async()=>{await loadCatalog();showToast('模型列表已更新');}));
 
 function modelTask(model) { return model.model_task||model.ui_task||model.task; }
@@ -1324,7 +1332,7 @@ function parameterControl(param) {
     describe();input.addEventListener('input',describe);group.append(path);
     group.append(button('在模型中心查看','button secondary small-button model-choice-link',event=>runAction(event.currentTarget,async()=>{
       const selected=modelChoice(param,input.value)||param.model_choices[0];
-      $('model-search').value=selected?.id||'qwen3_forced_aligner';$('model-task-filter').value='';$('model-state-filter').value='';renderLibrary();
+      libraryQuery=selected?.id||'qwen3_forced_aligner';$('model-task-filter').value='';$('model-state-filter').value='';renderLibrary();
       await navigate('models');if(selected)await selectLibraryModel(selected.id);
     })));
   }
@@ -1701,7 +1709,8 @@ $('export-result').addEventListener('click',()=>{const url=URL.createObjectURL(n
 $('cancel-job').addEventListener('click',async()=>{const record=state.job;if(!record||record.cancelRequested)return;record.cancelRequested=true;stopStreamPlayback();renderWorkspaceResults();try{await api(`/jobs/${encodeURIComponent(record.id)}/cancel`,{method:'POST',body:{}});}catch(error){record.cancelRequested=false;showToast(friendlyError(error));}finally{if(state.key===record.key)renderWorkspaceResults();}});
 
 function renderLibrary() {
-  const query=$('model-search').value.trim().toLowerCase(),task=$('model-task-filter').value,filter=$('model-state-filter').value;
+  const search=$('model-search');if(search.value!==libraryQuery)search.value=libraryQuery;
+  const query=libraryQuery.trim().toLowerCase(),task=$('model-task-filter').value,filter=$('model-state-filter').value;
   const models=(state.catalog?.models||[]).filter(m=>(!query||[m.label,t(m.label),m.id,m.family,m.description,t(m.description),TASK_NAMES[modelTask(m)],t(TASK_NAMES[modelTask(m)])].join(' ').toLowerCase().includes(query))&&(!task||fitsTask(m,task))&&(!filter||(filter==='installed'?m.installed:filter==='manual'?!m.installable&&!m.installed:m.installable&&!m.installed)));
   uiText($('model-count'), `${models.length} 个模型 · ${(state.catalog?.models||[]).filter(m=>m.installed).length} 个已安装`);
   const children=models.map(model=>{const row=button('','model-row',()=>selectLibraryModel(model.id));row.classList.toggle('selected',state.libraryModel===model.id);row.dataset.model=model.id;const top=node('div','model-row-top');top.append(node('span','model-row-title',model.label||model.id),badge(model.installed?'已安装':model.installable?'可下载':'手动导入',model.installed?'success':''));const meta=node('div','model-row-meta');meta.append(node('span','',TASK_NAMES[modelTask(model)]||modelTask(model)),node('span','',model.family||''));if(model.size_bytes)meta.append(node('span','',formatBytes(model.size_bytes)));if(model.min_vram_gb)meta.append(node('span','',`参考显存 ${model.min_vram_gb} GB`));row.append(top,meta);return row;});
@@ -1800,7 +1809,7 @@ function renderModelDetail(model) {
   if(model.files?.length){const details=node('details','details-files');details.append(node('summary','',`模型文件（${model.files.length}）`));const list=node('ul');for(const f of model.files)list.append(rawNode('li','',typeof f==='string'?f:f.name||f.path||shortText(f)));details.append(list);children.push(details);}
   replace(panel,...children);
 }
-async function startDownload(id) { const token=$('hf-token').value.trim();await api(`/downloads/${encodeURIComponent(id)}`,{method:'POST',body:{token}});$('hf-token').value='';showToast('正在准备下载，自动选择线路。');await pollDownloads();$('download-list').scrollIntoView({behavior:'smooth',block:'nearest'}); }
+async function startDownload(id) { const field=$('hf-token'),token=isAutofilled(field)?'':field.value.trim();await api(`/downloads/${encodeURIComponent(id)}`,{method:'POST',body:{token}});field.value='';showToast('正在准备下载，自动选择线路。');await pollDownloads();$('download-list').scrollIntoView({behavior:'smooth',block:'nearest'}); }
 const DOWNLOAD_NAMES={queued:'等待下载',pending:'等待下载',starting:'准备中',preparing:'准备中',probing:'检测线路',running:'下载中',downloading:'下载中',paused:'已暂停',pausing:'正在暂停',completed:'已完成',complete:'已完成',done:'已完成',error:'下载失败',failed:'下载失败',cancelled:'已取消',canceled:'已取消',installing:'正在安装',verifying:'正在校验'};
 function activeDownload(d){return ['queued','pending','starting','preparing','probing','running','downloading','installing','verifying','pausing'].includes(d.status);}
 function downloadRouteLabel(route){const value=plainMessage(shortText(route));const known={'HF official direct':'HF 官方直连','HF official via detected proxy':'HF 官方 · 自动检测代理','HF mirror direct':'HF 镜像直连','HF mirror via detected proxy':'HF 镜像 · 自动检测代理',official:'HF 官方直连',mirror:'HF 镜像直连',proxy:'自动检测代理',auto:'自动选择',probing:'正在检测线路'};return known[value]||value.replace(/HF official/g,'HF 官方').replace(/HF mirror/g,'HF 镜像').replace(/via detected proxy/g,'· 自动检测代理').replace(/\bdirect\b/g,'直连');}

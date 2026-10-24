@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/workbench-static/home.css?v=aixora-shortcuts-55">
   <link rel="stylesheet" href="/workbench-static/scenarios.css?v=scenario-languages-19">
   <link rel="stylesheet" href="/workbench-static/palettes.css?v=aixora-1">
-  <script type="module" src="/workbench-static/app.js?v=aixora-stream-player-114"></script>
+  <script type="module" src="/workbench-static/app.js?v=aixora-mobile-sync-117"></script>
   <link rel="stylesheet" href="/workbench-static/speaktype.css?v=1">
   <link rel="stylesheet" href="/workbench-static/mobile-access.css?v=1">
 </head>
@@ -110,13 +110,13 @@
         <header class="page-heading page-topbar"><h1 id="references-heading" data-i18n="参考音频库">参考音频库</h1><div class="reference-actions"><button id="new-reference" class="button secondary" data-i18n="新建参考音频">新建参考音频</button><button id="refresh-references" class="button secondary" data-i18n="刷新列表">刷新列表</button></div></header><p class="page-description" data-i18n="保存参考音频与对应文本，供语音合成和声音转换重复使用。">保存参考音频与对应文本，供语音合成和声音转换重复使用。</p>
         <div class="references-grid"><section class="card"><div class="card-heading"><h2 data-i18n="已保存参考音频">已保存参考音频</h2><span id="reference-count" class="muted small"></span></div><input id="reference-search" type="search" placeholder="搜索名称或参考文本" aria-label="搜索参考音频" data-i18n-placeholder="搜索名称或参考文本" data-i18n-aria-label="搜索参考音频"><div id="reference-list" class="reference-list"></div></section><section class="card"><div class="card-heading"><h2 data-i18n="添加或编辑参考音频">添加或编辑参考音频</h2></div><div id="reference-editor" class="form-fields"></div></section></div>
       </section>
-      <section id="page-realtime" class="page realtime-page" aria-labelledby="realtime-heading" hidden><h1 id="realtime-heading" class="sr-only" data-i18n="实时语音聊天">实时语音聊天</h1><div class="realtime-frame-wrap"><iframe id="realtime-frame" title="实时语音聊天" allow="microphone; autoplay; fullscreen" data-src="/realtime/?v=scene-7" data-i18n-title="实时语音聊天"></iframe></div></section>
+      <section id="page-realtime" class="page realtime-page" aria-labelledby="realtime-heading" hidden><h1 id="realtime-heading" class="sr-only" data-i18n="实时语音聊天">实时语音聊天</h1><div class="realtime-frame-wrap"><iframe id="realtime-frame" title="实时语音聊天" allow="microphone; autoplay; fullscreen" data-src="/realtime/?v=scene-8" data-i18n-title="实时语音聊天"></iframe></div></section>
       <section id="page-models" class="page management-page" aria-labelledby="models-heading" hidden>
         <header class="page-heading page-topbar"><h1 id="models-heading" data-i18n="模型中心">模型中心</h1><button class="button secondary" id="refresh-catalog" data-i18n="刷新模型">刷新模型</button></header>
-        <div class="model-toolbar"><div class="search-field"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg><input type="search" id="model-search" placeholder="搜索模型名称、系列或用途" aria-label="搜索模型" data-i18n-placeholder="搜索模型名称、系列或用途" data-i18n-aria-label="搜索模型"></div><select id="model-task-filter" aria-label="筛选用途" data-i18n-aria-label="筛选用途"><option value="" data-i18n="所有用途">所有用途</option></select><select id="model-state-filter" aria-label="筛选安装状态" data-i18n-aria-label="筛选安装状态"><option value="" data-i18n="全部模型">全部模型</option><option value="installed" data-i18n="已安装">已安装</option><option value="available" data-i18n="可下载">可下载</option><option value="manual" data-i18n="需手动导入">需手动导入</option></select></div>
+        <div class="model-toolbar"><form id="model-search-form" class="search-field" role="search" autocomplete="off"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg><input type="search" id="model-search" name="aixora_catalog_query" autocomplete="off" spellcheck="false" placeholder="搜索模型名称、系列或用途" aria-label="搜索模型" data-i18n-placeholder="搜索模型名称、系列或用途" data-i18n-aria-label="搜索模型"></form><select id="model-task-filter" aria-label="筛选用途" data-i18n-aria-label="筛选用途"><option value="" data-i18n="所有用途">所有用途</option></select><select id="model-state-filter" aria-label="筛选安装状态" data-i18n-aria-label="筛选安装状态"><option value="" data-i18n="全部模型">全部模型</option><option value="installed" data-i18n="已安装">已安装</option><option value="available" data-i18n="可下载">可下载</option><option value="manual" data-i18n="需手动导入">需手动导入</option></select></div>
         <div class="library-meta"><span id="model-count" class="muted small"></span></div>
         <div class="library-grid"><div id="model-list" class="model-list" aria-label="模型列表" data-i18n-aria-label="模型列表"></div><aside class="card model-detail" id="model-detail" aria-live="polite"><div class="empty-state compact"><p data-i18n="选择模型查看详情">选择模型查看详情</p></div></aside></div>
-        <section class="card downloads-card"><div class="card-heading"><h2><span data-i18n="下载管理 ">下载管理 </span><span id="downloads-count" class="muted"></span></h2><details class="download-auth"><summary class="text-button" data-i18n="访问凭证">访问凭证</summary><label for="hf-token" class="field-label">Hugging Face Token</label><input id="hf-token" type="password" autocomplete="off" placeholder="受限模型需要" title="仅用于本次下载，不保存到浏览器" data-i18n-placeholder="受限模型需要" data-i18n-title="仅用于本次下载，不保存到浏览器"></details></div><div id="download-list"><p class="muted small" data-i18n="暂无下载任务">暂无下载任务</p></div></section>
+        <section class="card downloads-card"><div class="card-heading"><h2><span data-i18n="下载管理 ">下载管理 </span><span id="downloads-count" class="muted"></span></h2><details class="download-auth"><summary class="text-button" data-i18n="访问凭证">访问凭证</summary><form id="model-download-credentials" method="post" autocomplete="off"><label for="hf-token" class="field-label">Hugging Face Token</label><input id="hf-token" name="aixora_huggingface_token" type="password" autocomplete="new-password" spellcheck="false" placeholder="受限模型需要" title="仅用于本次下载，不保存到浏览器" data-i18n-placeholder="受限模型需要" data-i18n-title="仅用于本次下载，不保存到浏览器"></form></details></div><div id="download-list"><p class="muted small" data-i18n="暂无下载任务">暂无下载任务</p></div></section>
       </section>
       <section id="page-settings" class="page settings-page management-page" aria-labelledby="settings-heading" hidden>
         <header class="page-heading page-topbar"><h1 id="settings-heading" data-i18n="系统设置">系统设置</h1></header>
@@ -131,8 +131,8 @@
             <h2 id="mobile-heading" data-i18n="手机访问">手机访问</h2>
             <p class="muted small" data-i18n="用手机与电脑上的语音助手通话，角色、声音和模型都在电脑上设置。">用手机与电脑上的语音助手通话，角色、声音和模型都在电脑上设置。</p>
             <p id="mobile-summary" class="mobile-access-summary small"></p>
-            <div class="mobile-access-actions"><button id="mobile-edit" class="button secondary" data-i18n="调整语音配置">调整语音配置</button><button id="mobile-save" class="button" data-i18n="保存当前语音配置">保存当前语音配置</button></div>
-            <p class="field-help" data-i18n="保存实时语音中当前选用的角色与设置；修改后再次保存，下次手机通话时生效。">保存实时语音中当前选用的角色与设置；修改后再次保存，下次手机通话时生效。</p>
+            <div class="mobile-access-actions"><button id="mobile-edit" class="button secondary" data-i18n="调整语音配置">调整语音配置</button></div>
+            <p id="mobile-config-state" class="field-help" role="status" aria-live="polite" data-i18n="在实时语音中保存设置后自动同步，下次手机通话时生效。">在实时语音中保存设置后自动同步，下次手机通话时生效。</p>
           </div>
           <div class="card mobile-access-card">
             <label class="mobile-access-toggle"><input id="mobile-enabled" type="checkbox" disabled><span data-i18n="允许局域网访问">允许局域网访问</span></label>

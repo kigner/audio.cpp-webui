@@ -190,6 +190,7 @@ function saveSettings(s) {
     localStorage.setItem(STORAGE[k], String(s[k] ?? ""));
   }
   s.characters = saveCharacters(s.characters);
+  void saveMobileConfiguration();
 }
 
 function characterInstructions(s) {
@@ -429,6 +430,7 @@ document.getElementById("character-name-save").addEventListener("click", () => {
   const role = readCharacterForm();
   settings.characters.roles[role.id].name = role.name;
   settings.characters = saveCharacters(settings.characters);
+  void saveMobileConfiguration();
   characterName.value = role.name;
   renderCharacterGrid();
   applyCharacterProfile(role);
@@ -1432,31 +1434,45 @@ window.addEventListener("message", (event) => {
   if (event.data?.type === "audiocpp:theme") applyTheme(event.data.theme, event.data.palette);
   if (event.data?.type === "audiocpp:realtime-stop") void doStop();
   if (event.data?.type === "audiocpp:mobile-edit" && !settingsModal.open) settingsBtn.click();
-  if (event.data?.type === "audiocpp:mobile-save") void saveMobileConfiguration();
+  if (event.data?.type === "audiocpp:mobile-sync") void saveMobileConfiguration();
   if (event.data?.type === "audiocpp:mobile-ping") window.parent.postMessage({type:"audiocpp:realtime-ready"}, location.origin);
 });
 
-async function saveMobileConfiguration() {
-  try {
-    if (!realtimeConfigReady) await refreshEnvDefaults();
-    await refreshReferenceLibrary();
-    if (!realtimeConfigReady) throw new Error("无法读取实时语音配置，请稍后重试。");
-    const response = await fetch("/api/workbench/mobile/config", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        config: {...appConfigFromSettings(settings), instructions: characterInstructions(settings)},
-        character: {id: currentCharacter(settings.characters).id,
-                    name: currentCharacter(settings.characters).name,
-                    animation: currentCharacter(settings.characters).animation},
-        noise_gate: Number(settings.noiseGate),
-      }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "保存失败，请重试。");
+let mobileSyncTask = null, mobileSyncRequested = false;
+function saveMobileConfiguration() {
+  // Standalone realtime servers do not expose the workbench's mobile settings.
+  if (window.parent === window) return;
+  mobileSyncRequested = true;
+  if (mobileSyncTask) return mobileSyncTask;
+  window.parent.postMessage({type:"audiocpp:mobile-syncing"}, location.origin);
+  mobileSyncTask = (async () => {
+    while (mobileSyncRequested) {
+      mobileSyncRequested = false;
+      try {
+        if (!realtimeConfigReady) await refreshEnvDefaults();
+        await refreshReferenceLibrary();
+        if (!realtimeConfigReady) throw new Error("无法读取实时语音配置，请稍后重试。");
+        const role = currentCharacter(settings.characters);
+        const response = await fetch("/api/workbench/mobile/config", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            config: appConfigFromSettings(settings),
+            character: {id:role.id, name:role.name, animation:role.animation},
+            noise_gate: Number(settings.noiseGate),
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "保存失败，请重试。");
+      } catch (error) {
+        // A newer saved configuration supersedes an earlier failed request.
+        if (mobileSyncRequested) continue;
+        window.parent.postMessage({type:"audiocpp:mobile-saved", error:error.message}, location.origin);
+        return;
+      }
+    }
     window.parent.postMessage({type:"audiocpp:mobile-saved"}, location.origin);
-  } catch (error) {
-    window.parent.postMessage({type:"audiocpp:mobile-saved", error:error.message}, location.origin);
-  }
+  })().finally(() => { mobileSyncTask = null; });
+  return mobileSyncTask;
 }
 
 // ── Init ───────────────────────────────────────────────────────────────
