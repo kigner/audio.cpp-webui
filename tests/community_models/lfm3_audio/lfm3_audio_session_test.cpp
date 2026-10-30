@@ -412,7 +412,11 @@ void test_translation(const Fixture & f) {
     require_eq(result.text_output->language, std::string("en"), "translation language");
     require_eq(result.output_artifacts.at(0).meta.at("source_text"), std::string("ok"), "source transcript is preserved");
     require(!result.audio_output->samples.empty(), "translation has speech");
-    streaming->start_stream(request);
+    auto voiced = request;
+    voiced.voice = runtime::VoiceCondition{};
+    voiced.voice->speaker = runtime::VoiceReference{};
+    voiced.voice->speaker->cached_voice_id = "british_english_male";
+    streaming->start_stream(voiced);
     const auto & audio = *request.audio_input;
     streaming->process_audio_chunk({audio.sample_rate, 1, 0, audio.samples});
     const auto recognized = streaming->next_stream_event();
@@ -425,6 +429,13 @@ void test_translation(const Fixture & f) {
     const auto streamed = streaming->finish_stream();
     require_eq(text_of(streamed), text_of(result), "stream does not repeat the translation");
     require(rel_diff(result.audio_output->samples, streamed.audio_output->samples) < .02, "translation offline/stream audio parity");
+    voiced.voice->speaker->cached_voice_id = "unknown_voice";
+    require_throws_with([&] { offline->run(voiced); }, "has no voice", "unknown translation voice rejected");
+    voiced.voice->speaker->cached_voice_id = "chinese_male";
+    require_throws_with([&] { offline->run(voiced); }, "must match target_language", "translation voice language checked before inference");
+    voiced.voice->speaker->cached_voice_id = "american_english_male";
+    voiced.voice->speaker->audio = tone(.1);
+    require_throws_with([&] { offline->run(voiced); }, "does not clone", "translation only accepts built-in voices");
     require_throws_with([&] { offline->run(audio_request(tone(1), {{"target_language", "auto"}})); }, "needs a target language", "automatic target rejected");
     require_throws_with([&] { offline->run(audio_request(tone(1), {{"target_language", "xx"}})); }, "does not know language", "unknown target rejected");
     require_throws_with([&] { offline->run(audio_request(tone(1), {{"translation_context", "old"}})); }, "needs target_language", "orphan context rejected");

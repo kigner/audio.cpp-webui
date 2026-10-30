@@ -207,7 +207,7 @@
           "tr",
           "zh"
         ],
-        "description": "S2S translation: transcribe source speech, translate to this language, then stream its TTS using the same resident model. language selects the source; no spoken-chat history or voice reference.",
+        "description": "S2S translation: transcribe source speech, translate to this language, then stream its TTS using the same resident model. language selects the source; request.voice may select a built-in voice matching the target language. No spoken-chat history or reference audio.",
         "required": false
       },
       {

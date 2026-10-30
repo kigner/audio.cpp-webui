@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -94,9 +95,11 @@ class TranslationSocketTests(unittest.TestCase):
             _ensure_with_options=lambda *args, **kwargs: self.loads.append((args, kwargs)))
         self.work = Workbench(self.backend)
         self.service = interpretation.Interpretation(self.work, probability_factory=lambda: lambda frame: float(np.max(frame) > .001))
+        self.addCleanup(self.service.saver.shutdown, wait=True)
         self.app = FastAPI()
         self.app.websocket(interpretation.PREFIX + '/live')(self.service.connect)
         self.app.post(interpretation.PREFIX + '/stop')(self.service.stop)
+        self.app.get(interpretation.PREFIX + '/recordings/{ident}')(self.service.recording)
         self.complete = True
         self.native_error = False
         self.real_async_client = httpx.AsyncClient
@@ -173,6 +176,112 @@ class TranslationSocketTests(unittest.TestCase):
                             self.assertTrue(message['message'])
                             break
             self.assertFalse(self.work.leases)
+            self.service.saver.submit(lambda: None).result(timeout=5)
+            self.assertTrue(all(not record.snapshot()['clips'] for record in self.service.recordings.values()))
+
+    def test_builtin_voices_are_language_filtered_and_forwarded(self):
+        voices = self.service.capabilities()['voices']
+        self.assertEqual(len(voices), 38)
+        self.assertEqual(len([voice for voice in voices if voice['language'] == 'en']), 4)
+        with TestClient(self.app) as client, client.websocket_connect(interpretation.PREFIX + '/live') as ws:
+            ws.send_json({'type': 'start', 'voice': 'british_english_male'})
+            self.assertEqual(ws.receive_json()['type'], 'preparing')
+            self.assertEqual(ws.receive_json()['type'], 'ready')
+            ws.send_bytes(frames(10) + frames(17, 0))
+            ws.send_json({'type': 'finish'})
+            while ws.receive_json()['type'] != 'finished':
+                pass
+        self.assertEqual(self.calls[0]['request']['voice'], 'british_english_male')
+
+    def test_invalid_or_wrong_language_voices_do_not_load_the_model(self):
+        for voice in ['unknown', 'chinese_male', {}, ['american_english_male']]:
+            with TestClient(self.app) as client, client.websocket_connect(interpretation.PREFIX + '/live') as ws:
+                ws.send_json({'type': 'start', 'voice': voice})
+                self.assertIn('内置音色', ws.receive_json()['message'])
+        self.assertFalse(self.loads)
+
+    def test_slow_file_writer_does_not_delay_the_next_inference_or_finish(self):
+        release, started = threading.Event(), threading.Event()
+        save = interpretation.TranslationRecording._save
+
+        def slow(record, *args):
+            started.set()
+            if not release.wait(10):
+                raise RuntimeError('test file writer was not released')
+            return save(record, *args)
+
+        try:
+            with patch.object(interpretation.TranslationRecording, '_save', slow), TestClient(self.app) as client:
+                with client.websocket_connect(interpretation.PREFIX + '/live') as ws:
+                    self.begin(ws)
+                    ws.send_bytes(frames(10) + frames(17, 0))
+                    ws.send_bytes(frames(10) + frames(17, 0))
+                    ws.send_json({'type': 'finish'})
+                    while ws.receive_json()['type'] != 'finished':
+                        pass
+                    self.assertTrue(started.wait(2))
+                    self.assertEqual(len(self.calls), 2, 'Next inference completes while disk writes are blocked')
+                    recording = next(iter(self.service.recordings.values()))
+                    snapshot = client.get(interpretation.PREFIX + '/recordings/' + recording.ident).json()
+                    self.assertEqual(snapshot['pending'], 2)
+                    self.assertFalse(snapshot['clips'])
+                self.assertFalse(self.work.leases, 'Saving must not hold the model lease')
+        finally:
+            release.set()
+        self.service.saver.submit(lambda: None).result(timeout=5)
+        snapshot = recording.snapshot()
+        self.assertEqual(snapshot['state'], 'done')
+        self.assertEqual([clip['id'] for clip in snapshot['clips']], [1, 2])
+        for clip in [*snapshot['clips'], {'audio': snapshot['audio']}]:
+            token = clip['audio']['url'].rsplit('/', 1)[-1]
+            with wave.open(str(self.work.artifacts[token]), 'rb') as wav:
+                self.assertEqual((wav.getframerate(), wav.getnchannels(), wav.getsampwidth()), (24000, 1, 2))
+                self.assertEqual(wav.getnframes(), 480 if clip['audio'] == snapshot['audio'] else 240)
+        self.assertFalse(list(Path(self.temp.name).rglob('*.part')))
+
+    def test_save_failure_does_not_stop_translation(self):
+        with patch.object(interpretation.Path, 'mkdir', side_effect=OSError('disk full')), TestClient(self.app) as client:
+            with client.websocket_connect(interpretation.PREFIX + '/live') as ws:
+                self.begin(ws)
+                ws.send_bytes(frames(10) + frames(17, 0))
+                ws.send_json({'type': 'finish'})
+                while ws.receive_json()['type'] != 'finished':
+                    pass
+            self.service.saver.submit(lambda: None).result(timeout=5)
+        record = next(iter(self.service.recordings.values())).snapshot()
+        self.assertEqual(record['state'], 'error')
+        self.assertIsNone(record['audio'])
+        self.assertIn('磁盘', record['message'])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_stop_preserves_completed_utterances_for_download(self):
+        with TestClient(self.app) as client, client.websocket_connect(interpretation.PREFIX + '/live') as ws:
+            self.begin(ws)
+            ws.send_bytes(frames(10) + frames(17, 0))
+            while ws.receive_json()['type'] != 'segment_done':
+                pass
+            client.post(interpretation.PREFIX + '/stop')
+        self.service.saver.submit(lambda: None).result(timeout=5)
+        record = next(iter(self.service.recordings.values())).snapshot()
+        self.assertEqual(record['state'], 'done')
+        self.assertEqual(len(record['clips']), 1)
+        self.assertTrue(record['audio']['url'])
+
+    def test_file_queue_pressure_does_not_stop_inference(self):
+        self.service.save_bytes = 32 * 1024 * 1024
+        with TestClient(self.app) as client, client.websocket_connect(interpretation.PREFIX + '/live') as ws:
+            self.begin(ws)
+            ws.send_bytes(frames(10) + frames(17, 0))
+            ws.send_json({'type': 'finish'})
+            while ws.receive_json()['type'] != 'finished':
+                pass
+        self.service.saver.submit(lambda: None).result(timeout=5)
+        record = next(iter(self.service.recordings.values())).snapshot()
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse(self.work.leases)
+        self.assertEqual(record['state'], 'error')
+        self.assertIn('仍会继续', record['message'])
+        self.assertEqual(record['pending'], 0)
 
     def test_silence_and_finish_do_not_call_native_model(self):
         with TestClient(self.app) as client:

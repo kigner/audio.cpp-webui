@@ -910,7 +910,7 @@ bool Lfm3TtsSession::reached_max_tokens() const {
 struct Lfm3ChatSession::Impl {
     struct RequestOptions {
         std::string system_prompt;
-        std::string source_language, target_language, translation_context;
+        std::string source_language, target_language, translation_context, translation_voice;
         Lfm3GenerationOptions generation;
         int64_t stream_frames_per_event = 0;
         bool return_codes = false;
@@ -958,7 +958,21 @@ struct Lfm3ChatSession::Impl {
             throw runtime::InvalidRequestError("LFM3-Audio s2s replies in the language of the conversation and takes no language");
         }
         if (request.voice.has_value() && request.voice->speaker.has_value()) {
-            throw runtime::InvalidRequestError("LFM3-Audio s2s replies in the checkpoint's voice and takes no voice");
+            if (out.target_language.empty()) {
+                throw runtime::InvalidRequestError("LFM3-Audio s2s replies in the checkpoint's voice and takes no voice");
+            }
+            if (request.voice->speaker->audio.has_value()) {
+                throw runtime::InvalidRequestError("LFM3-Audio translation speaks with its built-in voices and does not clone reference audio");
+            }
+            out.translation_voice = request.voice->speaker->cached_voice_id.value_or("");
+        }
+        if (!out.target_language.empty()) {
+            const auto & voice = lfm3_tts_voice(out.translation_voice, out.target_language);
+            const auto & expected = lfm3_tts_voice("", out.target_language);
+            if (voice.language_name != expected.language_name &&
+                !(out.target_language == "en" && voice.language_name == "British English")) {
+                throw runtime::InvalidRequestError("LFM3-Audio translation voice must match target_language");
+            }
         }
 
         out.system_prompt = kLfm3S2sSystemPrompt;
@@ -1023,7 +1037,7 @@ struct Lfm3ChatSession::Impl {
         if (translation.empty()) {
             throw std::runtime_error("LFM3-Audio produced an empty translation");
         }
-        const auto & voice = lfm3_tts_voice("", options.target_language);
+        const auto & voice = lfm3_tts_voice(options.translation_voice, options.target_language);
         return model.generate(make_lfm3_tts_prompt(model.tokenizer, lfm3_tts_system_prompt(voice), translation), {}, options.generation);
     }
 

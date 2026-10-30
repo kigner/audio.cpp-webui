@@ -282,6 +282,14 @@ def public_model(backend, entry):
     }
 
 
+def lfm3_voice_languages(spec):
+    languages = dict(arabic='ar', danish='da', german='de', greek='el',
+                     british_english='en', american_english='en', finnish='fi', french='fr',
+                     hebrew='he', italian='it', japanese='ja', korean='ko', dutch='nl',
+                     polish='pl', portuguese='pt', spanish='es', swedish='sv', turkish='tr', chinese='zh')
+    return {voice: languages[voice.rsplit('_', 1)[0]] for voice in spec.get('ui', {}).get('builtin_voices', [])}
+
+
 def model_detail(backend, entry):
     result = public_model(backend, entry)
     prof = backend.profile_for(entry)
@@ -403,12 +411,7 @@ def model_detail(backend, entry):
             result['tts_controls']['voice_languages'] = {
                 voice: languages[voice[0]] for voice in spec.get('ui', {}).get('builtin_voices', [])}
         if family == 'lfm3_audio':
-            languages = dict(arabic='ar', danish='da', german='de', greek='el',
-                             british_english='en', american_english='en', finnish='fi', french='fr',
-                             hebrew='he', italian='it', japanese='ja', korean='ko', dutch='nl',
-                             polish='pl', portuguese='pt', spanish='es', swedish='sv', turkish='tr', chinese='zh')
-            result['tts_controls']['voice_languages'] = {
-                voice: languages[voice.rsplit('_', 1)[0]] for voice in spec.get('ui', {}).get('builtin_voices', [])}
+            result['tts_controls']['voice_languages'] = lfm3_voice_languages(spec)
         if family in {'moss_ttsd', 'vibevoice'}:
             result['tts_controls']['speakers'] = {'first': 1 if family == 'moss_ttsd' else 0,
                                                 'allow_empty': family == 'moss_ttsd'}

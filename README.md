@@ -35,6 +35,7 @@ Aixora Audio brings local audio models into one workspace. Turn text into voiceo
 | Speech recognition and subtitles | Transcribe recordings or videos, inspect timestamps, correct text and export subtitles |
 | Video translation and dubbing | Transcribe, translate and review, generate speech per segment, then mix and export with optional background-music preservation |
 | Realtime voice chat | Choose a character and voice, then talk on your computer or scan a QR code to call from your phone on the same Wi-Fi; automatic language mode follows the language you speak |
+| Live translation | Use local LFM3 for automatic speech segmentation, translation and speech, choose a built-in target-language voice, and download sentences or the complete session audio |
 | Global dictation | Dictate into other applications using a shortcut, with recognition status shown in a floating toolbar |
 | Music, sound effects and voice design | Generate audio from prompts or lyrics, describe a voice, or convert speech and singing voices |
 | Audio tools | Separate vocals and accompaniment, audition stems, enhance and denoise, classify sounds, detect wake words, align text and convert formats |
@@ -47,6 +48,10 @@ Aixora Audio brings local audio models into one workspace. Turn text into voiceo
 3. Open a task page, select and load a model, enter text or upload your material, then generate.
 4. Realtime voice chat and global dictation are under **Scenarios**. Configure the service URL, model name and API key in the relevant conversation or translation settings.
 5. For phone calls, open **System settings → Mobile access** on your computer, enable mobile access, and scan the QR code with a phone on the same Wi-Fi network.
+
+**Live translation**: install LFM3-Audio, then open **Scenarios → Live translation** and choose the languages, voice and audio devices. Use **Read audio devices** and allow microphone access to list the physical and virtual devices available to the browser. To send translated speech to a virtual microphone, choose the virtual cable playback device here (such as CABLE Input) and its recording device (such as CABLE Output) as the microphone in your other app.
+
+Each completed sentence is saved as a 24 kHz mono WAV in the background while translation continues. Ending the session also combines its audio. Download sentences or the complete recording from the bilingual transcript; files remain in the local output folder. Stopping immediately retains completed sentences.
 
 The portable package includes Python and runtime dependencies. The launcher selects an available backend in **CUDA → Vulkan → CPU** order; you can override it with `AUDIOCPP_BACKEND`. Languages, reference inputs and parameters are shown for the selected model.
 

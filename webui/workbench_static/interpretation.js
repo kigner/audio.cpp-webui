@@ -2,11 +2,13 @@ import {t,uiText,html,textHTML} from './i18n.js';
 
 export function createInterpretation({root,api,navigate,showToast,onRuntimeChange=()=>{}}) {
   const key='audiocpp.interpretation.preferences';
-  let preferences={source_language:'zh',target_language:'en',input:'',output:''};
+  let preferences={source_language:'zh',target_language:'en',voice:'',input:'',output:''};
   try {const saved=JSON.parse(localStorage.getItem(key)||'{}');for(const name of Object.keys(preferences))if(typeof saved[name]==='string'&&saved[name].length<256)preferences[name]=saved[name];}catch{}
   let capabilities=null,phase='idle',epoch=0,socket=null,stream=null,context=null,capture=null,input=null,mute=null;
   let nextAudio=0,pending=0,engine='',flushResolve=null,completed=false;
   let earlyAudio=[],earlyBytes=0;
+  let recordingEpoch=0,recordingTimer=null,recordingFailures=0;
+  const savedClips=new Map();
   const sources=new Set(),rows=new Map();
   const find=selector=>root.querySelector(selector);
   const running=()=>['preparing','listening','finishing','playing'].includes(phase);
@@ -18,8 +20,10 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
       <div class="interpretation-grid"><section class="card interpretation-controls">
         <div class="card-heading"><h2 data-i18n="翻译方向">翻译方向</h2><span class="badge">LFM3</span></div>
         <div class="interpretation-direction"><label class="scene-field"><span data-i18n="我说">我说</span><select data-interpretation="source" aria-label="我说" data-i18n-aria-label="我说"></select></label><button class="button subtle interpretation-swap" data-interpretation="swap" title="交换语言" data-i18n-title="交换语言" aria-label="交换语言" data-i18n-aria-label="交换语言">⇄</button><label class="scene-field"><span data-i18n="译成">译成</span><select data-interpretation="target" aria-label="译成" data-i18n-aria-label="译成"></select></label></div>
+        <label class="scene-field"><span data-i18n="朗读音色">朗读音色</span><select data-interpretation="voice" aria-label="朗读音色" data-i18n-aria-label="朗读音色"></select></label>
         <label class="scene-field"><span data-i18n="麦克风">麦克风</span><select data-interpretation="input" aria-label="麦克风" data-i18n-aria-label="麦克风"></select></label>
         <label class="scene-field" data-interpretation="output-field"><span data-i18n="播放设备">播放设备</span><select data-interpretation="output" aria-label="播放设备" data-i18n-aria-label="播放设备"></select></label>
+        <div class="interpretation-devices"><button class="button subtle small-button" data-interpretation="devices" data-i18n="读取音频设备">读取音频设备</button><p class="muted small" data-interpretation="device-hint" data-i18n="允许麦克风权限后，可读取可用的实体和虚拟音频设备。">允许麦克风权限后，可读取可用的实体和虚拟音频设备。</p><details><summary data-i18n="输出到虚拟麦克风">输出到虚拟麦克风</summary><p class="muted small" data-i18n="播放设备选择虚拟声卡的播放端（如 CABLE Input）；其他软件的麦克风选择对应录音端（如 CABLE Output）。">播放设备选择虚拟声卡的播放端（如 CABLE Input）；其他软件的麦克风选择对应录音端（如 CABLE Output）。</p></details></div>
         <div class="interpretation-live" role="status" aria-live="polite"><div class="interpretation-indicator" data-interpretation="indicator"></div><strong data-interpretation="status"></strong><span data-interpretation="activity" class="muted small"></span></div>
         <div class="interpretation-meter" aria-hidden="true"><span data-interpretation="meter"></span></div>
         <p class="inline-error" data-interpretation="error" role="alert" hidden></p>
@@ -27,7 +31,8 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
         <button class="button subtle" data-interpretation="cancel" hidden data-i18n="立即停止">立即停止</button>
         <p class="muted small" data-i18n="建议戴耳机，避免译音再次进入麦克风。">建议戴耳机，避免译音再次进入麦克风。</p>
         <div data-interpretation="install" hidden><p class="muted small" data-i18n="请先在模型中心安装 LFM3-Audio。">请先在模型中心安装 LFM3-Audio。</p><button class="button secondary" data-interpretation="models" data-i18n="前往模型中心">前往模型中心</button></div>
-      </section><section class="card interpretation-results"><div class="card-heading"><h2 data-i18n="双语记录">双语记录</h2><button class="button subtle small-button" data-interpretation="copy" disabled data-i18n="复制全文">复制全文</button></div>
+      </section><section class="card interpretation-results"><div class="card-heading"><h2 data-i18n="双语记录">双语记录</h2><div class="interpretation-actions"><a class="button subtle small-button" data-interpretation="download" hidden download data-i18n="下载本轮译音">下载本轮译音</a><button class="button subtle small-button" data-interpretation="copy" disabled data-i18n="复制全文">复制全文</button></div></div>
+        <p class="muted small interpretation-saving" data-interpretation="saving" aria-live="polite" data-i18n="译音会在每句完成后自动保存。">译音会在每句完成后自动保存。</p>
         <div class="interpretation-columns" aria-hidden="true"><span data-interpretation="source-label"></span><span data-interpretation="target-label"></span></div>
         <div data-interpretation="rows"></div><div class="interpretation-empty" data-interpretation="empty"><span class="interpretation-empty-icon" aria-hidden="true">⇄</span><strong data-i18n="准备好，就开始说话">准备好，就开始说话</strong><p class="muted" data-i18n="原文和译文会逐句出现在这里，译音会按顺序播放。">原文和译文会逐句出现在这里，译音会按顺序播放。</p></div>
       </section></div>`;
@@ -42,8 +47,14 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
       preferences[field]=event.target.value;if(preferences[field]===preferences[other])preferences[other]=old;
       languages();remember();
     };
-    for(const name of ['input','output'])find(`[data-interpretation="${name}"]`).onchange=event=>{preferences[name]=event.target.value;remember();};
-    find('[data-interpretation="output-field"]').hidden=typeof (window.AudioContext||window.webkitAudioContext)?.prototype?.setSinkId!=='function';
+    for(const name of ['voice','input','output'])find(`[data-interpretation="${name}"]`).onchange=async event=>{
+      if(name==='output'&&event.target.value==='__choose_output__'){
+        try{const device=await navigator.mediaDevices.selectAudioOutput({deviceId:preferences.output||''});preferences.output=device.deviceId;await devices();}
+        catch(error){event.target.value=preferences.output;showToast(error.name==='NotAllowedError'?'播放设备权限未开启，请允许访问后重试。':'未能选择播放设备，请重试。');return;}
+      }else preferences[name]=event.target.value;
+      remember();
+    };
+    find('[data-interpretation="devices"]').onclick=readDevices;
   }
 
   function languages() {
@@ -55,6 +66,11 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
       select.replaceChildren(...supported.map(([id,label])=>{const option=document.createElement('option');option.value=id;uiText(option,label);return option;}));select.value=preferences[field];
       uiText(find(`[data-interpretation="${name}-label"]`),supported.find(([id])=>id===preferences[field])?.[1]||preferences[field]);
     }
+    const voices=(capabilities?.voices||[]).filter(voice=>voice.language===preferences.target_language);
+    if(!voices.some(voice=>voice.id===preferences.voice))preferences.voice='';
+    const automatic=document.createElement('option');automatic.value='';uiText(automatic,'跟随目标语言');
+    find('[data-interpretation="voice"]').replaceChildren(automatic,...voices.map(voice=>{const option=document.createElement('option');option.value=voice.id;uiText(option,voice.label);return option;}));
+    find('[data-interpretation="voice"]').value=preferences.voice;
   }
 
   async function devices() {
@@ -63,9 +79,31 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
     for(const [name,kind,label] of [['input','audioinput','系统默认麦克风'],['output','audiooutput','系统默认播放设备']]) {
       const select=find(`[data-interpretation="${name}"]`),defaultOption=document.createElement('option');defaultOption.value='';uiText(defaultOption,label);
       select.replaceChildren(defaultOption,...list.filter(device=>device.kind===kind&&device.deviceId&&device.deviceId!=='default'&&device.deviceId!=='communications').map((device,index)=>{const option=document.createElement('option');option.value=device.deviceId;option.textContent=device.label||`${t(name==='input'?'麦克风':'播放设备')} ${index+1}`;return option;}));
-      if([...select.options].some(option=>option.value===preferences[name]))select.value=preferences[name];
-      else preferences[name]='';
+      if(preferences[name]&&![...select.options].some(option=>option.value===preferences[name])){
+        const missing=document.createElement('option');missing.value=preferences[name];uiText(missing,'上次选择的设备（暂不可用）');select.append(missing);
+        if(running()&&list.some(device=>device.kind===kind&&device.label)){fail(t(name==='input'?'所选麦克风已断开，请重新选择设备。':'所选播放设备已断开，请重新选择设备。'));}
+      }
+      select.value=preferences[name];
+      if(name==='output'&&typeof navigator.mediaDevices?.selectAudioOutput==='function'){
+        const choose=document.createElement('option');choose.value='__choose_output__';uiText(choose,'选择其他播放设备…');select.append(choose);
+      }
     }
+    const supported=typeof (window.AudioContext||window.webkitAudioContext)?.prototype?.setSinkId==='function';
+    find('[data-interpretation="output"]').disabled=running()||!supported;
+    if(!supported){
+      preferences.output='';find('[data-interpretation="output"]').value='';
+      uiText(find('[data-interpretation="device-hint"]'),'当前浏览器仅支持系统默认播放设备，请在系统声音设置中切换。');
+    }
+  }
+
+  async function readDevices() {
+    const button=find('[data-interpretation="devices"]');button.disabled=true;
+    try{
+      if(!navigator.mediaDevices?.getUserMedia)throw new Error('浏览器无法使用麦克风，请在本机浏览器中打开工作台。');
+      const permission=await navigator.mediaDevices.getUserMedia({audio:true});permission.getTracks().forEach(track=>track.stop());
+      await devices();uiText(button,'刷新设备');
+    }catch(error){showToast(error.name==='NotAllowedError'?'麦克风权限未开启，请允许浏览器使用麦克风后重试。':error.message);}
+    finally{button.disabled=running();}
   }
 
   function status(message) {
@@ -77,6 +115,8 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
     find('[data-interpretation="cancel"]').hidden=!running();
     find('[data-interpretation="indicator"]').classList.toggle('active',phase==='listening'||phase==='preparing'&&!!stream);
     root.querySelectorAll('select,[data-interpretation="swap"]').forEach(control=>control.disabled=running());
+    find('[data-interpretation="devices"]').disabled=running();
+    if(typeof (window.AudioContext||window.webkitAudioContext)?.prototype?.setSinkId!=='function')find('[data-interpretation="output"]').disabled=true;
     activity();
   }
 
@@ -111,7 +151,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
   function rowFor(id,values={}) {
     if(!rows.has(id)) {
       const element=document.createElement('article');element.className='interpretation-row';element.dataset.segment=String(id);
-      element.innerHTML=html`<div class="interpretation-row-heading"><span></span><small class="muted" data-row-status></small></div><div class="interpretation-pair"><p data-row-source></p><p data-row-translation></p></div>`;
+      element.innerHTML=html`<div class="interpretation-row-heading"><span></span><small class="muted" data-row-status></small></div><div class="interpretation-pair"><p data-row-source></p><p data-row-translation></p></div><div class="interpretation-row-save"><a class="button subtle small-button" data-row-download hidden download data-i18n="下载本句">下载本句</a><small class="muted" data-row-saving hidden data-i18n="语音保存中…">语音保存中…</small></div>`;
       const row={element,source:'',translation:'',audio:0};rows.set(id,row);find('[data-interpretation="rows"]').append(element);
       find('[data-interpretation="empty"]').hidden=true;
     }
@@ -119,11 +159,42 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
     if(values.start!==undefined)row.element.querySelector('.interpretation-row-heading span').textContent=`${Math.floor(values.start/60).toString().padStart(2,'0')}:${Math.floor(values.start%60).toString().padStart(2,'0')}`;
     row.element.querySelector('[data-row-source]').textContent=row.source;
     row.element.querySelector('[data-row-translation]').textContent=row.translation;
+    const clip=savedClips.get(id);if(clip)download(row.element.querySelector('[data-row-download]'),clip.audio);
     find('[data-interpretation="copy"]').disabled=![...rows.values()].some(value=>value.translation);
     return row;
   }
 
   function rowStatus(row,label){uiText(row.element.querySelector('[data-row-status]'),label);}
+
+  function download(link,audio) {
+    if(!audio||!/^\/api\/workbench\/files\/[a-zA-Z0-9_-]+$/.test(audio.url||''))return;
+    link.href=audio.url;link.download=audio.name||'interpretation.wav';link.hidden=false;
+  }
+
+  function watchRecording(id) {
+    const generation=++recordingEpoch;recordingFailures=0;savedClips.clear();clearTimeout(recordingTimer);
+    const link=find('[data-interpretation="download"]');link.hidden=true;link.removeAttribute('href');
+    find('[data-interpretation="saving"]').classList.remove('inline-error');
+    uiText(find('[data-interpretation="saving"]'),'译音会在每句完成后自动保存。');
+    async function refresh(){
+      try{
+        const record=await api(`/interpretation/recordings/${encodeURIComponent(id)}`);
+        if(generation!==recordingEpoch)return;
+        recordingFailures=0;
+        for(const clip of record.clips||[]){savedClips.set(clip.id,clip);const row=rows.get(clip.id);if(row){download(row.element.querySelector('[data-row-download]'),clip.audio);row.element.querySelector('[data-row-saving]').hidden=true;}}
+        download(link,record.audio);
+        const saving=find('[data-interpretation="saving"]');saving.classList.toggle('inline-error',!!record.message);
+        uiText(saving,record.message||({recording:'译音会在每句完成后自动保存。',saving:'正在保存本轮译音…',done:'本轮译音已保存，可下载 WAV 文件。',empty:'本轮没有可保存的译音。'})[record.state]||'语音保存未完成，请检查输出目录。');
+        if(['recording','saving'].includes(record.state))recordingTimer=setTimeout(refresh,600);
+        else for(const row of rows.values())row.element.querySelector('[data-row-saving]').hidden=true;
+      }catch{
+        if(generation!==recordingEpoch)return;
+        if(++recordingFailures<4)recordingTimer=setTimeout(refresh,1500);
+        else uiText(find('[data-interpretation="saving"]'),'未能读取语音文件，请在输出目录中查看。');
+      }
+    }
+    void refresh();
+  }
   function settle() {
     if(completed&&!sources.size){phase='idle';engine='';pending=0;stopMic();status('本轮翻译已结束');}
   }
@@ -145,7 +216,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
     if(generation!==epoch)return;
     switch(message.type) {
       case 'preparing':phase='preparing';status();break;
-      case 'ready':rows.clear();find('[data-interpretation="rows"]').replaceChildren();find('[data-interpretation="empty"]').hidden=false;find('[data-interpretation="copy"]').disabled=true;phase='listening';capture.port.postMessage({kind:'enable',value:true});for(const pcm of earlyAudio)socket.send(pcm);earlyAudio=[];earlyBytes=0;status();onRuntimeChange();break;
+      case 'ready':rows.clear();find('[data-interpretation="rows"]').replaceChildren();find('[data-interpretation="empty"]').hidden=false;find('[data-interpretation="copy"]').disabled=true;if(message.recording_id)watchRecording(message.recording_id);phase='listening';capture.port.postMessage({kind:'enable',value:true});for(const pcm of earlyAudio)socket.send(pcm);earlyAudio=[];earlyBytes=0;status();onRuntimeChange();break;
       case 'speech':find('[data-interpretation="indicator"]').classList.toggle('speaking',!!message.active);break;
       case 'queued':pending=message.pending;activity();break;
       case 'segment':pending=message.pending;engine='正在识别';rowStatus(rowFor(message.id,message),'正在识别');activity();break;
@@ -153,7 +224,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
       case 'translated':engine='正在合成';rowStatus(rowFor(message.id,message),'准备朗读');activity();break;
       case 'audio':engine='正在朗读';play(message,generation);break;
       case 'empty':{const row=rows.get(message.id);row?.element.remove();rows.delete(message.id);find('[data-interpretation="empty"]').hidden=rows.size>0;break;}
-      case 'segment_done':{pending=message.pending;engine='';const row=rows.get(message.id);if(row){row.done=true;if(!row.audio){row.element.classList.remove('playing');rowStatus(row,'已播放');}}activity();break;}
+      case 'segment_done':{pending=message.pending;engine='';const row=rows.get(message.id);if(row){row.done=true;row.element.querySelector('[data-row-saving]').hidden=savedClips.has(message.id);if(!row.audio){row.element.classList.remove('playing');rowStatus(row,'已播放');}}activity();break;}
       case 'finishing':phase='finishing';status();break;
       case 'finished':completed=true;phase='playing';status();settle();break;
       case 'error':fail(message.message||'翻译失败，请重新开始。');break;
@@ -174,7 +245,10 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
       const Audio=window.AudioContext||window.webkitAudioContext;
       const audio=new Audio({latencyHint:'interactive'});context=audio;await audio.resume();
       if(generation!==epoch){await audio.close().catch(()=>{});return;}
-      if(preferences.output&&audio.setSinkId)await audio.setSinkId(preferences.output);
+      if(preferences.output){
+        if(!audio.setSinkId)throw new Error('当前浏览器无法使用所选播放设备，请选择系统默认播放设备。');
+        try{await audio.setSinkId(preferences.output);}catch(error){throw new Error(error.name==='NotAllowedError'?'播放设备权限未开启，请允许访问后重试。':'所选播放设备不可用，请重新选择设备。');}
+      }
       await audio.audioWorklet.addModule('/realtime/worklets/mic-capture.js?v=interpretation-1');
       if(generation!==epoch){await audio.close();return;}
       capture=new AudioWorkletNode(audio,'mic-capture');capture.port.postMessage({kind:'enable',value:true});
@@ -192,7 +266,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
       status('正在收音，模型准备中…');
       if(generation!==epoch)return;
       const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/workbench/interpretation/live`);socket=ws;
-      ws.onopen=()=>{if(generation===epoch)ws.send(JSON.stringify({type:'start',source_language:preferences.source_language,target_language:preferences.target_language}));};
+      ws.onopen=()=>{if(generation===epoch)ws.send(JSON.stringify({type:'start',source_language:preferences.source_language,target_language:preferences.target_language,voice:preferences.voice}));};
       ws.onmessage=event=>{try{receive(JSON.parse(event.data),generation);}catch(error){if(generation===epoch)fail(error.message);}};
       ws.onerror=()=>{if(generation===epoch)fail('无法连接翻译服务，请检查工作台是否仍在运行。');};
       ws.onclose=()=>{onRuntimeChange();if(generation===epoch){socket=null;stopMic();if(!completed)fail('翻译连接已断开，请重新开始。');}};
@@ -218,6 +292,6 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
     catch(error){fail(error.message);}
   }
   window.addEventListener('pagehide',hide);
-  navigator.mediaDevices?.addEventListener?.('devicechange',()=>{if(!running())void devices();});
+  navigator.mediaDevices?.addEventListener?.('devicechange',()=>void devices());
   return {open,hide};
 }

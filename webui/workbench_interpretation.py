@@ -4,18 +4,27 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
+from functools import lru_cache
 import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 import uuid
 import wave
 
 import httpx
 import numpy as np
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+
+try:
+    from .workbench_metadata import lfm3_voice_languages
+except ImportError:
+    from workbench_metadata import lfm3_voice_languages
 
 PREFIX = "/api/workbench/interpretation"
 RATE, FRAME = 16000, 512
@@ -137,12 +146,119 @@ def translation_context(history):
     return ""
 
 
+@lru_cache(maxsize=1)
+def builtin_voices():
+    root = Path(__file__).resolve().parent
+    spec = json.loads((root.parent / 'model_specs/lfm3_audio.json').read_text(encoding='utf-8'))
+    params = json.loads((root / 'configs/model_params.json').read_text(encoding='utf-8'))
+    labels = dict(next(p['choices'] for p in params['lfm3-audio-tts'] if p['name'] == 'voice'))
+    return [{'id': voice, 'label': next(label for label, value in labels.items() if value == voice),
+             'language': language} for voice, language in lfm3_voice_languages(spec).items()]
+
+
+class TranslationRecording:
+    """Only complete utterances enter the disk queue; inference never waits for it."""
+    def __init__(self, owner, ident):
+        self.owner, self.ident = owner, ident
+        self.folder = Path(owner.work.b.OUTPUT_DIR) / ident
+        self.name = f'interpretation_{datetime.now():%Y%m%d_%H%M%S}_{ident[-8:]}.wav'
+        self.lock = threading.Lock()
+        self.clips, self.errors = [], []
+        self.pending = 0
+        self.ended = False
+        self.state, self.audio = 'recording', None
+
+    def snapshot(self):
+        with self.lock:
+            return {'id': self.ident, 'state': self.state, 'pending': self.pending,
+                    'clips': [{'id': clip['id'], 'audio': clip['audio'], 'duration': clip['frames'] / 24000}
+                              for clip in self.clips], 'audio': self.audio,
+                    'message': self.errors[-1] if self.errors else ''}
+
+    def add(self, ident, parts):
+        size = sum(map(len, parts))
+        with self.owner.save_lock:
+            if self.owner.save_bytes + size > 32 * 1024 * 1024:
+                with self.lock:
+                    self.errors.append('语音保存跟不上生成速度，部分语音未保存；实时翻译仍会继续。')
+                return
+            self.owner.save_bytes += size
+        with self.lock:
+            self.pending += 1
+        self.owner.saver.submit(self._save, ident, parts, size)
+
+    def _save(self, ident, parts, size):
+        path = self.folder / f'{ident:04d}.wav'
+        temporary = path.with_suffix('.wav.part')
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(temporary), 'wb') as wav:
+                wav.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+                for part in parts:
+                    wav.writeframesraw(part)
+            temporary.replace(path)
+            audio = self.owner.work.artifact(path)
+            with self.lock:
+                self.clips.append({'id': ident, 'path': path, 'audio': audio, 'frames': size // 2})
+        except Exception:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            with self.lock:
+                self.errors.append('部分译音保存失败，请检查输出目录和磁盘空间。')
+        finally:
+            with self.lock:
+                self.pending -= 1
+            with self.owner.save_lock:
+                self.owner.save_bytes -= size
+
+    def finish(self):
+        if not self.ended:
+            self.ended = True
+            with self.lock:
+                self.state = 'saving'
+            # This shares the single FIFO writer, so all utterances finish first.
+            self.owner.saver.submit(self._finish)
+
+    def _finish(self):
+        temporary = self.folder / (self.name + '.part')
+        try:
+            if self.clips:
+                with wave.open(str(temporary), 'wb') as output:
+                    output.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+                    for clip in self.clips:
+                        with wave.open(str(clip['path']), 'rb') as source:
+                            while pcm := source.readframes(16384):
+                                output.writeframesraw(pcm)
+                path = self.folder / self.name
+                temporary.replace(path)
+                audio = self.owner.work.artifact(path)
+            else:
+                audio = None
+            with self.lock:
+                self.audio = audio
+                self.state = ('partial' if audio else 'error') if self.errors else ('done' if audio else 'empty')
+        except Exception:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            with self.lock:
+                self.state = 'partial' if self.clips else 'error'
+                self.errors.append('完整译音保存失败，已保存的单句仍可下载。')
+
+
 class Interpretation:
     def __init__(self, work, *, probability_factory=local_probability):
         self.work = work
         self.probability_factory = probability_factory
         self.sessions = set()
         self.closed = False
+        self.recordings = {}
+        self.saver = ThreadPoolExecutor(max_workers=1, thread_name_prefix='interpretation-save')
+        self.save_lock = threading.Lock()
+        self.save_bytes = 0
 
     def model(self):
         return next((entry for entry in self.work.b.catalog_models()
@@ -153,11 +269,18 @@ class Interpretation:
         model = self.model()
         return {"ready": bool(model), "model": model["id"] if model else None,
                 "languages": LANGUAGES, "source_language": "zh", "target_language": "en",
+                "voices": builtin_voices(),
                 "message": "使用本机 LFM3，自动断句、翻译并朗读。" if model else "请先在模型中心安装 LFM3-Audio。"}
 
     async def close(self):
         self.closed = True
         await self.stop()
+        await asyncio.to_thread(self.saver.shutdown, wait=True)
+
+    def recording(self, ident):
+        if ident not in self.recordings:
+            raise HTTPException(404, '没有找到本轮翻译的语音记录。')
+        return self.recordings[ident].snapshot()
 
     async def stop(self):
         await asyncio.gather(*(session.close() for session in list(self.sessions)), return_exceptions=True)
@@ -200,6 +323,7 @@ class TranslationSession:
         self.closed = self.leased = self.processing = False
         self.proc = None
         self.sequence = 0
+        self.recording = None
 
     async def send(self, kind, **fields):
         if not self.closed:
@@ -234,8 +358,14 @@ class TranslationSession:
         if not entry:
             raise ValueError("请先在模型中心安装 LFM3-Audio。")
         self.model = entry["id"]
+        self.voice = config.get('voice', '')
+        if not isinstance(self.voice, str) or self.voice and not any(
+                voice['id'] == self.voice and voice['language'] == self.target for voice in builtin_voices()):
+            raise ValueError('请选择与目标语言匹配的 LFM3 内置音色。')
         self.work.lease(self.ident, {"tts_model": self.model, "tts_server_source": "managed", "tts_streaming": True})
         self.leased = True
+        self.recording = TranslationRecording(self.owner, self.ident)
+        self.owner.recordings[self.ident] = self.recording
         await self.send("preparing")
         # Await both initializers even on failure, so a model cannot finish loading after the lease is released.
         async def initialize():
@@ -250,7 +380,7 @@ class TranslationSession:
             return
         self.vad = VoiceSegments(initialized[1])
         self.worker = asyncio.create_task(self.process())
-        await self.send("ready", model=self.model, sample_rate=RATE)
+        await self.send("ready", model=self.model, sample_rate=RATE, recording_id=self.ident)
         active = False
         while True:
             receiver = asyncio.create_task(self.ws.receive())
@@ -277,7 +407,8 @@ class TranslationSession:
                     await self.queue.put(None)
                     await self.send("finishing", pending=self.queue.qsize() - 1)
                     await self.worker
-                    await self.send("finished")
+                    self.recording.finish()
+                    await self.send("finished", recording_id=self.ident)
                     break
                 if action.get("type") == "cancel":
                     break
@@ -296,12 +427,15 @@ class TranslationSession:
                 started = time.monotonic()
                 source = translated = ""
                 heard_audio = saw_done = empty = False
+                audio_parts = []
                 with tempfile.TemporaryDirectory(prefix="audiocpp-interpretation-") as temp:
                     path = Path(temp) / "speech.wav"
                     path.write_bytes(wav_bytes(segment.pcm))
                     body = {"model": self.model, "stream_format": "sse", "request": {"audio": str(path), "options": {
                         "language": self.source, "target_language": self.target,
                         "translation_context": translation_context(self.history), "stream_frames_per_event": 2}}}
+                    if self.voice:
+                        body['request']['voice'] = self.voice
                     async with http.stream("POST", b.SERVER + "/v1/tasks/stream", json=body) as response:
                         if response.status_code != 200:
                             detail = (await response.aread()).decode("utf-8", errors="replace")[:400]
@@ -333,7 +467,9 @@ class TranslationSession:
                                 with wave.open(io.BytesIO(base64.b64decode(event["audio"])), "rb") as wav:
                                     if wav.getsampwidth() != 2 or wav.getnchannels() != 1 or wav.getframerate() != 24000:
                                         raise RuntimeError("模型返回了无法播放的音频格式，请更新运行程序。")
-                                    pcm = base64.b64encode(wav.readframes(wav.getnframes())).decode("ascii")
+                                    raw = wav.readframes(wav.getnframes())
+                                    audio_parts.append(raw)
+                                    pcm = base64.b64encode(raw).decode("ascii")
                                 await self.send("audio", id=ident, pcm=pcm, sample_rate=24000,
                                                 first=not heard_audio, generated_ms=round((time.monotonic() - started) * 1000))
                                 heard_audio = True
@@ -342,6 +478,7 @@ class TranslationSession:
                     raise RuntimeError("模型连接在翻译完成前中断，请重新开始。")
                 if not empty:
                     self.history.append({"source": source, "translation": translated})
+                    self.recording.add(ident, audio_parts)
                 await self.send("segment_done", id=ident, empty=empty, pending=self.queue.qsize(),
                                 elapsed_ms=round((time.monotonic() - started) * 1000))
 
@@ -362,6 +499,8 @@ class TranslationSession:
         if self.leased:
             self.work.lease(self.ident, None)
             self.leased = False
+        if self.recording:
+            self.recording.finish()
         try:
             await self.ws.close()
         except (RuntimeError, WebSocketDisconnect):
@@ -373,5 +512,6 @@ def install_interpretation_routes(app, work):
     app.state.interpretation = service
     app.get(PREFIX + "/capabilities")(service.capabilities)
     app.post(PREFIX + "/stop")(service.stop)
+    app.get(PREFIX + '/recordings/{ident}')(service.recording)
     app.websocket(PREFIX + "/live")(service.connect)
     return service
