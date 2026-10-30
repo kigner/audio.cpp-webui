@@ -189,7 +189,10 @@ function Get-AppInputs {
         $inputs += [pscustomobject]@{ Source = Join-Path $repoRoot $relative; Path = $relative }
     }
 
-    $tracked = @(& git -C $repoRoot ls-files -- `
+    $previousGitOutputEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+        $tracked = @(& git -c core.quotepath=false -C $repoRoot ls-files -- `
         webui `
         SpeakType `
         tools/model_manager_v2.py `
@@ -197,7 +200,14 @@ function Get-AppInputs {
         tools/community_models/convert_glm_tts.py `
         assets/model_manager `
         assets/framework/models/marblenet_vad `
+        assets/framework/models/earshot_vad `
+        tools/community_models/convert_underdog_bark3.py `
+        tools/community_models/convert_underdog_bark3_plus.py `
+        tools/community_models/convert_underdog_bark3_standard.py `
         model_specs)
+    } finally {
+        [Console]::OutputEncoding = $previousGitOutputEncoding
+    }
     if ($LASTEXITCODE -ne 0) { throw "git ls-files failed." }
     foreach ($relative in $tracked) {
         $normalized = ([string]$relative).Replace('\', '/')
@@ -220,10 +230,14 @@ function Get-AppInputs {
         } elseif ($normalized -in @(
                       "tools/model_manager_v2.py",
                       "tools/model_manager_deprecated.py",
-                      "tools/community_models/convert_glm_tts.py"
+                      "tools/community_models/convert_glm_tts.py",
+                      "tools/community_models/convert_underdog_bark3.py",
+                      "tools/community_models/convert_underdog_bark3_plus.py",
+                      "tools/community_models/convert_underdog_bark3_standard.py"
                   ) -or
                   $normalized.StartsWith("assets/model_manager/") -or
                   $normalized.StartsWith("assets/framework/models/marblenet_vad/") -or
+                  $normalized.StartsWith("assets/framework/models/earshot_vad/") -or
                   $normalized.StartsWith("model_specs/")) {
             $include = $true
         }

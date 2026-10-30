@@ -1,8 +1,13 @@
 """Same-origin routing and shared runtime ownership; no model weights needed."""
+import asyncio
+import json
 import os
+import threading
 import unittest
-from unittest.mock import Mock, patch
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import AsyncMock, Mock, patch
 
+import anyio
 import httpx
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -102,6 +107,41 @@ class IntegratedRealtimeTests(unittest.TestCase):
         self.assertEqual(events[0][0], events[1][0])
         pipeline.stop.assert_called_once()
         self.assertEqual(pipeline.configure.call_args.args[0]["tts_stream_sample_rate"], 24000)
+
+    def test_cancelled_disconnect_still_releases_the_model(self):
+        events = []
+
+        def lease(session_id, config):
+            events.append((session_id, None if config is None else config["tts_model"]))
+
+        pipeline = Mock()
+        pipeline.drain_events.return_value = []
+        app = create_app(_models, Mock(), lease_callback=lease)
+        endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/realtime")
+        ws = Mock(headers={}, accept=AsyncMock(), send_json=AsyncMock())
+
+        async def disconnect():
+            asyncio.get_running_loop().set_default_executor(executor)
+            with anyio.CancelScope() as scope:
+                async def receive():
+                    if not events:
+                        return json.dumps({"type": "session.update", "session": {"audiocpp": _config()}})
+                    # Hold the worker so cancellation reaches the queued release.
+                    gate = threading.Event()
+                    asyncio.get_running_loop().run_in_executor(None, gate.wait)
+                    threading.Timer(.05, gate.set).start()
+                    scope.cancel()
+                    raise WebSocketDisconnect()
+
+                ws.receive_text = receive
+                await endpoint(ws)
+
+        with ThreadPoolExecutor(max_workers=1) as executor, \
+                patch("realtime_server.RealtimePipeline", return_value=pipeline):
+            anyio.run(disconnect)
+        self.assertEqual([event[1] for event in events], ["test-tts", None])
+        self.assertEqual(events[0][0], events[1][0])
+        pipeline.stop.assert_called_once()
 
     def test_preflight_distinguishes_installed_asr_from_running_model(self):
         request = httpx.Request("GET", "http://127.0.0.1:8081/v1/models")

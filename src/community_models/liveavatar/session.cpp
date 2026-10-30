@@ -79,10 +79,10 @@ engine::runtime::ModelCliInterface make_cli() {
         {"num_inference_steps", "n", "Flow denoising steps.", false, std::nullopt, "1"},
         {"generation_mode", "offline|liveavatar", "Use whole-clip generation or LiveAvatar blockwise generation.", false, "offline"},
         {"guidance_scale", "float", "Classifier-free guidance scale.", false, std::nullopt, "0"},
-        {"fused_cfg", "true|false", "Run classifier-free guidance in one denoiser graph.", false, "true"},
+        {"batched_cfg", "true|false", "Run classifier-free guidance in one denoiser graph.", false, "true"},
         {"sage_attention", "true|false", "Use H3-style CUDA SAGE attention in the denoiser graph.", false, "true"},
         {"mem_saver", "true|false", "Reuse immutable condition data and temporary denoiser graph storage across sequential blocks.", false, "true"},
-        {"denoiser_layerwise", "true|false", "Run the denoiser in explicit layerwise mode. Offline generation requires fused_cfg=true and guidance_scale > 1.", false, "false"},
+        {"denoiser_layerwise", "true|false", "Run the denoiser in explicit layerwise mode. Offline generation requires batched_cfg=true and guidance_scale > 1.", false, "false"},
         {"denoiser_layerwise_batch", "n", "Denoiser layer group size when denoiser_layerwise=true.", false, "16", "1"},
         {"vae_encoder_chunk_size", "n", "Cached VAE encoder chunk size.", false, "16", "1"},
         {"vae_decoder_tile_size", "n", "Opt-in VAE decoder spatial tile size for large outputs; 0 disables tiling. Enabled tile sizes must be multiples of 8 and larger than the 64-pixel overlap.", false, "0", "0"},
@@ -266,8 +266,12 @@ LiveAvatarGenerateRequest LiveAvatarSession::make_request(const engine::runtime:
     out.seed = engine::runtime::parse_u64_option(request.options, {"seed"}).value_or(out.seed);
     out.guidance_scale = engine::runtime::parse_float_option(request.options, {"guidance_scale"})
                              .value_or(default_guidance_scale);
-    if (const auto value = engine::runtime::find_option(request.options, {"fused_cfg", "liveavatar.fused_cfg"})) {
-        out.fused_cfg = engine::runtime::parse_bool_option(*value, "fused_cfg");
+    auto batched_cfg = engine::runtime::find_option(request.options, {"batched_cfg", "liveavatar.batched_cfg"});
+    if (!batched_cfg.has_value()) {
+        batched_cfg = engine::runtime::find_option(request.options, {"fused_cfg", "liveavatar.fused_cfg"});
+    }
+    if (batched_cfg.has_value()) {
+        out.fused_cfg = engine::runtime::parse_bool_option(*batched_cfg, "batched_cfg");
     }
     if (const auto value = engine::runtime::find_option(request.options, {"sage_attention", "liveavatar.sage_attention"})) {
         out.sage_attention = engine::runtime::parse_bool_option(*value, "sage_attention");
@@ -337,6 +341,24 @@ std::shared_ptr<engine::runtime::IVoiceModelLoader> make_liveavatar_loader() {
     public:
         std::string family() const override {
             return kFamily;
+        }
+
+        engine::runtime::PackageLoadTarget resolve_package_load(const assets::ModelPackage & package) const override {
+            engine::runtime::PackageLoadTarget out{kFamily, package.root, {}, {}};
+            if (package.format == "gguf") {
+                for (const auto & file : package.files) {
+                    if (file.extension() != ".gguf") continue;
+                    const auto name = file.filename().string();
+                    if (name.rfind("Wan2.2-S2V-Support-", 0) == 0) {
+                        out.load_options.emplace("liveavatar.support_gguf", file.generic_string());
+                    } else if (name.rfind("Wan2.2-S2V-VAE-", 0) == 0) {
+                        out.load_options.emplace("liveavatar.vae_gguf", file.generic_string());
+                    } else if (name.rfind("Wan2.2-S2V-14B-", 0) == 0) {
+                        out.load_options.emplace("liveavatar.denoiser_gguf", file.generic_string());
+                    }
+                }
+            }
+            return out;
         }
 
         engine::runtime::CapabilitySet advertised_capabilities() const override {

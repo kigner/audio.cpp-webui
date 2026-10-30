@@ -24,6 +24,14 @@ refer to entries in your server config, with the task/mode required by the route
 
 Returns server readiness and the number of configured models.
 
+```json
+{"status":"ok","backend":"cpu","models":1,"ui":true,"ui_management":false,"version":"dev","git":"1bbd8517","git_date":"2026-10-25"}
+```
+
+`version`, `git`, and `git_date` are the build values `audiocpp_server --version`
+prints: the `AUDIOCPP_VERSION` CMake value (`dev` by default), the short commit,
+and the commit date.
+
 ## `GET /v1/models`
 
 Returns OpenAI-style model entries for the configured audio.cpp model ids.
@@ -87,6 +95,7 @@ below `2^53` are accepted, but larger JSON numbers may lose precision before
 option parsing.
 
 If no request voice is provided and the configured model has `default_voice_preset`, the server injects that preset automatically. Request-level `voice`, `voice_ref`, and `reference_text` override the configured default.
+An empty string or `null` for `voice` is treated as omitted.
 
 A preset's configured `options` fill missing request keys. Explicit request options override preset options with the same key. Different aliases are not merged; supplying conflicting aliases may produce a model validation error.
 
@@ -135,7 +144,7 @@ Some versions of the optional `mp3_encode` frontend reject `response_format=pcm`
 before the core handler. If this example returns that frontend error, use a
 server built without that module for PCM streaming.
 
-`POST /v1/audio/speech/live` is the live-ingest variant for speech-to-speech models: the request body is raw PCM sent with `Transfer-Encoding: chunked`, and the response can emit audio while the input stream is still open. `input` is the text a text-to-speech model speaks and is required for it. A speech-to-speech or voice-conversion entry (task `s2s`, `vc` or `svc`) takes it as an optional prompt, such as PersonaPlex's persona prompt or LFM2.5-Audio's system prompt, and without it the model uses its default. The route's `speech.audio.done` timing reports `ttft_ms` only when first output audio occurs after the input stream ends. If output audio starts before the input stream closes, `ttft_ms` is `null`, `first_audio_before_input_end=true`, and `overlap_ms` reports how much earlier the first output arrived. `request_start_to_first_audio_ms` is also included for transport diagnostics.
+`POST /v1/audio/speech/live` is the live-ingest variant for speech-to-speech models: the request body is raw PCM sent with `Transfer-Encoding: chunked`, and the response can emit audio while the input stream is still open. `input` is the text a text-to-speech model speaks and is required for it. A speech-to-speech or voice-conversion entry (task `s2s`, `vc` or `svc`) takes it as an optional prompt, such as PersonaPlex's persona prompt or the system prompt of LFM2.5-Audio or LFM3-Audio, and without it the model uses its default. The route's `speech.audio.done` timing reports `ttft_ms` only when first output audio occurs after the input stream ends. If output audio starts before the input stream closes, `ttft_ms` is `null`, `first_audio_before_input_end=true`, and `overlap_ms` reports how much earlier the first output arrived. `request_start_to_first_audio_ms` is also included for transport diagnostics.
 
 With `return_text=true` (or `1`), the stream also carries the text the model writes as it speaks, such as a spoken reply's words. `speech.text.delta` events carry the text written since the previous event, in order with the audio deltas (an event's text comes before its audio), and `speech.text.done` carries the whole text before `speech.audio.done`:
 

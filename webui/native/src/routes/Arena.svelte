@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { AudioLines, Code, FileText, FolderOpen, MessageSquare, Play, Plus, Square, Trash2, User } from '@lucide/svelte';
   import { browserDecodeToWav } from '$lib/audio';
+  import { requirePackageLoadTarget } from '$lib/catalog';
   import {
     availableVoices,
     base64AudioUrl,
@@ -15,7 +17,7 @@
   import type { Translator } from '$lib/i18n';
   import MediaPreview from '$lib/MediaPreview.svelte';
   import VoicePicker from '$lib/VoicePicker.svelte';
-  import type { SavedVoice } from '$lib/voices';
+  import type { SavedVoice } from '$lib/library';
   import type { CatalogEntry, InstallPackageChoice, LoadedModel, ServerHealth } from '$lib/types';
 
   export let activeCatalog: CatalogEntry[] = [];
@@ -28,8 +30,6 @@
   export let studioPackageSlots: (entry: CatalogEntry) =>
     Array<{ key: string; label: string; choice?: InstallPackageChoice }> = () => [];
   export let packageIsAvailable: (entry: CatalogEntry, choice: InstallPackageChoice) => boolean = () => false;
-  export let packageSessionOptionsMatch:
-    (entry: CatalogEntry, choice: InstallPackageChoice, model: LoadedModel) => boolean = () => true;
   export let supportsMaxTokens: (entry: CatalogEntry) => boolean = () => false;
   export let supportsRequestOption: (entry: CatalogEntry, option: string) => boolean = () => false;
   export let requiresRequestOption: (entry: CatalogEntry, option: string) => boolean = () => false;
@@ -357,6 +357,13 @@
     arenaItems = [];
   }
 
+  function chooseArenaMode(mode: ArenaMode) {
+    if (running || mode === arenaMode) return;
+    resetArena();
+    arenaMode = mode;
+    status = '';
+  }
+
   function addArenaItem() {
     if (!arenaEntry) return;
     const choice = arenaPackageChoices.find((candidate) => candidate.id === arenaPackageId);
@@ -417,13 +424,17 @@
       }
       return;
     }
+    choice = choice || entry.install_packages?.[0];
+    const target = choice ? requirePackageLoadTarget(choice) : undefined;
     if (choice && !packageIsAvailable(entry, choice)) {
       throw new StatusWarning(tr('arena.error.notDownloaded', { package: choice.label }));
     }
     const path = modelPathForChoice(entry, choice);
+    // Arena matches its own request, independently of Studio overrides.
+    const sessionOptions = mergedSessionOptionsForChoice(entry, choice);
     const resident = loadedModels.find((model) => model.id === entry.id && model.loaded &&
       loadedPathMatches(path, model.path) &&
-      (!choice || packageSessionOptionsMatch(entry, choice, model)));
+      Object.entries(sessionOptions).every(([key, value]) => model.session_options?.[key] === value));
     if (resident) return;
 
     const replaced = loadedModels.filter((model) => model.loaded &&
@@ -435,16 +446,16 @@
     await loadModel({
       id: entry.id,
       path,
-      family: entry.family,
+      family: target?.family ?? entry.family,
       task: entry.task,
       mode: entry.mode || 'offline',
-      load_options: entry.load_options || {},
-      session_options: mergedSessionOptionsForChoice(entry, choice)
+      load_options: { ...choice?.load_options, ...entry.load_options },
+      session_options: sessionOptions
     });
     await refresh();
     if (!loadedModels.some((model) => model.id === entry.id && model.loaded &&
       loadedPathMatches(path, model.path) &&
-      (!choice || packageSessionOptionsMatch(entry, choice, model)))) {
+      Object.entries(sessionOptions).every(([key, value]) => model.session_options?.[key] === value))) {
       throw new Error(tr('arena.error.loadFailed'));
     }
   }
@@ -635,9 +646,9 @@
     <p>{arenaSubtitle}</p>
   </div>
   <div class="arena-mode-switch">
-    <button class:active={arenaMode === 'tts'} on:click={() => arenaMode = 'tts'}>{tr('arena.mode.tts')}</button>
-    <button class:active={arenaMode === 'vc'} on:click={() => arenaMode = 'vc'}>{tr('arena.mode.vc')}</button>
-    <button class:active={arenaMode === 'asr'} on:click={() => arenaMode = 'asr'}>{tr('arena.mode.asr')}</button>
+    <button class:active={arenaMode === 'tts'} disabled={running} on:click={() => chooseArenaMode('tts')}>{tr('arena.mode.tts')}</button>
+    <button class:active={arenaMode === 'vc'} disabled={running} on:click={() => chooseArenaMode('vc')}>{tr('arena.mode.vc')}</button>
+    <button class:active={arenaMode === 'asr'} disabled={running} on:click={() => chooseArenaMode('asr')}>{tr('arena.mode.asr')}</button>
   </div>
 </section>
 
@@ -648,27 +659,31 @@
       <span class="task-chip">{arenaModeText}</span>
     </div>
 
+    <section class="arena-input-section">
     {#if arenaMode === 'tts'}
-      <label for="arena-text">{tr('request.text')}</label>
+      <label class="arena-section-label" for="arena-text"><MessageSquare size={17} />{tr('request.text')}</label>
       <textarea id="arena-text" rows="5" bind:value={arenaText}
         placeholder={tr('arena.input.textPlaceholder')}></textarea>
     {:else}
-      <label for="arena-source">{tr('request.sourceAudio')}</label>
+      <label class="arena-section-label" for="arena-source"><AudioLines size={17} />{tr('request.sourceAudio')}</label>
       <input id="arena-source" class="file file-native" type="file" accept="audio/*"
         bind:this={arenaSourceInput}
         on:change={(event) => arenaSourceFile = event.currentTarget.files?.[0] || null} />
-      <label class="file-picker" for="arena-source"><strong>{tr('file.choose')}</strong><span>{arenaSourceFile?.name || tr('file.none')}</span></label>
+      <label class="file-picker" for="arena-source"><FolderOpen size={16} /><strong>{tr('file.choose')}</strong><span>{arenaSourceFile?.name || tr('file.none')}</span></label>
       <div class="media-actions">
         <button type="button" disabled={!arenaSourceFile} on:click={clearArenaSource}>{tr('file.clear')}</button>
         {#if arenaSourceFile}<span>{arenaSourceFile.name}</span>{/if}
       </div>
       <MediaPreview file={arenaSourceFile} kind="audio" label={tr('file.preview')} />
     {/if}
+    </section>
 
     {#if arenaMode === 'asr'}
-      <label for="arena-ground-truth">{tr('arena.input.groundTruth')} <span>{tr('request.optional')}</span></label>
+      <section class="arena-input-section">
+      <label class="arena-section-label" for="arena-ground-truth"><FileText size={17} />{tr('arena.input.groundTruth')} <span>{tr('request.optional')}</span></label>
       <textarea id="arena-ground-truth" rows="4" bind:value={arenaGroundTruthText}
         placeholder={tr('arena.input.groundTruthPlaceholder')}></textarea>
+      </section>
     {/if}
 
     <div class="field-grid">
@@ -684,7 +699,9 @@
       {/if}
     </div>
 
+    <div class:arena-input-section={arenaMode !== 'asr'}>
     {#if arenaMode !== 'asr'}
+      <h3 class="arena-section-label"><User size={17} />{arenaMode === 'vc' ? tr('arena.voice.targetSpeaker') : tr('voice.reference')}</h3>
       <div class="reference-input-grid">
         <div>
           <VoicePicker id="arena-voice-mode"
@@ -710,7 +727,7 @@
       <input id="arena-voice" class="file file-native" type="file" accept="audio/*"
         bind:this={arenaVoiceInput}
         on:change={(event) => chooseArenaReferenceVoice(event.currentTarget.files?.[0] || null)} />
-      <label class="file-picker" for="arena-voice"><strong>{tr('file.choose')}</strong><span>{arenaVoiceFile?.name || tr('file.none')}</span></label>
+      <label class="file-picker" for="arena-voice"><FolderOpen size={16} /><strong>{tr('file.choose')}</strong><span>{arenaVoiceFile?.name || tr('file.none')}</span></label>
       <MediaPreview file={arenaVoiceFile} kind="audio" label={tr('file.preview')} />
     {/if}
     {#if arenaMode !== 'asr'}
@@ -721,9 +738,10 @@
         {#if arenaVoiceFile}<span>{arenaVoiceFile.name}</span>{/if}
       </div>
     {/if}
+    </div>
 
-    <details>
-      <summary>{tr('arena.options.shared')} <span>JSON</span></summary>
+    <details class="arena-options">
+      <summary><Code size={16} />{tr('arena.options.shared')} <span>JSON</span></summary>
       <textarea class="code" rows="3" bind:value={arenaOptionsJson}></textarea>
     </details>
   </section>
@@ -757,7 +775,7 @@
           {/if}
         </select>
       </div>
-      <button type="button" disabled={!arenaEntry} on:click={addArenaItem}>{tr('arena.queue.add')}</button>
+      <button type="button" disabled={!arenaEntry} on:click={addArenaItem}><Plus size={15} />{tr('arena.queue.add')}</button>
     </div>
 
     {#if arenaItems.length}
@@ -769,7 +787,7 @@
               <span>{item.packageLabel}</span>
             </div>
             <span class="arena-status">{arenaStatusLabel(item.status)}</span>
-            <button type="button" disabled={running} on:click={() => removeArenaItem(item.id)}>{tr('arena.queue.remove')}</button>
+            <button type="button" disabled={running} on:click={() => removeArenaItem(item.id)}><Trash2 size={14} />{tr('arena.queue.remove')}</button>
           </article>
         {/each}
       </div>
@@ -824,11 +842,12 @@
   <div class="arena-actions">
     <div class="runbar arena-runbar">
       <button class="run" disabled={running || !arenaItems.length} on:click={runArena}>
+        <Play size={15} />
         <span>{running ? tr('run.working') : tr('arena.run')}</span>
         <kbd>Ctrl Enter</kbd>
       </button>
-      <button disabled={!running} on:click={cancel}>{tr('run.cancel')}</button>
-      <button disabled={running || !arenaItems.length} on:click={resetArena}>{tr('arena.queue.clear')}</button>
+      <button disabled={!running} on:click={cancel}><Square size={14} />{tr('run.cancel')}</button>
+      <button disabled={running || !arenaItems.length} on:click={resetArena}><Trash2 size={14} />{tr('arena.queue.clear')}</button>
     </div>
     <div class="status" class:busy={running}>{status || tr('status.ready')}</div>
   </div>

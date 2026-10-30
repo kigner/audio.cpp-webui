@@ -75,10 +75,15 @@ if (NOT AUDIOCPP_USE_SYSTEM_OPENSSL)
         FetchContent_Declare(audiocpp_boringssl
             SOURCE_DIR "${AUDIOCPP_BORINGSSL_LOCAL_SOURCE_DIR}")
     else()
-        FetchContent_Declare(audiocpp_boringssl
+        set(AUDIOCPP_BORINGSSL_FETCH_ARGS
             URL "https://github.com/google/boringssl/archive/refs/tags/${AUDIOCPP_BORINGSSL_VERSION}.tar.gz"
             URL_HASH "SHA256=${AUDIOCPP_BORINGSSL_SHA256}"
-            DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        )
+        # CMake < 3.24 does not recognize DOWNLOAD_EXTRACT_TIMESTAMP.
+        if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+            list(APPEND AUDIOCPP_BORINGSSL_FETCH_ARGS DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        endif()
+        FetchContent_Declare(audiocpp_boringssl ${AUDIOCPP_BORINGSSL_FETCH_ARGS})
     endif()
 
     set(AUDIOCPP_SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})

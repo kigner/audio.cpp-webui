@@ -207,6 +207,49 @@
         "required": false,
         "values": ["auto", "on", "off"],
         "default": "auto"
+      },
+      {
+        "name": "perf_mode",
+        "type": "enum",
+        "description": "AR decode preset. off uses the normal defaults (fused_depth, direct_prefill and skip_cache_round enabled on CUDA, Vulkan and Metal); cuda_perf additionally enables batched_cfg on CUDA. Explicit session options override the preset.",
+        "required": false,
+        "values": ["off", "cuda_perf"],
+        "default": "off"
+      },
+      {
+        "name": "fused_depth",
+        "type": "bool",
+        "description": "Decode each frame's depth codebooks in one backend graph with device-side CFG mixing and sampling. Device sampling uses the per-codebook path's torch random draws, so CUDA output normally matches it token for token. Vulkan/Metal sampling uses a different draw mapping. CUDA, Vulkan and Metal only.",
+        "required": false,
+        "default": true
+      },
+      {
+        "name": "direct_prefill",
+        "type": "bool",
+        "description": "Offline generation prefills the backbone straight into the decode cache, as streaming does, instead of exporting the KV state to the host and importing it back. Same computation. CUDA, Vulkan and Metal only.",
+        "required": false,
+        "default": true
+      },
+      {
+        "name": "skip_cache_round",
+        "type": "bool",
+        "description": "Skip re-rounding the F16 KV cache to bf16 after each update, which is an identity because the K/V rows are already bf16-rounded. Applies only with the bf16 reference path and flash attention. CUDA, Vulkan and Metal only.",
+        "required": false,
+        "default": true
+      },
+      {
+        "name": "round_bf16_fusion",
+        "type": "bool",
+        "description": "Fold the bf16 activation rounding into the CUDA RMS-norm, add and SwiGLU kernels that produce it. Bit-identical to the unfused graph, with fewer kernel launches. CUDA only.",
+        "required": false,
+        "default": false
+      },
+      {
+        "name": "batched_cfg",
+        "type": "bool",
+        "description": "With guidance_scale != 1, decode the conditional and unconditional backbone branches as one batch-2 step. Batching changes matmul accumulation order, so output differs from the two-runtime path. CUDA only.",
+        "required": false,
+        "default": false
       }
     ],
     "load": []

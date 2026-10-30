@@ -41,6 +41,42 @@ Open `http://127.0.0.1:8080`, install a model package from the model library,
 then select it in the matching studio tab. Replace `cuda` with a backend your
 binary and selected model support, such as `cpu`, `vulkan`, or `metal`.
 
+Use **Lib → Speakers → New speaker preset** to save a model, voice, and
+generation settings together, then select that speaker in **Apps → Text to
+speech**. **Lib → Voices** manages reference recordings and their transcripts.
+These libraries are stored in this browser, not in the server config. Existing
+projects keep their own speaker settings when a library preset is edited or deleted.
+
+The **Apps** tab, after Studio, is an early release. Workflows and saved project
+formats may change; export audio you want to keep. It contains a project-based
+**Text to speech** app:
+
+- Import TXT/Markdown and preview text splitting before applying it.
+- In **Speakers**, create or reuse named speakers and assign them to passages.
+  Set a project default or apply a speaker to all passages. Search and filter
+  passages; the browser remembers the last selected passage for each project.
+- Edit each chosen take with **Edit audio**: zoom/pan its waveform,
+  place a playhead, insert silence, drag-select and delete existing gaps or
+  audio ranges, remove inserted regions, and undo/redo.
+  Edits stay with that take and persist with the project; original recordings
+  are retained. Boundary previews and exports use the edited audio.
+- Generate chunks individually or in a batch, compare takes, and choose the audio
+  to keep. Optional reference transcription uses a separately selected ASR model.
+- In **Arrange**, inspect joins with actual waveforms and boundary playback.
+  Adjust pauses with + / − or enter an exact duration; choose **Use default**
+  to reset a join. Custom pauses are saved with the project.
+- Combine the selected takes, then use **Export** for optional model enhancement,
+  gain or peak normalization, and WAV PCM16 or WebM Opus download.
+
+Projects, references and generated takes persist in this browser. Regeneration
+preserves chosen takes; splitting/merging archives the original chunks. Changing
+text/settings marks affected audio out of date instead of silently reusing it.
+
+An app applies the saved load/session options when UI management owns the model.
+For a server-configured model, its configuration must already match the saved settings;
+apps do not rewrite the server config. App modules are maintained independently;
+see the [app contribution guide](../../webui/native/src/lib/apps/README.md).
+
 This requires a binary built with `AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON`.
 If the server reports that UI management is unavailable, use the configured API
 path below or [rebuild with that option](#choose-a-server-mode). The plain `--ui`
@@ -248,7 +284,8 @@ individual model entries:
 ```
 
 The indices use audio.cpp's backend device order; run the server with
-`--list-devices` to inspect it. Each model remains wholly on one device: this
+`--list-devices` to inspect it, or `--list-devices --json` for PCI ids and
+free/total memory in [JSON](../../docs/usage.md#listing-devices). Each model remains wholly on one device: this
 setting assigns models independently and does not split one model across GPUs.
 `GET /v1/models` reports the effective `device` for every entry. Dynamic loads
 may also send `device`; when a registered model is reloaded and the field is
@@ -394,6 +431,7 @@ file. Starting the full UI without a config enables lazy loading automatically.
 | `max_loaded_models` | `0` | Maximum resident models; `0` disables the limit, `1` keeps one model resident. | `--max-loaded-models <n>` |
 | `idle_unload_ms` | `0` | Unload resident models after the server has had no model load/run activity for this long; `0` disables it. | `--idle-unload-ms <ms>` |
 | `min_free_memory_mb` | `0` | Free-memory headroom in MiB required after an estimated model load; `0` disables the guard. | `--min-free-memory-mb <mb>` |
+| `resample_kernel_cache_mb` | `32` | MiB of resampling kernels kept for reuse across requests, evicting the least recently used first; `0` disables the cache. A kernel larger than the limit, such as the 84.5 MiB one for 44056 Hz to 16 kHz, is rebuilt on every request; raise the limit for such inputs. | `--resample-kernel-cache-mb <mb>` |
 
 > [!WARNING]
 > Lazy loading does not unload a model after each request. Used models stay
@@ -648,7 +686,8 @@ Server-side resolution of reference audio and voice names:
 4. Otherwise, `voice` is passed as the model-native cached voice ID.
 
 If neither `voice` nor `voice_ref` is supplied, the configured default preset
-applies. Prefer one selection method per request: combining `voice` and
+applies. An empty string or `null` for `voice` is treated as omitted.
+Prefer one selection method per request: combining `voice` and
 `voice_ref` can pass both a native ID and audio to the model, whose interpretation
 is model-specific. Top-level `reference_text` overrides the preset/library text.
 
@@ -685,7 +724,7 @@ supports every task, mode, or optional output.
 
 | Need | Endpoint | Input / response |
 |---|---|---|
-| Check readiness / configured IDs | <a id="get-health"></a>[`GET /health`](api.md#get-health), <a id="get-v1models"></a>[`GET /v1/models`](api.md#get-v1models) | JSON metadata; a registered model may still be unloaded. |
+| Check readiness / configured IDs | <a id="get-health"></a>[`GET /health`](api.md#get-health), <a id="get-v1models"></a>[`GET /v1/models`](api.md#get-v1models) | JSON metadata, including the build version and git commit; a registered model may still be unloaded. |
 | Generate speech | <a id="post-v1audiospeech"></a>[`POST /v1/audio/speech`](api.md#post-v1audiospeech) | JSON text and voice controls; WAV by default, or streaming audio/SSE when supported. |
 | Transcribe a recording | <a id="post-v1audiotranscriptions"></a>[`POST /v1/audio/transcriptions`](api.md#post-v1audiotranscriptions) | Server-local WAV path or file upload; text/timing, optionally transcript SSE. |
 | Get timestamps or speaker labels | <a id="post-v1audiotranscriptionsdetails"></a>[`POST /v1/audio/transcriptions/details`](api.md#post-v1audiotranscriptionsdetails) | Same inputs; includes detail arrays the model actually produces. |

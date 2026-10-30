@@ -1,4 +1,7 @@
 #include "ggml-cuda.h"
+#ifdef GGML_USE_HIP
+#include "ggml-hip/gfx1151_v1/gfx1151_v1.cuh"
+#endif
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
@@ -554,7 +557,14 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
             access.location.id = device;
             access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-            CU_CHECK(cuMemSetAccess((CUdeviceptr)((char *)(pool_addr) + pool_size), reserve_size, &access, 1));
+#if defined(GGML_USE_HIP)
+            // Some HIP runtimes reject access changes applied to a newly mapped
+            // subrange inside a larger reservation. Reapply access to the fully
+            // mapped, contiguous prefix; the unmapped tail is excluded.
+            CU_CHECK(cuMemSetAccess(pool_addr, pool_size + reserve_size, &access, 1));
+#else
+            CU_CHECK(cuMemSetAccess(start_ptr, reserve_size, &access, 1));
+#endif
 
             // add to the pool
             pool_size += reserve_size;
@@ -2748,6 +2758,17 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
 
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     const bool split = ggml_backend_buft_is_cuda_split(src0->buffer->buft);
+#ifdef GGML_USE_HIP
+    if (ctx.impl && ctx.impl->mul_mat) {
+        const auto buft = ggml_backend_cuda_buffer_type(ctx.device);
+        if (ggml_backend_buffer_get_type(src0->buffer) == buft &&
+            ggml_backend_buffer_get_type(src1->buffer) == buft &&
+            ggml_backend_buffer_get_type(dst->buffer) == buft &&
+            ctx.impl->mul_mat(src0, src1, dst, ctx.stream(), ggml_cuda_info().devices[ctx.device].cc)) {
+            return;
+        }
+    }
+#endif
 
     if (dst->type == GGML_TYPE_F16) {
         GGML_ASSERT(!split && src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16);
@@ -4238,6 +4259,69 @@ static bool ggml_cuda_safe_bias_fusion(const ggml_cgraph * graph, int i) {
 }
 #endif
 
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+// bf16-reference graphs (see ggml_round_bf16) insert a ROUND_BF16 after most
+// activations, which breaks the usual fusion patterns. These helpers match the
+// rounding that directly follows a fusable op so it can run in that op's kernel.
+static bool ggml_cuda_is_round_bf16_of(const ggml_cgraph * cgraph, int idx, const ggml_tensor * src) {
+    if (idx >= cgraph->n_nodes) {
+        return false;
+    }
+    const ggml_tensor * node = cgraph->nodes[idx];
+    return node->op == GGML_OP_UNARY && ggml_get_unary_op(node) == GGML_UNARY_OP_ROUND_BF16 &&
+           (node->flags & GGML_TENSOR_FLAG_COMPUTE) && node->src[0] == src &&
+           node->type == GGML_TYPE_F32 && ggml_is_contiguous(node);
+}
+
+// Intermediate that is consumed only inside the fused chain and is not a requested output.
+static bool ggml_cuda_is_elidable(const ggml_cgraph * cgraph, int idx) {
+    return (cgraph->nodes[idx]->flags & GGML_TENSOR_FLAG_COMPUTE) && ggml_node_has_n_uses(cgraph, idx, 1);
+}
+
+static bool ggml_cuda_ranges_overlap(const ggml_tensor * a, const ggml_tensor * b) {
+    const uintptr_t a0 = reinterpret_cast<uintptr_t>(a->data);
+    const uintptr_t b0 = reinterpret_cast<uintptr_t>(b->data);
+    return a0 < b0 + ggml_nbytes(b) && b0 < a0 + ggml_nbytes(a);
+}
+
+// ROUND(gate) -> SILU -> ROUND, [VIEW up], ROUND(up) -> MUL -> ROUND starting at node i.
+static bool ggml_cuda_can_fuse_swiglu_round_bf16(const ggml_cgraph * cgraph, int i) {
+    if (i + 6 >= cgraph->n_nodes) {
+        return false;
+    }
+    const ggml_tensor * round_gate = cgraph->nodes[i];
+    const ggml_tensor * silu       = cgraph->nodes[i + 1];
+    const ggml_tensor * round_silu = cgraph->nodes[i + 2];
+    const ggml_tensor * up_view    = cgraph->nodes[i + 3];
+    const ggml_tensor * round_up   = cgraph->nodes[i + 4];
+    const ggml_tensor * mul        = cgraph->nodes[i + 5];
+    if (round_gate->op != GGML_OP_UNARY || ggml_get_unary_op(round_gate) != GGML_UNARY_OP_ROUND_BF16 ||
+        silu->op != GGML_OP_UNARY || ggml_get_unary_op(silu) != GGML_UNARY_OP_SILU || silu->src[0] != round_gate ||
+        !ggml_cuda_is_round_bf16_of(cgraph, i + 2, silu) || up_view->op != GGML_OP_VIEW ||
+        !ggml_cuda_is_round_bf16_of(cgraph, i + 4, up_view) || mul->op != GGML_OP_MUL ||
+        !((mul->src[0] == round_silu && mul->src[1] == round_up) ||
+          (mul->src[0] == round_up && mul->src[1] == round_silu)) ||
+        !ggml_cuda_is_round_bf16_of(cgraph, i + 6, mul)) {
+        return false;
+    }
+    for (int idx : { i, i + 1, i + 2, i + 4, i + 5 }) {
+        if (!ggml_cuda_is_elidable(cgraph, idx)) {
+            return false;
+        }
+    }
+    const ggml_tensor * gate = round_gate->src[0];
+    const ggml_tensor * up   = up_view;
+    const ggml_tensor * dst  = cgraph->nodes[i + 6];
+    if (gate->type != GGML_TYPE_F32 || up->type != GGML_TYPE_F32 || silu->type != GGML_TYPE_F32 ||
+        mul->type != GGML_TYPE_F32 || gate->nb[0] != sizeof(float) || up->nb[0] != sizeof(float) ||
+        !ggml_are_same_shape(gate, up) || !ggml_are_same_shape(gate, dst) || !ggml_are_same_shape(mul, dst)) {
+        return false;
+    }
+    // The fused kernel reads gate/up while writing dst; they must not alias.
+    return !ggml_cuda_ranges_overlap(dst, gate) && !ggml_cuda_ranges_overlap(dst, up);
+}
+#endif
+
 // try and fuse nodes and return the number of nodes to skip
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
@@ -4283,6 +4367,38 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             ggml_cuda_op_bias_residual(*cuda_ctx, node, activation->src[0], activation);
             return 2;
         }
+    }
+
+    // bf16-reference rounding folded into the producing kernel; opt-in per backend
+    // through ggml_backend_cuda_set_round_bf16_fusion().
+    if (cuda_ctx->round_bf16_fusion && node->op == GGML_OP_RMS_NORM && ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL }, {}) &&
+        ggml_cuda_is_elidable(cgraph, i + 1) && ggml_cuda_is_round_bf16_of(cgraph, i + 2, cgraph->nodes[i + 1])) {
+        const int outputs[] = { i + 2 };
+        if (ggml_cuda_check_fusion_memory_ranges(cgraph, i, 3, outputs, 1)) {
+            ggml_cuda_op_rms_norm_fused(*cuda_ctx, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2]);
+            return 2;
+        }
+    }
+    if (cuda_ctx->round_bf16_fusion && node->op == GGML_OP_ADD && ggml_cuda_is_elidable(cgraph, i) &&
+        ggml_cuda_is_round_bf16_of(cgraph, i + 1, node) &&
+        node->type == GGML_TYPE_F32 && node->src[0]->type == GGML_TYPE_F32 && node->src[1]->type == GGML_TYPE_F32 &&
+        ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(node->src[1]) &&
+        ggml_are_same_shape(node->src[0], node) && ggml_are_same_shape(node->src[1], node)) {
+        // Element-wise: an exact in-place alias of an operand is safe, a shifted overlap is not.
+        const ggml_tensor * dst = cgraph->nodes[i + 1];
+        bool safe = true;
+        for (const ggml_tensor * src : { node->src[0], node->src[1] }) {
+            safe = safe && (!ggml_cuda_ranges_overlap(dst, src) || dst->data == src->data);
+        }
+        if (safe) {
+            ggml_cuda_op_add_round_bf16(*cuda_ctx, node, cgraph->nodes[i + 1]);
+            return 1;
+        }
+    }
+    if (cuda_ctx->round_bf16_fusion && node->op == GGML_OP_UNARY &&
+        ggml_get_unary_op(node) == GGML_UNARY_OP_ROUND_BF16 && ggml_cuda_can_fuse_swiglu_round_bf16(cgraph, i)) {
+        ggml_cuda_op_swiglu_round_bf16(*cuda_ctx, node->src[0], cgraph->nodes[i + 3], cgraph->nodes[i + 6]);
+        return 6;
     }
 
 #endif
@@ -5327,6 +5443,14 @@ void ggml_backend_cuda_set_stream_priority(ggml_backend_t backend, int priority)
     ctx->stream_priority = priority;
 }
 
+void ggml_backend_cuda_set_round_bf16_fusion(ggml_backend_t backend, bool enabled) {
+    if (backend == nullptr || !ggml_backend_is_cuda(backend)) {
+        return;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *)backend->context;
+    ctx->round_bf16_fusion = enabled;
+}
+
 void ggml_backend_cuda_clear_graph(ggml_backend_t backend, const ggml_cgraph * graph) {
 #ifdef USE_CUDA_GRAPH
     if (!ggml_backend_is_cuda(backend) || graph == nullptr || graph->n_nodes <= 0) {
@@ -5553,6 +5677,40 @@ static ggml_backend_t ggml_backend_cuda_device_init_backend(ggml_backend_dev_t d
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
     return ggml_backend_cuda_init(ctx->device);
 }
+
+#ifdef GGML_USE_HIP
+static const char * const * ggml_backend_hip_get_impls(ggml_backend_dev_t dev) {
+    const auto * ctx = static_cast<ggml_backend_cuda_device_context *>(dev->context);
+    static const char * const defaults[] = { "default", nullptr };
+    static const char * const gfx1151_v1[] = { "default", "gfx1151_v1", nullptr };
+    return GGML_CUDA_CC_IS_RDNA(ggml_cuda_info().devices[ctx->device].cc) ? gfx1151_v1 : defaults;
+}
+
+static ggml_backend_t ggml_backend_hip_init_with_impl(
+        ggml_backend_dev_t dev, const char * impl, const char * params) {
+    const auto * device = static_cast<ggml_backend_cuda_device_context *>(dev->context);
+    if (strcmp(impl, "gfx1151_v1") != 0 ||
+        !GGML_CUDA_CC_IS_RDNA(ggml_cuda_info().devices[device->device].cc)) {
+        GGML_LOG_ERROR("ROCm%d: implementation '%s' is unavailable on this device\n", device->device, impl);
+        return nullptr;
+    }
+    static const ggml_hip_impl gfx1151_v1 = {
+        "gfx1151_v1", ggml_hip_gfx1151_v1_mul_mat, ggml_hip_gfx1151_v1_im2col, ggml_hip_gfx1151_v1_cpy,
+    };
+    ggml_backend_t backend = ggml_backend_cuda_device_init_backend(dev, params);
+    if (backend) {
+        auto * ctx = static_cast<ggml_backend_cuda_context *>(backend->context);
+        ctx->impl = &gfx1151_v1;
+        GGML_LOG_INFO("ROCm%d: implementation=%s\n", device->device, ctx->impl->name);
+    }
+    return backend;
+}
+
+static const char * ggml_backend_hip_get_impl(ggml_backend_t backend) {
+    const auto * ctx = static_cast<ggml_backend_cuda_context *>(backend->context);
+    return ctx->impl ? ctx->impl->name : "default";
+}
+#endif
 
 static ggml_backend_buffer_type_t ggml_backend_cuda_device_get_buffer_type(ggml_backend_dev_t dev) {
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
@@ -5935,11 +6093,16 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SUM:
             return ggml_is_contiguous_rows(op->src[0]);
         case GGML_OP_TOP_K:
-        case GGML_OP_ARGSORT:
 #ifndef GGML_CUDA_USE_CUB
             return op->src[0]->ne[0] <= 1024;
 #else
             return true;
+#endif
+        case GGML_OP_ARGSORT:
+#if defined(GGML_CUDA_USE_CUB) || defined(GGML_USE_HIP)
+            return true;
+#else
+            return op->src[0]->ne[0] <= 1024;
 #endif
         case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:
@@ -6150,6 +6313,17 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+#ifdef GGML_USE_HIP
+    if (strcmp(name, "ggml_backend_dev_get_impls") == 0) {
+        return (void *) ggml_backend_hip_get_impls;
+    }
+    if (strcmp(name, "ggml_backend_dev_init_with_impl") == 0) {
+        return (void *) ggml_backend_hip_init_with_impl;
+    }
+    if (strcmp(name, "ggml_backend_get_impl") == 0) {
+        return (void *) ggml_backend_hip_get_impl;
+    }
+#endif
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;
     }
@@ -6179,6 +6353,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_set_stream_priority") == 0) {
         return (void *)ggml_backend_cuda_set_stream_priority;
+    }
+    if (strcmp(name, "ggml_backend_cuda_set_round_bf16_fusion") == 0) {
+        return (void *)ggml_backend_cuda_set_round_bf16_fusion;
     }
     if (strcmp(name, "ggml_backend_cuda_get_stream") == 0) {
         return (void *)ggml_backend_cuda_get_stream;

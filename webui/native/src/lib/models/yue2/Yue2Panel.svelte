@@ -2,8 +2,9 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import { jsonRequest, loadModel, models, runTask, unloadModel, uploadFile } from '$lib/api';
   import MediaPreview from '$lib/MediaPreview.svelte';
+  import LoraGroup from '$lib/LoraGroup.svelte';
   import type { Translator } from '$lib/i18n';
-  import type { CatalogEntry, LoadedModel, ParamSpec, ServerHealth } from '$lib/types';
+  import type { CatalogEntry, LoadedModel, PackageLoadTarget, ParamSpec, ServerHealth } from '$lib/types';
 
   export let lyrics = '';
   export let seed = 1234;
@@ -15,6 +16,8 @@
   export let loadedModels: LoadedModel[] = [];
   export let server: ServerHealth | null = null;
   export let modelPathFor: (entry: CatalogEntry) => string = (entry) => entry.path;
+  export let loadTargetFor: (entry: CatalogEntry) => Promise<PackageLoadTarget | undefined>;
+  export let loadOptionsFor: (entry: CatalogEntry) => Record<string, string> = entry => entry.load_options || {};
   export let sessionOptionsFor: (entry: CatalogEntry) => Record<string, string> = (entry) => entry.session_options || {};
   export let refreshModels: () => Promise<void> = async () => {};
   export let log: (message: string) => void = () => {};
@@ -152,13 +155,14 @@
       }
       return;
     }
+    const target = await loadTargetFor(entry);
     await loadModel({
       id: entry.id,
-      path: modelPathFor(entry),
-      family: entry.family,
+      path: target?.model_path ?? modelPathFor(entry),
+      family: target?.family ?? entry.family,
       task: entry.task,
       mode: entry.mode || 'offline',
-      load_options: entry.load_options || {},
+      load_options: loadOptionsFor(entry),
       session_options: sessionOptionsFor(entry)
     });
   }
@@ -304,8 +308,10 @@
     {/each}
   </div>
 
+  {#if specByName('ar_lora') || specByName('nar_lora')}
+  <LoraGroup selected={Number(Boolean(advancedValues.ar_lora)) + Number(Boolean(advancedValues.nar_lora))}>
   {#if specByName('ar_lora')}
-    <div class="yue2-grid">
+    <div class="lora-fields">
       <div class="yue2-field">
         <label for="param-ar_lora">AR LoRA adapter</label>
         <input id="param-ar_lora" type="text" placeholder="Server path (.safetensors)"
@@ -339,7 +345,7 @@
   {/if}
 
   {#if specByName('nar_lora')}
-    <div class="yue2-grid">
+    <div class="lora-fields">
       <div class="yue2-field">
         <label for="param-nar_lora">NAR LoRA adapter</label>
         <input id="param-nar_lora" type="text" placeholder="Server path (.safetensors)"
@@ -368,9 +374,12 @@
               setNamedParameter('nar_lora_scale', event.currentTarget.valueAsNumber);
             }
           }} />
-        <small>Scales the LoRA deltas only; any full vae2llm/llm2vae projection replacement in the adapter stays at full strength.</small>
       </div>
     </div>
+    <small>Scales the LoRA deltas only; any full vae2llm/llm2vae projection replacement in the adapter stays at full strength.</small>
+  {/if}
+
+  </LoraGroup>
   {/if}
 
   <div class="yue2-grid yue2-grid-core">

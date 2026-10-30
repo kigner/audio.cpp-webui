@@ -146,7 +146,18 @@ ASR_COMMON_PARAMETERS = {
 ASR_HIDDEN_LANGUAGE = {'kroko_asr', 'lfm2_audio', 'higgs_audio_stt', 'granite5asr', 'niagara_asr', 'firered_audio', 'vibevoice_asr_streaming'}
 ASR_AUTO_LANGUAGE = {'qwen3_asr': 'auto', 'confucius4_r2t2': 'Auto',
                      'sense_asr': 'auto', 'fun_asr_nano': 'auto', 'nemotron_asr': 'auto',
-                     'owsm': 'auto', 'owsm_ctc': 'auto'}
+                     'owsm': 'auto', 'owsm_ctc': 'auto', 'lfm3_audio': 'auto'}
+
+FRIENDLY.update({
+    'chat': ('语音问答', '开启后回答录音中的问题，关闭时转写原话。', 'basic'),
+    'enable_thinking': ('先思考再回答', '仅用于语音问答，返回思考后的回答。', 'effect'),
+    'text_temperature': ('文字随机性', '0 使用确定性文字解码，较高值增加变化。', 'expert'),
+    'max_audio_tail_frames': ('音频尾段上限（帧）', '回复文字结束后最多继续生成的音频帧数；0 不限制。', 'effect'),
+    'note_guidance_scale': ('音符引导强度', '调整钢琴卷帘对生成音符的影响。', 'effect'),
+    'drum_guidance_scale': ('鼓点引导强度', '调整鼓点条件对音乐生成的影响。', 'effect'),
+    'drums': ('鼓点', '选择自动、无鼓点或有鼓点。', 'effect'),
+    'ultimate_clone': ('增强声音克隆', '将参考录音作为续写提示；需要参考音频及匹配的原文。', 'effect'),
+})
 
 
 def asr_parameter(parameter, family, spec):
@@ -158,6 +169,11 @@ def asr_parameter(parameter, family, spec):
         return
     if name in ASR_COMMON_PARAMETERS:
         parameter['level'] = 'basic'
+    if family == 'lfm3_audio':
+        if name in {'enable_thinking', 'text_temperature', 'text_top_k'}:
+            parameter['requires'] = {'chat': [True]}
+        if name.startswith('audio_chunk_'):
+            parameter.setdefault('excludes', {})['chat'] = [True]
     if name == 'return_timestamps':
         parameter.update(modes=['offline'], label='时间戳', help='保存模型返回的时间戳，同时启用详细结果下载。')
         if family == 'qwen3_asr':
@@ -290,6 +306,8 @@ def model_detail(backend, entry):
             continue
         if family == 'dots_tts' and ident == 'dots-tts-edit' and name == 'template_name':
             p.update(choices=['edit'], default='edit')
+        if family == 'magenta_realtime_2' and name == 'drums':
+            p.update(type='choice', choices=[['自动', -1], ['无鼓点', 0], ['有鼓点', 1]])
         if family == "firered_audio" and entry.get("task") == "gen" and name == "template_name":
             p.update(choices=[["声学编辑", "acoustic_edit"], ["语义编辑", "semantic_edit"]], default="acoustic_edit")
         if family == 'seed_vc' and name == 'route':
@@ -315,6 +333,8 @@ def model_detail(backend, entry):
         label, help_text, level = FRIENDLY.get(name, (p.get("label", name), p.get("info", "使用模型默认值即可。"), "expert"))
         if name in COMMON_FAMILY_PARAMETERS.get(family, set()):
             level = "effect"
+        if family == 'earshot_vad' and scope == 'request':
+            level = 'effect'
         if result['task'] == 'tts' and name in TTS_COMMON_PARAMETERS.get(family, set()):
             level = 'effect'
         if result['task'] == 'vc':
@@ -382,6 +402,13 @@ def model_detail(backend, entry):
             languages = dict(a='en-us', b='en-gb', e='es', f='fr-fr', h='hi', i='it', j='ja', p='pt-br', z='zh')
             result['tts_controls']['voice_languages'] = {
                 voice: languages[voice[0]] for voice in spec.get('ui', {}).get('builtin_voices', [])}
+        if family == 'lfm3_audio':
+            languages = dict(arabic='ar', danish='da', german='de', greek='el',
+                             british_english='en', american_english='en', finnish='fi', french='fr',
+                             hebrew='he', italian='it', japanese='ja', korean='ko', dutch='nl',
+                             polish='pl', portuguese='pt', spanish='es', swedish='sv', turkish='tr', chinese='zh')
+            result['tts_controls']['voice_languages'] = {
+                voice: languages[voice.rsplit('_', 1)[0]] for voice in spec.get('ui', {}).get('builtin_voices', [])}
         if family in {'moss_ttsd', 'vibevoice'}:
             result['tts_controls']['speakers'] = {'first': 1 if family == 'moss_ttsd' else 0,
                                                 'allow_empty': family == 'moss_ttsd'}
@@ -391,6 +418,25 @@ def model_detail(backend, entry):
 def parameter_applies(entry, name):
     """Family contracts can describe several tasks; hide parameters for other tasks."""
     family, task = entry['family'], entry.get('task')
+    if family == 'magenta_realtime_2' and name == 'pianoroll_file':
+        return False  # The music page resolves the uploaded piano-roll file.
+    if family == 'lfm3_audio':
+        if name in {'target_language', 'translation_context'}:
+            return False  # The live translation scene owns this multi-stage request.
+        if name == 'session_options.lfm3_audio.vad_model_path':
+            return task == 'asr'
+        if name == 'session_options.lfm3_audio.max_pass_duration_sec':
+            return task in {'asr', 's2s'}
+        if not name.startswith(('session_options.', 'load_options.')):
+            asr = {'language', 'max_tokens', 'audio_chunk_mode', 'audio_chunk_duration_sec',
+                   'chat', 'enable_thinking', 'text_temperature', 'text_top_k'}
+            if task == 'asr':
+                return name in asr
+            if task == 's2s':
+                return name not in {'language', 'voice', 'audio_chunk_mode', 'audio_chunk_duration_sec',
+                                    'chat', 'enable_thinking', 'text_chunk_mode', 'text_chunk_size', 'return_codes'}
+            return name not in {'audio_chunk_mode', 'audio_chunk_duration_sec', 'chat', 'enable_thinking',
+                                'max_audio_tail_frames', 'return_codes', 'text_temperature', 'text_top_k'}
     if family == 'voxcpm1' and name in {'load_options.voxcpm1.weight_type', 'load_options.voxcpm1.audiovae_weight_type'}:
         return False  # VoxCPM1 consumes precision in session options, not its loader.
     if family == 'chatterbox' and task == 'vc' and name in {
@@ -488,7 +534,9 @@ def music_inputs(backend, entry, profile, parameters):
         "text_label": "歌词" if lyrics_in_text else "编辑指令" if editing else "音乐或音效描述",
         "lyrics": not lyrics_in_text and bool(lyrics_option or profile.get("require_lyrics") or legacy_routes),
         "require_lyrics": not lyrics_in_text and bool(profile.get("require_lyrics") or lyrics_option.get("required")),
-        "source_audio": bool(editing or audio_conditioning or legacy_routes),
+        "source_audio": bool(editing or audio_conditioning or legacy_routes or profile.get('accepts_style_audio')),
+        "style_audio": bool(profile.get('accepts_style_audio')),
+        "pianoroll": entry['family'] == 'magenta_realtime_2',
         "require_source_audio": bool(profile.get("require_source_audio")),
         "source_audio_routes": [value for value in legacy_routes if value != "text2music"] if legacy_routes else None,
         "source_required_routes": [value for value in legacy_routes if value not in {"text2music", "complete"}],

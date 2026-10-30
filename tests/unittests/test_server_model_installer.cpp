@@ -1,5 +1,6 @@
 #include "model_installer.h"
 #include "engine/framework/io/json.h"
+#include "engine/framework/package_manager/manager.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -10,6 +11,7 @@
 #include <string>
 #include <thread>
 #include <future>
+#include <vector>
 
 namespace {
 
@@ -50,6 +52,74 @@ std::string wait_for(minitts::server::ModelInstaller & installer, const std::str
     throw std::runtime_error("timed out waiting for " + id + " to become " + state);
 }
 
+void test_native_package_info() {
+    namespace json = engine::io::json;
+    const auto root = make_root();
+    try {
+        write(root / "model_specs" / "demo.json", R"({"family":"demo",
+          "package_defaults":{"download":{"kind":"huggingface_snapshot","repo":"org/repo"}},
+          "packages":[
+            {"id":"components","display_name":"Components","format":"gguf","precision":"f32",
+             "target_directory":"Nested/Components","strip_prefix":"Remote/",
+             "files":["Remote/config.json","Remote/subdir/z.gguf","Remote/a.gguf"]},
+            {"id":"directory","display_name":"Directory","format":"directory","precision":"f32",
+             "target_directory":"Directory","strip_prefix":".","files":["./config.json"]},
+            {"id":"empty","display_name":"Empty","format":"gguf","precision":"f32",
+             "target_directory":"Empty","files":[]}
+          ]})");
+        engine::package_manager::PackageManager manager(root, root / "models");
+        require(!manager.package_info("missing").has_value(), "unknown packages return no package info");
+        const auto info = manager.package_info("components");
+        require(info.has_value() && info->family == "demo" && !info->installed &&
+            info->package.root == root / "models" / "Nested" / "Components" &&
+            info->package.format == "gguf", "package info exposes raw identity, root, format, and local presence");
+        const std::vector<std::filesystem::path> expected = {"config.json", "subdir/z.gguf", "a.gguf"};
+        require(info->package.files == expected,
+            "package info strips the prefix, preserves file order and subdirectories, and retains every component");
+        require(!std::filesystem::exists(info->package.root), "package lookup does not install or create a package");
+        const auto directory = manager.package_info("directory");
+        require(directory.has_value() && directory->package.format == "directory" &&
+            directory->package.files == std::vector<std::filesystem::path>{"config.json"},
+            "non-GGUF packages use the same generic metadata and dot-prefix semantics");
+        require(!manager.package_info("empty")->installed && manager.package_info("empty")->package.files.empty(),
+            "packages without files retain the installer's not-installed state");
+
+        const auto check_inventory = [&](bool installed) {
+            const auto response = json::parse(manager.inventory(false, "components"));
+            const auto & row = response.as_array().at(0);
+            const auto & metadata = row.require("package");
+            require(row.require("installed").as_bool() == installed &&
+                manager.package_info("components")->installed == installed,
+                "lookup and local inventory agree on complete package presence");
+            require(metadata.require("family").as_string() == info->family &&
+                metadata.require("root").as_string() == info->package.root.generic_string() &&
+                metadata.require("format").as_string() == info->package.format,
+                "inventory exposes the same raw package identity, root, and format");
+            const auto & files = metadata.require("files").as_array();
+            require(files.size() == expected.size(), "inventory retains all package files");
+            for (size_t i = 0; i < expected.size(); ++i) {
+                require(files[i].as_string() == expected[i].generic_string(),
+                    "inventory paths are installed-relative and retain source order");
+            }
+            require(metadata.as_object().size() == 4 && row.find("load_target") == nullptr &&
+                row.find("load_options") == nullptr && row.find("session_options") == nullptr,
+                "native inventory contains raw package data without loading policy or options");
+        };
+        check_inventory(false);
+        write(info->package.root / expected[0], "{}");
+        check_inventory(false);
+        write(info->package.root / expected[1], "payload");
+        write(info->package.root / expected[2], "payload");
+        check_inventory(true);
+        std::filesystem::remove(info->package.root / expected[0]);
+        check_inventory(false);
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void test_native_package_lifecycle() {
     const auto root = make_root();
     try {
@@ -64,15 +134,17 @@ void test_native_package_lifecycle() {
             {"id":"demo_f16","display_name":"Demo F16","format":"gguf","precision":"f16",
              "target_directory":"Demo","files":["Demo/model-f16.gguf","Demo/shared.json"],"strip_prefix":"Demo"},
             {"id":"demo_slow","display_name":"Demo Slow","format":"gguf","precision":"q8_0",
-             "target_directory":"Slow","files":["Slow/model.gguf"],"strip_prefix":"Slow"}
+             "target_directory":"Slow","files":["Slow/model.gguf"],"strip_prefix":"Slow"},
+            {"id":"demo_slow_sibling","display_name":"Demo Slow sibling","format":"gguf","precision":"f16",
+             "target_directory":"Slow","files":["Slow/sibling.gguf"],"strip_prefix":"Slow"}
           ],"sources":[]
         })JSON");
         set_base_url("http://127.0.0.1:18991");
         auto fixture = std::async(std::launch::async, [] {
 #ifdef _WIN32
-            return std::system("python \"" AUDIOCPP_NATIVE_MANAGER_FIXTURE "\" --requests 14");
+            return std::system("python \"" AUDIOCPP_NATIVE_MANAGER_FIXTURE "\" --requests 16");
 #else
-            return std::system("python3 \"" AUDIOCPP_NATIVE_MANAGER_FIXTURE "\" --requests 14");
+            return std::system("python3 \"" AUDIOCPP_NATIVE_MANAGER_FIXTURE "\" --requests 16");
 #endif
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -89,7 +161,12 @@ void test_native_package_lifecycle() {
         require(started.find("\"state\":\"queued\"") != std::string::npos ||
                 started.find("\"state\":\"running\"") != std::string::npos,
             "native install starts asynchronously");
+        const auto sibling_started = installer.start("demo_f16", "", "", "", "", false);
+        require(sibling_started.find("\"state\":\"queued\"") != std::string::npos ||
+                sibling_started.find("\"state\":\"running\"") != std::string::npos,
+            "a sibling package can be queued while the first package is installing");
         auto complete = wait_for(installer, "demo_q8", "complete");
+        (void) wait_for(installer, "demo_f16", "complete");
         require(complete.find("\"progress_percent\":100") != std::string::npos,
             "completed install reports 100 percent");
         require(std::filesystem::is_regular_file(root / "models" / "Demo" / "model-q8.gguf"),
@@ -99,8 +176,8 @@ void test_native_package_lifecycle() {
         require(std::filesystem::is_regular_file(root / "models" / "Demo" / ".audiocpp-package-demo_q8.json"),
             "native install writes a version manifest");
 
-        (void) installer.start("demo_f16", "", "", "", "", false);
-        (void) wait_for(installer, "demo_f16", "complete");
+        // Packages in the same model family share a target directory. The
+        // package manager serializes them so common sidecars are published once.
         require(std::filesystem::is_regular_file(root / "models" / "Demo" / "model-f16.gguf"),
             "sibling precision installs beside Q8");
         auto removed = installer.remove("demo_q8");
@@ -119,6 +196,23 @@ void test_native_package_lifecycle() {
         (void) wait_for(installer, "demo_slow", "cancelled");
         require(!std::filesystem::exists(root / "models" / "Slow" / "model.gguf"),
             "cancelled package is never published to its final path");
+
+        // A sibling queued behind an active install must be cancellable while
+        // it waits for the shared target-directory lock.
+        (void) installer.start("demo_slow", "", "", "", "", false);
+        (void) wait_for(installer, "demo_slow", "running");
+        (void) installer.start("demo_slow_sibling", "", "", "", "", false);
+        (void) wait_for(installer, "demo_slow_sibling", "queued");
+        const auto sibling_stopping = installer.stop("demo_slow_sibling");
+        require(sibling_stopping.find("\"state\":\"cancelling\"") != std::string::npos,
+            "queued sibling accepts cancellation while another package is active");
+        (void) wait_for(installer, "demo_slow_sibling", "cancelled");
+        require(installer.status("demo_slow").find("\"state\":\"running\"") != std::string::npos,
+            "cancelling a queued sibling does not stop the active package");
+        (void) installer.stop("demo_slow");
+        (void) wait_for(installer, "demo_slow", "cancelled");
+        require(!std::filesystem::exists(root / "models" / "Slow" / "sibling.gguf"),
+            "cancelled queued sibling is never published");
 
         const auto partial = root / "models" / ".Demo.abandoned";
         write(partial / "model.tmp", "partial");
@@ -200,6 +294,7 @@ void test_large_inventory() {
 
 int main() {
     try {
+        test_native_package_info();
         test_native_package_lifecycle();
         test_large_inventory();
     }

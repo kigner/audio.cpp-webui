@@ -98,8 +98,14 @@ build_speech_request(const Value &body, const SpeechRequestContext &context) {
 
   bool voice_field_is_preset = false;
   const RuntimeVoicePreset *preset = nullptr;
-  if (const auto *value = body.find("voice")) {
-    const auto it = context.voice_presets.find(value->as_string());
+  const auto *voice_value = body.find("voice");
+  if (voice_value != nullptr &&
+      (voice_value->is_null() ||
+       (voice_value->is_string() && voice_value->as_string().empty()))) {
+    voice_value = nullptr;
+  }
+  if (voice_value != nullptr) {
+    const auto it = context.voice_presets.find(voice_value->as_string());
     if (it != context.voice_presets.end()) {
       voice_field_is_preset = true;
       preset = &it->second;
@@ -140,11 +146,10 @@ build_speech_request(const Value &body, const SpeechRequestContext &context) {
   }
 
   const bool has_explicit_voice_ref = body.find("voice_ref") != nullptr;
-  if (const auto *value = body.find("voice");
-      value != nullptr && !voice_field_is_preset) {
+  if (voice_value != nullptr && !voice_field_is_preset) {
     bool voice_library_resolved = false;
     if (context.voice_dir.has_value() && !has_explicit_voice_ref) {
-      const std::string voice_name = value->as_string();
+      const std::string voice_name = voice_value->as_string();
       if (const auto wav =
               resolve_voice_library_wav(*context.voice_dir, voice_name)) {
         voice.speaker = engine::runtime::VoiceReference{};
@@ -164,7 +169,7 @@ build_speech_request(const Value &body, const SpeechRequestContext &context) {
       if (!voice.speaker.has_value()) {
         voice.speaker = engine::runtime::VoiceReference{};
       }
-      voice.speaker->cached_voice_id = value->as_string();
+      voice.speaker->cached_voice_id = voice_value->as_string();
       has_voice = true;
     }
   }
@@ -885,7 +890,8 @@ bool stream_event_has_output(const engine::runtime::StreamEvent &event) {
           !event.partial_text->text.empty()) ||
          (event.partial_text_snapshot.has_value() &&
           !event.partial_text_snapshot->text.empty()) ||
-         event.audio_output.has_value() || !event.named_audio_outputs.empty();
+         event.audio_output.has_value() || !event.named_audio_outputs.empty() ||
+         !event.output_artifacts.empty();
 }
 
 bool task_result_has_output(const engine::runtime::TaskResult &result) {
@@ -917,6 +923,21 @@ static const char *artifact_kind_name(engine::runtime::ArtifactKind kind) {
     return "custom";
   }
   return "custom";
+}
+
+static void write_artifact_json(std::ostringstream &out,
+                                const engine::runtime::VoiceArtifact &artifact) {
+  out << "{\"id\":" << json_quote(artifact.id)
+      << ",\"kind\":" << json_quote(artifact_kind_name(artifact.kind))
+      << ",\"payload\":" << json_quote(base64_encode(artifact.payload))
+      << ",\"meta\":{";
+  bool first = true;
+  for (const auto &[key, value] : artifact.meta) {
+    if (!first) out << ",";
+    first = false;
+    out << json_quote(key) << ":" << json_quote(value);
+  }
+  out << "}}";
 }
 
 double require_ttft_ms(const std::optional<double> &ttft_ms) {
@@ -1100,18 +1121,7 @@ task_result_json_with_timing(const engine::runtime::TaskResult &result,
       if (!first_artifact)
         out << ",";
       first_artifact = false;
-      out << "{\"id\":" << json_quote(artifact.id)
-          << ",\"kind\":" << json_quote(artifact_kind_name(artifact.kind))
-          << ",\"payload\":" << json_quote(base64_encode(artifact.payload))
-          << ",\"meta\":{";
-      bool first_meta = true;
-      for (const auto &[key, value] : artifact.meta) {
-        if (!first_meta)
-          out << ",";
-        first_meta = false;
-        out << json_quote(key) << ":" << json_quote(value);
-      }
-      out << "}}";
+      write_artifact_json(out, artifact);
     };
     if (result.artifact_output.has_value())
       write_artifact(*result.artifact_output);
@@ -1247,6 +1257,15 @@ std::string stream_event_json(const engine::runtime::StreamEvent &event,
           << ",\"end_sample\":" << event.word_timestamps[i].span.end_sample
           << ",\"word\":" << json_quote(event.word_timestamps[i].word)
           << ",\"confidence\":" << event.word_timestamps[i].confidence << "}";
+    }
+    out << "]";
+  }
+  if (!event.output_artifacts.empty()) {
+    field("artifacts");
+    out << "[";
+    for (size_t i = 0; i < event.output_artifacts.size(); ++i) {
+      if (i != 0) out << ",";
+      write_artifact_json(out, event.output_artifacts[i]);
     }
     out << "]";
   }

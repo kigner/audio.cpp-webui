@@ -264,6 +264,261 @@
     {"id": "ming3-audio-clone", "display_name": "Ming 3.0 Audio Tiny (voice clone)", "family": "ming3_audio", "path": "models/Ming-3.0-Audio-Tiny-GGUF/ming-3.0-audio-tiny-q4_k.gguf", "task": "clon", "mode": "offline", "download_id": "ming3_audio_tiny_q4_k", "profile": {"lang_map": {"chinese": "zh", "english": "en"}, "require_voice": true}, "input_hint": "Ming 3.0 Audio Tiny：支持识别、语音生成及语音到语音处理。", "input_hint_en": "Ming 3.0 Audio Tiny supports recognition, speech generation and speech-to-speech processing."},
     {"id": "ming3-audio-s2s", "display_name": "Ming 3.0 Audio Tiny (speech to speech)", "family": "ming3_audio", "path": "models/Ming-3.0-Audio-Tiny-GGUF/ming-3.0-audio-tiny-q4_k.gguf", "task": "s2s", "mode": "offline", "download_id": "ming3_audio_tiny_q4_k", "profile": {"accepts_voice_reference": false}, "input_hint": "Ming 3.0 Audio Tiny：支持识别、语音生成及语音到语音处理。", "input_hint_en": "Ming 3.0 Audio Tiny supports recognition, speech generation and speech-to-speech processing."},
     {"id": "xtts-v2", "display_name": "XTTS v2", "family": "xtts_v2", "path": "models/XTTS-v2-Q8/xtts-v2-gpt-q8_0.gguf", "task": "tts", "mode": "offline", "download_id": "xtts_v2_gguf_q8_0", "profile": {"lang_map": {"english": "en", "chinese": "zh-cn", "japanese": "ja", "korean": "ko", "german": "de", "french": "fr", "spanish": "es", "italian": "it", "portuguese": "pt", "polish": "pl", "turkish": "tr", "russian": "ru", "dutch": "nl", "czech": "cs", "arabic": "ar", "hungarian": "hu", "hindi": "hi"}, "require_voice": true, "send_reference_text": false, "send_max_tokens": false}, "input_hint": "跨语种声音克隆：请选择或上传参考声音。", "input_hint_en": "Cross-lingual voice cloning; select or upload a reference voice."},
-    {"id": "xtts-v2-clone", "display_name": "XTTS v2 (voice clone)", "family": "xtts_v2", "path": "models/XTTS-v2-Q8/xtts-v2-gpt-q8_0.gguf", "task": "tts", "mode": "offline", "download_id": "xtts_v2_gguf_q8_0", "profile": {"lang_map": {"english": "en", "chinese": "zh-cn", "japanese": "ja", "korean": "ko", "german": "de", "french": "fr", "spanish": "es", "italian": "it", "portuguese": "pt", "polish": "pl", "turkish": "tr", "russian": "ru", "dutch": "nl", "czech": "cs", "arabic": "ar", "hungarian": "hu", "hindi": "hi"}, "require_voice": true, "send_reference_text": false, "send_max_tokens": false}, "input_hint": "跨语种声音克隆：请选择或上传参考声音。", "input_hint_en": "Cross-lingual voice cloning; select or upload a reference voice.", "ui_task": "clon"}
+    {"id": "xtts-v2-clone", "display_name": "XTTS v2 (voice clone)", "family": "xtts_v2", "path": "models/XTTS-v2-Q8/xtts-v2-gpt-q8_0.gguf", "task": "tts", "mode": "offline", "download_id": "xtts_v2_gguf_q8_0", "profile": {"lang_map": {"english": "en", "chinese": "zh-cn", "japanese": "ja", "korean": "ko", "german": "de", "french": "fr", "spanish": "es", "italian": "it", "portuguese": "pt", "polish": "pl", "turkish": "tr", "russian": "ru", "dutch": "nl", "czech": "cs", "arabic": "ar", "hungarian": "hu", "hindi": "hi"}, "require_voice": true, "send_reference_text": false, "send_max_tokens": false}, "input_hint": "跨语种声音克隆：请选择或上传参考声音。", "input_hint_en": "Cross-lingual voice cloning; select or upload a reference voice.", "ui_task": "clon"},
+
+    {
+      "id": "lfm3-audio-asr",
+      "display_name": "LFM3-Audio 2B · 多语种识别",
+      "family": "lfm3_audio",
+      "path": "models/LFM3-Audio-2B-GGUF",
+      "task": "asr",
+      "mode": "offline",
+      "display_name_en": "LFM3-Audio 2B · Multilingual ASR",
+      "min_vram_gb": 4,
+      "streaming_tasks": [],
+      "profile": {
+        "accepts_voice_reference": false,
+        "send_reference_text": false,
+        "input_16k_mono": true,
+        "send_seed": false
+      },
+      "input_hint": "LFM3-Audio：支持中文等 18 种语言的离线识别；开启语音问答后返回对问题的文字回答，可选思考模式。",
+      "input_hint_en": "LFM3-Audio: offline recognition in 18 languages, including Chinese. Spoken-question chat returns a text answer, with optional thinking.",
+      "download_id": "lfm3_audio_2b_q8_0"
+    },
+    {
+      "id": "lfm3-audio-tts",
+      "display_name": "LFM3-Audio 2B · 多语种语音合成",
+      "family": "lfm3_audio",
+      "path": "models/LFM3-Audio-2B-GGUF",
+      "task": "tts",
+      "mode": "offline",
+      "display_name_en": "LFM3-Audio 2B · Multilingual TTS",
+      "min_vram_gb": 4,
+      "streaming_tasks": [
+        "tts"
+      ],
+      "profile": {
+        "accepts_voice_reference": false,
+        "send_reference_text": false,
+        "input_16k_mono": true,
+        "stream_sample_rate": 24000,
+        "send_max_tokens": true
+      },
+      "input_hint": "LFM3-Audio：38 个内置音色，含中文男女声；支持 24 kHz 流式合成。选择语言或对应音色即可，无需参考录音。",
+      "input_hint_en": "LFM3-Audio: 38 built-in voices, including Chinese female and male voices; 24 kHz streaming. Choose a language or voice; no reference recording.",
+      "download_id": "lfm3_audio_2b_q8_0"
+    },
+    {
+      "id": "lfm3-audio-s2s",
+      "display_name": "LFM3-Audio 2B · 语音对话",
+      "family": "lfm3_audio",
+      "path": "models/LFM3-Audio-2B-GGUF",
+      "task": "s2s",
+      "mode": "offline",
+      "display_name_en": "LFM3-Audio 2B · Spoken Chat",
+      "min_vram_gb": 4,
+      "ui_task": "vc",
+      "streaming_tasks": [
+        "s2s"
+      ],
+      "profile": {
+        "accepts_voice_reference": false,
+        "send_reference_text": false,
+        "input_16k_mono": true,
+        "supports_streaming": true,
+        "stream_sample_rate": 24000,
+        "native_s2s": true,
+        "vc_sample_rate": 16000
+      },
+      "input_hint": "LFM3-Audio：录制或上传语音问题，获得文字和语音回复；流式模式在问题输入结束后开始播放回复。连续提问会保留最近三轮；点击“开始新对话”清空历史。",
+      "input_hint_en": "LFM3-Audio: record or upload a spoken question for a text and audio reply. Streaming starts after the question ends. Keeps the last three turns; New conversation clears history.",
+      "download_id": "lfm3_audio_2b_q8_0"
+    },
+    {
+      "id": "gradium-phonon-31m-en",
+      "display_name": "Gradium Phonon 31M · 英语语音合成",
+      "family": "gradium_phonon",
+      "path": "models/phonon-31m-en",
+      "task": "tts",
+      "mode": "offline",
+      "display_name_en": "Gradium Phonon 31M · English TTS",
+      "min_vram_gb": 1,
+      "streaming_tasks": [
+        "tts"
+      ],
+      "profile": {
+        "accepts_voice_reference": false,
+        "send_reference_text": false,
+        "send_max_tokens": false,
+        "stream_sample_rate": 24000,
+        "lang_map": {
+          "english": "en"
+        }
+      },
+      "input_hint": "Phonon 31M：英语流式语音合成，默认音色随模型附带；可用音色嵌入文件切换音色，不支持参考录音克隆。",
+      "input_hint_en": "Phonon 31M: English streaming TTS with a bundled default voice. Use a voice embedding file for other voices; reference-audio cloning is unavailable.",
+      "download_id": "gradium_phonon_31m_en_q8_0"
+    },
+    {
+      "id": "magenta-realtime-2-small",
+      "display_name": "Magenta RealTime 2 Small",
+      "family": "magenta_realtime_2",
+      "path": "models/Magenta-RealTime-2-GGUF",
+      "task": "gen",
+      "mode": "offline",
+      "min_vram_gb": 3,
+      "streaming_tasks": [
+        "gen"
+      ],
+      "profile": {
+        "supports_streaming": true,
+        "stream_sample_rate": 48000,
+        "stream_channels": 2,
+        "accepts_style_audio": true
+      },
+      "input_hint": "Magenta RealTime 2：生成 48 kHz 立体声纯音乐，可填写风格描述或上传风格参考音频；支持流式播放，可通过钢琴卷帘文件控制音符。",
+      "input_hint_en": "Magenta RealTime 2: 48 kHz stereo instrumental music from a style prompt or reference audio. Supports streaming playback and optional piano-roll conditioning.",
+      "download_id": "magenta_realtime_2_small_f16"
+    },
+    {
+      "id": "magenta-realtime-2-base",
+      "display_name": "Magenta RealTime 2 Base",
+      "family": "magenta_realtime_2",
+      "path": "models/Magenta-RealTime-2-GGUF",
+      "task": "gen",
+      "mode": "offline",
+      "min_vram_gb": 6,
+      "streaming_tasks": [
+        "gen"
+      ],
+      "profile": {
+        "supports_streaming": true,
+        "stream_sample_rate": 48000,
+        "stream_channels": 2,
+        "accepts_style_audio": true
+      },
+      "input_hint": "Magenta RealTime 2：生成 48 kHz 立体声纯音乐，可填写风格描述或上传风格参考音频；支持流式播放，可通过钢琴卷帘文件控制音符。",
+      "input_hint_en": "Magenta RealTime 2: 48 kHz stereo instrumental music from a style prompt or reference audio. Supports streaming playback and optional piano-roll conditioning.",
+      "download_id": "magenta_realtime_2_base_q8_0"
+    },
+    {
+      "id": "earshot-vad",
+      "display_name": "Earshot VAD · 语音段检测",
+      "family": "earshot_vad",
+      "path": "assets/framework/models/earshot_vad",
+      "task": "vad",
+      "mode": "offline",
+      "backend": "cpu",
+      "input_hint": "Earshot VAD：轻量 CPU 语音活动检测，模型权重已附带；可调整起止阈值、静音时长和前后留白。",
+      "input_hint_en": "Earshot VAD: lightweight CPU speech detection with bundled weights. Adjust speech thresholds, silence duration and padding."
+    },
+    {
+      "id": "music-flamingo",
+      "display_name": "Music Flamingo 2601 · 音乐理解",
+      "family": "audio_flamingo",
+      "path": "models/Audio-Flamingo-GGUF",
+      "task": "asr",
+      "mode": "offline",
+      "display_name_en": "Music Flamingo 2601 · Music Understanding",
+      "streaming_tasks": [],
+      "profile": {
+        "input_16k_mono": true,
+        "default_options": {
+          "instruct": "Describe the instruments, rhythm and mood of this music."
+        }
+      },
+      "input_hint": "Music Flamingo：分析音乐中的乐器、节奏、风格和情绪；在“问题或指令”中填写希望了解的内容，返回文字结果。",
+      "input_hint_en": "Music Flamingo analyzes instruments, rhythm, style and mood. Ask a question or give an instruction for a text answer.",
+      "download_id": "music_flamingo_2601_q8_0"
+    },
+    {
+      "id": "irodori-tts-meanflow",
+      "display_name": "Irodori-TTS v4.1 Small MeanFlow · 日语合成",
+      "family": "irodori_tts",
+      "path": "models/Irodori-TTS-v4-Small-GGUF",
+      "task": "tts",
+      "mode": "offline",
+      "display_name_en": "Irodori-TTS v4.1 Small MeanFlow · Japanese TTS",
+      "min_vram_gb": 4,
+      "download_id": "irodori_tts_v4_1_small_mf_q8_0"
+    },
+    {
+      "id": "irodori-tts-meanflow-vdesign",
+      "display_name": "Irodori-TTS v4.1 Small MeanFlow · 声音设计",
+      "family": "irodori_tts",
+      "path": "models/Irodori-TTS-v4-Small-GGUF",
+      "task": "vdes",
+      "mode": "offline",
+      "display_name_en": "Irodori-TTS v4.1 Small MeanFlow · Voice Design",
+      "min_vram_gb": 4,
+      "download_id": "irodori_tts_v4_1_small_mf_q8_0"
+    },
+    {
+      "id": "underdog-bark3-standard",
+      "display_name": "Underdog Bark 3.0 Standard · 英语识别",
+      "family": "parakeet_tdt",
+      "path": "models/underdog-bark-3.0-mixed-f16.gguf",
+      "task": "asr",
+      "mode": "offline",
+      "display_name_en": "Underdog Bark 3.0 Standard · English ASR",
+      "manual_install": true,
+      "model_spec_override": "embedded",
+      "streaming_tasks": [
+        "asr"
+      ],
+      "profile": {
+        "input_16k_mono": true,
+        "lang_map": {
+          "english": "en"
+        }
+      },
+      "input_hint": "Underdog Bark 3.0：英语语音识别，支持离线和缓冲式流式转写。请先用 tools/community_models/convert_underdog_bark3_standard.py 转换权重，将生成的 underdog-bark-3.0-mixed-f16.gguf 放入 models 文件夹；不提供一键下载。",
+      "input_hint_en": "Underdog Bark 3.0: English offline and buffered-streaming ASR. Convert the source checkpoint with the matching converter and place underdog-bark-3.0-mixed-f16.gguf in models. Manual installation required."
+    },
+    {
+      "id": "underdog-bark3-plus",
+      "display_name": "Underdog Bark 3.0 Plus · 英语识别",
+      "family": "parakeet_tdt",
+      "path": "models/underdog-bark-3.0-plus-mixed-f16.gguf",
+      "task": "asr",
+      "mode": "offline",
+      "display_name_en": "Underdog Bark 3.0 Plus · English ASR",
+      "manual_install": true,
+      "model_spec_override": "embedded",
+      "streaming_tasks": [
+        "asr"
+      ],
+      "profile": {
+        "input_16k_mono": true,
+        "lang_map": {
+          "english": "en"
+        }
+      },
+      "input_hint": "Underdog Bark 3.0：英语语音识别，支持离线和缓冲式流式转写。请先用 tools/community_models/convert_underdog_bark3_plus.py 转换权重，将生成的 underdog-bark-3.0-plus-mixed-f16.gguf 放入 models 文件夹；不提供一键下载。",
+      "input_hint_en": "Underdog Bark 3.0: English offline and buffered-streaming ASR. Convert the source checkpoint with the matching converter and place underdog-bark-3.0-plus-mixed-f16.gguf in models. Manual installation required."
+    },
+    {
+      "id": "underdog-bark3-pro",
+      "display_name": "Underdog Bark 3.0 Pro · 英语识别",
+      "family": "parakeet_tdt",
+      "path": "models/underdog-bark-3.0-pro-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline",
+      "display_name_en": "Underdog Bark 3.0 Pro · English ASR",
+      "manual_install": true,
+      "model_spec_override": "embedded",
+      "streaming_tasks": [
+        "asr"
+      ],
+      "profile": {
+        "input_16k_mono": true,
+        "lang_map": {
+          "english": "en"
+        }
+      },
+      "input_hint": "Underdog Bark 3.0：英语语音识别，支持离线和缓冲式流式转写。请先用 tools/community_models/convert_underdog_bark3.py 转换权重，将生成的 underdog-bark-3.0-pro-q8_0.gguf 放入 models 文件夹；不提供一键下载。",
+      "input_hint_en": "Underdog Bark 3.0: English offline and buffered-streaming ASR. Convert the source checkpoint with the matching converter and place underdog-bark-3.0-pro-q8_0.gguf in models. Manual installation required."
+    }
   ]
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import time
 from typing import Literal
 import uuid
 import webbrowser
+import wave
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
@@ -39,7 +41,7 @@ except ImportError:
 
 PREFIX = "/api/workbench"
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".webm", ".mp4", ".aiff", ".aif", ".wma"}
-UPLOAD_EXTENSIONS = AUDIO_EXTENSIONS | {".gguf", ".onnx", ".index", ".pth", ".pt"}
+UPLOAD_EXTENSIONS = AUDIO_EXTENSIONS | {".gguf", ".onnx", ".index", ".pth", ".pt", ".json"}
 
 
 class JobRequest(BaseModel):
@@ -103,6 +105,7 @@ class Workbench:
         self.asr = None
         self.external_model = None
         self.scenario_runtime = None
+        self.conversations = {}
         self.inputs_dir = Path(backend.OUTPUT_DIR) / "workbench-inputs"
         self.inputs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -215,6 +218,7 @@ class Workbench:
         with self.lock:
             dictation = "speaktype" in self.leases
             busy, realtime = self.active_job or dictation, any(key != "speaktype" for key in self.leases)
+            interpretation = any(key.startswith("interpretation-") for key in self.leases)
         proc = getattr(self.b, "_server_proc", None)
         managed = proc is not None and proc.poll() is None
         model = getattr(self.b, "_loaded_id", None) if proc is None or managed else None
@@ -236,7 +240,7 @@ class Workbench:
                              "name": getattr(self.b, "LOCAL_GPU_NAME", None)},
                 "asr": self.asr.status() if self.asr and callable(getattr(self.asr, "status", None)) else {"model": None, "managed": False},
                 "busy": bool(busy), "job": self.active_job, "realtime_active": realtime,
-                "speaktype_active": dictation}
+                "speaktype_active": dictation, "interpretation_active": interpretation}
 
     def catalog(self):
         entries = [public_model(self.b, e) for e in self.b.catalog_models() if task_for(e)]
@@ -377,6 +381,97 @@ class Workbench:
         options.pop(family + '.reference_text', None)
         return ' '.join(transcripts)
 
+    def _run_native_audio(self, job, req, entry, audio):
+        """Run native spoken chat or Magenta 2 without losing text, stereo or history."""
+        b, values = self.b, req.inputs
+        spoken = bool(b.profile_for(entry).get('native_s2s'))
+        options = b._merged_options(b.profile_for(entry), dict(req.options), '')
+        streaming = bool(values.get('stream'))
+        request = {}
+        if spoken:
+            if not audio:
+                raise ValueError('请先录制或上传语音问题。')
+            request['audio'] = b._ensure_wav(audio, target_sr=16000)
+            prompt = str(values.get('system_prompt') or '').strip()
+            if prompt:
+                request['text'] = prompt
+            conversation_id = str(values.get('conversation_id') or job['id'])
+            previous = self.conversations.get(req.model, {})
+            identity = (conversation_id, entry.get('download_id'), prompt)
+            turns = previous.get('turns', []) if previous.get('identity') == identity else []
+            request['artifacts'] = [artifact for turn in turns for artifact in turn]
+            options['return_codes'] = True
+        else:
+            text = str(values.get('text') or '').strip()
+            if not text and not audio:
+                raise ValueError('请填写音乐风格描述或添加风格参考音频。')
+            if text:
+                request['text'] = text
+            if audio:
+                request['audio'] = b._ensure_wav(audio)
+            duration = values.get('duration')
+            if duration not in (None, '', 0):
+                options.setdefault('duration_sec', float(duration))
+            if values.get('pianoroll'):
+                options['pianoroll_file'] = self.input_path(values['pianoroll'], audio=False)
+        seed = options.pop('seed', values.get('seed'))
+        if seed not in (None, ''):
+            request['seed'] = b._resolve_seed(seed)[0]
+        b._ensure_with_options(req.model, b.VC_TASKS if spoken else b.GEN_TASKS,
+                               options, mode='streaming' if streaming else 'offline')
+        request['options'] = options
+        result = None
+        if streaming:
+            response = b.requests.post(f'{b.SERVER}/v1/tasks/stream',
+                json={'model': req.model, 'stream_format': 'sse', 'request': request},
+                stream=True, timeout=1800)
+            with response:
+                if response.status_code != 200:
+                    raise b.server_error(entry, response.status_code, response.text)
+                for message in b._iter_sse_events(response):
+                    if job['cancel'].is_set():
+                        return [], ''
+                    if message.get('type') == 'task.stream.done':
+                        result = message.get('result') or {}
+                    elif message.get('type') == 'task.stream.event':
+                        event = message.get('event') or {}
+                        job['text'] += (event.get('partial_text') or {}).get('text') or ''
+                        if event.get('audio'):
+                            with wave.open(io.BytesIO(base64.b64decode(event['audio'])), 'rb') as wav:
+                                if wav.getsampwidth() != 2:
+                                    raise ValueError('流式音频格式不受支持，请关闭流式后重试。')
+                                job['audio_segments'].append({
+                                    'index': len(job['audio_segments']) + 1,
+                                    'sample_rate': wav.getframerate(), 'channels': wav.getnchannels(),
+                                    'pcm': base64.b64encode(wav.readframes(wav.getnframes())).decode('ascii')})
+                        job['message'] = '正在生成语音回复…' if spoken else '正在生成音乐…'
+            if result is None:
+                raise RuntimeError('流式连接在生成完成前断开，请重新生成。')
+        else:
+            result = b._run_task(entry, req.model, request, timeout=1800, log_label='spoken chat' if spoken else 'music generation')
+        if job['cancel'].is_set():
+            return [], ''
+        job['text'] = result.get('text') or job['text']
+        paths = []
+        if result.get('audio'):
+            output = Path(b.OUTPUT_DIR) / f"native_audio_{job['id']}.wav"
+            output.write_bytes(base64.b64decode(result['audio']))
+            paths.append(str(output))
+        if job['text']:
+            output = Path(b.OUTPUT_DIR) / f"reply_{job['id']}.txt"
+            output.write_text(job['text'], encoding='utf-8')
+            paths.append(str(output))
+        if not paths:
+            raise RuntimeError('没有收到生成结果，请重试。')
+        if spoken:
+            reply = next((artifact for artifact in result.get('artifacts', [])
+                          if artifact.get('id') == 'lfm3_audio.reply'), None)
+            if reply:
+                question = {'id': 'lfm3_audio.question', 'kind': 'custom',
+                            'payload': base64.b64encode(Path(request['audio']).read_bytes()).decode('ascii')}
+                self.conversations[req.model] = {'identity': identity, 'turns': [*turns, [question, reply]][-3:]}
+        return paths, '✅ 语音回复完成。' if spoken else '✅ 音乐生成完成。'
+
     def _run(self, job, req):
         b, values, opts = self.b, req.inputs, dict(req.options)
         self.local.operation = job["id"]
@@ -400,7 +495,11 @@ class Workbench:
             max_tokens = values.get("max_tokens")
             max_tokens = None if max_tokens in (None, "") else int(max_tokens)
             text, language = str(values.get("text") or ""), str(values.get("language") or "")
-            if req.task == "tts":
+            entry = self.entry(model)
+            if (entry.get('family') == 'lfm3_audio' and entry.get('task') == 's2s'
+                    or entry.get('family') == 'magenta_realtime_2'):
+                paths, final_message = self._run_native_audio(job, req, entry, audio)
+            elif req.task == "tts":
                 if 'speaker_references' in values:
                     ref_text = self.speaker_references(model, values['speaker_references'], opts)
                     voice, builtin = None, '(none)'
@@ -577,6 +676,11 @@ def create_workbench_app(backend, *, realtime=True, download_manager=None, asr_m
         from workbench_scenarios import install_scenario_routes
     install_scenario_routes(app, work)
     try:
+        from .workbench_interpretation import install_interpretation_routes
+    except ImportError:
+        from workbench_interpretation import install_interpretation_routes
+    interpretation = install_interpretation_routes(app, work)
+    try:
         from .workbench_speaktype import install_speaktype_routes
     except ImportError:
         from workbench_speaktype import install_speaktype_routes
@@ -597,6 +701,7 @@ def create_workbench_app(backend, *, realtime=True, download_manager=None, asr_m
             yield
         finally:
             app.state.shutting_down = True
+            await interpretation.close()
             await asyncio.to_thread(mobile.stop, timeout=None)
             speaktype.close()
             with work.lock:

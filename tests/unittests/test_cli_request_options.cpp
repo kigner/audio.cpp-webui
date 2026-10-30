@@ -39,7 +39,7 @@ uint64_t parse_seed(const std::string & value) {
 void require_seed_rejected(const std::string & value) {
     try {
         (void) parse_seed(value);
-    } catch (const std::runtime_error &) {
+    } catch (const engine::runtime::InvalidRequestError &) {
         return;
     }
     throw std::runtime_error("unsafe seed option was parsed unexpectedly: " + value);
@@ -75,6 +75,13 @@ void test_unsafe_integer_numbers_are_not_silently_rounded() {
         rounded.find('e') != std::string::npos || rounded.find('E') != std::string::npos,
         "2^53+1 does not become a rounded decimal option");
     require_seed_rejected(rounded);
+}
+
+void test_malformed_seeds_are_invalid_requests() {
+    // A JSON null option reaches the parser as "null".
+    for (const char * value : {"null", " -1", "18446744073709551616"}) {
+        require_seed_rejected(value);
+    }
 }
 
 void test_audio_only_language_is_request_option() {
@@ -465,18 +472,37 @@ void test_component_exec_plans() {
     }
 }
 
+void test_non_negative_int_flag_values() {
+    using minitts::cli::parse_non_negative_int;
+    const std::string flag = "--resample-kernel-cache-mb";
+    engine::test::require_eq(parse_non_negative_int("0", flag), 0, "0 parses");
+    engine::test::require_eq(parse_non_negative_int("32", flag), 32, "32 parses");
+    engine::test::require_eq(parse_non_negative_int("2147483647", flag), 2147483647, "INT_MAX parses");
+    for (const std::string value : {"-1", "abc", "32abc", "1.5", "", " 8", "+5", "2147483648"}) {
+        bool rejected = false;
+        try {
+            (void) parse_non_negative_int(value, flag);
+        } catch (const std::runtime_error & error) {
+            rejected = std::string(error.what()) == flag + " expects a non-negative integer, got: " + value;
+        }
+        engine::test::require(rejected, flag + " rejects '" + value + "' and names the flag");
+    }
+}
+
 }  // namespace
 
 int main() {
     test_large_safe_integer_numbers_stay_decimal();
     test_float_numbers_keep_json_formatting();
     test_unsafe_integer_numbers_are_not_silently_rounded();
+    test_malformed_seeds_are_invalid_requests();
     test_audio_only_language_is_request_option();
     test_audio_chunk_shortcut_uses_canonical_name();
     test_normalized_request_option_aliases();
     test_out_format_selects_wav_sample_format();
     test_request_json_artifacts();
     test_component_exec_plans();
+    test_non_negative_int_flag_values();
     std::cout << "cli_request_options_test passed\n";
     return 0;
 }

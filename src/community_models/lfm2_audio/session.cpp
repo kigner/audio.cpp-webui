@@ -9,7 +9,7 @@
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/runtime/spec_backed_model.h"
 #include "engine/framework/text/chunking.h"
-#include "engine/models/silero_vad/session.h"
+#include "engine/framework/runtime/registry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -293,7 +293,8 @@ void append_chunk_text(std::string & merged, std::string chunk) {
     merged += chunk;
 }
 
-// Fixed chunks of audio_chunk_seconds. A short tail joins the previous chunk.
+// Fixed chunks of audio_chunk_seconds. A short tail and the chunk before it
+// split their audio evenly; joined, they would pass audio_chunk_seconds.
 std::vector<runtime::TimeSpan> plan_fixed_chunks(int64_t samples, int64_t chunk_samples) {
     std::vector<runtime::TimeSpan> spans;
     for (const auto & chunk : audio::plan_audio_chunks(samples, {chunk_samples, chunk_samples})) {
@@ -302,8 +303,9 @@ std::vector<runtime::TimeSpan> plan_fixed_chunks(int64_t samples, int64_t chunk_
 
     const auto min_samples = static_cast<int64_t>(kMinChunkSeconds * kSampleRate);
     if (spans.size() > 1 && spans.back().end_sample - spans.back().start_sample < min_samples) {
-        spans.pop_back();
-        spans.back().end_sample = samples;
+        auto & before = spans[spans.size() - 2];
+        before.end_sample = (before.start_sample + samples) / 2;
+        spans.back().start_sample = before.end_sample;
     }
 
     return spans;
@@ -426,8 +428,7 @@ std::vector<runtime::TimeSpan> Lfm2AudioSession::plan_chunks(
 
     const auto chunk_samples = static_cast<int64_t>(std::llround(seconds * kSampleRate));
     // Before any chunk is planned or encoded, so vad is held to the setting
-    // rather than to its spans. fixed can make the last chunk up to a second
-    // longer (a shorter tail joins it), which the limit lets through.
+    // rather than to its spans.
     require_one_pass(std::min(total, chunk_samples), kSampleRate, max_pass_seconds_, "audio_chunk_duration_sec allows chunks of up to",
                      "lower audio_chunk_duration_sec, or raise the limit");
     if (mode == audio::AudioChunkMode::Auto && total <= chunk_samples) {
@@ -448,7 +449,7 @@ runtime::IOfflineVoiceTaskSession & Lfm2AudioSession::vad_session() {
     if (vad_session_ == nullptr) {
         runtime::ModelLoadRequest load_request;
         load_request.model_path = vad_model_path_;
-        vad_model_ = engine::models::silero_vad::load_silero_vad_model(load_request);
+        vad_model_ = runtime::load_vad_model(load_request);
         auto session = vad_model_->create_task_session(
             {runtime::VoiceTaskKind::Vad, runtime::RunMode::Offline},
             runtime::SessionOptions{RuntimeSessionBase::options().backend, {}});
@@ -1332,6 +1333,22 @@ std::shared_ptr<runtime::IVoiceModelLoader> make_lfm2_audio_loader() {
     class Loader final : public runtime::IVoiceModelLoader {
     public:
         std::string family() const override { return kFamily; }
+
+        runtime::PackageLoadTarget resolve_package_load(const assets::ModelPackage & package) const override {
+            runtime::PackageLoadTarget out{kFamily, package.root, {}, {}};
+            if (package.format == "gguf") {
+                for (const auto & file : package.files) {
+                    if (file.extension() != ".gguf") continue;
+                    const auto name = file.filename().string();
+                    const char * option = "lfm2_audio.model_gguf";
+                    if (name.rfind("mmproj-", 0) == 0) option = "lfm2_audio.mmproj_gguf";
+                    else if (name.rfind("vocoder-", 0) == 0) option = "lfm2_audio.vocoder_gguf";
+                    else if (name.rfind("tokenizer-", 0) == 0) option = "lfm2_audio.detokenizer_gguf";
+                    out.session_options.emplace(option, file.generic_string());
+                }
+            }
+            return out;
+        }
 
         bool can_load(const runtime::ModelLoadRequest & request) const override {
             if (request.family_hint && *request.family_hint != kFamily) {

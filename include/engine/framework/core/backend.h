@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,23 +20,9 @@ struct BackendConfig {
     BackendType type = BackendType::Cpu;
     int device = 0;
     int threads = 1;
+    // Empty selects the backend's default implementation.
+    std::string impl = {};
 };
-
-struct BackendDeviceInfo {
-    std::string backend;    // ggml registry name, e.g. "CUDA", "ROCm", "Vulkan", "CPU"
-    int index = 0;          // device index within the owning registry (the value --device takes)
-    std::string name;       // human-readable device name
-    std::string type;       // CPU, GPU, IGPU, ACCEL, or META
-};
-
-// Enumerates every device of every loaded ggml backend registry, in registry order.
-std::vector<BackendDeviceInfo> list_backend_devices();
-void print_backend_devices(std::ostream & out);
-
-// Load every registered ggml backend registry (idempotent). Needed before
-// query_backend_memory() can report GPU memory on a process that has not yet
-// initialized a backend.
-void ensure_backends_loaded();
 
 struct BackendMemorySnapshot {
     bool available = false;
@@ -43,6 +30,35 @@ struct BackendMemorySnapshot {
     int64_t used_bytes = 0;
     int64_t free_bytes = 0;
 };
+
+struct BackendDeviceInfo {
+    std::string backend;    // ggml registry name, e.g. "CUDA", "ROCm", "Vulkan", "CPU"
+    int index = 0;          // device index within the owning registry (the value --device takes)
+    std::string name;       // display name for the text listing: the description, else the ggml device name
+    std::string type;       // CPU, GPU, IGPU, ACCEL, or META
+    std::string backend_option;  // --backend value that selects this registry; empty when none does (BLAS, RPC)
+    std::string device_name;     // ggml device name, e.g. "CUDA0" (the JSON "name")
+    std::string description;     // ggml device description, e.g. "NVIDIA GeForce RTX 5090"
+
+    // Filled only by list_backend_devices(true).
+    std::optional<std::string> pci_bus_id;  // ggml props device_id, e.g. "0000:01:00.0"
+    BackendMemorySnapshot memory;           // not available when the device reports no total, or free above it
+    ggml_backend_dev_caps caps{};
+};
+
+// Enumerates every device of every loaded ggml backend registry, in registry order.
+// query_properties also reads each device's PCI id, memory and caps. On CUDA and HIP
+// that creates the device's primary context, so the plain listing leaves it off.
+std::vector<BackendDeviceInfo> list_backend_devices(bool query_properties = false);
+void print_backend_devices(std::ostream & out);
+// --list-devices --json: schema_version 1, documented in docs/usage.md.
+void print_backend_devices_json(std::ostream & out);
+void print_backend_devices_json(std::ostream & out, const std::vector<BackendDeviceInfo> & devices);
+
+// Load every registered ggml backend registry (idempotent). Needed before
+// query_backend_memory() can report GPU memory on a process that has not yet
+// initialized a backend.
+void ensure_backends_loaded();
 
 ggml_backend_t init_backend(const BackendConfig & config);
 void set_backend_threads(ggml_backend_t backend, int threads);
@@ -56,6 +72,8 @@ std::vector<ggml_backend_buffer_type_t> cpu_extra_buffer_types(ggml_backend_t ba
 bool buffer_type_supports_matmul_weight(
     ggml_backend_t backend, ggml_backend_buffer_type_t buffer_type, ggml_type type, int64_t ne0, int64_t ne1);
 BackendType backend_type(ggml_backend_t backend);
+// Whether `buffer` lives on a device owned by the HIP (ROCm) registry.
+bool is_hip_buffer(ggml_backend_buffer_t buffer);
 bool is_host_backend(ggml_backend_t backend);
 bool uses_host_graph_plan(BackendType type);
 bool uses_host_graph_plan(ggml_backend_t backend);
@@ -68,6 +86,10 @@ void trim_backend_pools(ggml_backend_t backend);
 // higher priority, 0 = default). No-op on non-CUDA backends and on builds
 // whose CUDA backend does not export the hook.
 void set_backend_stream_priority(ggml_backend_t backend, int priority);
+// Opts this CUDA backend instance into folding bf16-reference rounding into
+// RMS_NORM*MUL, ADD and SwiGLU kernels (bit-identical, fewer launches). No-op
+// on other backends and on builds whose CUDA backend does not export the hook.
+void set_backend_round_bf16_fusion(ggml_backend_t backend, bool enabled);
 void * backend_cuda_stream(ggml_backend_t backend);
 // evict_cuda_graph_cache=false (the default) is the historical no-op;
 // true drops the backend's cached compiled-graph state (CUDA/HIP graph

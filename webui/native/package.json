@@ -1,7 +1,7 @@
 {
   "name": "audiocpp-native-webui",
   "private": true,
-  "version": "0.9.2",
+  "version": "0.9.3",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -21,8 +21,5 @@
     "@lucide/svelte": "^1.55.0",
     "abcjs": "^6.7.0",
     "mediabunny": "^1.59.0"
-  },
-  "overrides": {
-    "cookie": "0.7.2"
   }
 }

@@ -12,6 +12,7 @@
 
 #include "../cli/request.h"
 #include "../common/base64.h"
+#include "../common/build_info.h"
 #include "../streaming/pcm_source.h"
 #include "../streaming/streaming.h"
 
@@ -220,7 +221,10 @@ HttpResponse ServerState::handle_health() const {
         "{\"status\":\"ok\",\"backend\":\"" + std::string(backend_name(config_.backend)) +
         "\",\"models\":" + std::to_string(model_count) +
         ",\"ui\":" + (config_.ui_enabled ? "true" : "false") +
-        ",\"ui_management\":" + (config_.ui_management ? "true" : "false") + "}");
+        ",\"ui_management\":" + (config_.ui_management ? "true" : "false") +
+        ",\"version\":" + json_quote(minitts::app::build_version()) +
+        ",\"git\":" + json_quote(minitts::app::build_git_sha()) +
+        ",\"git_date\":" + json_quote(minitts::app::build_git_date()) + "}");
 }
 
 void ServerState::load_models() {
@@ -689,6 +693,7 @@ void ServerState::ensure_model_loaded_locked(LoadedModel & model) {
 
     engine::runtime::SessionOptions session_options;
     session_options.backend.type = config_.backend;
+    session_options.backend.impl = config_.backend_impl;
     session_options.backend.device = model.config.device.value_or(config_.device);
     session_options.backend.threads = config_.threads;
     session_options.options = model.config.session_options;

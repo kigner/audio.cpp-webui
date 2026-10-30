@@ -499,6 +499,36 @@ vae_tile_frames=VAE 分块帧数
 '''.strip().splitlines()))
 
 
+LABELS.update({'audio_tokenizer_codebook_weight_type': '音频码本权重格式',
+ 'planner_f16_decode': '规划器半精度解码',
+ 'planner_fused_projections': '规划器投影融合',
+ 'planner_independent_cfg_prefill': '规划器独立引导预填充',
+ 'planner_prefix_bucketing': '规划器前缀分桶',
+ 'vae_tile_overlap_frames': '编解码分块重叠帧数',
+ 'batched_cfg': '批量条件引导',
+ 'direct_prefill': '直接预填充',
+ 'fused_depth': '深度解码融合',
+ 'round_bf16_fusion': '半精度舍入融合',
+ 'skip_cache_round': '跳过冗余缓存舍入',
+ 'cfg_mode': '条件引导模式',
+ 'codec_async_decode': '异步音频解码',
+ 'codec_batch_frames': '音频解码批量帧数',
+ 'device_sampling': '设备端采样',
+ 'fused_moe': '融合专家计算',
+ 'chat': '语音问答',
+ 'drum_guidance_scale': '鼓点引导强度',
+ 'drums': '鼓点',
+ 'export_speaker_embedding_file': '导出说话人嵌入文件',
+ 'keep_trailing_segment': '保留末尾语音',
+ 'max_audio_tail_frames': '音频尾段上限（帧）',
+ 'neg_threshold': '语音结束阈值',
+ 'note_guidance_scale': '音符引导强度',
+ 'smoothing_factor': '平滑程度',
+ 'start_delay_ms': '开始确认时长（毫秒）',
+ 'ultimate_clone': '增强声音克隆',
+ 'use_mapper': '映射音乐风格空间'})
+
+
 def option_label(name):
     key = name.rsplit('.', 1)[-1]
     if key in LABELS or key in SPECIAL:

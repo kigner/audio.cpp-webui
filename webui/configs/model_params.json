@@ -457,7 +457,7 @@
   ],
 
   "irodori_tts": [
-    {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps（RF 扩散步数）", "label_en": "num_inference_steps", "default": 40, "minimum": 1, "step": 1, "precision": 0},
+    {"name": "num_inference_steps", "type": "number", "label": "采样步数", "label_en": "num_inference_steps", "minimum": 1, "step": 1, "precision": 0, "placeholder": "RF 默认 40，MeanFlow 默认 4"},
     {"name": "duration_sec", "type": "number", "label": "duration_sec（0=模型自动预测时长）", "label_en": "duration_sec (0 = auto)", "default": 0, "minimum": 0, "step": 0.5},
     {"name": "duration_scale", "type": "slider", "label": "duration_scale（语速倒数，越大越慢）", "label_en": "duration_scale", "default": 1.0, "minimum": 0.5, "maximum": 2.0, "step": 0.05}
   ],
@@ -486,5 +486,295 @@
 
   "lfm2-audio-tts": [
     {"name": "voice", "type": "choice", "label": "voice（英语预置音色）", "label_en": "voice (English presets)", "default": "us_male", "choices": ["us_male", "us_female", "uk_male", "uk_female"]}
+  ],
+
+  "lfm3-audio-tts": [
+    {
+      "name": "voice",
+      "type": "choice",
+      "label": "预设音色",
+      "label_en": "Voice",
+      "choices": [
+        [
+          "跟随语言",
+          ""
+        ],
+        [
+          "阿拉伯语女声",
+          "arabic_female"
+        ],
+        [
+          "阿拉伯语男声",
+          "arabic_male"
+        ],
+        [
+          "丹麦语女声",
+          "danish_female"
+        ],
+        [
+          "丹麦语男声",
+          "danish_male"
+        ],
+        [
+          "德语女声",
+          "german_female"
+        ],
+        [
+          "德语男声",
+          "german_male"
+        ],
+        [
+          "希腊语女声",
+          "greek_female"
+        ],
+        [
+          "希腊语男声",
+          "greek_male"
+        ],
+        [
+          "英式英语女声",
+          "british_english_female"
+        ],
+        [
+          "英式英语男声",
+          "british_english_male"
+        ],
+        [
+          "美式英语女声",
+          "american_english_female"
+        ],
+        [
+          "美式英语男声",
+          "american_english_male"
+        ],
+        [
+          "芬兰语女声",
+          "finnish_female"
+        ],
+        [
+          "芬兰语男声",
+          "finnish_male"
+        ],
+        [
+          "法语女声",
+          "french_female"
+        ],
+        [
+          "法语男声",
+          "french_male"
+        ],
+        [
+          "希伯来语女声",
+          "hebrew_female"
+        ],
+        [
+          "希伯来语男声",
+          "hebrew_male"
+        ],
+        [
+          "意大利语女声",
+          "italian_female"
+        ],
+        [
+          "意大利语男声",
+          "italian_male"
+        ],
+        [
+          "日语女声",
+          "japanese_female"
+        ],
+        [
+          "日语男声",
+          "japanese_male"
+        ],
+        [
+          "韩语女声",
+          "korean_female"
+        ],
+        [
+          "韩语男声",
+          "korean_male"
+        ],
+        [
+          "荷兰语女声",
+          "dutch_female"
+        ],
+        [
+          "荷兰语男声",
+          "dutch_male"
+        ],
+        [
+          "波兰语女声",
+          "polish_female"
+        ],
+        [
+          "波兰语男声",
+          "polish_male"
+        ],
+        [
+          "葡萄牙语女声",
+          "portuguese_female"
+        ],
+        [
+          "葡萄牙语男声",
+          "portuguese_male"
+        ],
+        [
+          "西班牙语女声",
+          "spanish_female"
+        ],
+        [
+          "西班牙语男声",
+          "spanish_male"
+        ],
+        [
+          "瑞典语女声",
+          "swedish_female"
+        ],
+        [
+          "瑞典语男声",
+          "swedish_male"
+        ],
+        [
+          "土耳其语女声",
+          "turkish_female"
+        ],
+        [
+          "土耳其语男声",
+          "turkish_male"
+        ],
+        [
+          "中文女声",
+          "chinese_female"
+        ],
+        [
+          "中文男声",
+          "chinese_male"
+        ]
+      ],
+      "default": ""
+    }
+  ],
+
+  "gradium_phonon": [
+    {
+      "name": "temperature",
+      "type": "number",
+      "label": "声音随机性",
+      "label_en": "Temperature",
+      "default": 0.3,
+      "minimum": 0.01,
+      "step": 0.01
+    },
+    {
+      "name": "frames_after_eos",
+      "type": "number",
+      "label": "结束后保留帧数",
+      "label_en": "Frames after EOS",
+      "default": -1,
+      "minimum": -1,
+      "step": 1,
+      "precision": 0
+    }
+  ],
+
+  "magenta_realtime_2": [
+    {
+      "name": "drums",
+      "type": "choice",
+      "label": "鼓点",
+      "label_en": "Drums",
+      "choices": [
+        [
+          "自动",
+          -1
+        ],
+        [
+          "无鼓点",
+          0
+        ],
+        [
+          "有鼓点",
+          1
+        ]
+      ],
+      "default": -1
+    }
+  ],
+
+  "earshot_vad": [
+    {
+      "name": "threshold",
+      "type": "number",
+      "label": "语音开始阈值",
+      "label_en": "threshold",
+      "default": 0.6,
+      "minimum": 0,
+      "step": 0.05,
+      "maximum": 1
+    },
+    {
+      "name": "neg_threshold",
+      "type": "number",
+      "label": "语音结束阈值",
+      "label_en": "neg_threshold",
+      "default": 0.5,
+      "minimum": 0,
+      "step": 0.05,
+      "maximum": 1
+    },
+    {
+      "name": "smoothing_factor",
+      "type": "number",
+      "label": "平滑程度",
+      "label_en": "smoothing_factor",
+      "default": 0.4,
+      "minimum": 0,
+      "step": 0.05,
+      "maximum": 0.999
+    },
+    {
+      "name": "start_delay_ms",
+      "type": "number",
+      "label": "开始确认时长（毫秒）",
+      "label_en": "start_delay_ms",
+      "default": 32,
+      "minimum": 0,
+      "step": 16
+    },
+    {
+      "name": "min_silence_duration_ms",
+      "type": "number",
+      "label": "最短静音（毫秒）",
+      "label_en": "min_silence_duration_ms",
+      "default": 64,
+      "minimum": 0,
+      "step": 16
+    },
+    {
+      "name": "speech_pad_ms",
+      "type": "number",
+      "label": "前后留白（毫秒）",
+      "label_en": "speech_pad_ms",
+      "default": 80,
+      "minimum": 0,
+      "step": 16
+    },
+    {
+      "name": "min_speech_duration_ms",
+      "type": "number",
+      "label": "最短语音（毫秒）",
+      "label_en": "min_speech_duration_ms",
+      "default": 96,
+      "minimum": 0,
+      "step": 16
+    },
+    {
+      "name": "keep_trailing_segment",
+      "type": "bool",
+      "label": "保留末尾语音",
+      "label_en": "Keep trailing speech",
+      "default": true
+    }
   ]
 }

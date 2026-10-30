@@ -41,6 +41,18 @@ enum class Bf16ActivationMode {
     Off,
 };
 
+// CUDA/Vulkan/Metal performance defaults; cuda_perf additionally enables CUDA batched CFG.
+struct BreezePerfOptions {
+    // Decode each frame's depth codebooks in one graph with device sampling.
+    bool fused_depth = true;
+    // Offline prefill writes the backbone KV straight into the decode cache.
+    bool direct_prefill = true;
+    // Skip re-rounding the F16 KV cache to bf16 after each update (an identity).
+    bool skip_cache_round = true;
+    // With CFG, decode both backbone branches as one batch-2 step.
+    bool batched_cfg = false;
+};
+
 class BreezeGeneratorRuntime {
 public:
     BreezeGeneratorRuntime(
@@ -50,7 +62,8 @@ public:
         size_t weight_context_bytes,
         engine::assets::TensorStorageType storage_type,
         engine::core::AttentionPreference attention_preference = engine::core::AttentionPreference::Auto,
-        Bf16ActivationMode bf16_activations = Bf16ActivationMode::Auto);
+        Bf16ActivationMode bf16_activations = Bf16ActivationMode::Auto,
+        BreezePerfOptions perf = {});
     ~BreezeGeneratorRuntime();
 
     engine::runtime::AudioBuffer generate(

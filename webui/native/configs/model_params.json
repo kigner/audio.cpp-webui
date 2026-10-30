@@ -1,4 +1,38 @@
 {
+  "ming3_tts": [
+    {"name":"template_name","type":"text","label":"Prompt template","placeholder":"Automatic"},
+    {"name":"voice_id","type":"text","label":"IP voice name","placeholder":"US_James (IP template only)"},
+    {"name":"temperature","type":"number","label":"Temperature","default":0,"minimum":0,"step":0.1},
+    {"name":"guidance_scale","type":"number","label":"Guidance scale","default":2,"step":0.1},
+    {"name":"sigma","type":"number","label":"SDE noise scale","default":0.25,"minimum":0,"step":0.05},
+    {"name":"trim_silence","type":"bool","label":"Trim trailing silence","default":true}
+  ],
+  "ming3_audio": [
+    {"name":"voice_id","type":"text","label":"Voice name","placeholder":"US_James"},
+    {"name":"prompt","type":"text","label":"Audio task prompt","placeholder":"Use task default"},
+    {"name":"system_prompt","type":"text","label":"System prompt"},
+    {"name":"enable_thinking","type":"bool","label":"Enable thinking","default":false},
+    {"name":"max_audio_tokens","type":"number","label":"Maximum acoustic patches per chunk","default":1000,"minimum":1,"step":1},
+    {"name":"temperature","type":"number","label":"Temperature","default":0,"minimum":0,"step":0.1},
+    {"name":"guidance_scale","type":"number","label":"Guidance scale","default":2,"step":0.1},
+    {"name":"disk_experts","scope":"session","session_option":"ming3_audio.disk_experts","type":"bool","label":"Offload expert weights","default":false},
+    {"name":"pin_experts","scope":"session","session_option":"ming3_audio.pin_experts","type":"bool","label":"Keep experts in pinned host RAM","default":false}
+  ],
+  "xtts_v2": [
+    {"name":"temperature","type":"slider","label":"Temperature","default":0.75,"minimum":0,"maximum":2,"step":0.05},
+    {"name":"top_k","type":"number","label":"Top-k","default":50,"minimum":0,"step":1},
+    {"name":"top_p","type":"slider","label":"Top-p","default":0.85,"minimum":0,"maximum":1,"step":0.01},
+    {"name":"repetition_penalty","type":"number","label":"Repetition penalty","default":10,"minimum":1,"step":0.5},
+    {"name":"max_mel_tokens","type":"number","label":"Maximum mel tokens","default":605,"minimum":1,"step":1}
+  ],
+  "latentsync": [
+    {"name":"num_inference_steps","type":"number","label":"Denoising steps","default":20,"minimum":1,"maximum":999,"step":1},
+    {"name":"cache_interval","type":"number","label":"DeepCache interval","default":1,"minimum":1,"step":1},
+    {"name":"guidance_scale","type":"number","label":"Guidance scale","default":1.5,"minimum":0,"step":0.1},
+    {"name":"frames_per_chunk","type":"number","label":"Frames per chunk","default":16,"minimum":1,"maximum":24,"step":1},
+    {"name":"fps","type":"number","label":"Frames per second","default":25,"minimum":1,"step":1},
+    {"name":"mem_saver","scope":"session","session_option":"latentsync.mem_saver","type":"bool","label":"Memory saver","default":false}
+  ],
   "ast_audioset": [
     {"name":"top_k","type":"number","label":"Top classes","default":10,"minimum":1,"maximum":527,"step":1}
   ],
@@ -339,6 +373,30 @@
     {"name": "max_tokens", "type": "number", "label": "max_tokens", "default": 512, "minimum": 1, "step": 1, "precision": 0, "info_en": "Transcript tokens allowed per chunk; a transcript that reaches it is cut off there."}
   ],
 
+  "lfm3-audio-tts": [
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 1.0, "minimum": 0.0, "maximum": 2.0, "step": 0.05, "info_en": "Audio code temperature; 0 picks the most likely code."},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 128, "minimum": 0, "step": 1, "precision": 0, "info_en": "Sample audio codes from the k most likely; 0 keeps all."},
+    {"name": "repetition_penalty", "type": "number", "label": "repetition_penalty", "default": 1.1, "minimum": 0.01, "step": 0.05, "info_en": "Audio repetition penalty over the last 4096 frames of each codebook; must be positive, 1 disables it."},
+    {"name": "text_chunk_size", "type": "number", "label": "text_chunk_size", "default": 200, "minimum": 1, "step": 1, "precision": 0, "info_en": "Target characters per text chunk; each chunk is its own spoken turn."}
+  ],
+
+  "lfm3-audio-s2s": [
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 1.0, "minimum": 0.0, "maximum": 2.0, "step": 0.05, "info_en": "Audio code temperature; 0 picks the most likely code."},
+    {"name": "top_k", "type": "number", "label": "top_k", "default": 128, "minimum": 0, "step": 1, "precision": 0, "info_en": "Sample audio codes from the k most likely; 0 keeps all."},
+    {"name": "repetition_penalty", "type": "number", "label": "repetition_penalty", "default": 1.1, "minimum": 0.01, "step": 0.05, "info_en": "Audio repetition penalty over the last 4096 frames of each codebook; must be positive, 1 disables it."},
+    {"name": "text_temperature", "type": "slider", "label": "text_temperature", "default": 0.0, "minimum": 0.0, "maximum": 2.0, "step": 0.05, "info_en": "Text token temperature; 0 is greedy."},
+    {"name": "text_top_k", "type": "number", "label": "text_top_k", "default": 0, "minimum": 0, "step": 1, "precision": 0, "info_en": "Sample text tokens from the k most likely; 0 keeps all."},
+    {"name": "max_audio_tail_frames", "type": "number", "label": "max_audio_tail_frames", "default": 375, "minimum": 0, "step": 1, "precision": 0, "info_en": "Most audio frames after the reply text ends before the turn is closed with an end-of-audio frame; 0 disables the cap."}
+  ],
+
+  "lfm3_audio": [
+    {"name": "audio_chunk_mode", "type": "choice", "label": "audio_chunk_mode", "default": "auto", "choices": ["auto", "vad", "fixed", "none"], "info_en": "auto keeps audio up to audio_chunk_duration_sec whole and splits longer audio at VAD pauses; none transcribes it in one pass."},
+    {"name": "audio_chunk_duration_sec", "type": "number", "label": "audio_chunk_duration_sec", "minimum": 1, "step": 1, "info_en": "Longest chunk in seconds; empty uses 300 or lfm3_audio.max_pass_duration_sec, whichever is lower."},
+    {"name": "chat", "type": "bool", "label": "chat", "default": false, "info_en": "Answer the spoken input as a text chat reply instead of transcribing it."},
+    {"name": "enable_thinking", "type": "bool", "label": "enable_thinking", "default": false, "info_en": "Needs chat. Let the model think first; only the text after </think> is returned."},
+    {"name": "max_tokens", "type": "number", "label": "max_tokens", "minimum": 1, "step": 1, "precision": 0, "info_en": "Text tokens allowed per chunk; empty uses 512 or 8 per second of audio, whichever is more (chat 512, 2048 with thinking). A reply that reaches it is cut off there."}
+  ],
+
   "confucius4_r2t2": [
     {"name": "chunk_size_ms", "type": "slider", "scope": "session", "session_option": "confucius4_r2t2.chunk_size_ms", "label": "chunk_size_ms（流式分块毫秒）", "label_en": "chunk_size_ms (streaming chunk, ms)", "default": 320, "minimum": 80, "maximum": 2000, "step": 10, "precision": 0, "info": "80-2000ms：越小延迟越低；320ms 在 Apple Silicon 上延迟与速度较均衡。", "info_en": "80-2000 ms. Lower means lower latency; 320 ms balances latency and speed on Apple Silicon."},
     {"name": "unfixed_chunk_num", "type": "number", "scope": "session", "session_option": "confucius4_r2t2.unfixed_chunk_num", "label": "unfixed_chunk_num（前 N 块不用稳定前缀）", "label_en": "unfixed_chunk_num (leading chunks without prefix)", "default": 2, "minimum": 0, "maximum": 10, "step": 1, "precision": 0, "info": "开头若干块不使用已识别文本作为前缀提示。", "info_en": "Leading chunks that decode without a stable-prefix prompt."},
@@ -349,6 +407,11 @@
 
   "pocket_tts": [
     {"name": "frames_after_eos", "type": "number", "label": "frames_after_eos（-1=自动）", "default": -1, "minimum": -1, "step": 1, "precision": 0}
+  ],
+
+  "gradium_phonon": [
+    {"name": "frames_after_eos", "type": "number", "label": "frames_after_eos（-1=自动）", "label_en": "frames_after_eos (-1 = auto)", "default": -1, "minimum": -1, "step": 1, "precision": 0},
+    {"name": "temperature", "type": "slider", "label": "temperature", "default": 0.3, "minimum": 0.05, "maximum": 1.0, "step": 0.05}
   ],
 
   "neutts": [
@@ -602,7 +665,7 @@
   ],
 
   "irodori_tts": [
-    {"name": "num_inference_steps", "type": "number", "label": "num_inference_steps（RF 扩散步数）", "label_en": "num_inference_steps", "default": 40, "minimum": 1, "step": 1, "precision": 0},
+    {"name": "num_inference_steps", "type": "number", "label": "采样步数（留空使用模型默认）", "label_en": "Sampling steps (RF default 40; MeanFlow default 4)", "minimum": 1, "step": 1, "precision": 0},
     {"name": "duration_sec", "type": "number", "label": "duration_sec（0=模型自动预测时长）", "label_en": "duration_sec (0 = auto)", "default": 0, "minimum": 0, "step": 0.5},
     {"name": "duration_scale", "type": "slider", "label": "duration_scale（语速倒数，越大越慢）", "label_en": "duration_scale", "default": 1.0, "minimum": 0.5, "maximum": 2.0, "step": 0.05}
   ],

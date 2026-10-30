@@ -180,25 +180,25 @@ Replace `cpu` in the last line if you built a CUDA or Vulkan backend. Open the w
 
 ## Model support
 
-Aixora Audio's Model center includes **129 model families and 184 model entries**. The table below groups them by use. Select a model in the interface to see its versions, languages, reference inputs and parameters.
+Aixora Audio's Model center includes **133 model families and 197 model entries**. The table below groups them by use. Select a model in the interface to see its versions, languages, reference inputs and parameters.
 
 | Category | Supported models |
 |---|---|
-| Speech synthesis and voice design | OmniVoice, Pocket TTS, DotTTS (SOAR / MeanFlow / Edit), NeuTTS 2E, Qwen3-TTS (0.6B / 1.7B)<br>MioTTS 1.7B, VoxCPM2, VibeVoice 1.5B, IndexTTS2 / IndexTTS2.5, Irodori-TTS (v4 / v3)<br>MOSS-TTS-Local v1.5, MOSS-TTS-Nano 100M, Supertonic 3, Higgs Audio v3 TTS 4B, Fish Audio S2 Pro<br>GLM-TTS, Llama-OuteTTS 1.0 1B, VieNeu-TTS v3 Turbo, Inflect Micro v2, DramaBox<br>Confucius4-TTS, Habibi / F5-TTS, MagpieTTS Multilingual 357M, Chatterbox, MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B, AuK, BreezeTTS 2, Chatterbox Turbo, CosyVoice3<br>Echo-TTS, FireRedTTS3, KittenTTS Mini 0.8, Kitten TTS 2, Kokoro 82M<br>KugelAudio-0-Open, Maya1, MiraTTS, MOSS-TTS-v1.5, MOSS-TTSD<br>Piper TTS, sanoTTS Nano, Soprano, Sopro V2 Turbo, VoxCPM1, ZipVoice<br>Fish Audio Drama 3 / Drama3-small, Ming 3.0 TTS 0.5B, Ming 3.0 Audio Tiny, XTTS v2, Voxtral 4B TTS<br>Plapre 3, LFM2.5-Audio (English / Japanese), FireRedAudio |
-| Speech recognition and audio understanding | Qwen3-ASR (0.6B / 1.7B), Citrinet ASR, Nemotron 3.5 ASR 0.6B, Higgs Audio v3 STT, Hviske (v5.3 / v6)<br>VibeVoice ASR, Voxtral Mini 4B Realtime, Fun-ASR-Nano 2512, Parakeet-TDT 0.6B v3, Kroko Community ASR<br>SenseVoice-Small, Audio8-ASR-0.1B, Audio Flamingo 3 / Next, Canary 180M Flash, Cohere Transcribe<br>Confucius4-R2T2, CrisperWhisper 2.0, FireRedAudio, GigaAM ASR, Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT, LFM2.5-Audio (English / Japanese), Moonshine Streaming ASR, MOSS-Transcribe-Diarize, Niagara ASR<br>OWSM, OWSM-CTC, SAMSONE, VibeVoice-ASR-BitNet, VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny, Whistle ASR |
-| Music and sound effects | ACE-Step 1.5, Stable Audio 3 (Small Music / Small SFX / Medium), HeartMuLa 3B, MiniMax-H3, MiniMax Music 3<br>ControlFoley, MiDashengLM-Gen, YuE2 |
-| Speech conversation | PersonaPlex, Ming 3.0 Audio Tiny |
+| Speech synthesis and voice design | OmniVoice, Pocket TTS, DotTTS (SOAR / MeanFlow / Edit), NeuTTS 2E, Qwen3-TTS (0.6B / 1.7B)<br>MioTTS 1.7B, VoxCPM2, VibeVoice 1.5B, IndexTTS2 / IndexTTS2.5, Irodori-TTS (v4.1 MeanFlow / v4 / v3)<br>MOSS-TTS-Local v1.5, MOSS-TTS-Nano 100M, Supertonic 3, Higgs Audio v3 TTS 4B, Fish Audio S2 Pro<br>GLM-TTS, Llama-OuteTTS 1.0 1B, VieNeu-TTS v3 Turbo, Inflect Micro v2, DramaBox<br>Confucius4-TTS, Habibi / F5-TTS, MagpieTTS Multilingual 357M, Chatterbox, MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B, AuK, BreezeTTS 2, Chatterbox Turbo, CosyVoice3<br>Echo-TTS, FireRedTTS3, KittenTTS Mini 0.8, Kitten TTS 2, Kokoro 82M<br>KugelAudio-0-Open, Maya1, MiraTTS, MOSS-TTS-v1.5, MOSS-TTSD<br>Piper TTS, sanoTTS Nano, Soprano, Sopro V2 Turbo, VoxCPM1, ZipVoice<br>Fish Audio Drama 3 / Drama3-small, Ming 3.0 TTS 0.5B, Ming 3.0 Audio Tiny, XTTS v2, Voxtral 4B TTS<br>Plapre 3, LFM2.5-Audio (English / Japanese), LFM3-Audio 2B, Gradium Phonon 31M, FireRedAudio |
+| Speech recognition and audio understanding | Qwen3-ASR (0.6B / 1.7B), Citrinet ASR, Nemotron 3.5 ASR 0.6B, Higgs Audio v3 STT, Hviske (v5.3 / v6)<br>VibeVoice ASR, Voxtral Mini 4B Realtime, Fun-ASR-Nano 2512, Parakeet-TDT 0.6B v3, Kroko Community ASR<br>SenseVoice-Small, Audio8-ASR-0.1B, Audio Flamingo 3 / Next, Canary 180M Flash, Cohere Transcribe<br>Confucius4-R2T2, CrisperWhisper 2.0, FireRedAudio, GigaAM ASR, Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT, LFM2.5-Audio (English / Japanese), Moonshine Streaming ASR, MOSS-Transcribe-Diarize, Niagara ASR<br>OWSM, OWSM-CTC, SAMSONE, VibeVoice-ASR-BitNet, VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny, Whistle ASR, LFM3-Audio 2B, Underdog Bark 3.0 (Standard / Plus / Pro), Music Flamingo 2601 |
+| Music and sound effects | ACE-Step 1.5, Stable Audio 3 (Small Music / Small SFX / Medium), HeartMuLa 3B, MiniMax-H3, MiniMax Music 3<br>ControlFoley, MiDashengLM-Gen, YuE2, Magenta RealTime 2 (Small / Base) |
+| Speech conversation | PersonaPlex, Ming 3.0 Audio Tiny, LFM3-Audio 2B |
 | Voice conversion and audio codecs | MeanVC2, Vevo2, Seed-VC, RVC, MioCodec<br>Tone Color VC |
 | Source separation | HTDemucs, BS-RoFormer, Mel-Band RoFormer, HTDemucs 6-stem, SAM Audio, MossFormer2, TF-GridNet |
 | Audio enhancement and restoration | Apollo, AudioSR, RNNoise, DeepFilterNet2, ZipEnhancer, GTCRN (Streaming / DNS3 / VCTK), FlashSR, RE-USE, Sidon v0.1<br>UniverSR |
-| Voice activity and end-of-turn detection | Silero VAD, MarbleNet VAD, PulseVAD, FireRed VAD / Stream-VAD, Smart Turn v3.2 |
+| Voice activity and end-of-turn detection | Silero VAD, MarbleNet VAD, PulseVAD, FireRed VAD / Stream-VAD, Earshot VAD, Smart Turn v3.2 |
 | Sound classification | AST AudioSet, CED (Base / Mini / Small / Tiny) |
 | Wake-word detection | microWakeWord, OpenWakeWord, Sherpa Zipformer KWS (Chinese / English) |
 | Speaker diarization | Sortformer Diarization 4spk, Nemotron 3 Diarization, Sortformer Diarization v2.1 |
 | Subtitle and text alignment | Qwen3 Forced Aligner, MMS-300M Forced Aligner |
 | Music transcription | MuScriptor Small, SheetSage2 |
 
-Download models from **Model center**. Sound classification and wake-word detection are under **Audio tools**. MiraTTS and Sortformer v2 require manual weight installation.
+Download models from **Model center**. Sound classification and wake-word detection are under **Audio tools**. MiraTTS, Sortformer v2 and Underdog Bark 3.0 require manual weight installation. Underdog Bark requires a converted GGUF. LFM3-Audio supports offline recognition and streaming speech synthesis or spoken replies; spoken replies begin after the input ends.
 
 ## Acknowledgments
 

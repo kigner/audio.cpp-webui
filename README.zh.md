@@ -180,25 +180,25 @@ AUDIOCPP_BACKEND=cpu ./venv/bin/python webui/webui.py
 
 ## 模型支持
 
-Aixora Audio 的模型中心提供 **129 个模型家族、184 个模型条目**。下表按用途列出模型；选择模型后，可以在界面中查看版本、语言、参考输入和参数。
+Aixora Audio 的模型中心提供 **133 个模型家族、197 个模型条目**。下表按用途列出模型；选择模型后，可以在界面中查看版本、语言、参考输入和参数。
 
 | 类别 | 支持的模型 |
 |---|---|
-| 语音合成与声音设计 | OmniVoice、Pocket TTS、DotTTS（SOAR / MeanFlow / Edit）、NeuTTS 2E、Qwen3-TTS（0.6B / 1.7B）<br>MioTTS 1.7B、VoxCPM2、VibeVoice 1.5B、IndexTTS2 / IndexTTS2.5、Irodori-TTS（v4 / v3）<br>MOSS-TTS-Local v1.5、MOSS-TTS-Nano 100M、Supertonic 3、Higgs Audio v3 TTS 4B、Fish Audio S2 Pro<br>GLM-TTS、Llama-OuteTTS 1.0 1B、VieNeu-TTS v3 Turbo、Inflect Micro v2、DramaBox<br>Confucius4-TTS、Habibi / F5-TTS、MagpieTTS Multilingual 357M、Chatterbox、MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B、AuK、BreezeTTS 2、Chatterbox Turbo、CosyVoice3<br>Echo-TTS、FireRedTTS3、KittenTTS Mini 0.8、Kitten TTS 2、Kokoro 82M<br>KugelAudio-0-Open、Maya1、MiraTTS、MOSS-TTS-v1.5、MOSS-TTSD<br>Piper TTS、sanoTTS Nano、Soprano、Sopro V2 Turbo、VoxCPM1、ZipVoice<br>Fish Audio Drama 3 / Drama3-small、Ming 3.0 TTS 0.5B、Ming 3.0 Audio Tiny、XTTS v2、Voxtral 4B TTS<br>Plapre 3、LFM2.5-Audio（英语 / 日语）、FireRedAudio |
-| 语音识别与音频理解 | Qwen3-ASR（0.6B / 1.7B）、Citrinet ASR、Nemotron 3.5 ASR 0.6B、Higgs Audio v3 STT、Hviske（v5.3 / v6）<br>VibeVoice ASR、Voxtral Mini 4B Realtime、Fun-ASR-Nano 2512、Parakeet-TDT 0.6B v3、Kroko Community ASR<br>SenseVoice-Small、Audio8-ASR-0.1B、Audio Flamingo 3 / Next、Canary 180M Flash、Cohere Transcribe<br>Confucius4-R2T2、CrisperWhisper 2.0、FireRedAudio、GigaAM ASR、Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT、LFM2.5-Audio（英语 / 日语）、Moonshine Streaming ASR、MOSS-Transcribe-Diarize、Niagara ASR<br>OWSM、OWSM-CTC、SAMSONE、VibeVoice-ASR-BitNet、VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny、Whistle ASR |
-| 音乐与音效 | ACE-Step 1.5、Stable Audio 3（Small Music / Small SFX / Medium）、HeartMuLa 3B、MiniMax-H3、MiniMax Music 3<br>ControlFoley、MiDashengLM-Gen、YuE2 |
-| 语音对话 | PersonaPlex、Ming 3.0 Audio Tiny |
+| 语音合成与声音设计 | OmniVoice、Pocket TTS、DotTTS（SOAR / MeanFlow / Edit）、NeuTTS 2E、Qwen3-TTS（0.6B / 1.7B）<br>MioTTS 1.7B、VoxCPM2、VibeVoice 1.5B、IndexTTS2 / IndexTTS2.5、Irodori-TTS（v4.1 MeanFlow / v4 / v3）<br>MOSS-TTS-Local v1.5、MOSS-TTS-Nano 100M、Supertonic 3、Higgs Audio v3 TTS 4B、Fish Audio S2 Pro<br>GLM-TTS、Llama-OuteTTS 1.0 1B、VieNeu-TTS v3 Turbo、Inflect Micro v2、DramaBox<br>Confucius4-TTS、Habibi / F5-TTS、MagpieTTS Multilingual 357M、Chatterbox、MOSS-VoiceGenerator<br>Audio8 TTS Preview 0.6B、AuK、BreezeTTS 2、Chatterbox Turbo、CosyVoice3<br>Echo-TTS、FireRedTTS3、KittenTTS Mini 0.8、Kitten TTS 2、Kokoro 82M<br>KugelAudio-0-Open、Maya1、MiraTTS、MOSS-TTS-v1.5、MOSS-TTSD<br>Piper TTS、sanoTTS Nano、Soprano、Sopro V2 Turbo、VoxCPM1、ZipVoice<br>Fish Audio Drama 3 / Drama3-small、Ming 3.0 TTS 0.5B、Ming 3.0 Audio Tiny、XTTS v2、Voxtral 4B TTS<br>Plapre 3、LFM2.5-Audio（英语 / 日语）、LFM3-Audio 2B、Gradium Phonon 31M、FireRedAudio |
+| 语音识别与音频理解 | Qwen3-ASR（0.6B / 1.7B）、Citrinet ASR、Nemotron 3.5 ASR 0.6B、Higgs Audio v3 STT、Hviske（v5.3 / v6）<br>VibeVoice ASR、Voxtral Mini 4B Realtime、Fun-ASR-Nano 2512、Parakeet-TDT 0.6B v3、Kroko Community ASR<br>SenseVoice-Small、Audio8-ASR-0.1B、Audio Flamingo 3 / Next、Canary 180M Flash、Cohere Transcribe<br>Confucius4-R2T2、CrisperWhisper 2.0、FireRedAudio、GigaAM ASR、Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT、LFM2.5-Audio（英语 / 日语）、Moonshine Streaming ASR、MOSS-Transcribe-Diarize、Niagara ASR<br>OWSM、OWSM-CTC、SAMSONE、VibeVoice-ASR-BitNet、VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny、Whistle ASR、LFM3-Audio 2B、Underdog Bark 3.0（Standard / Plus / Pro）、Music Flamingo 2601 |
+| 音乐与音效 | ACE-Step 1.5、Stable Audio 3（Small Music / Small SFX / Medium）、HeartMuLa 3B、MiniMax-H3、MiniMax Music 3<br>ControlFoley、MiDashengLM-Gen、YuE2、Magenta RealTime 2（Small / Base） |
+| 语音对话 | PersonaPlex、Ming 3.0 Audio Tiny、LFM3-Audio 2B |
 | 声音转换与音频编码 | MeanVC2、Vevo2、Seed-VC、RVC、MioCodec<br>Tone Color VC |
 | 音轨分离 | HTDemucs、BS-RoFormer、Mel-Band RoFormer、HTDemucs 六轨版、SAM Audio、MossFormer2、TF-GridNet |
 | 音频增强与修复 | Apollo、AudioSR、RNNoise、DeepFilterNet2、ZipEnhancer、GTCRN（Streaming / DNS3 / VCTK）、FlashSR、RE-USE、Sidon v0.1<br>UniverSR |
-| 语音检测与对话结束判断 | Silero VAD、MarbleNet VAD、PulseVAD、FireRed VAD / Stream-VAD、Smart Turn v3.2 |
+| 语音检测与对话结束判断 | Silero VAD、MarbleNet VAD、PulseVAD、FireRed VAD / Stream-VAD、Earshot VAD、Smart Turn v3.2 |
 | 声音分类 | AST AudioSet、CED（Base / Mini / Small / Tiny） |
 | 唤醒词检测 | microWakeWord、OpenWakeWord、Sherpa Zipformer KWS（中文 / 英文） |
 | 说话人分离 | Sortformer Diarization 4spk、Nemotron 3 Diarization、Sortformer Diarization v2.1 |
 | 字幕与文本对齐 | Qwen3 Forced Aligner、MMS-300M Forced Aligner |
 | 音乐转谱 | MuScriptor Small、SheetSage2 |
 
-在 **模型中心** 选择并下载模型。声音分类和唤醒词检测位于 **音频工具**。MiraTTS 与 Sortformer v2 的权重需要手动安装。
+在 **模型中心** 选择并下载模型。声音分类和唤醒词检测位于 **音频工具**。MiraTTS、Sortformer v2 和 Underdog Bark 3.0 的权重需要手动安装；Underdog Bark 使用转换后的 GGUF。LFM3-Audio 支持离线识别、流式合成和语音回复，语音回复在问题输入结束后开始。
 
 ## 致谢
 

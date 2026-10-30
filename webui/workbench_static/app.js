@@ -2,6 +2,8 @@ import {t, uiText, uiAttr, rawText, sourceText, html, textHTML, applyLanguage, g
 import {createScenarioStudio} from './scenarios.js?v=scenario-editors-24';
 import {createSpeakType} from './speaktype.js?v=2';
 import {createMobileAccess} from './mobile-access.js?v=auto-sync-2';
+import {createInterpretation} from './interpretation.js?v=1';
+const interpretation=createInterpretation({root:document.getElementById('page-interpretation'),api,navigate,showToast,onRuntimeChange:()=>void pollStatus()});
 const mobileAccess=createMobileAccess({navigate,showToast});
 const speakType=createSpeakType({root:document.getElementById('page-speaktype'),api,showToast});
 const scenarioStudio=createScenarioStudio({root:document.getElementById('page-scenario-studio'),api,showToast,navigate,plainMessage});
@@ -19,6 +21,7 @@ const TASKS = [
 ];
 const PRIMARY_TASKS = ['tts','asr','music','vc','design'];
 const SCENARIOS = [
+  {id:'interpretation',label:'实时翻译',description:'说中文，听英文。自动断句、翻译并朗读，所有处理都在本机完成。',icon:'wave',available:true},
   {id:'realtime-chat',label:'实时语音聊天',description:'通过语音或文字与对话模型交流，使用选定声音回复。',icon:'chat',available:true},
   {id:'subtitles',label:'自动字幕与校对',description:'导入单人口播音频或视频，识别语音、校对字幕并导出 SRT / VTT。',icon:'text',available:true},
   {id:'video-dubbing',label:'视频翻译配音',description:'识别原文、翻译、逐句配音与时长检查，保留背景音乐并混音导出视频。',icon:'play',available:true},
@@ -45,12 +48,12 @@ function node(tag, className='', text) { const n=document.createElement(tag);if(
 function rawNode(tag, className='', text) {const n=node(tag,className);if(text!==undefined)rawText(n,text);return n;}
 function button(text, className, fn) { const n=node('button',className,text);n.type='button';n.addEventListener('click',fn);return n; }
 function replace(el, ...children) { el.replaceChildren(...children.filter(Boolean)); }
-function taskInfo() { const task=TASKS.find(t=>t.id===state.task);return state.tool?{...task,...state.tool}:task; }
+function taskInfo() { const task=TASKS.find(t=>t.id===state.task);if(state.task==='vc'&&state.detail?.profile?.native_s2s)return {...task,label:'语音对话',action:'发送语音'};return state.tool?{...task,...state.tool}:task; }
 function workspace(key=state.key) { return state.workspaces[key] ||= {forms:{},options:{},model:null,result:null}; }
 function clearWorkspaceResult(key=state.key) {const current=workspace(key);if(current.result?.sourceUrl){URL.revokeObjectURL(current.result.sourceUrl);delete current.result.sourceUrl;}current.result=null;current.message='';current.resultEpoch=(current.resultEpoch||0)+1;if(key===state.key)stopStreamPlayback();}
 function formValues() { return workspace().forms; }
 function modelOptions(key=state.key,model=state.model) { return workspace(key).options[model||''] ||= {values:{},inputs:{},json:''}; }
-function fieldValues(key) {return ['language','context','detailed','dialogue','stream','duration','seed','max_tokens','builtin_voice'].includes(key)?modelOptions().inputs:formValues();}
+function fieldValues(key) {return ['language','context','detailed','dialogue','stream','duration','seed','max_tokens','builtin_voice','system_prompt'].includes(key)?modelOptions().inputs:formValues();}
 function preference(name,fallback) { try{return JSON.parse(localStorage.getItem(`audiocpp-${name}`))??fallback;}catch{return fallback;} }
 function savePreference(name,value) { try{localStorage.setItem(`audiocpp-${name}`,JSON.stringify(value));}catch{} }
 function icon(name) { const el=document.createElementNS('http://www.w3.org/2000/svg','svg');el.setAttribute('class','icon');el.setAttribute('aria-hidden','true');const use=document.createElementNS(el.namespaceURI,'use');use.setAttribute('href',`#icon-${name}`);el.append(use);return el; }
@@ -114,10 +117,11 @@ async function navigate(route, updateHash=true, modelId) {
   const task=TASKS.find(t=>PRIMARY_TASKS.includes(t.id)&&t.id===route);
   const settings=route==='settings'||route.startsWith('settings/');
   const scenario=route==='scenarios/subtitles'?'subtitles':route==='scenarios/video-dubbing'?'dubbing':null;
-  const page=task||tool?'workspace':settings?'settings':route==='scenarios/speaktype'?'speaktype':route==='scenarios/realtime-chat'?'realtime':scenario?'scenario-studio':route;
-  if(!['home','workspace','tools','scenarios','scenario-studio','speaktype','realtime','models','settings','references'].includes(page))return navigate('home',updateHash);
+  const page=task||tool?'workspace':settings?'settings':route==='scenarios/interpretation'?'interpretation':route==='scenarios/speaktype'?'speaktype':route==='scenarios/realtime-chat'?'realtime':scenario?'scenario-studio':route;
+  if(!['home','workspace','tools','scenarios','scenario-studio','speaktype','interpretation','realtime','models','settings','references'].includes(page))return navigate('home',updateHash);
   if(page==='realtime'&&state.page!=='realtime')realtimeReturnRoute=initializing?'scenarios':state.route;
   if(page!=='speaktype')speakType.hide();
+  if(page!=='interpretation')interpretation.hide();
   if(state.route!==route){stopRecordings();window.scrollTo(0,0);}closeModelPicker(false);setParameters(false,false);
   state.route=route;state.page=page;
   document.querySelector('.main-content').prepend($('global-model-status'));
@@ -129,7 +133,7 @@ async function navigate(route, updateHash=true, modelId) {
   syncDrawers();
   $('sidebar-toggle').setAttribute('aria-expanded',String(!document.body.classList.contains('sidebar-collapsed')&&!matchMedia('(max-width:760px)').matches));
   document.querySelectorAll('.page').forEach(p=>{p.hidden=p.id!==`page-${page}`;p.classList.toggle('active',!p.hidden);});
-  const nav=tool?'tools':settings?'settings':page==='realtime'||page==='speaktype'||scenario?'scenarios':route;
+  const nav=tool?'tools':settings?'settings':page==='realtime'||page==='speaktype'||page==='interpretation'||scenario?'scenarios':route;
   document.querySelectorAll('[data-route]').forEach(b=>{const active=b.dataset.route===nav;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   if(updateHash&&location.hash!==`#${route}`)history.pushState(null,'',`#${route}`);
   else if(location.hash!==`#${route}`)history.replaceState(null,'',`#${route}`);
@@ -152,6 +156,7 @@ async function navigate(route, updateHash=true, modelId) {
   }else if(page==='tools')renderTools();
   else if(page==='scenarios')renderScenarios();
   else if(page==='speaktype')await speakType.open();
+  else if(page==='interpretation')await interpretation.open();
   else if(scenario)await scenarioStudio.open(scenario);
   else if(page==='references'){renderReferenceEditor();if(!initializing)await refreshReferences();}
   else if(page==='realtime'){const frame=$('realtime-frame');if(!frame.hasAttribute('src'))frame.src=frame.dataset.src;}
@@ -244,7 +249,10 @@ window.addEventListener('keydown',event=>{
 },true);
 $('tools-back').addEventListener('click',()=>navigate('tools'));
 $('return-active-job').addEventListener('click',async()=>{const record=state.job;if(!record)return;await navigate(record.key,true,record.model);if(state.job===record){if(record.sourceBlob&&!record.sourceUrl)record.sourceUrl=URL.createObjectURL(record.sourceBlob);workspace(record.key).result=record;renderWorkspaceResults();updateActiveJobBanner();}});
-$('end-realtime-session').addEventListener('click',()=>$('realtime-frame').contentWindow?.postMessage({type:'audiocpp:realtime-stop'},location.origin));
+$('end-realtime-session').addEventListener('click',async()=>{
+  if(state.runtime?.interpretation_active){interpretation.hide();try{await api('/interpretation/stop',{method:'POST'});await pollStatus();}catch(error){showToast(error.message);}return;}
+  $('realtime-frame').contentWindow?.postMessage({type:'audiocpp:realtime-stop'},location.origin);
+});
 $('browse-models').addEventListener('click',()=>{$('model-task-filter').value=state.task;renderLibrary();navigate('models');});
 fillSelect($('model-task-filter'),[{label:'所有用途',value:''},...TASKS.map(t=>({label:t.label,value:t.id}))],'');
 // Search and download credentials have separate form owners and session state.
@@ -469,6 +477,7 @@ function updateLoadStatus() {
 function modelLoadBlockReason() {
   if(initializing)return '正在读取工作空间…';
   if(state.loading)return '模型正在加载，请稍候。';
+  if(state.runtime?.interpretation_active)return '实时翻译正在使用模型，请先结束翻译。';
   if(state.runtime?.realtime_active||state.realtime?.active)return '实时聊天正在使用模型，请先结束通话。';
   if(state.referenceJob)return '正在识别参考文本，请等待识别完成。';
   if(state.job||state.submitting||state.runtime?.busy)return '已有任务正在执行，请等待完成或先停止任务。';
@@ -500,7 +509,8 @@ function updateActiveJobBanner() {
 function updateRealtimeBadge() {
   const active=!!(state.realtime?.active||state.runtime?.realtime_active);
   $('realtime-nav-status').hidden=!active;$('end-realtime-session').hidden=!active;
-  uiText($('realtime-nav-status'), state.realtime?.microphone?'通话中':'会话中');
+  uiText($('realtime-nav-status'), state.runtime?.interpretation_active?'翻译中':state.realtime?.microphone?'通话中':'会话中');
+  uiText($('end-realtime-session').querySelector('span')||$('end-realtime-session'), state.runtime?.interpretation_active?'结束当前翻译':'结束当前对话');
 }
 function stopRecordings() {state.recordingEpoch=(state.recordingEpoch||0)+1;for(const recorder of state.recorders)if(recorder.state==='recording')recorder.stop();}
 function languageLabel(value,fallback=value) {const key=String(value).toLowerCase();if(LANGUAGE_NAMES[key])return LANGUAGE_NAMES[key];try{const name=new Intl.DisplayNames([getLanguage()==='en'?'en':'zh-CN'],{type:'language'}).of(key);return name&&name!==key?name:fallback;}catch{return fallback;}}
@@ -1193,7 +1203,7 @@ function renderInputs() {
     }
     if(music.source_audio){
       const sourceWorkspace=state.key;
-      const source=uploadInput('audio',music.require_source_audio?'源音频':'源音频（可选）',{required:!!music.require_source_audio,
+      const source=uploadInput('audio',music.style_audio?'音频风格参考（可选）':music.require_source_audio?'源音频':'源音频（可选）',{required:!!music.require_source_audio,
         onUploaded:()=>{if(aceEdit)return musicSourceChanged(sourceWorkspace);},
         onClear:()=>{if(aceEdit)musicSourceChanged(sourceWorkspace);}});
       if(detail?.family==='ace_step'){const analyze=button('分析源音频','button secondary small-button',()=>submitTask('analyze_source'));analyze.id='analyze-music-source';analyze.disabled=$('run-button').disabled||!formValues().audio;source.querySelector('.upload-actions').append(analyze);}
@@ -1204,8 +1214,10 @@ function renderInputs() {
       if(aceEdit){creation.append(musicRouteControls(context,source));renderMusicAnalysisChoice(sourceColumn);}
       creation.append(common);columns.append(sourceColumn,creation);musicHeader.append(columns);
     }
+    if(music.pianoroll)primary.append(uploadInput('pianoroll','钢琴卷帘（JSON，可选）',{accept:'.json',record:false}));
   }else if(task==='vc'||task==='processing'){
-    primary.append(uploadInput('audio',task==='vc'?'要转换的源音频':'要处理的源音频',{required:true}));
+    primary.append(uploadInput('audio',profile.native_s2s?'语音问题':task==='vc'?'要转换的源音频':'要处理的源音频',{required:true}));
+    if(profile.native_s2s)secondary.append(textInput('system_prompt','系统提示词（可选）',{rows:3,placeholder:'留空使用模型的语音对话提示词。'}));
     if(detail?.voice_mode==='rvc'||profile.model_as_target_voice){
       secondary.classList.add('paired-inputs');
       secondary.append(uploadInput('rvc_voice_model','RVC 声音模型（可选）',{accept:'.pth,.pt',record:false,fallback:{key:'rvc_use_builtin',label:'使用内置音色',chooseLabel:'选择 RVC 文件',help:'勾选时使用右侧选择的内置音色；已上传的自定义模型会保留。'}}));
@@ -1350,6 +1362,7 @@ function parameterControl(param) {
   input.addEventListener('input',()=>{
     let value=input.type==='checkbox'?input.checked:input.value;
     if(runtimeBool&&value!=='')value=value==='true';
+    if(choices?.length&&input.tagName==='SELECT'){const choice=choicesOf(choices).find(choice=>String(choice.value)===value);if(choice)value=choice.value;}
     if(input.type==='number'||input.type==='range')value=value===''?'':Number(value);
     if(value==='')delete values[key];else values[key]=value;
     if(runtime||ace||['tts','asr','design','vc'].includes(state.task))setModelOption(key,value===''?undefined:value);
@@ -1421,7 +1434,10 @@ function renderParameters() {
   replace($('basic-controls'),...basic.filter(p=>!voice(p)).map(parameterControl));
   const settings=$('task-setting-inputs');replace(settings);
   settings.append(...basic.filter(voice).map(parameterControl));
-  if(state.task==='tts'&&state.detail?.streaming)settings.append(checkboxInput('stream','流式生成','开启时边生成边播放，关闭时离线生成。'));
+  if(state.detail?.streaming&&(['tts','music'].includes(state.task)||state.detail.profile?.native_s2s))settings.append(checkboxInput('stream','流式生成','开启时边生成边播放，关闭时离线生成。'));
+  if(state.detail?.profile?.native_s2s){
+    const reset=button('开始新对话','button secondary small-button',()=>{if(state.job||state.submitting)return;modelOptions().inputs.conversation_id=crypto.randomUUID();clearWorkspaceResult();renderWorkspaceResults();showToast('新对话将在下一次提问时开始。');});reset.id='new-spoken-conversation';reset.disabled=!!state.job||state.submitting;settings.append(reset);
+  }
   if(state.task==='asr'&&state.detail?.streaming)settings.append(checkboxInput('stream','流式转写'));
   if((state.task==='tts'&&state.detail?.languages?.length)||(state.task==='asr'&&state.detail?.languages?.length>1)){
     const group=selectInput('language',state.task==='asr'?'识别语言':'语言',state.task==='asr'?asrLanguageChoices(state.detail):languageChoices(state.detail.languages,state.detail.tts_controls?.voice_languages?'跟随音色':'自动'));
@@ -1462,7 +1478,7 @@ function renderParameters() {
   }
   if(!design&&maxTokens)$('expert-controls').append(maxTokens);
   $('common-options').hidden=!settings.childElementCount&&!$('basic-controls').childElementCount&&!$('effect-controls').childElementCount;
-  uiText($('common-options-heading'), state.task==='music'?'创作选项':state.task==='asr'?'识别选项':state.task==='vc'?'转换选项':'合成选项');
+  uiText($('common-options-heading'), state.detail?.profile?.native_s2s?'对话选项':state.task==='music'?'创作选项':state.task==='asr'?'识别选项':state.task==='vc'?'转换选项':'合成选项');
   $('common-options-heading').hidden=!['tts','design','vc','asr','music'].includes(state.task)||($('common-options').hidden&&!document.querySelector('.music-route-controls')?.childElementCount);
 }
 $('reset-options').addEventListener('click',()=>{const options=modelOptions();options.values={};options.inputs={};options.json='';delete options.musicEdited;delete options.musicAnalysisPending;state.overrides=options.values;$('options-json').value='';renderInputs();renderParameters();updateRunButton();showToast('已恢复默认参数；运行设置需应用后生效');});
@@ -1486,6 +1502,7 @@ function collectInputs() {
   if(state.task==='tts'&&state.detail.family==='irodori_tts'&&collectOptions().no_ref===true){delete inputs.voice;delete inputs.builtin_voice;}
   if(aceMusicEditing()&&inputs.audio&&state.detail.music_inputs?.duration)inputs.duration=-1;
   if(state.task==='asr'&&collectOptions().return_timestamps){inputs.detailed=true;inputs.dialogue=false;}
+  if(profile.native_s2s){modelOptions().inputs.conversation_id ||= crypto.randomUUID();inputs.conversation_id=modelOptions().inputs.conversation_id;}
   return inputs;
 }
 function validateInputs(inputs,options={}) {
@@ -1504,6 +1521,7 @@ function validateInputs(inputs,options={}) {
   if(voiceLanguages&&language&&selectedVoice&&voiceLanguages[selectedVoice]!==language)throw new Error('所选音色与语言不匹配，请选择对应音色，或将语言设为跟随音色。');
   const xVectorOnly=state.detail.family==='qwen3_tts'&&(options.x_vector_only_mode===true||['true','1','yes','on'].includes(String(options.x_vector_only_mode)));
   const referenceText=inputs.reference_text||state.voices.find(voice=>voice.name===inputs.builtin_voice)?.text||'';
+  if(state.task==='tts'&&state.detail.family==='voxcpm2'&&options.ultimate_clone){if(!inputs.voice&&!inputs.builtin_voice)throw new Error('增强声音克隆需要参考音频。');if(!referenceText.trim())throw new Error('增强声音克隆需要匹配的参考原文。');}
   if(!xVectorOnly&&(profile.require_reference_text||state.detail.requires_reference_text||(profile.require_reference_text_with_voice&&(inputs.voice||inputs.builtin_voice)))&&!referenceText.trim())throw new Error('这个模型需要参考原文，请填写参考音频实际说出的内容。');
   if(state.task==='vc'&&profile.require_vc_target&&!inputs.voice&&!inputs.builtin_voice)throw new Error('请添加目标声音参考。');
   if(state.task==='vc'&&state.detail.family==='rvc'){
@@ -1532,7 +1550,7 @@ async function submitTask(action='generate'){
     if(action!=='analyze_source')for(const root of [$('task-form'),$('workspace-settings')])for(const input of root.querySelectorAll('input[type="number"]'))if(!input.checkValidity())throw new Error(`请检查参数「${input.closest('.field-group')?.querySelector('label')?.textContent||input.name||input.id}」的范围和步长。`);
     if(action==='analyze_source'){if(state.task!=='music'||state.detail.family!=='ace_step'||!inputs.audio)throw new Error('请先添加 ACE-Step 源音频。');}else{validateInputs(inputs,options);if(state.task==='music')options=musicRequestOptions(options,inputs);}
     runtimeOptions(options);const source=workspace(key).forms._audioBlob;
-    const saved=modelOptions(),record={key,resultEpoch,task:state.task,model:state.model,action,label:`${action==='analyze_source'?'源音频分析':taskInfo().label} · ${state.detail.label||state.model}`,stream:state.task==='tts'&&!!inputs.stream,lastAudioIndex:-1,result:{status:'queued',message:'正在准备任务…',artifacts:[]}};
+    const saved=modelOptions(),record={key,resultEpoch,task:state.task,model:state.model,action,label:`${action==='analyze_source'?'源音频分析':taskInfo().label} · ${state.detail.label||state.model}`,stream:['tts','music','vc'].includes(state.task)&&!!inputs.stream,lastAudioIndex:-1,result:{status:'queued',message:'正在准备任务…',artifacts:[]}};
     if(action==='analyze_source'){delete saved.musicAnalysisPending;Object.assign(record,{sourceAudio:inputs.audio,parameterValues:saved.values,submittedValues:{...saved.values},submittedJson:saved.json});}
     state.pendingRecord=record;
     renderWorkspaceResults();
@@ -1631,7 +1649,7 @@ function playStreamSegments(segments) {
   for(const segment of [...(segments||[])].sort((a,b)=>Number(a.index)-Number(b.index))){
     const index=Number(segment.index);if(!Number.isInteger(index)||index<=state.job.lastAudioIndex)continue;state.job.lastAudioIndex=index;
     const playback=state.playback;if(!playback)continue;
-    try{const sampleRate=Number(segment.sample_rate);if(!Number.isFinite(sampleRate)||sampleRate<8000||sampleRate>192000)throw new Error('invalid sample rate');const raw=atob(segment.pcm||'');if(!raw.length||raw.length%2)continue;const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);const data=new DataView(bytes.buffer);const buffer=playback.context.createBuffer(1,raw.length/2,sampleRate);const samples=buffer.getChannelData(0);for(let i=0;i<samples.length;i++)samples[i]=data.getInt16(i*2,true)/32768;const source=playback.context.createBufferSource();source.buffer=buffer;source.connect(playback.gain);const start=Math.max(playback.nextTime,playback.context.currentTime+0.06);playback.nextTime=start+buffer.duration;playback.duration+=buffer.duration;playback.parts.push({start,duration:buffer.duration});playback.sources.add(source);source.onended=()=>{source.disconnect();playback.sources.delete(source);if(state.playback===playback&&playback.finished&&!playback.sources.size){stopStreamPlayback();if(state.key===playback.record.key)renderWorkspaceResults();}};source.start(start);updateStreamPlayback(playback);}
+    try{const sampleRate=Number(segment.sample_rate);if(!Number.isFinite(sampleRate)||sampleRate<8000||sampleRate>192000)throw new Error('invalid sample rate');const raw=atob(segment.pcm||'');if(!raw.length||raw.length%2)continue;const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);const data=new DataView(bytes.buffer);const channels=Number(segment.channels||1);if(![1,2].includes(channels)||raw.length%(2*channels))throw new Error('invalid channel data');const buffer=playback.context.createBuffer(channels,raw.length/(2*channels),sampleRate);for(let channel=0;channel<channels;channel++){const samples=buffer.getChannelData(channel);for(let i=0;i<samples.length;i++)samples[i]=data.getInt16((i*channels+channel)*2,true)/32768;}const source=playback.context.createBufferSource();source.buffer=buffer;source.connect(playback.gain);const start=Math.max(playback.nextTime,playback.context.currentTime+0.06);playback.nextTime=start+buffer.duration;playback.duration+=buffer.duration;playback.parts.push({start,duration:buffer.duration});playback.sources.add(source);source.onended=()=>{source.disconnect();playback.sources.delete(source);if(state.playback===playback&&playback.finished&&!playback.sources.size){stopStreamPlayback();if(state.key===playback.record.key)renderWorkspaceResults();}};source.start(start);updateStreamPlayback(playback);}
     catch{stopStreamPlayback();showToast('流式试听中断，任务会继续生成完整音频。');}
   }
 }

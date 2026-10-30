@@ -7,12 +7,14 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cctype>
 #include <ctime>
 #include <cstdlib>
 #include <fstream>
 #include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -626,6 +628,25 @@ struct PackageManager::Impl {
     std::filesystem::path repository_root;
     std::filesystem::path models_root;
     std::vector<Package> packages;
+    std::mutex install_locks_mutex;
+    struct InstallLock {
+        std::mutex mutex;
+        std::condition_variable available;
+        bool held = false;
+    };
+    std::map<std::string, std::weak_ptr<InstallLock>> install_locks;
+
+    std::shared_ptr<InstallLock> install_lock_for(const Package & package) {
+        std::lock_guard<std::mutex> lock(install_locks_mutex);
+        const auto key = package.target_directory.generic_string();
+        auto & weak_lock = install_locks[key];
+        auto install_lock = weak_lock.lock();
+        if (!install_lock) {
+            install_lock = std::make_shared<InstallLock>();
+            weak_lock = install_lock;
+        }
+        return install_lock;
+    }
 
     const Package & require_package(const std::string & id) const {
         const auto found = std::find_if(packages.begin(), packages.end(), [&](const Package & item) {
@@ -673,6 +694,26 @@ std::string PackageManager::install(
     const std::shared_ptr<std::atomic_bool> & cancelled,
     const std::function<void(const PackageProgress &)> & progress) {
     const auto & package = impl_->require_package(package_id);
+    // Packages that share a target directory can also share sidecar files.
+    // Serialize their full install transactions so simultaneous library
+    // downloads cannot race while publishing those files.
+    const auto install_lock = impl_->install_lock_for(package);
+    {
+        std::unique_lock<std::mutex> lock(install_lock->mutex);
+        while (install_lock->held) {
+            if (cancelled && cancelled->load()) throw Cancelled();
+            install_lock->available.wait_for(lock, std::chrono::milliseconds(50));
+        }
+        if (cancelled && cancelled->load()) throw Cancelled();
+        install_lock->held = true;
+    }
+    const auto release_install_lock = std::shared_ptr<void>(nullptr, [install_lock](void *) {
+        {
+            std::lock_guard<std::mutex> lock(install_lock->mutex);
+            install_lock->held = false;
+        }
+        install_lock->available.notify_one();
+    });
     const auto final_root = impl_->models_root / package.target_directory;
     std::vector<std::pair<std::string, std::filesystem::path>> plan;
     for (const auto & remote : package.files) plan.emplace_back(remote, final_root / stripped_path(package, remote));
@@ -826,6 +867,23 @@ std::string PackageManager::remove(const std::string & package_id) {
     return "Removed " + package.id + " -> " + root.string();
 }
 
+std::optional<PackageInfo> PackageManager::package_info(const std::string & package_id) const {
+    const auto found = std::find_if(impl_->packages.begin(), impl_->packages.end(), [&](const Package & package) {
+        return package.id == package_id;
+    });
+    if (found == impl_->packages.end()) return std::nullopt;
+    PackageInfo info;
+    info.family = found->family;
+    info.package.root = (impl_->models_root / found->target_directory).lexically_normal();
+    info.package.format = found->format;
+    info.package.files.reserve(found->files.size());
+    for (const auto & remote : found->files) {
+        info.package.files.push_back(stripped_path(*found, remote).lexically_normal());
+    }
+    info.installed = package_installed(*found, impl_->models_root);
+    return info;
+}
+
 std::string PackageManager::inventory(bool query_remote, const std::string & package_id) const {
     std::vector<const Package *> selected;
     selected.reserve(impl_->packages.size());
@@ -849,6 +907,17 @@ std::string PackageManager::inventory(bool query_remote, const std::string & pac
             json::Value::Object row;
             row["id"] = string_value(package.id);
             row["installed"] = bool_value(installed);
+            json::Value::Array files;
+            files.reserve(package.files.size());
+            for (const auto & remote : package.files) {
+                files.push_back(string_value(stripped_path(package, remote).lexically_normal().generic_string()));
+            }
+            json::Value::Object metadata;
+            metadata["family"] = string_value(package.family);
+            metadata["root"] = string_value((impl_->models_root / package.target_directory).lexically_normal().generic_string());
+            metadata["files"] = json::Value::make_array(std::move(files));
+            metadata["format"] = string_value(package.format);
+            row["package"] = json::Value::make_object(std::move(metadata));
             row["state"] = string_value(query_remote ? "ok" : "pending");
             row["message"] = string_value("");
             row["size_bytes"] = json::Value::make_null();

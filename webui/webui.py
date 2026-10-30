@@ -1170,7 +1170,7 @@ _UPDATED_STREAMING_RATES = {
     "qwen3_tts": 24000, "fish_audio": 44100, "plapre": 24000,
     "vibevoice": 24000, "kokoro_tts": 24000, "higgs_audio_tts": 24000,
     "irodori_tts": 48000, "moss_tts_nano": 48000, "fish_drama3": 44100,
-    "voxtral_tts": 24000,
+    "voxtral_tts": 24000, "ming3_tts": 24000,
 }
 
 
@@ -1980,6 +1980,8 @@ def _prefer_package(candidates):
 
 
 def _matching_spec_package(entry):
+    if entry.get("manual_install"):
+        return None
     family = entry.get("family")
     packages = SPEC_PACKAGES_BY_FAMILY.get(family, [])
     if not packages:
@@ -2252,7 +2254,8 @@ def catalog_models():
                               if entry.get("family") in GGUF_NATIVE_FAMILIES else None)
         entry["gguf_ready"] = bool(entry["gguf_path"])
         entry["gguf_only"] = entry["gguf_ready"] and not (package_complete or legacy_complete)
-        if entry["gguf_ready"] and not entry.get("additional_download_ids"):
+        if (entry["gguf_ready"] and not entry.get("additional_download_ids")
+                and (entry.get("family") not in {"lfm3_audio", "gradium_phonon"} or not entry["missing_files"])):
             entry["installed"] = True
             entry["incomplete"] = False
         if source_complete and entry["abs_path"] == source_complete[0] and not entry["gguf_ready"]:
@@ -2301,6 +2304,25 @@ def choices_for_tasks(tasks, language=None):
     return out
 
 
+def _initialize_builtin_voices():
+    """Seed reviewed examples once; the runtime voice directory is private."""
+    marker = os.path.join(PROMPTS_DIR, ".demo-voices-initialized")
+    shared = os.path.join(HERE, "demo_voices")
+    if os.path.exists(marker) or not os.path.isdir(shared):
+        return
+    os.makedirs(PROMPTS_DIR, exist_ok=True)
+    for name in os.listdir(shared):
+        source = os.path.join(shared, name)
+        target = os.path.join(PROMPTS_DIR, name)
+        if name.lower().endswith(".wav") and os.path.isfile(source) and not os.path.exists(target):
+            shutil.copy2(source, target)
+    with open(marker, "w", encoding="ascii") as f:
+        f.write("1\n")
+
+
+_initialize_builtin_voices()
+
+
 def builtin_voices():
     if not os.path.isdir(PROMPTS_DIR):
         return []
@@ -2327,14 +2349,20 @@ def _load_voice_texts():
     """Built-in voice basename -> reference transcript, parsed from
     voice/prompt_text (each line is '<basename>|<transcript>')."""
     texts = {}
-    try:
-        with open(os.path.join(PROMPTS_DIR, "prompt_text"), "r", encoding="utf-8") as f:
-            for line in f:
-                name, sep, text = line.rstrip("\n").partition("|")
-                if sep:
-                    texts[name.strip()] = text
-    except Exception:
-        pass
+    paths = [os.path.join(PROMPTS_DIR, "prompt_text"),
+             os.path.join(os.path.dirname(PROMPTS_DIR), "configs", "voice_prompt_defaults.txt")]
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    name, sep, text = line.rstrip("\n").partition("|")
+                    if sep:
+                        texts[name.strip()] = text
+            break  # An existing local file, even empty, overrides shared defaults.
+        except FileNotFoundError:
+            continue
+        except Exception:
+            break
     return texts
 
 
@@ -2390,7 +2418,7 @@ def _write_voice_prompt(voice_stem, reference_text):
         with open(prompt_path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
     except FileNotFoundError:
-        lines = []
+        lines = [f"{name}|{text}" for name, text in _load_voice_texts().items()]
 
     transcript = " ".join((reference_text or "").splitlines()).strip()
     record = f"{voice_stem}|{transcript}"
@@ -2435,7 +2463,7 @@ def _delete_voice_prompt(voice_stem):
         with open(prompt_path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
     except FileNotFoundError:
-        return
+        lines = [f"{name}|{text}" for name, text in _load_voice_texts().items()]
     output = [
         line for line in lines
         if not (line.partition("|")[1]
@@ -2784,6 +2812,8 @@ def _declared_package_gguf_path(entry):
     required = REQUIRED_FILES.get(entry.get("download_id") or "") or []
     found = []
     for rel in required:
+        if entry.get("family") == "lfm3_audio" and os.path.basename(rel).lower().startswith("mmproj-"):
+            continue
         parts = [part for part in str(rel).replace("\\", "/").split("/") if part]
         candidate = os.path.join(model_path, *parts)
         if os.path.isfile(candidate):
@@ -2803,6 +2833,8 @@ def _server_model_path(entry):
 
 def _runtime_model_spec(entry):
     """Bind a validated external Vevo2 Whisper root in a temporary native spec."""
+    if entry.get("model_spec_override") == "embedded":
+        return "embedded"
     if entry.get("family") != "vevo2" or not entry.get("source_roots"):
         return None
     spec = json.loads(json.dumps(MODEL_SPECS["vevo2"]))
@@ -3918,6 +3950,8 @@ def _existing_gguf_path(entry):
         return model_path
     if not os.path.isdir(model_path):
         return None
+    if entry.get('family') == 'lfm3_audio':
+        return _declared_package_gguf_path(entry)
     default = os.path.join(model_path, "model.gguf")
     if os.path.isfile(default):
         return default
@@ -4200,6 +4234,11 @@ def _speech_max_tokens(prof, value, options):
 
 
 def _tts_reference_text_required(entry, prof, has_reference, options):
+    if (entry and entry.get('family') == 'voxcpm2'
+            and str(options.get('ultimate_clone', False)).lower() in {'true', '1', 'yes', 'on'}):
+        if not has_reference:
+            raise gr.Error(_t('增强声音克隆需要参考音频。', 'Enhanced voice cloning requires reference audio.'))
+        return True
     required = (prof.get("require_reference_text") or
                 (prof.get("require_reference_text_with_voice") and has_reference))
     # Qwen Base's x-vector mode still needs audio, but does not consume its transcript.
@@ -4226,6 +4265,15 @@ def _validate_tts_options(entry, options, *, streaming=False):
 
 def _tts_preset_options(entry, language, options):
     """Choose a compatible default voice without overriding an explicit voice."""
+    if entry and entry.get("family") == "lfm3_audio":
+        language = str(options.get("language", language) or "auto").strip().lower()
+        codes = dict(ar="arabic", da="danish", de="german", el="greek", en="american_english",
+                     es="spanish", fi="finnish", fr="french", he="hebrew", it="italian",
+                     ja="japanese", ko="korean", nl="dutch", pl="polish", pt="portuguese",
+                     sv="swedish", tr="turkish", zh="chinese")
+        if language in codes and not options.get("voice"):
+            options["voice"] = codes[language] + "_female"
+        return
     if not entry or entry.get("family") != "kokoro_tts":
         return
     languages = dict(a='en-us', b='en-gb', e='es', f='fr-fr', h='hi', i='it', j='ja', p='pt-br', z='zh')
@@ -4844,6 +4892,9 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
         if detail_results is not None and (stream or dialogue):
             raise gr.Error(_t("详细结果仅支持普通离线转写，请关闭流式和对话模式。",
                               "Detailed results require offline transcription without dialogue mode."))
+        if (context or "").strip() and entry and entry.get("family") in {"audio_flamingo", "samsone"}:
+            prof = {**prof, "default_options": {**prof.get("default_options", {}),
+                                               "instruct": context.strip()}}
         options = _merged_options(prof, adv_values, adv_options)
         runtime_args = {"runtime": asr_runtime, "cancel": cancel} if asr_runtime is not None else {}
         route_args = {"server_url": asr_runtime.server_url, "cancel": cancel} if asr_runtime is not None else {}
@@ -4857,8 +4908,6 @@ def do_asr(model, audio_path, language="", context="", dialogue=False, stream=Fa
             extras["language"] = resolve_language(prof, language)
         if (context or "").strip():
             extras["text"] = context.strip()
-            if entry and entry.get("family") in {"audio_flamingo", "samsone"}:
-                options.setdefault("instruct", context.strip())
         if options:
             extras["options"] = options
         if dialogue:
@@ -5097,7 +5146,7 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
             if not (text or "").strip() and route in {"complete", "lego", "extract"}:
                 tracks = ", ".join(options.get("complete_track_classes", [])) or options.get("track_name", "")
                 text = f"{route}: {tracks}"
-        if not (text or "").strip():
+        if not (text or "").strip() and not (entry and entry.get("family") == "magenta_realtime_2" and source_audio):
             raise gr.Error(_t("请输入音乐/音效提示词", "Enter a music or sound prompt."))
         if prof.get("require_source_audio") and not source_audio:
             raise gr.Error(_t("该任务需要源音频。", "This task requires source audio."))
@@ -5134,7 +5183,7 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         if duration is not None and float(duration) != 0:
             duration_value = float(duration)
             if duration_value > 0 or not prof.get("omit_nonpositive_duration"):
-                if family in {"auk", "controlfoley", "midashenglm_gen"}:
+                if family in {"auk", "controlfoley", "midashenglm_gen", "magenta_realtime_2"}:
                     if duration_value > 0:
                         options.setdefault("duration_sec", duration_value)
                 elif family not in {"yue2", "firered_audio"}:
@@ -5144,7 +5193,8 @@ def do_music_gen(model, text, lyrics, source_audio, duration, seed,
         if options:
             req["options"] = options
 
-        dur_note = f"{req['duration_seconds']}s" if "duration_seconds" in req else "auto"
+        target_duration = req.get("duration_seconds", options.get("duration_sec"))
+        dur_note = f"{target_duration}s" if target_duration is not None else "auto"
         _ui_log("music generation started: model={model}, target duration {dur_note}".format(
                 model=model, dur_note=dur_note))
         t_start = time.time()

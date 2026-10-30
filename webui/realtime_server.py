@@ -40,6 +40,7 @@ import threading
 from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
+import anyio
 import uvicorn
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -673,7 +674,9 @@ def create_app(
                 pipeline.stop()
             finally:
                 if leased and lease_callback is not None:
-                    await asyncio.to_thread(lease_callback, session_id, None)
+                    # A cancelled socket must not cancel its queued model release.
+                    with anyio.CancelScope(shield=True):
+                        await asyncio.to_thread(lease_callback, session_id, None)
 
     # Shared Studio translations also serve standalone realtime pages.
     if serve_static:

@@ -41,6 +41,76 @@ class LauncherTests(unittest.TestCase):
             self.assertTrue(launcher.port_in_use(port))
             self.assertEqual(listener.getsockname()[1], port)
 
+    def test_related_installations_are_limited_to_the_checkout_and_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, bundle = root / 'webui', root / 'audiocpp-portable/webui'
+            for folder in (source, bundle):
+                folder.mkdir(parents=True)
+                (folder / 'workbench_launcher.py').touch()
+            for current, expected in ((source, bundle), (bundle, source)):
+                with patch.object(launcher, 'WEBUI_DIR', current):
+                    self.assertEqual(list(launcher.related_installations().values()), [expected.resolve()])
+
+    def peer_response(self, **updates):
+        info = {'application': launcher.APPLICATION, 'install_id': 'peer',
+                'shutdown_available': True, 'shutdown_token': 'local-test-token', **updates}
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = json.dumps(info).encode()
+        return response
+
+    def test_idle_related_instance_hands_off_without_signalling_other_processes(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(launcher, 'related_installations', return_value={'peer': Path(directory)}), \
+                patch.object(launcher.urllib.request, 'build_opener') as opener, \
+                patch.object(launcher, 'instance_idle', return_value=True), \
+                patch.object(launcher, 'port_in_use', side_effect=[True, False]), \
+                patch.object(launcher.time, 'sleep'):
+            opener.return_value.open.return_value = self.peer_response()
+            self.assertTrue(launcher.release_related_instance(7899))
+            request = opener.return_value.open.call_args_list[1].args[0]
+            self.assertEqual(request.full_url, 'http://127.0.0.1:7899/api/workbench/shutdown')
+            self.assertEqual(request.get_header('X-workbench-shutdown'), 'local-test-token')
+
+    def test_active_or_unrecognised_peer_is_not_stopped(self):
+        for info, active in (({'install_id': 'unrelated'}, False),
+                             ({'application': 'other-program'}, False), ({}, True)):
+            with patch.object(launcher, 'related_installations', return_value={'peer': Path('peer')}), \
+                    patch.object(launcher.urllib.request, 'build_opener') as opener, \
+                    patch.object(launcher, 'instance_idle', return_value=not active):
+                opener.return_value.open.return_value = self.peer_response(**info)
+                if active:
+                    with self.assertRaisesRegex(RuntimeError, '正在执行任务'):
+                        launcher.release_related_instance(7899)
+                else:
+                    self.assertFalse(launcher.release_related_instance(7899))
+                self.assertEqual(opener.return_value.open.call_count, 1)
+
+    def test_peer_lock_is_released_before_handoff_finishes(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(launcher, 'related_installations', return_value={'peer': Path(directory)}), \
+                patch.object(launcher.urllib.request, 'build_opener') as opener, \
+                patch.object(launcher, 'instance_idle', return_value=True), \
+                patch.object(launcher, 'port_in_use', return_value=False), \
+                patch.object(launcher, '_lock_file', side_effect=[OSError('still cleaning up'), None]) as locked, \
+                patch.object(launcher.time, 'sleep'):
+            path = Path(directory) / 'logs/workbench.lock'
+            path.parent.mkdir();path.write_bytes(b'0')
+            opener.return_value.open.return_value = self.peer_response()
+            self.assertTrue(launcher.release_related_instance(7899))
+            self.assertEqual(locked.call_count, 2)
+
+    def test_peer_that_does_not_exit_reports_a_bounded_error(self):
+        with patch.object(launcher, 'related_installations', return_value={'peer': Path('peer')}), \
+                patch.object(launcher.urllib.request, 'build_opener') as opener, \
+                patch.object(launcher, 'instance_idle', return_value=True), \
+                patch.object(launcher.time, 'monotonic', side_effect=[0, 21]):
+            opener.return_value.open.return_value = self.peer_response()
+            with self.assertRaisesRegex(RuntimeError, '仍在退出'):
+                launcher.release_related_instance(7899)
+
     def test_lock_during_slow_start_reuses_healthy_instance(self):
         with tempfile.TemporaryDirectory() as root, patch.object(launcher, "LOG_DIR", Path(root)), \
                 patch.object(launcher, "existing_health", side_effect=[None, None, {"pid": 123, "runtime_revision": launcher.runtime_revision()}]), \

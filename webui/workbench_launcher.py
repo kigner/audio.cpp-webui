@@ -32,7 +32,7 @@ def runtime_revision():
     digest = hashlib.sha256()
     for name in ("webui.py", "workbench_launcher.py", "workbench_server.py", "workbench_metadata.py",
                  "workbench_references.py", "workbench_asr.py", "workbench_downloads.py",
-                 "workbench_scenarios.py", "scenario_media.py", "workbench_speaktype.py",
+                 "workbench_scenarios.py", "scenario_media.py", "workbench_speaktype.py", "workbench_interpretation.py",
                  "realtime_server.py", "realtime_pipeline.py", "mobile_access.py"):
         path = WEBUI_DIR / name
         digest.update(name.encode("utf-8") + b"\0")
@@ -73,6 +73,56 @@ def port_in_use(port):
     with socket.socket() as probe:
         probe.settimeout(.3)
         return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+def related_installations():
+    """Only this checkout and its adjacent portable bundle may hand off a port."""
+    root = WEBUI_DIR.parent
+    candidates = [root / "audiocpp-portable" / "webui"]
+    if root.name.lower() == "audiocpp-portable":
+        candidates.append(root.parent / "webui")
+    return {hashlib.sha256(os.path.normcase(str(path.resolve())).encode("utf-8")).hexdigest()[:20]: path.resolve()
+            for path in candidates if (path / "workbench_launcher.py").is_file()}
+
+
+def release_related_instance(port):
+    """Gracefully retire an idle peer; never signal an arbitrary port owner."""
+    peers = related_installations()
+    if not peers:
+        return False
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/api/workbench/health", timeout=1) as response:
+            info = json.loads(response.read(16384))
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+    if not isinstance(info, dict) or info.get("application") != APPLICATION or info.get("install_id") not in peers:
+        return False
+    peer = peers[info["install_id"]]
+    if not instance_idle(port):
+        raise RuntimeError(f"端口 {port} 的另一工作台正在执行任务，请先结束任务或退出该工作台。运行目录：{peer.parent}")
+    if not info.get("shutdown_available") or not info.get("shutdown_token"):
+        raise RuntimeError(f"端口 {port} 被另一工作台占用，请在该工作台的系统设置中退出本地服务。运行目录：{peer.parent}")
+    print(f"[webui] 正在关闭空闲的另一工作台并切换到当前目录：{peer.parent}", flush=True)
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/workbench/shutdown", data=b"{}",
+        headers={"Content-Type": "application/json", "X-Workbench-Shutdown": info["shutdown_token"]})
+    with opener.open(request, timeout=5) as response:
+        response.read(16384)
+    deadline = time.monotonic() + 20
+    path = peer / "logs" / "workbench.lock"
+    while time.monotonic() < deadline:
+        if not port_in_use(port):
+            # Uvicorn closes its listener before inference/mobile cleanup finishes.
+            # Wait for the peer's process lock as well, so shared backend ports are free.
+            try:
+                if path.is_file():
+                    with path.open("r+b") as handle:
+                        _lock_file(handle)
+                return True
+            except OSError:
+                pass
+        time.sleep(.2)
+    raise RuntimeError(f"另一工作台仍在退出，端口 {port} 暂未释放，请稍后重试。运行目录：{peer.parent}")
 
 
 def open_existing(port):
@@ -255,7 +305,7 @@ def main(argv=None):
             lock = lock_instance(port)
             if lock is None:
                 return 0
-            if port_in_use(port):
+            if port_in_use(port) and not release_related_instance(port):
                 raise RuntimeError(f"Port {port} is in use. Set AUDIOCPP_UI_PORT to another port and try again.")
         sys.path.insert(0, str(WEBUI_DIR))
         runpy.run_path(str(WEBUI_DIR / "webui.py"), run_name="__main__")

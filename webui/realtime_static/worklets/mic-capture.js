@@ -54,6 +54,22 @@ class MicCaptureProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (e) => {
       const data = e.data;
       if (data?.kind === "enable") this._enabled = !!data.value;
+      else if (data?.kind === "flush") {
+        if (this._enabled && this._scratch.length) {
+          const count = Math.floor(this._scratch.length / this._ratio);
+          const tail = new Int16Array(count);
+          for (let i = 0; i < count; i++) {
+            const at = i * this._ratio, index = Math.floor(at), fraction = at - index;
+            const a = this._scratch[index], b = this._scratch[index + 1] ?? a;
+            const value = Math.max(-1, Math.min(1, a + (b - a) * fraction));
+            tail[i] = value < 0 ? value * 32768 : value * 32767;
+          }
+          if (count) this.port.postMessage(tail.buffer, [tail.buffer]);
+        }
+        this._scratch = new Float32Array(0);
+        this._enabled = false;
+        this.port.postMessage({ kind: "flushed" });
+      }
       else if (data?.kind === "gate") {
         this._gateEnabled = !!data.enabled;
         // dB -> linear amplitude. When off, threshold 0 keeps the gate open.

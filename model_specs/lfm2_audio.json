@@ -59,7 +59,7 @@
       {
         "name": "audio_chunk_duration_sec",
         "type": "float",
-        "description": "Longest chunk in seconds, at least 1. With fixed chunks, a final piece shorter than 1 second joins the previous chunk.",
+        "description": "Longest chunk in seconds, at least 1. With fixed chunks, a final piece shorter than 1 second and the chunk before it split their audio evenly.",
         "required": false,
         "min": 1,
         "default": 30
@@ -169,7 +169,7 @@
       {
         "name": "vad_model_path",
         "type": "string",
-        "description": "Path to the Silero VAD model directory used by automatic audio chunking.",
+        "description": "Path to the VAD model (any built-in VAD family; default Silero VAD) used by automatic audio chunking.",
         "required": false,
         "default": "assets/framework/models/silero_vad"
       },

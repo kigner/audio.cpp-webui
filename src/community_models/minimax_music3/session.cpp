@@ -7,6 +7,7 @@
 #include "engine/framework/runtime/options.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <stdexcept>
@@ -23,6 +24,31 @@ using Clock = std::chrono::steady_clock;
 constexpr const char * kFamily = "minimax_music3";
 constexpr size_t kDefaultGraphArenaBytes = 32ull * 1024ull * 1024ull;
 constexpr size_t kDefaultWeightContextBytes = 32ull * 1024ull * 1024ull;
+
+struct PerfPreset {
+    std::string_view name;
+    MiniMaxMusic3PerfOptions settings;
+};
+
+constexpr std::array<PerfPreset, 2> kPerfPresets{{
+    {"off", {}},
+    {"cuda_perf", {256}},
+}};
+
+MiniMaxMusic3PerfOptions perf_options_from_session(const runtime::SessionOptions & options) {
+    const auto name = runtime::find_option(options.options, {"minimax_music3.perf_mode"}).value_or("off");
+    const auto preset = std::find_if(kPerfPresets.begin(), kPerfPresets.end(),
+        [&](const auto & entry) { return entry.name == name; });
+    if (preset == kPerfPresets.end()) {
+        throw std::runtime_error("Invalid minimax_music3.perf_mode: " + name);
+    }
+    auto settings = preset->settings;
+    settings.kv_cache_alignment = runtime::parse_positive_i64_option(
+        options.options, {"minimax_music3.kv_cache_alignment"}, settings.kv_cache_alignment);
+    debug::trace_log_scalar("minimax_music3.perf_mode", name);
+    debug::trace_log_scalar("minimax_music3.kv_cache_alignment", settings.kv_cache_alignment);
+    return settings;
+}
 
 std::shared_ptr<const MiniMaxMusic3Assets> require_assets(std::shared_ptr<const MiniMaxMusic3Assets> assets) {
     if (assets == nullptr) {
@@ -151,6 +177,8 @@ runtime::ModelCliInterface minimax_music3_cli_interface() {
         {"minimax_music3.weight_context_mb", "int", "Weight context size in MiB.", false, "32", "1"},
         {"minimax_music3.mem_saver", "bool", "Load large generation stages only while they are needed to reduce peak VRAM.", false, "true"},
         {"minimax_music3.pipeline_overlap", "bool", "Overlap AR decoding with per-chunk condition/flow/vocoder work on a second backend stream. Requires mem_saver=false; combining with mem_saver=true is an error. Long requests and nondefault chunk hops use the sequential pipeline.", false, "false"},
+        {"minimax_music3.perf_mode", "off|cuda_perf", "Performance preset; cuda_perf selects attention-prefix buckets of 256 rows. Explicit controls override the preset.", false, "off"},
+        {"minimax_music3.kv_cache_alignment", "int", "Attention-prefix bucket size; 1 preserves full-capacity attention. All valid history is retained. Graph shapes may change sampled output. Explicit values override the preset.", false, std::nullopt, "1"},
     };
     return out;
 }
@@ -213,7 +241,8 @@ MiniMaxMusic3Session::MiniMaxMusic3Session(
         weight_context_bytes,
         weight_type,
         memory_saver,
-        pipeline_overlap);
+        pipeline_overlap,
+        perf_options_from_session(this->options()));
 }
 
 MiniMaxMusic3Session::~MiniMaxMusic3Session() = default;
@@ -350,6 +379,24 @@ std::shared_ptr<runtime::IVoiceModelLoader> make_minimax_music3_loader() {
     public:
         std::string family() const override {
             return kFamily;
+        }
+
+        runtime::PackageLoadTarget resolve_package_load(const assets::ModelPackage & package) const override {
+            runtime::PackageLoadTarget out{kFamily, package.root, {}, {}};
+            if (package.format == "gguf") {
+                for (const auto & file : package.files) {
+                    if (file.extension() != ".gguf") continue;
+                    const auto name = file.filename().string();
+                    if (name.rfind("language_model_", 0) == 0) {
+                        out.session_options.emplace("minimax_music3.language_model_gguf", file.generic_string());
+                    } else if (name.rfind("rvq_depth_decoder_", 0) == 0) {
+                        out.session_options.emplace("minimax_music3.rvq_depth_decoder_gguf", file.generic_string());
+                    } else if (name.rfind("transformer_", 0) == 0) {
+                        out.session_options.emplace("minimax_music3.flow_transformer_gguf", file.generic_string());
+                    }
+                }
+            }
+            return out;
         }
 
         bool can_load(const runtime::ModelLoadRequest & request) const override {

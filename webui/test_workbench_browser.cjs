@@ -1555,13 +1555,30 @@ const cases = [
     await upload(page,'#task-form [data-input-key="audio"]','edit-source.wav');await page.locator('#run-button').click();
     await waitUntil(()=>backend.requests.length===1,'Music editing did not submit');assert.equal(backend.requests[0].inputs.text,'保留旋律，将乐器改为钢琴');
   }],
+  ['interpretation status stops the translation session instead of the chat iframe', async (page, backend) => {
+    backend.status.interpretation_active=true;backend.status.realtime_active=true;
+    let stopped=0;
+    await page.route('**/api/workbench/interpretation/stop',async route=>{
+      assert.equal(route.request().method(),'POST');stopped++;
+      backend.status.interpretation_active=false;backend.status.realtime_active=false;
+      await route.fulfill({status:200,contentType:'application/json',body:'{"stopped":true}'});
+    });
+    await page.reload();
+    await page.locator('#end-realtime-session').waitFor({state:'visible'});
+    assert.match(await page.locator('#end-realtime-session').textContent(),/结束当前翻译/);
+    assert.equal(await page.locator('#realtime-nav-status').textContent(),'翻译中');
+    await page.locator('#end-realtime-session').click();
+    await page.locator('#end-realtime-session').waitFor({state:'hidden'});
+    assert.equal(stopped,1);
+    assert.equal(await page.locator('#realtime-frame').getAttribute('src'),null);
+  }],
   ['scenario directory, planned workflows and realtime navigation', async (page, backend) => {
     await page.getByRole('button',{name:'场景应用',exact:true}).click();
     assert.equal(await page.locator('#page-scenarios').isVisible(),true);
     assert.equal(await page.locator('#parameter-toggle').isVisible(),false);
-    assert.equal(await page.locator('#scenario-list > button').count(),4);
+    assert.equal(await page.locator('#scenario-list > button').count(),5);
     assert.equal(await page.locator('#scenario-list > article.planned').count(),0);
-    assert.deepEqual(await page.locator('#scenario-list .tool-card-title').allTextContents(),['实时语音聊天','自动字幕与校对','视频翻译配音','全局快捷键听写']);
+    assert.deepEqual(await page.locator('#scenario-list .tool-card-title').allTextContents(),['实时翻译','实时语音聊天','自动字幕与校对','视频翻译配音','全局快捷键听写']);
     assert.equal(await page.locator('[data-scenario="long-form-reading"]').count(),0);
     await snapshot(page,'scenarios-desktop');
     await page.setViewportSize({width:390,height:900});
@@ -3914,6 +3931,78 @@ cases.push(['stream player hands off to the complete file without replaying it',
   assert.equal(await page.locator('.stream-player').count(),0);
   assert.equal(await page.evaluate(()=>window.streamTestContext.state),'closed');
   assert.equal(await page.locator('#result-content audio').evaluate(el=>el.paused&&el.currentTime===0),true,'Completing the stream must not autoplay the file a second time');
+}]);
+
+let upstreamOctoberModels;
+function octoberModels() {
+  if(!upstreamOctoberModels){
+    const {execFileSync}=require('node:child_process');
+    const python=process.env.AUDIOCPP_TEST_PYTHON||path.join(__dirname,'..','venv',process.platform==='win32'?'Scripts/python.exe':'bin/python');
+    const source="import json; from webui import webui as b; from webui.workbench_metadata import model_detail; print(json.dumps([model_detail(b,b.catalog_by_id(i)) for i in ['lfm3-audio-asr','lfm3-audio-tts','lfm3-audio-s2s','magenta-realtime-2-small']],ensure_ascii=True))";
+    upstreamOctoberModels=JSON.parse(execFileSync(python,['-X','utf8','-c',source],{cwd:path.join(__dirname,'..'),encoding:'utf8',timeout:30000}));
+  }
+  return clone(upstreamOctoberModels).map(model=>({...model,installed:true,incomplete:false}));
+}
+
+cases.push(['upstream review enhanced clone parses explicit false JSON values',async(page,backend)=>{
+  backend.models.push(model('review-voxcpm2','Review VoxCPM2','tts','tts',{
+    family:'voxcpm2',voice_mode:'reference',profile:{accepts_voice_reference:true,send_seed:false,send_max_tokens:false},
+    parameters:[{name:'ultimate_clone',label:'增强声音克隆',type:'bool',default:false,level:'effect',scope:'request'}]}));
+  await page.reload();await waitText(page,'#model-picker-label','TTS One');await pick(page,'review-voxcpm2');
+  await page.locator('[data-input-key="text"]').fill('Test speech.');
+  for(const value of [false,'false',0,'0']){
+    await advanced(page);
+    await page.locator('#options-json').fill(JSON.stringify({ultimate_clone:value}));
+    await page.locator('#finish-model-settings').click();const count=backend.requests.length;
+    await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===count+1,`False clone option ${JSON.stringify(value)} was treated as enabled`);
+    assert.ok([false,0,'false','0'].includes(backend.requests[count].options.ultimate_clone));
+    backend.finish(`job-${count+1}`,'',['speech.wav']);await page.waitForFunction(()=>!document.querySelector('#run-button').disabled);
+  }
+  await advanced(page);
+  await page.locator('#options-json').fill(JSON.stringify({ultimate_clone:'TRUE'}));
+  await page.locator('#finish-model-settings').click();await page.locator('#run-button').click();await waitText(page,'#job-status','增强声音克隆需要参考音频');assert.equal(backend.requests.length,4);
+}]);
+
+cases.push(['upstream 20261030 LFM3 task controls and conversation reset',async(page,backend)=>{
+  backend.models.push(...octoberModels());await page.reload();await waitText(page,'#model-picker-label','TTS One');
+  await task(page,'asr');await pick(page,'lfm3-audio-asr');
+  assert.equal(await page.locator('[data-input-key="stream"]').count(),0);
+  await page.locator('#param-chat').check();await page.locator('#param-enable_thinking').waitFor({state:'visible'});
+  await task(page,'tts');await pick(page,'lfm3-audio-tts');
+  assert.equal(await page.locator('#param-voice option').count(),39);
+  await page.locator('[data-input-key="language"]').selectOption('zh');
+  await waitValue(page,'#param-voice','chinese_female');
+  assert.equal(await page.locator('#task-form input[data-input-key="voice"]').count(),0);
+  await task(page,'vc');await pick(page,'lfm3-audio-s2s');
+  await waitText(page,'#task-title','语音对话');await page.locator('#new-spoken-conversation').waitFor({state:'visible'});
+  assert.equal(await page.locator('#task-form input[data-input-key="voice"]').count(),0);
+  await upload(page,'#task-form input[data-input-key="audio"]','question.wav');
+  await page.locator('[data-input-key="stream"]').check();await page.locator('#run-button').click();
+  await waitUntil(()=>backend.requests.length===1,'Spoken chat was not submitted');
+  const first=backend.requests[0].inputs.conversation_id;assert.ok(first);assert.equal(backend.requests[0].inputs.stream,true);
+  backend.finish('job-1','你好',['reply.wav','reply.txt']);await waitText(page,'#job-status','处理完成');
+  await page.locator('#new-spoken-conversation').click();await page.locator('#run-button').click();
+  await waitUntil(()=>backend.requests.length===2,'Second spoken question was not submitted');
+  assert.notEqual(backend.requests[1].inputs.conversation_id,first);
+  backend.finish('job-2','新的回答',['reply.wav']);await waitText(page,'#job-status','处理完成');
+  await assertBrowserScroll(page);await snapshot(page,'upstream-20261030-lfm3');
+}]);
+
+cases.push(['upstream 20261030 Magenta style audio piano roll and stereo stream',async(page,backend)=>{
+  await page.addInitScript(()=>{const Original=window.AudioContext;window.streamChannels=[];window.AudioContext=class extends Original{createBuffer(channels,...args){window.streamChannels.push(channels);return super.createBuffer(channels,...args);}};});
+  backend.models.push(...octoberModels());await page.reload();await waitText(page,'#model-picker-label','TTS One');
+  await task(page,'music');await pick(page,'magenta-realtime-2-small');
+  await upload(page,'#task-form input[data-input-key="audio"]','style.wav');
+  await page.locator('#task-form input[data-input-key="pianoroll"]').setInputFiles({name:'notes.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify([Array(128).fill(0)]))});
+  await page.waitForFunction(()=>document.querySelector('[data-input-key="pianoroll"]').closest('.upload-zone').querySelector('.upload-status').textContent.includes('notes.json'));
+  await page.locator('#param-drums').selectOption('0');await page.locator('[data-input-key="stream"]').check();
+  await page.locator('#run-button').click();await waitUntil(()=>backend.requests.length===1,'Music stream was not submitted');
+  const request=backend.requests[0];assert.equal(request.inputs.stream,true);assert.ok(request.inputs.audio);assert.ok(request.inputs.pianoroll);assert.equal(request.options.drums,0);
+  const pcm=Buffer.alloc(4800*4);for(let i=0;i<4800;i++){pcm.writeInt16LE(1200,i*4);pcm.writeInt16LE(-1200,i*4+2);}
+  backend.jobs.get('job-1').audio_segments=[{index:0,sample_rate:48000,channels:2,pcm:pcm.toString('base64')}];
+  await page.waitForFunction(()=>window.streamChannels.includes(2));
+  backend.finish('job-1','',['music.wav']);await waitText(page,'#job-status','处理完成');
+  await assertBrowserScroll(page);await snapshot(page,'upstream-20261030-magenta');
 }]);
 
 (async () => {

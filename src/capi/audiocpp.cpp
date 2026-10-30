@@ -18,6 +18,7 @@
 
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/module.h"
+#include "engine/framework/runtime/errors.h"
 #include "engine/framework/runtime/model.h"
 #include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
@@ -106,6 +107,10 @@ audiocpp_status guard(Fn && fn, audiocpp_status runtime_status = AUDIOCPP_ERR_RU
         g_last_error = e.what();
         return AUDIOCPP_ERR_OUT_OF_MEMORY;
     } catch (const std::invalid_argument & e) {
+        g_last_error = e.what();
+        return AUDIOCPP_ERR_INVALID_ARGUMENT;
+    } catch (const rt::InvalidRequestError & e) {
+        /* Caller input such as a malformed option value: not a load or runtime failure. */
         g_last_error = e.what();
         return AUDIOCPP_ERR_INVALID_ARGUMENT;
     } catch (const std::exception & e) {
@@ -548,6 +553,14 @@ audiocpp_status audiocpp_session_create(const audiocpp_model * model,
                                         const audiocpp_backend_config * backend_config,
                                         const audiocpp_options * options,
                                         audiocpp_session ** out_session) {
+    return audiocpp_session_create_with_impl(
+        model, task, mode, backend_config, nullptr, options, out_session);
+}
+
+audiocpp_status audiocpp_session_create_with_impl(
+        const audiocpp_model * model, const char * task, const char * mode,
+        const audiocpp_backend_config * backend_config, const char * impl,
+        const audiocpp_options * options, audiocpp_session ** out_session) {
     if (model == nullptr || task == nullptr || mode == nullptr || out_session == nullptr) {
         return fail(AUDIOCPP_ERR_INVALID_ARGUMENT, "model, task, mode and out_session must be non-null");
     }
@@ -566,6 +579,7 @@ audiocpp_status audiocpp_session_create(const audiocpp_model * model,
             session_options.backend.device = backend_config->device;
             session_options.backend.threads = backend_config->threads;
         }
+        session_options.backend.impl = impl ? impl : "";
         session_options.options = option_map(options);
 
         auto handle = std::make_unique<audiocpp_session>();

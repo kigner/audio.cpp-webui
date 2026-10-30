@@ -60,10 +60,9 @@ __pycache__/
 /webui/configs/ui_language.json
 /webui/configs/workbench_downloads.json
 /webui/configs/workbench_downloads.json.tmp
-# Shared reference voices can be committed; personal recordings stay local.
-/webui/voice/[mM][yY]-[rR][eE][cC]*
-/webui/voice/[dD][lL][cC]*
-/webui/voice/ref-w1.wav
+# Runtime voices and prompt transcripts are private, regardless of filename.
+# Reviewed public examples live in webui/demo_voices and configs/voice_prompt_defaults.txt.
+/webui/voice/
 
 # --- upstream native WebUI build artifacts ---
 /webui/native/node_modules/

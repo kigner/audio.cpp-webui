@@ -10,7 +10,8 @@
   <link rel="stylesheet" href="/workbench-static/home.css?v=aixora-shortcuts-55">
   <link rel="stylesheet" href="/workbench-static/scenarios.css?v=scenario-languages-19">
   <link rel="stylesheet" href="/workbench-static/palettes.css?v=aixora-1">
-  <script type="module" src="/workbench-static/app.js?v=aixora-mobile-sync-117"></script>
+  <script type="module" src="/workbench-static/app.js?v=aixora-interpretation-118"></script>
+  <link rel="stylesheet" href="/workbench-static/interpretation.css?v=1">
   <link rel="stylesheet" href="/workbench-static/speaktype.css?v=1">
   <link rel="stylesheet" href="/workbench-static/mobile-access.css?v=1">
 </head>
@@ -106,6 +107,7 @@
       <section id="page-scenarios" class="page scenarios-page management-page" aria-labelledby="scenarios-heading" hidden><header class="page-heading page-topbar"><h1 id="scenarios-heading" data-i18n="场景应用">场景应用</h1></header><p class="page-description" data-i18n="按工作流使用音频能力。">按工作流使用音频能力。</p><div id="scenario-list" class="tool-list"></div></section>
       <section id="page-scenario-studio" class="page scenario-studio-page management-page" aria-label="字幕与视频译配工作台" hidden data-i18n-aria-label="字幕与视频译配工作台"></section>
       <section id="page-speaktype" class="page management-page" aria-label="全局快捷键听写" hidden data-i18n-aria-label="全局快捷键听写"></section>
+      <section id="page-interpretation" class="page management-page" aria-label="实时翻译" hidden data-i18n-aria-label="实时翻译"></section>
       <section id="page-references" class="page references-page management-page" aria-labelledby="references-heading" hidden>
         <header class="page-heading page-topbar"><h1 id="references-heading" data-i18n="参考音频库">参考音频库</h1><div class="reference-actions"><button id="new-reference" class="button secondary" data-i18n="新建参考音频">新建参考音频</button><button id="refresh-references" class="button secondary" data-i18n="刷新列表">刷新列表</button></div></header><p class="page-description" data-i18n="保存参考音频与对应文本，供语音合成和声音转换重复使用。">保存参考音频与对应文本，供语音合成和声音转换重复使用。</p>
         <div class="references-grid"><section class="card"><div class="card-heading"><h2 data-i18n="已保存参考音频">已保存参考音频</h2><span id="reference-count" class="muted small"></span></div><input id="reference-search" type="search" placeholder="搜索名称或参考文本" aria-label="搜索参考音频" data-i18n-placeholder="搜索名称或参考文本" data-i18n-aria-label="搜索参考音频"><div id="reference-list" class="reference-list"></div></section><section class="card"><div class="card-heading"><h2 data-i18n="添加或编辑参考音频">添加或编辑参考音频</h2></div><div id="reference-editor" class="form-fields"></div></section></div>

@@ -1,3 +1,4 @@
+#include "engine/framework/sampling/sway_schedule.h"
 #include "engine/community_models/echo_tts/sampler.h"
 
 #include <algorithm>
@@ -12,25 +13,20 @@ constexpr float kInitScale = 0.999F;
 
 }  // namespace
 
-std::vector<float> euler_timestep_schedule(int num_steps) {
-    if (num_steps <= 0) {
-        throw std::runtime_error("Echo-TTS sampler requires at least one step");
-    }
-    std::vector<float> schedule(static_cast<size_t>(num_steps) + 1);
-    for (int i = 0; i <= num_steps; ++i) {
-        // torch.linspace(1, 0, n + 1) puts exact endpoints at both ends.
-        const float ramp =
-            1.0F - static_cast<float>(i) / static_cast<float>(num_steps);
-        schedule[static_cast<size_t>(i)] = ramp * kInitScale;
-    }
-    return schedule;
+std::vector<engine::modules::FlowSamplerScheduleStep> euler_timestep_schedule(EchoSamplerOptions options) {
+    return engine::modules::make_rf_schedule(
+        options.num_steps,
+        "Echo-TTS",
+        options.t_schedule_mode == EchoScheduleMode::Linear ? "linear" : "sway",
+        options.sway_coeff,
+        kInitScale);
 }
 
 bool cfg_active(float t, float cfg_min_t, float cfg_max_t) {
     return t >= cfg_min_t && t <= cfg_max_t;
 }
 
-std::vector<float> combine_cfg_lanes(
+std::vector<float> combine_cfg_lanes_independent(
     const std::vector<float> & lanes,
     int64_t lane_elements,
     float cfg_scale_text,
@@ -49,6 +45,26 @@ std::vector<float> combine_cfg_lanes(
         out[static_cast<size_t>(i)] =
             c + cfg_scale_text * (c - uncond_text[i]) +
             cfg_scale_speaker * (c - uncond_speaker[i]);
+    }
+    return out;
+}
+
+std::vector<float> combine_cfg_lanes_joint(
+    const std::vector<float> & lanes,
+    int64_t lane_elements,
+    float cfg_scale) {
+    if (lane_elements <= 0 ||
+        static_cast<int64_t>(lanes.size()) != lane_elements * 2) {
+        throw std::runtime_error("Echo-TTS Joint-CFG combine expects exactly 2 lanes");
+    }
+    const float * cond = lanes.data();
+    const float * uncond = lanes.data() + lane_elements;
+
+    std::vector<float> out(static_cast<size_t>(lane_elements));
+    for (int64_t i = 0; i < lane_elements; ++i) {
+        const float c = cond[i];
+        out[static_cast<size_t>(i)] =
+            c + cfg_scale * (c - uncond[i]);
     }
     return out;
 }
@@ -76,7 +92,7 @@ std::vector<float> run_euler_sampler(
         }
     }
 
-    const auto schedule = euler_timestep_schedule(options.num_steps);
+    const auto schedule = euler_timestep_schedule(options);
     bool kv_scaled = options.speaker_kv_scale.has_value();
 
     const int cfg_interval = std::max(1, options.cfg_interval);
@@ -84,12 +100,14 @@ std::vector<float> run_euler_sampler(
     // is the whole additive term, w_text * (v_cond - v_text) + w_speaker *
     // (v_cond - v_speaker), held in absolute units rather than as a ratio so a
     // reused correction cannot amplify a small v_cond.
+    const int n_cfg_lanes = options.cfg_mode == EchoCfgMode::Joint ? 2 : 3;
     std::vector<float> cfg_delta;
     int steps_since_refresh = 0;
 
     for (int step = 0; step < options.num_steps; ++step) {
-        const float t = schedule[static_cast<size_t>(step)];
-        const float t_next = schedule[static_cast<size_t>(step) + 1];
+        const auto schedule_step = schedule[static_cast<size_t>(step)];
+        const float t = schedule_step.t;
+        const float t_next = schedule_step.t_next;
         const bool use_cfg = cfg_active(t, options.cfg_min_t, options.cfg_max_t);
 
         std::vector<float> v_pred;
@@ -98,12 +116,17 @@ std::vector<float> run_euler_sampler(
             // applied before one has been measured.
             const bool refresh = cfg_delta.empty() || steps_since_refresh >= cfg_interval - 1;
             if (refresh) {
-                auto lanes = denoise(x_t, t, 3);
-                if (static_cast<int64_t>(lanes.size()) != elements * 3) {
+                auto lanes = denoise(x_t, t, n_cfg_lanes);
+                if (static_cast<int64_t>(lanes.size()) != elements * n_cfg_lanes) {
                     throw std::runtime_error("Echo-TTS denoiser returned mis-shaped CFG lanes");
                 }
-                v_pred = combine_cfg_lanes(
-                    lanes, elements, options.cfg_scale_text, options.cfg_scale_speaker);
+                if (n_cfg_lanes == 2) {
+                    v_pred = combine_cfg_lanes_joint(
+                        lanes, elements, options.cfg_scale);
+                } else {
+                    v_pred = combine_cfg_lanes_independent(
+                        lanes, elements, options.cfg_scale_text, options.cfg_scale_speaker);
+                }
                 if (cfg_interval > 1) {
                     cfg_delta.resize(static_cast<size_t>(elements));
                     for (int64_t i = 0; i < elements; ++i) {
