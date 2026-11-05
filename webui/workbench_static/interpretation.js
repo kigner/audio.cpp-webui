@@ -5,6 +5,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
   let preferences={source_language:'zh',target_language:'en',voice:'',input:'',output:''};
   try {const saved=JSON.parse(localStorage.getItem(key)||'{}');for(const name of Object.keys(preferences))if(typeof saved[name]==='string'&&saved[name].length<256)preferences[name]=saved[name];}catch{}
   let capabilities=null,phase='idle',epoch=0,socket=null,stream=null,context=null,capture=null,input=null,mute=null;
+  let readingDevices=false;
   let nextAudio=0,pending=0,engine='',flushResolve=null,completed=false;
   let earlyAudio=[],earlyBytes=0;
   let recordingEpoch=0,recordingTimer=null,recordingFailures=0;
@@ -78,7 +79,9 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
     if(!find('[data-interpretation="input"]'))return;
     for(const [name,kind,label] of [['input','audioinput','系统默认麦克风'],['output','audiooutput','系统默认播放设备']]) {
       const select=find(`[data-interpretation="${name}"]`),defaultOption=document.createElement('option');defaultOption.value='';uiText(defaultOption,label);
-      select.replaceChildren(defaultOption,...list.filter(device=>device.kind===kind&&device.deviceId&&device.deviceId!=='default'&&device.deviceId!=='communications').map((device,index)=>{const option=document.createElement('option');option.value=device.deviceId;option.textContent=device.label||`${t(name==='input'?'麦克风':'播放设备')} ${index+1}`;return option;}));
+      const available=list.filter(device=>device.kind===kind);
+      if(available.length&&!available.some(device=>device.deviceId&&device.label)&&select.options.length)continue;
+      select.replaceChildren(defaultOption,...available.filter(device=>device.deviceId&&device.deviceId!=='default'&&device.deviceId!=='communications').map((device,index)=>{const option=document.createElement('option');option.value=device.deviceId;option.textContent=device.label||`${t(name==='input'?'麦克风':'播放设备')} ${index+1}`;return option;}));
       if(preferences[name]&&![...select.options].some(option=>option.value===preferences[name])){
         const missing=document.createElement('option');missing.value=preferences[name];uiText(missing,'上次选择的设备（暂不可用）');select.append(missing);
         if(running()&&list.some(device=>device.kind===kind&&device.label)){fail(t(name==='input'?'所选麦克风已断开，请重新选择设备。':'所选播放设备已断开，请重新选择设备。'));}
@@ -89,21 +92,25 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
       }
     }
     const supported=typeof (window.AudioContext||window.webkitAudioContext)?.prototype?.setSinkId==='function';
-    find('[data-interpretation="output"]').disabled=running()||!supported;
+    find('[data-interpretation="output"]').disabled=running()||readingDevices||!supported;
     if(!supported){
       preferences.output='';find('[data-interpretation="output"]').value='';
       uiText(find('[data-interpretation="device-hint"]'),'当前浏览器仅支持系统默认播放设备，请在系统声音设置中切换。');
     }
+    return list.some(device=>device.kind==='audioinput'&&device.deviceId&&device.label);
   }
 
   async function readDevices() {
-    const button=find('[data-interpretation="devices"]');button.disabled=true;
+    if(readingDevices||running())return;
+    readingDevices=true;status();
+    const button=find('[data-interpretation="devices"]'),generation=epoch;let permission=null;
     try{
       if(!navigator.mediaDevices?.getUserMedia)throw new Error('浏览器无法使用麦克风，请在本机浏览器中打开工作台。');
-      const permission=await navigator.mediaDevices.getUserMedia({audio:true});permission.getTracks().forEach(track=>track.stop());
+      permission=await navigator.mediaDevices.getUserMedia({audio:true});
+      if(generation!==epoch||root.hidden)return;
       await devices();uiText(button,'刷新设备');
     }catch(error){showToast(error.name==='NotAllowedError'?'麦克风权限未开启，请允许浏览器使用麦克风后重试。':error.message);}
-    finally{button.disabled=running();}
+    finally{permission?.getTracks().forEach(track=>track.stop());readingDevices=false;status();}
   }
 
   function status(message) {
@@ -111,11 +118,11 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
     uiText(find('[data-interpretation="status"]'),label);
     const button=find('[data-interpretation="start"]');
     uiText(button,phase==='listening'?'结束翻译':phase==='preparing'?'正在准备…':phase==='finishing'||phase==='playing'?'正在结束…':'开始翻译');
-    button.disabled=!capabilities?.ready||running()&&phase!=='listening';
+    button.disabled=!capabilities?.ready||readingDevices||running()&&phase!=='listening';
     find('[data-interpretation="cancel"]').hidden=!running();
     find('[data-interpretation="indicator"]').classList.toggle('active',phase==='listening'||phase==='preparing'&&!!stream);
-    root.querySelectorAll('select,[data-interpretation="swap"]').forEach(control=>control.disabled=running());
-    find('[data-interpretation="devices"]').disabled=running();
+    root.querySelectorAll('select,[data-interpretation="swap"]').forEach(control=>control.disabled=running()||readingDevices);
+    find('[data-interpretation="devices"]').disabled=running()||readingDevices;
     if(typeof (window.AudioContext||window.webkitAudioContext)?.prototype?.setSinkId!=='function')find('[data-interpretation="output"]').disabled=true;
     activity();
   }
@@ -151,7 +158,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
   function rowFor(id,values={}) {
     if(!rows.has(id)) {
       const element=document.createElement('article');element.className='interpretation-row';element.dataset.segment=String(id);
-      element.innerHTML=html`<div class="interpretation-row-heading"><span></span><small class="muted" data-row-status></small></div><div class="interpretation-pair"><p data-row-source></p><p data-row-translation></p></div><div class="interpretation-row-save"><a class="button subtle small-button" data-row-download hidden download data-i18n="下载本句">下载本句</a><small class="muted" data-row-saving hidden data-i18n="语音保存中…">语音保存中…</small></div>`;
+      element.innerHTML=html`<div class="interpretation-row-heading"><span></span><div class="interpretation-row-save"><small class="muted" data-row-status></small><small class="muted" data-row-saving hidden data-i18n="语音保存中…">语音保存中…</small><a class="button subtle small-button" data-row-download hidden download data-i18n="下载本句">下载本句</a></div></div><div class="interpretation-pair"><p data-row-source></p><p data-row-translation></p></div>`;
       const row={element,source:'',translation:'',audio:0};rows.set(id,row);find('[data-interpretation="rows"]').append(element);
       find('[data-interpretation="empty"]').hidden=true;
     }
@@ -232,7 +239,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
   }
 
   async function start() {
-    if(running()||!capabilities?.ready)return;
+    if(running()||readingDevices||!capabilities?.ready)return;
     hide();const generation=epoch;phase='preparing';completed=false;
     find('[data-interpretation="error"]').hidden=true;status();
     try {
@@ -288,7 +295,7 @@ export function createInterpretation({root,api,navigate,showToast,onRuntimeChang
 
   async function open() {
     if(!root.children.length)layout();
-    try{capabilities=await api('/interpretation/capabilities');languages();await devices();find('[data-interpretation="install"]').hidden=capabilities.ready;status(capabilities.ready?undefined:'模型尚未准备好');}
+    try{capabilities=await api('/interpretation/capabilities');languages();const available=await devices();find('[data-interpretation="install"]').hidden=capabilities.ready;status(capabilities.ready?undefined:'模型尚未准备好');if(!available&&navigator.mediaDevices?.getUserMedia&&!root.hidden)await readDevices();}
     catch(error){fail(error.message);}
   }
   window.addEventListener('pagehide',hide);

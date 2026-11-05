@@ -39,6 +39,7 @@ __pycache__/
 # --- local dev environment / editor tooling (not for the repo) ---
 /venv/
 /.codegraph/
+/.serena/
 /.cursor/
 /.claude/
 /.playwright-mcp/
@@ -46,6 +47,7 @@ __pycache__/
 # --- portable bundle: distributed manually, never committed ---
 /audiocpp-portable/
 /_update/
+/agent.md
 /AGENTS.md
 /CLAUDE.md
 

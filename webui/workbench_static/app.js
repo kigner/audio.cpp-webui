@@ -2,7 +2,7 @@ import {t, uiText, uiAttr, rawText, sourceText, html, textHTML, applyLanguage, g
 import {createScenarioStudio} from './scenarios.js?v=scenario-editors-24';
 import {createSpeakType} from './speaktype.js?v=2';
 import {createMobileAccess} from './mobile-access.js?v=auto-sync-2';
-import {createInterpretation} from './interpretation.js?v=1';
+import {createInterpretation} from './interpretation.js?v=2';
 const interpretation=createInterpretation({root:document.getElementById('page-interpretation'),api,navigate,showToast,onRuntimeChange:()=>void pollStatus()});
 const mobileAccess=createMobileAccess({navigate,showToast});
 const speakType=createSpeakType({root:document.getElementById('page-speaktype'),api,showToast});
