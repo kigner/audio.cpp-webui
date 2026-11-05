@@ -371,6 +371,7 @@ function Invoke-Minisign {
     Invoke-Checked $MinisignPath @("-V", "-m", $MessagePath, "-x", $SignaturePath, "-p", $MinisignPublicKey)
 }
 
+& (Join-Path $PSScriptRoot "check_demo_voices.ps1")
 Assert-SafeOutputDirectory
 if (-not (Test-Path -LiteralPath $PortableRoot -PathType Container)) {
     throw "Portable bundle root not found: $PortableRoot"

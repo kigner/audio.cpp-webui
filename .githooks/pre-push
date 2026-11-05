@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+if command -v pwsh >/dev/null 2>&1; then
+    powershell=pwsh
+elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell=powershell.exe
+else
+    echo "PowerShell is required to verify frozen public voice samples before pushing." >&2
+    exit 1
+fi
+check="$repo_root/scripts/check_demo_voices.ps1"
+"$powershell" -NoProfile -ExecutionPolicy Bypass -File "$check" -Quiet </dev/null
+zero=0000000000000000000000000000000000000000
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" != "$zero" ] || continue
+    # Verify every outgoing commit, so a later cleanup cannot hide an earlier leak.
+    if [ "$remote_sha" = "$zero" ]; then
+        commits=$local_sha
+    else
+        commits=$(git rev-list "$remote_sha..$local_sha")
+    fi
+    for commit in $commits; do
+        "$powershell" -NoProfile -ExecutionPolicy Bypass -File "$check" -Commit "$commit" -Quiet </dev/null
+    done
+done
+echo "Frozen public voice samples verified before push."

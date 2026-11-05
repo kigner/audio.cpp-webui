@@ -16,9 +16,9 @@ class VoicePrivacyTests(unittest.TestCase):
     def test_shared_defaults_are_copied_on_first_local_edit_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            voice, config = root / 'voice', root / 'configs'
-            voice.mkdir(); config.mkdir()
-            shared = config / 'voice_prompt_defaults.txt'
+            voice, examples = root / 'voice', root / 'demo_voices'
+            voice.mkdir(); examples.mkdir()
+            shared = examples / 'prompt_text'
             shared.write_text('public-demo|Public example transcript.\n', encoding='utf-8')
             original = hashlib.sha256(shared.read_bytes()).hexdigest()
             with mock.patch.object(app, 'PROMPTS_DIR', str(voice)):
@@ -32,9 +32,9 @@ class VoicePrivacyTests(unittest.TestCase):
     def test_existing_local_prompt_and_empty_prompt_override_public_defaults(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            voice, config = root / 'voice', root / 'configs'
-            voice.mkdir(); config.mkdir()
-            (config / 'voice_prompt_defaults.txt').write_text('public-demo|Public text\n', encoding='utf-8')
+            voice, examples = root / 'voice', root / 'demo_voices'
+            voice.mkdir(); examples.mkdir()
+            (examples / 'prompt_text').write_text('public-demo|Public text\n', encoding='utf-8')
             prompt = voice / 'prompt_text'
             prompt.write_text('local-fixture|Local text\n', encoding='utf-8')
             with mock.patch.object(app, 'PROMPTS_DIR', str(voice)):
@@ -45,9 +45,9 @@ class VoicePrivacyTests(unittest.TestCase):
     def test_deleting_a_shared_prompt_does_not_restore_it_from_defaults(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            voice, config = root / 'voice', root / 'configs'
-            voice.mkdir(); config.mkdir()
-            (config / 'voice_prompt_defaults.txt').write_text('public-demo|Public text\n', encoding='utf-8')
+            voice, examples = root / 'voice', root / 'demo_voices'
+            voice.mkdir(); examples.mkdir()
+            (examples / 'prompt_text').write_text('public-demo|Public text\n', encoding='utf-8')
             with mock.patch.object(app, 'PROMPTS_DIR', str(voice)):
                 app._delete_voice_prompt('public-demo')
                 self.assertTrue((voice / 'prompt_text').is_file())

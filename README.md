@@ -9,11 +9,11 @@
 <p align="center"><strong>Your local audio studio</strong><br />Speech synthesis · Speech recognition · Music and sound effects · Realtime voice · Video translation and dubbing</p>
 
 > [!IMPORTANT]
-> **Aixora Audio 0.7.5 is available**
+> **Version 0.7.6 is available**
 >
-> Realtime voice calls from your phone, more supported models, an updated audio backend and bug fixes.
+> Live translation with WAV downloads, new and updated models, refreshed CPU / CUDA / Vulkan runtimes, and automatic Chinese / English selection from your browser language with a sidebar language shortcut.
 >
-> **[View the 0.7.5 release](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.5).** Already using the 0.7.0 portable package? Run **`update.bat`**. For a first installation, download the [complete 0.7.0 package](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0), then run `update.bat`.
+> **[View the 0.7.6 release](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.6).** Using a portable package based on 0.7.0 or later? Close the app and run **`update.bat`**; your models, voices, outputs and personal settings are preserved. For a first installation or an upgrade from 0.6.x or earlier, download the [complete 0.7.0 package](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0), then run `update.bat` to reach 0.7.6.
 
 <p align="center">
   <a href="webui/README.md">User guide</a> ·
@@ -185,7 +185,21 @@ Replace `cpu` in the last line if you built a CUDA or Vulkan backend. Open the w
 
 ## Model support
 
-Aixora Audio's Model center includes **133 model families and 197 model entries**. The table below groups them by use. Select a model in the interface to see its versions, languages, reference inputs and parameters.
+Aixora Audio 0.7.6 includes **133 model families and 197 model entries** in Model center, with **13 entries added since 0.7.5**. Entries distinguish model variants and tasks; a family can appear in more than one category. Select a model in the interface to see its languages, reference inputs and parameters.
+
+### New and expanded models in 0.7.6
+
+| Model / variants | Functions | Availability and usage |
+|---|---|---|
+| LFM3-Audio 2B | Multilingual speech recognition, speech synthesis and spoken chat; used by Live translation | Model center; offline recognition, 24 kHz streaming speech with 38 built-in voices; spoken replies start after the question ends |
+| Gradium Phonon 31M English | English streaming speech synthesis | Model center; bundled default voice or voice embeddings; reference-audio cloning is unavailable |
+| Magenta RealTime 2 Small / Base | 48 kHz stereo instrumental music with streaming playback | Model center; style prompts, reference audio and optional piano-roll conditioning |
+| Earshot VAD | Speech-segment detection with adjustable thresholds, silence and padding | Bundled weights; runs on CPU |
+| Music Flamingo 2601 | Music understanding: instruments, rhythm, style and mood | Model center; enter a question or instruction to receive a text answer |
+| Irodori-TTS v4.1 Small MeanFlow | Japanese speech synthesis and voice design | Model center; separate synthesis and voice-design entries share the same package |
+| Underdog Bark 3.0 Standard / Plus / Pro | English offline and buffered-streaming speech recognition | Manual installation of converted GGUF weights; no one-click download |
+
+### Models by task
 
 | Category | Supported models |
 |---|---|
@@ -193,17 +207,19 @@ Aixora Audio's Model center includes **133 model families and 197 model entries*
 | Speech recognition and audio understanding | Qwen3-ASR (0.6B / 1.7B), Citrinet ASR, Nemotron 3.5 ASR 0.6B, Higgs Audio v3 STT, Hviske (v5.3 / v6)<br>VibeVoice ASR, Voxtral Mini 4B Realtime, Fun-ASR-Nano 2512, Parakeet-TDT 0.6B v3, Kroko Community ASR<br>SenseVoice-Small, Audio8-ASR-0.1B, Audio Flamingo 3 / Next, Canary 180M Flash, Cohere Transcribe<br>Confucius4-R2T2, CrisperWhisper 2.0, FireRedAudio, GigaAM ASR, Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT, LFM2.5-Audio (English / Japanese), Moonshine Streaming ASR, MOSS-Transcribe-Diarize, Niagara ASR<br>OWSM, OWSM-CTC, SAMSONE, VibeVoice-ASR-BitNet, VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny, Whistle ASR, LFM3-Audio 2B, Underdog Bark 3.0 (Standard / Plus / Pro), Music Flamingo 2601 |
 | Music and sound effects | ACE-Step 1.5, Stable Audio 3 (Small Music / Small SFX / Medium), HeartMuLa 3B, MiniMax-H3, MiniMax Music 3<br>ControlFoley, MiDashengLM-Gen, YuE2, Magenta RealTime 2 (Small / Base) |
 | Speech conversation | PersonaPlex, Ming 3.0 Audio Tiny, LFM3-Audio 2B |
-| Voice conversion and audio codecs | MeanVC2, Vevo2, Seed-VC, RVC, MioCodec<br>Tone Color VC |
+| Voice design | Qwen3-TTS 1.7B VoiceDesign, Irodori-TTS (v4.1 Small MeanFlow / v4 Small / 600M v3), MOSS-VoiceGenerator<br>BreezeTTS 2, FireRedAudio, FireRedTTS3, Ming 3.0 TTS 0.5B |
+| Speech editing | DotTTS Edit, AuK, FireRedAudio, Vevo2 |
+| Voice conversion and audio codecs | Chatterbox, MeanVC2, Vevo2 (speech / singing), Seed-VC (speech / singing), RVC, MioCodec<br>Tone Color VC |
 | Source separation | HTDemucs, BS-RoFormer, Mel-Band RoFormer, HTDemucs 6-stem, SAM Audio, MossFormer2, TF-GridNet |
 | Audio enhancement and restoration | Apollo, AudioSR, RNNoise, DeepFilterNet2, ZipEnhancer, GTCRN (Streaming / DNS3 / VCTK), FlashSR, RE-USE, Sidon v0.1<br>UniverSR |
 | Voice activity and end-of-turn detection | Silero VAD, MarbleNet VAD, PulseVAD, FireRed VAD / Stream-VAD, Earshot VAD, Smart Turn v3.2 |
 | Sound classification | AST AudioSet, CED (Base / Mini / Small / Tiny) |
 | Wake-word detection | microWakeWord, OpenWakeWord, Sherpa Zipformer KWS (Chinese / English) |
 | Speaker diarization | Sortformer Diarization 4spk, Nemotron 3 Diarization, Sortformer Diarization v2.1 |
-| Subtitle and text alignment | Qwen3 Forced Aligner, MMS-300M Forced Aligner |
+| Subtitle and text alignment | Qwen3 Forced Aligner, MMS-300M Forced Aligner, CrisperWhisper 2.0 |
 | Music transcription | MuScriptor Small, SheetSage2 |
 
-Download models from **Model center**. Sound classification and wake-word detection are under **Audio tools**. MiraTTS, Sortformer v2 and Underdog Bark 3.0 require manual weight installation. Underdog Bark requires a converted GGUF. LFM3-Audio supports offline recognition and streaming speech synthesis or spoken replies; spoken replies begin after the input ends.
+Download models from **Model center**. Sound classification and wake-word detection are under **Audio tools**. MiraTTS, Sortformer Diarization v2.1 and Underdog Bark 3.0 require manual weight installation. Underdog Bark requires a converted GGUF. Earshot VAD and VibeVoice-ASR-BitNet use CPU; backend support varies by model. LFM3-Audio supports offline recognition and streaming speech synthesis or spoken replies; spoken replies begin after the input ends.
 
 ## Acknowledgments
 

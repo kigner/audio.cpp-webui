@@ -2347,10 +2347,11 @@ def _stage_tts_voice_recording(path):
 
 def _load_voice_texts():
     """Built-in voice basename -> reference transcript, parsed from
-    voice/prompt_text (each line is '<basename>|<transcript>')."""
+    voice/prompt_text or demo_voices/prompt_text for a fresh installation
+    (each line is '<basename>|<transcript>')."""
     texts = {}
     paths = [os.path.join(PROMPTS_DIR, "prompt_text"),
-             os.path.join(os.path.dirname(PROMPTS_DIR), "configs", "voice_prompt_defaults.txt")]
+             os.path.join(os.path.dirname(PROMPTS_DIR), "demo_voices", "prompt_text")]
     for path in paths:
         try:
             with open(path, "r", encoding="utf-8") as f:

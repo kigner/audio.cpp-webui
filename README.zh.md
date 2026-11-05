@@ -9,11 +9,11 @@
 <p align="center"><strong>你的本地声音工作室</strong><br />语音合成 · 语音识别 · 音乐与音效 · 实时语音 · 视频翻译配音</p>
 
 > [!IMPORTANT]
-> **Aixora Audio 0.7.5 已发布**
+> **0.7.6 已发布**
 >
-> 新增手机端实时语音访问，扩展模型支持，同步音频后端并修复已知问题。
+> 新增实时翻译与 WAV 下载，扩展和更新模型，升级 CPU / CUDA / Vulkan 后端；首次打开按浏览器语言选择中英文，并提供侧栏语言快捷切换。
 >
-> **[查看 0.7.5 发布页](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.5)。** 已安装 0.7.0 整合包的用户直接运行 **`update.bat`**。首次使用请先下载 [0.7.0 完整版整合包](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0)，再运行 `update.bat` 更新。
+> **[查看 0.7.6 发布页](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.6)。** 已安装 0.7.0 及以上整合包的用户，关闭程序后运行 **`update.bat`**；模型、音色、生成结果和个人配置会保留。首次使用或从 0.6.x 及更早版本升级，请先下载 [0.7.0 完整版整合包](https://github.com/kigner/audio.cpp-webui/releases/tag/v0.7.0)，再运行 `update.bat` 更新到 0.7.6。
 
 <p align="center">
   <a href="webui/README.zh.md">中文使用说明</a> ·
@@ -185,7 +185,21 @@ AUDIOCPP_BACKEND=cpu ./venv/bin/python webui/webui.py
 
 ## 模型支持
 
-Aixora Audio 的模型中心提供 **133 个模型家族、197 个模型条目**。下表按用途列出模型；选择模型后，可以在界面中查看版本、语言、参考输入和参数。
+Aixora Audio 0.7.6 的模型中心提供 **133 个模型家族、197 个模型条目**，比 0.7.5 **新增 13 个条目**。条目区分模型版本和任务，同一家族可出现在多个用途分类中。选择模型后，可以在界面中查看语言、参考输入和参数。
+
+### 0.7.6 新增与扩展模型
+
+| 模型 / 版本 | 功能 | 获取与使用方式 |
+|---|---|---|
+| LFM3-Audio 2B | 多语种语音识别、语音合成、语音对话；用于实时翻译场景 | 模型中心下载；离线识别、24 kHz 流式语音、38 个内置音色；语音回复在问题输入结束后开始 |
+| Gradium Phonon 31M English | 英语流式语音合成 | 模型中心下载；附带默认音色，可使用音色嵌入文件，不支持参考录音克隆 |
+| Magenta RealTime 2 Small / Base | 48 kHz 立体声纯音乐生成，支持流式播放 | 模型中心下载；支持风格描述、参考音频和可选的钢琴卷帘控制 |
+| Earshot VAD | 语音段检测，可调整阈值、静音时长与前后留白 | 权重已附带，使用 CPU |
+| Music Flamingo 2601 | 分析音乐中的乐器、节奏、风格和情绪 | 模型中心下载；输入问题或指令，返回文字结果 |
+| Irodori-TTS v4.1 Small MeanFlow | 日语语音合成与声音设计 | 模型中心下载；合成与声音设计两个条目共用同一模型包 |
+| Underdog Bark 3.0 Standard / Plus / Pro | 英语离线与缓冲式流式语音识别 | 手动安装转换后的 GGUF 权重，不提供一键下载 |
+
+### 按用途分类的模型总表
 
 | 类别 | 支持的模型 |
 |---|---|
@@ -193,17 +207,19 @@ Aixora Audio 的模型中心提供 **133 个模型家族、197 个模型条目**
 | 语音识别与音频理解 | Qwen3-ASR（0.6B / 1.7B）、Citrinet ASR、Nemotron 3.5 ASR 0.6B、Higgs Audio v3 STT、Hviske（v5.3 / v6）<br>VibeVoice ASR、Voxtral Mini 4B Realtime、Fun-ASR-Nano 2512、Parakeet-TDT 0.6B v3、Kroko Community ASR<br>SenseVoice-Small、Audio8-ASR-0.1B、Audio Flamingo 3 / Next、Canary 180M Flash、Cohere Transcribe<br>Confucius4-R2T2、CrisperWhisper 2.0、FireRedAudio、GigaAM ASR、Granite Speech 5.0 470M TurboCTC<br>Index-Echo-S2TT、LFM2.5-Audio（英语 / 日语）、Moonshine Streaming ASR、MOSS-Transcribe-Diarize、Niagara ASR<br>OWSM、OWSM-CTC、SAMSONE、VibeVoice-ASR-BitNet、VibeVoice ASR Streaming<br>Ming 3.0 Audio Tiny、Whistle ASR、LFM3-Audio 2B、Underdog Bark 3.0（Standard / Plus / Pro）、Music Flamingo 2601 |
 | 音乐与音效 | ACE-Step 1.5、Stable Audio 3（Small Music / Small SFX / Medium）、HeartMuLa 3B、MiniMax-H3、MiniMax Music 3<br>ControlFoley、MiDashengLM-Gen、YuE2、Magenta RealTime 2（Small / Base） |
 | 语音对话 | PersonaPlex、Ming 3.0 Audio Tiny、LFM3-Audio 2B |
-| 声音转换与音频编码 | MeanVC2、Vevo2、Seed-VC、RVC、MioCodec<br>Tone Color VC |
+| 声音设计 | Qwen3-TTS 1.7B VoiceDesign、Irodori-TTS（v4.1 Small MeanFlow / v4 Small / 600M v3）、MOSS-VoiceGenerator<br>BreezeTTS 2、FireRedAudio、FireRedTTS3、Ming 3.0 TTS 0.5B |
+| 语音编辑 | DotTTS Edit、AuK、FireRedAudio、Vevo2 |
+| 声音转换与音频编码 | Chatterbox、MeanVC2、Vevo2（语音 / 歌声）、Seed-VC（语音 / 歌声）、RVC、MioCodec<br>Tone Color VC |
 | 音轨分离 | HTDemucs、BS-RoFormer、Mel-Band RoFormer、HTDemucs 六轨版、SAM Audio、MossFormer2、TF-GridNet |
 | 音频增强与修复 | Apollo、AudioSR、RNNoise、DeepFilterNet2、ZipEnhancer、GTCRN（Streaming / DNS3 / VCTK）、FlashSR、RE-USE、Sidon v0.1<br>UniverSR |
 | 语音检测与对话结束判断 | Silero VAD、MarbleNet VAD、PulseVAD、FireRed VAD / Stream-VAD、Earshot VAD、Smart Turn v3.2 |
 | 声音分类 | AST AudioSet、CED（Base / Mini / Small / Tiny） |
 | 唤醒词检测 | microWakeWord、OpenWakeWord、Sherpa Zipformer KWS（中文 / 英文） |
 | 说话人分离 | Sortformer Diarization 4spk、Nemotron 3 Diarization、Sortformer Diarization v2.1 |
-| 字幕与文本对齐 | Qwen3 Forced Aligner、MMS-300M Forced Aligner |
+| 字幕与文本对齐 | Qwen3 Forced Aligner、MMS-300M Forced Aligner、CrisperWhisper 2.0 |
 | 音乐转谱 | MuScriptor Small、SheetSage2 |
 
-在 **模型中心** 选择并下载模型。声音分类和唤醒词检测位于 **音频工具**。MiraTTS、Sortformer v2 和 Underdog Bark 3.0 的权重需要手动安装；Underdog Bark 使用转换后的 GGUF。LFM3-Audio 支持离线识别、流式合成和语音回复，语音回复在问题输入结束后开始。
+在 **模型中心** 选择并下载模型。声音分类和唤醒词检测位于 **音频工具**。MiraTTS、Sortformer Diarization v2.1 和 Underdog Bark 3.0 的权重需要手动安装；Underdog Bark 使用转换后的 GGUF。Earshot VAD 和 VibeVoice-ASR-BitNet 使用 CPU，其他模型的后端支持以具体模型为准。LFM3-Audio 支持离线识别、流式合成和语音回复，语音回复在问题输入结束后开始。
 
 ## 致谢
 

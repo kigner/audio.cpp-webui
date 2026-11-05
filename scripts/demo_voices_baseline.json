@@ -1,0 +1,47 @@
+{
+  "source_commit": "102a27131e5245265fbc53ab196b96cd3e5a5097",
+  "source_directory": "webui/voice",
+  "directory": "webui/demo_voices",
+  "files": [
+    {
+      "name": "Aixora-旅行女声-演示.wav",
+      "blob": "3cc0dad34950edfffc64fc3135dde6d47706e6b7"
+    },
+    {
+      "name": "Aixora-旅行女声-第3章-v001.wav",
+      "blob": "3cc0dad34950edfffc64fc3135dde6d47706e6b7"
+    },
+    {
+      "name": "Aixora-旅行女声-第3章-录制02.wav",
+      "blob": "3cc0dad34950edfffc64fc3135dde6d47706e6b7"
+    },
+    {
+      "name": "demo_01_man.wav",
+      "blob": "aa3bc4220f5ec5ec18fac687bdf3109bb56ffc3d"
+    },
+    {
+      "name": "demo_02_woman.wav",
+      "blob": "a9096e897d192574b69a8eee0819b141c76cc671"
+    },
+    {
+      "name": "demo_08_ref.wav",
+      "blob": "76fce1b6298c0b0f52d31c36bad93a9b1e1ed15a"
+    },
+    {
+      "name": "demo_09_ref.wav",
+      "blob": "2350d48d755d9be9893d1faf7992e71371324c49"
+    },
+    {
+      "name": "demo_3_man.wav",
+      "blob": "1b5d8707d13df172949412fea84dbf1f20657600"
+    },
+    {
+      "name": "prompt_text",
+      "blob": "66dc194d249fe30297b09c436722c862c1142f9d"
+    },
+    {
+      "name": "纪录片-男-1.wav",
+      "blob": "8d34a08941cdfc68a1a2aae8d233e429759a1f91"
+    }
+  ]
+}
