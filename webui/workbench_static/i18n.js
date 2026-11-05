@@ -1,7 +1,12 @@
 // Translate authored interface copy. User input and model output are never scanned.
 const LANGUAGE_KEY = 'audiocpp-ui-language';
-let language = 'zh';
-try { language = localStorage.getItem(LANGUAGE_KEY) === 'en' ? 'en' : 'zh'; } catch {}
+function resolveLanguage(value) {
+  if (value === 'zh' || value === 'en') return value;
+  const locale = navigator.languages?.[0] || navigator.language || '';
+  return /^zh(?:[-_]|$)/i.test(locale) ? 'zh' : 'en';
+}
+let language = resolveLanguage();
+try { language = resolveLanguage(localStorage.getItem(LANGUAGE_KEY)); } catch {}
 const dictionary = await fetch(new URL('./locales/en.json', import.meta.url)).then(r => {
   if (!r.ok) throw new Error('Language file unavailable');
   return r.json();
@@ -70,13 +75,13 @@ export function applyLanguage(root = document) {
   }
 }
 export function setLanguage(value, {persist=true} = {}) {
-  language = value === 'en' ? 'en' : 'zh';
+  language = resolveLanguage(value);
   if (persist) try { localStorage.setItem(LANGUAGE_KEY,language); } catch {}
   document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
   applyLanguage();
   window.dispatchEvent(new CustomEvent('audiocpp:language',{detail:{language}}));
 }
-window.addEventListener('storage',event => { if (event.key===LANGUAGE_KEY) setLanguage(event.newValue,{persist:false}); });
+window.addEventListener('storage',event => { if (event.key===LANGUAGE_KEY || event.key===null) setLanguage(event.newValue,{persist:false}); });
 document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
 // Called only for HTML templates authored by the app. Interpolated text is opaque.
 const escape = value => String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));

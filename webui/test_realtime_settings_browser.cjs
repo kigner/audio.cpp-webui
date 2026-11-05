@@ -14,7 +14,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
   if (screenshots) await fs.mkdir(screenshots,{recursive:true});
   if (process.env.AUDIOCPP_BROWSER_EXECUTABLE) options.executablePath = process.env.AUDIOCPP_BROWSER_EXECUTABLE;
   const browser = await chromium.launch(options);
-  const page = await browser.newPage({viewport:{width:1440,height:900}});
+  const page = await browser.newPage({locale:'zh-CN',viewport:{width:1440,height:900}});
   const errors = [], activations = [];
   const consoleErrors = [];
   page.on('console', message => {if(message.type()==='error')consoleErrors.push(message.text());});

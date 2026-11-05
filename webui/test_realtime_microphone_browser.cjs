@@ -22,7 +22,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     } catch {response.writeHead(500).end();}
   });
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
-  let page = await browser.newPage({viewport:{width:1280,height:800}});
+  let page = await browser.newPage({locale:'zh-CN',viewport:{width:1280,height:800}});
   const errors = [], activations = [], audio = [];
   const consoleErrors = [];
   page.on('console', message => {if (message.type() === 'error') consoleErrors.push(message.text());});

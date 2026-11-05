@@ -21,11 +21,11 @@ const TASKS = [
 ];
 const PRIMARY_TASKS = ['tts','asr','music','vc','design'];
 const SCENARIOS = [
-  {id:'interpretation',label:'实时翻译',description:'说中文，听英文。自动断句、翻译并朗读，所有处理都在本机完成。',icon:'wave',available:true},
   {id:'realtime-chat',label:'实时语音聊天',description:'通过语音或文字与对话模型交流，使用选定声音回复。',icon:'chat',available:true},
   {id:'subtitles',label:'自动字幕与校对',description:'导入单人口播音频或视频，识别语音、校对字幕并导出 SRT / VTT。',icon:'text',available:true},
   {id:'video-dubbing',label:'视频翻译配音',description:'识别原文、翻译、逐句配音与时长检查，保留背景音乐并混音导出视频。',icon:'play',available:true},
   {id:'speaktype',label:'全局快捷键听写',description:'启动 SpeakType，用全局快捷键录音，将识别文字输入其他应用。',icon:'text',available:true},
+  {id:'interpretation',label:'实时翻译',description:'说中文，听英文。自动断句、翻译并朗读，所有处理都在本机完成。',icon:'wave',available:true},
 ];
 const TOOLS = [
   {id:'processing',task:'processing',label:'音频处理',description:'降噪、增强、超分辨率与语音到语音处理',icon:'wave'},
@@ -1948,10 +1948,20 @@ initialize();
 
 applyLanguage();
 const uiLanguage=document.getElementById('ui-language');
-uiLanguage.value=getLanguage();
-uiLanguage.addEventListener('change',event=>setLanguage(event.target.value));
-window.addEventListener('audiocpp:language',()=>{
+const languageToggle=document.getElementById('language-toggle');
+function updateLanguageControls(){
+  const english=getLanguage()==='en';
   uiLanguage.value=getLanguage();
+  languageToggle.textContent=english?'中文':'EN';
+  languageToggle.lang=english?'zh-CN':'en';
+  languageToggle.title=english?'切换为中文界面':'Switch interface to English';
+  languageToggle.setAttribute('aria-label',languageToggle.title);
+}
+updateLanguageControls();
+uiLanguage.addEventListener('change',event=>setLanguage(event.target.value));
+languageToggle.addEventListener('click',()=>setLanguage(getLanguage()==='en'?'zh':'en'));
+window.addEventListener('audiocpp:language',()=>{
+  updateLanguageControls();
   const frame=$('realtime-frame');
   if(frame.hasAttribute('src'))frame.contentWindow?.postMessage({type:'audiocpp:language',language:getLanguage()},location.origin);
 });

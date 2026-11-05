@@ -21,7 +21,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     const args = ['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream'];
     browser = await chromium.launch({headless:true, args,
       ...(process.env.AUDIOCPP_BROWSER_EXECUTABLE ? {executablePath:process.env.AUDIOCPP_BROWSER_EXECUTABLE} : {})});
-    const context = await browser.newContext({ignoreHTTPSErrors:true, viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const context = await browser.newContext({locale:'zh-CN',ignoreHTTPSErrors:true, viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     const phone = await context.newPage();
     const errors = [];
     const failedAssets = [];
@@ -187,7 +187,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
     assert.deepEqual(errors,[]);
     assert.deepEqual(failedAssets,[]);
 
-    const desktop = await browser.newPage({viewport:{width:1440,height:1000}});
+    const desktop = await browser.newPage({locale:'zh-CN',viewport:{width:1440,height:1000}});
     const desktopErrors = [];
     desktop.on('pageerror', error => desktopErrors.push(error.message));
     let saved = null;

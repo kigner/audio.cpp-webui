@@ -12,7 +12,7 @@ const {chromium} = require(process.env.AUDIOCPP_PLAYWRIGHT_MODULE || 'playwright
   const options = {headless:true,args:['--enable-gpu','--use-angle=d3d11']};
   if (process.env.AUDIOCPP_BROWSER_EXECUTABLE) options.executablePath = process.env.AUDIOCPP_BROWSER_EXECUTABLE;
   const browser = await chromium.launch(options);
-  const page = await browser.newPage({viewport:{width:1365,height:768}});
+  const page = await browser.newPage({locale:'zh-CN',viewport:{width:1365,height:768}});
   const errors = [], requests = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', async route => {

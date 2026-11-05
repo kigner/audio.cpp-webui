@@ -1578,7 +1578,7 @@ const cases = [
     assert.equal(await page.locator('#parameter-toggle').isVisible(),false);
     assert.equal(await page.locator('#scenario-list > button').count(),5);
     assert.equal(await page.locator('#scenario-list > article.planned').count(),0);
-    assert.deepEqual(await page.locator('#scenario-list .tool-card-title').allTextContents(),['实时翻译','实时语音聊天','自动字幕与校对','视频翻译配音','全局快捷键听写']);
+    assert.deepEqual(await page.locator('#scenario-list .tool-card-title').allTextContents(),['实时语音聊天','自动字幕与校对','视频翻译配音','全局快捷键听写','实时翻译']);
     assert.equal(await page.locator('[data-scenario="long-form-reading"]').count(),0);
     await snapshot(page,'scenarios-desktop');
     await page.setViewportSize({width:390,height:900});
@@ -3478,6 +3478,64 @@ cases.push(['SpeakType scenario starts native dictation and keeps it across navi
   assert.equal(await page.locator('#speaktype-start').isDisabled(),true);
 }]);
 
+for(const variant of [
+  {locale:'en-US',expected:'en'},
+  {locale:'en-ZA',expected:'en'},
+  {locale:'de-DE',expected:'en'},
+  {locale:'zh-CN',expected:'zh'},
+  {locale:'zh-TW',expected:'zh'},
+  {locale:'zh-HK',expected:'zh'},
+  {locale:'en-US',saved:'zh',expected:'zh'},
+  {locale:'zh-CN',saved:'en',expected:'en'},
+  {locale:'en-US',saved:'invalid',expected:'en'},
+  {locale:'en-US',blocked:true,expected:'en'},
+  {locale:'zh-CN',blocked:true,expected:'zh'},
+])cases.push([`interface language startup ${variant.locale} ${variant.blocked?'storage blocked':variant.saved??'fresh'}`,async(page)=>{
+  assert.equal(await page.locator('html').getAttribute('lang'),variant.expected==='en'?'en':'zh-CN');
+  assert.equal(await page.locator('#ui-language').inputValue(),variant.expected);
+  assert.equal(await page.locator('#settings-heading').textContent(),variant.expected==='en'?'Settings':'系统设置');
+  if(!variant.blocked&&variant.saved===undefined)assert.equal(await page.evaluate(()=>localStorage.getItem('audiocpp-ui-language')),null,'Automatic language detection must not overwrite an explicit future choice');
+},variant]);
+
+cases.push(['interface language follows cross-tab preference changes and clearing',async(page)=>{
+  assert.equal(await page.locator('#ui-language').inputValue(),'en');
+  await page.evaluate(()=>window.dispatchEvent(new StorageEvent('storage',{key:'audiocpp-ui-language',newValue:'zh'})));
+  assert.equal(await page.locator('#ui-language').inputValue(),'zh');
+  assert.equal(await page.locator('#language-toggle').textContent(),'EN');
+  for(const key of ['audiocpp-ui-language',null]){
+    await page.evaluate(()=>window.dispatchEvent(new StorageEvent('storage',{key:'audiocpp-ui-language',newValue:'zh'})));
+    await page.evaluate(key=>window.dispatchEvent(new StorageEvent('storage',{key,newValue:null})),key);
+    assert.equal(await page.locator('#ui-language').inputValue(),'en');
+    assert.equal(await page.locator('#language-toggle').textContent(),'中文');
+  }
+},{locale:'en-US'}]);
+
+cases.push(['interface language quick switch follows settings and works in compact navigation',async(page,backend)=>{
+  const toggle=page.locator('#language-toggle');
+  await toggle.click();
+  assert.equal(await page.locator('#ui-language').inputValue(),'en');
+  assert.equal(await toggle.textContent(),'中文');
+  assert.equal(await page.locator('#task-title').textContent(),'Text to Speech');
+  await page.locator('[data-route="settings"]').first().click();
+  await page.locator('#ui-language').selectOption('zh');
+  assert.equal(await toggle.textContent(),'EN');
+  assert.equal(await toggle.getAttribute('aria-label'),'Switch interface to English');
+  await page.locator('#sidebar-toggle').click();
+  for(const width of [1440,390,320]){
+    await page.setViewportSize({width,height:844});
+    await assertVisibleControl(page,'#language-toggle','Language switch clipped in compact navigation');
+    const box=await toggle.boundingBox();
+    assert.ok(box.x>=0&&box.x+box.width<=width);
+    assert.ok(await toggle.evaluate(el=>el.scrollWidth<=el.clientWidth));
+  }
+  await toggle.click();
+  await page.reload();
+  assert.equal(await page.locator('#ui-language').inputValue(),'en');
+  assert.equal(await toggle.textContent(),'中文');
+  await snapshot(page,'language-quick-switch-mobile');
+  assert.deepEqual(backend.loads,[],'Changing language must not load a model');
+}]);
+
 cases.push(['interface language preserves drafts, runtime and request values', async (page, backend) => {
   const draft='语音合成';
   await page.locator('#input-tts-text').fill(draft);
@@ -4013,10 +4071,12 @@ cases.push(['upstream 20261030 Magenta style audio piano roll and stereo stream'
   try {
     const selected = cases.filter(([name]) => !process.env.AUDIOCPP_BROWSER_TEST_FILTER || name.includes(process.env.AUDIOCPP_BROWSER_TEST_FILTER));
     assert.ok(selected.length, 'AUDIOCPP_BROWSER_TEST_FILTER matched no cases');
-    for (const [name, run] of selected) {
+    for (const [name, run, languageCase={}] of selected) {
       const backend = fixture();
       if (!name.startsWith('model dropdown') && !name.startsWith('unloaded')) backend.status.server.model='tts-one';
-      const context = await browser.newContext({viewport:{width:1440,height:1000}, serviceWorkers:'block'});
+      const context = await browser.newContext({locale:languageCase.locale||'zh-CN',viewport:{width:1440,height:1000}, serviceWorkers:'block'});
+      if(languageCase.saved!==undefined)await context.addInitScript(value=>localStorage.setItem('audiocpp-ui-language',value),languageCase.saved);
+      if(languageCase.blocked)await context.addInitScript(()=>Object.defineProperty(window,'localStorage',{get(){throw new DOMException('Storage blocked','SecurityError');}}));
       const page = await context.newPage();
       page.setDefaultTimeout(8000);
       const errors = [];

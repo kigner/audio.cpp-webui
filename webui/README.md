@@ -13,7 +13,7 @@ Aixora Audio is a local audio workspace for speech generation, transcription, mu
 
 The service keeps running after you close the browser. Double-click `run_webui.bat` to open the interface again.
 
-To switch to English, open **系统设置 → 外观 → 界面语言** and choose **English**. The browser remembers your choice. SpeakType uses this language when you start dictation.
+On first visit, Chinese browser languages use Chinese; other browser languages use English. Click **EN / 中文** in the sidebar, or open **Settings → Appearance → Interface Language** (**系统设置 → 外观 → 界面语言**) to switch. Your saved choice takes priority over the browser language. SpeakType uses this language when you start dictation.
 
 Python and runtime dependencies are included. Keep the complete folder structure. The usage guide in the package root lists the bundled models; download others from the model center.
 

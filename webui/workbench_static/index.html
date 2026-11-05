@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/workbench-static/home.css?v=aixora-shortcuts-55">
   <link rel="stylesheet" href="/workbench-static/scenarios.css?v=scenario-languages-19">
   <link rel="stylesheet" href="/workbench-static/palettes.css?v=aixora-1">
-  <script type="module" src="/workbench-static/app.js?v=aixora-interpretation-119"></script>
+  <script type="module" src="/workbench-static/app.js?v=aixora-language-120"></script>
   <link rel="stylesheet" href="/workbench-static/interpretation.css?v=2">
   <link rel="stylesheet" href="/workbench-static/speaktype.css?v=1">
   <link rel="stylesheet" href="/workbench-static/mobile-access.css?v=1">
@@ -57,6 +57,7 @@
       </nav>
       <button id="end-realtime-session" class="button subtle small-button end-realtime-session" type="button" title="结束当前对话" aria-label="结束当前对话" hidden data-i18n-title="结束当前对话" data-i18n-aria-label="结束当前对话"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg><span data-i18n="结束当前对话">结束当前对话</span></button>
       <div class="sidebar-bottom">
+        <button id="language-toggle" class="text-button" type="button" lang="en" title="Switch interface to English" aria-label="Switch interface to English">EN</button>
         <div id="resident-model" class="resident-model" role="status" hidden><span class="resident-model-mark" aria-hidden="true"><svg class="icon"><use href="#icon-box"/></svg><span class="status-dot resident-service-dot"></span></span><span class="resident-model-copy"><span class="resident-model-label" data-i18n="常驻模型">常驻模型</span><span id="resident-model-name"></span></span></div>
         <div id="connection-status" class="connection-status" data-state="connecting" role="status" title="连接服务中" data-i18n-title="连接服务中"><span class="status-dot" id="server-dot" aria-hidden="true"></span><span id="sidebar-status" data-i18n="连接服务中">连接服务中</span></div>
         <div class="local-info"><span class="muted small" id="hardware-label" data-i18n="本地工作空间">本地工作空间</span><span class="version" id="version-label">Aixora Audio 0.7.0</span></div>
