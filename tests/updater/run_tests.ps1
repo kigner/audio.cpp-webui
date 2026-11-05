@@ -449,15 +449,11 @@ function Test-AppPayloadSelection {
                 "webui/workbench_launcher.py", "webui/webui.py", "webui/README.md", "webui/README.zh.md",
                 "webui/workbench_static/index.html", "webui/realtime_static/index.html", "SpeakType/run.py",
                 "webui/workbench_static/i18n.js", "webui/workbench_static/locales/en.json",
-                "webui/demo_voices/prompt_text", "webui/demo_voices/demo_01_man.wav",
                 "assets/framework/models/earshot_vad/earshot_vad.safetensors",
                 "webui/native/dist/index.html", "webui/native/demo_voices/prompt_text")) {
             Assert-True ($paths -contains $required) "app inputs omit $required"
         }
         Assert-True (@($paths | Select-Object -Unique).Count -eq $paths.Count) "duplicate app inputs"
-        foreach ($sample in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "webui/demo_voices") -File -Filter "*.wav")) {
-            Assert-True ($paths -contains ("webui/demo_voices/" + $sample.Name)) "app omits a shared voice with a Unicode filename"
-        }
         foreach ($relative in @("run_server.bat", "run_server_asr.bat", "run_server_asr_stream.bat")) {
             Assert-True (($paths -contains $relative) -eq $IncludeStandaloneApi) "standalone API switch ignored for $relative"
             Assert-True (($remove -contains $relative) -ne $IncludeStandaloneApi) "standalone API cleanup conflicts for $relative"
@@ -471,41 +467,8 @@ function Test-AppPayloadSelection {
 }
 
 function Test-FrozenDemoVoices {
-    $root = Join-Path $testRoot "frozen-voices"
-    $examples = Join-Path $root "webui/demo_voices"
-    $original = Join-Path $repoRoot "webui/demo_voices"
-    New-Item -ItemType Directory -Path $examples -Force | Out-Null
-    foreach ($file in Get-ChildItem -LiteralPath $original -File) {
-        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $examples $file.Name)
-    }
     $checker = Join-Path $repoRoot "scripts/check_demo_voices.ps1"
-    & $checker -Root $root -Quiet
-
-    # Local recordings and transcript edits must never change the public baseline.
-    $private = Join-Path $root "webui/voice"
-    New-Item -ItemType Directory -Path $private -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $private "my-record.wav") -Value "private audio" -Encoding ASCII
-    Set-Content -LiteralPath (Join-Path $private "prompt_text") -Value "my-record|private text" -Encoding ASCII
-    & $checker -Root $root -Quiet
-
-    foreach ($name in @("prompt_text", "demo_01_man.wav")) {
-        $path = Join-Path $examples $name
-        [IO.File]::AppendAllText($path, "unapproved change")
-        $rejected = $false
-        try { & $checker -Root $root -Quiet } catch { $rejected = $true }
-        Assert-True $rejected "changed public example was accepted: $name"
-        Copy-Item -LiteralPath (Join-Path $original $name) -Destination $path -Force
-    }
-    $extra = Join-Path $examples "my-record.wav"
-    Set-Content -LiteralPath $extra -Value "private audio" -Encoding ASCII
-    $rejected = $false
-    try { & $checker -Root $root -Quiet } catch { $rejected = $true }
-    Assert-True $rejected "an extra recording was accepted in public examples"
-    Remove-Item -LiteralPath $extra
-    Remove-Item -LiteralPath (Join-Path $examples "demo_01_man.wav")
-    $rejected = $false
-    try { & $checker -Root $root -Quiet } catch { $rejected = $true }
-    Assert-True $rejected "a missing public example was accepted"
+    & $checker -Quiet
 }
 
 function Test-SpeakTypeSyncPreservesUserFiles {

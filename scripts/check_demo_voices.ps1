@@ -1,14 +1,12 @@
 [CmdletBinding()]
 param(
-    [string]$Root = "",
-    [string]$Commit = "",
+    [string]$Commit = "HEAD",
     [switch]$Quiet
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
-if ($Root -eq "") { $Root = $repositoryRoot }
 $baseline = Get-Content -LiteralPath (Join-Path $PSScriptRoot "demo_voices_baseline.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $directory = [string]$baseline.directory
 $previousEncoding = [Console]::OutputEncoding
@@ -28,34 +26,21 @@ function Assert-Examples {
     foreach ($entry in $baseline.files) {
         $name = [string]$entry.name
         if ($Actual.Keys -cnotcontains $name -or $Actual[$name] -cne [string]$entry.blob) {
-            throw "Frozen public example changed or missing: $name. Keep local recordings and transcripts in webui/voice/."
+            throw "Frozen public example changed or missing: $name. Keep local recording and transcript edits out of commits."
         }
     }
 }
 
 try {
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-    if ($Commit -ne "") {
-        $actual = @{}
-        foreach ($line in (Invoke-Git @("ls-tree", "-r", "--format=%(objectname) %(path)", $Commit, "--", "$directory/"))) {
-            $blob, $path = $line -split ' ', 2
-            $actual[$path.Substring($directory.Length + 1)] = $blob
-        }
-        Assert-Examples $actual
-        $privateFiles = @(Invoke-Git @("ls-tree", "-r", "--name-only", $Commit, "--", "webui/voice/"))
-    } else {
-        $examples = [IO.Path]::GetFullPath((Join-Path $Root $directory))
-        $actual = @{}
-        foreach ($file in Get-ChildItem -LiteralPath $examples -File -Recurse -Force) {
-            if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Public examples cannot be links." }
-            $name = $file.FullName.Substring($examples.Length + 1).Replace('\', '/')
-            $blob = @(Invoke-Git @("hash-object", "--path=$directory/$name", "--", $file.FullName))
-            $actual[$name] = $blob[0]
-        }
-        Assert-Examples $actual
-        $privateFiles = @(Invoke-Git @("ls-files", "--", "webui/voice/"))
+    # Inspect committed Git objects only: local voice recordings and prompt edits
+    # are intentionally allowed and must never become release inputs.
+    $actual = @{}
+    foreach ($line in (Invoke-Git @("ls-tree", "-r", "--format=%(objectname) %(path)", $Commit, "--", "$directory/"))) {
+        $blob, $path = $line -split ' ', 2
+        $actual[$path.Substring($directory.Length + 1)] = $blob
     }
-    if ($privateFiles.Count -ne 0) { throw "Runtime webui/voice files must stay untracked." }
+    Assert-Examples $actual
     if (-not $Quiet) { Write-Host "Frozen demo voices verified: original 9 WAVs and prompt_text." }
 } finally {
     [Console]::OutputEncoding = $previousEncoding

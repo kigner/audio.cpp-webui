@@ -2304,25 +2304,6 @@ def choices_for_tasks(tasks, language=None):
     return out
 
 
-def _initialize_builtin_voices():
-    """Seed reviewed examples once; the runtime voice directory is private."""
-    marker = os.path.join(PROMPTS_DIR, ".demo-voices-initialized")
-    shared = os.path.join(HERE, "demo_voices")
-    if os.path.exists(marker) or not os.path.isdir(shared):
-        return
-    os.makedirs(PROMPTS_DIR, exist_ok=True)
-    for name in os.listdir(shared):
-        source = os.path.join(shared, name)
-        target = os.path.join(PROMPTS_DIR, name)
-        if name.lower().endswith(".wav") and os.path.isfile(source) and not os.path.exists(target):
-            shutil.copy2(source, target)
-    with open(marker, "w", encoding="ascii") as f:
-        f.write("1\n")
-
-
-_initialize_builtin_voices()
-
-
 def builtin_voices():
     if not os.path.isdir(PROMPTS_DIR):
         return []
@@ -2347,11 +2328,9 @@ def _stage_tts_voice_recording(path):
 
 def _load_voice_texts():
     """Built-in voice basename -> reference transcript, parsed from
-    voice/prompt_text or demo_voices/prompt_text for a fresh installation
-    (each line is '<basename>|<transcript>')."""
+    voice/prompt_text (each line is '<basename>|<transcript>')."""
     texts = {}
-    paths = [os.path.join(PROMPTS_DIR, "prompt_text"),
-             os.path.join(os.path.dirname(PROMPTS_DIR), "demo_voices", "prompt_text")]
+    paths = [os.path.join(PROMPTS_DIR, "prompt_text")]
     for path in paths:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -2359,7 +2338,7 @@ def _load_voice_texts():
                     name, sep, text = line.rstrip("\n").partition("|")
                     if sep:
                         texts[name.strip()] = text
-            break  # An existing local file, even empty, overrides shared defaults.
+            break
         except FileNotFoundError:
             continue
         except Exception:

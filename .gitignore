@@ -62,9 +62,9 @@ __pycache__/
 /webui/configs/ui_language.json
 /webui/configs/workbench_downloads.json
 /webui/configs/workbench_downloads.json.tmp
-# Runtime voices and prompt transcripts are private, regardless of filename.
-# Reviewed public WAVs and their prompt_text live together in webui/demo_voices/.
+# The original tracked voice samples are frozen; all additional runtime files stay local.
 /webui/voice/
+/webui/demo_voices/
 
 # --- upstream native WebUI build artifacts ---
 /webui/native/node_modules/

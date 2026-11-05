@@ -1,7 +1,7 @@
 {
   "source_commit": "102a27131e5245265fbc53ab196b96cd3e5a5097",
   "source_directory": "webui/voice",
-  "directory": "webui/demo_voices",
+  "directory": "webui/voice",
   "files": [
     {
       "name": "Aixora-旅行女声-演示.wav",
